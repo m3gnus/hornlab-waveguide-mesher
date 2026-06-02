@@ -86,9 +86,3 @@ Recommended command/backend shape:
 ```bash
 hornlab-waveguide config.toml -o waveguide.msh
 ```
-
-## Roadmap
-
-1. Keep this extraction buildable with the current `hornlab_mesher` import.
-2. Finish ATH source-cap and rear-return tessellation parity.
-3. Add integration adapters where downstream applications need them.
