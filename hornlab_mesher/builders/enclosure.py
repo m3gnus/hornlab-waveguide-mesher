@@ -1,18 +1,19 @@
-"""Cabinet enclosure builder for point-grid horns.
+"""Rear enclosure builder for point-grid waveguides.
 
-Supports closed-domain horns (``quadrants=1234``), the supported enclosure
-topology for this standalone package, with:
+Supports closed-domain waveguides (``quadrants=1234``) with:
 
 * ``HornEnclosure.plan_type`` ``∈ {1, 2, 3}`` — rounded rectangle, ellipse,
   superellipse (exponent from ``plan_n``).
 * ``HornEnclosure.edge_type`` ``∈ {1, 2}`` — rounded fillet (3 profile
   thru-section) or chamfer (single ruled surface).
 
-The open-domain (``closed=False``) branch is intentionally not ported for
-enclosures.
+The open-domain (``closed=False``) branch is intentionally not ported — the
+WG mesh route forces ``quadrants=1234`` so that code path is dead in
+production.
 
 The pure XY-plane geometry math (rounded-rect, ellipse, superellipse
-samplers) is kept as pure Python so enclosure tests do not require a frontend.
+samplers) is vendored from ``Waveguide-Generator/server/solver/waveguide_enclosure.py``
+without modification.
 """
 
 from __future__ import annotations
@@ -167,7 +168,7 @@ def sample_enclosure_plan(
     n_per_edge: int = 3,
     n_per_corner: int = 4,
 ) -> NDArray[np.float64]:
-    """Dispatch to the correct plan shape sampler for the cabinet front/back/edges.
+    """Dispatch to the correct plan shape sampler for enclosure front/back/edges.
 
     ``plan_type`` selects: 1 = rounded rectangle, 2 = ellipse, 3 = superellipse.
     The ``corner_radius`` / ``edge_type`` arguments are only meaningful for
@@ -318,7 +319,7 @@ def build_enclosure_box(
     enclosure: HornEnclosure,
     closed: bool = True,
 ) -> dict[str, Any]:
-    """Build a closed-domain cabinet enclosure around the horn mouth.
+    """Build a closed-domain rear enclosure around the horn mouth.
 
     Returns a dict mirroring WG's ``_build_enclosure_box`` output:
 
@@ -410,7 +411,7 @@ def build_enclosure_box(
     # can track accurately.
     min_bspline_r = 0.1
 
-    # --- Front baffle: cabinet plan shape with horn-mouth hole. ---
+    # --- Front baffle: enclosure plan shape with horn-mouth hole. ---
     ring0_pts = sample_enclosure_plan(
         bx0=bx0 + clamped_edge,
         bx1=bx1 - clamped_edge,

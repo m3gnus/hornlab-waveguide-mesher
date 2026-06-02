@@ -10,7 +10,6 @@
 //   health                  -> {"status": "ok", "version": "..."}
 //   compute_osse_profile    -> {x: [...], y: [...], total_length}
 //   compute_rosse_profile   -> {x: [...], y: [...]}
-//   compute_lookup_profile  -> {x: [...], y: [...], total_length}
 //   build_inner_points      -> {inner_points: [...], grid_n_phi, grid_n_length, full_circle, angle_list, slice_map}
 //   build_point_grid        -> {inner_points: [...], outer_points: [...] | null, grid_n_phi, grid_n_length, full_circle, angle_list, slice_map}
 //
@@ -20,11 +19,17 @@
 import readline from 'node:readline';
 import { calculateOSSE, calculateROSSE } from '@hornlab/geometry/engine/index.js';
 import { prepareGeometryParams } from '@hornlab/geometry/params.js';
-import { pchipEval } from '@hornlab/geometry/engine/interp.js';
 import { buildGeometryShape, buildGeometryMeshFromShape } from '@hornlab/geometry/pipeline.js';
 import { extractPointGrid } from '@hornlab/geometry/pointGridExtractor.js';
 
 const VERSION = '0.1.0';
+
+function normaliseWaveguideType(value = 'OSSE') {
+  const raw = String(value || 'OSSE').trim().toUpperCase().replace('_', '-');
+  if (raw === 'ROSSE') return 'R-OSSE';
+  if (raw === 'OSSE' || raw === 'R-OSSE') return raw;
+  throw new Error(`hornlab-waveguide-mesher supports only OSSE or R-OSSE/ROSSE, got ${value}`);
+}
 
 function computeOsseProfile({ phi = 0, t_values, params }) {
   if (!Array.isArray(t_values)) throw new Error('compute_osse_profile: t_values must be an array');
@@ -67,26 +72,6 @@ function computeRosseProfile({ phi = 0, t_values, params }) {
   return { x, y, total_length: Number.isFinite(last) ? last : NaN };
 }
 
-function computeLookupProfile({ t_values, lookup_points }) {
-  if (!Array.isArray(t_values)) throw new Error('compute_lookup_profile: t_values must be an array');
-  if (!Array.isArray(lookup_points) || lookup_points.length < 2) {
-    throw new Error('compute_lookup_profile: lookup_points must be an array of at least two [z, r] pairs');
-  }
-  const zs = lookup_points.map((p) => Number(p[0]));
-  const rs = lookup_points.map((p) => Number(p[1]));
-  const L = zs[zs.length - 1] - zs[0];
-  const z0 = zs[0];
-  const x = new Array(t_values.length);
-  const y = new Array(t_values.length);
-  for (let i = 0; i < t_values.length; i += 1) {
-    const t = t_values[i];
-    const z = z0 + t * L;
-    x[i] = z;
-    y[i] = pchipEval(zs, rs, z);
-  }
-  return { x, y, total_length: L };
-}
-
 function buildInnerPoints({ params }) {
   if (!params || typeof params !== 'object') {
     throw new Error('build_inner_points: params required');
@@ -95,7 +80,8 @@ function buildInnerPoints({ params }) {
   if (!Number.isInteger(lengthSegments) || lengthSegments < 1) {
     throw new Error('build_inner_points: params.lengthSegments must be a positive integer');
   }
-  const shape = buildGeometryShape(params);
+  const type = normaliseWaveguideType(params.type);
+  const shape = buildGeometryShape({ ...params, type });
   const meshData = buildGeometryMeshFromShape(shape, {
     includeEnclosure: false,
     adaptivePhi: false,
@@ -120,7 +106,8 @@ function buildPointGrid({ params }) {
     throw new Error('build_point_grid: params.lengthSegments must be a positive integer');
   }
 
-  const prepared = prepareGeometryParams(params, { type: params.type });
+  const type = normaliseWaveguideType(params.type);
+  const prepared = prepareGeometryParams({ ...params, type }, { type });
   const encDepth = Number(prepared.encDepth || 0);
   const wallThickness = Number(prepared.wallThickness || 0);
   const includeOuter = encDepth <= 0 && wallThickness > 0;
@@ -155,7 +142,6 @@ const OPS = {
   health: () => ({ status: 'ok', version: VERSION }),
   compute_osse_profile: computeOsseProfile,
   compute_rosse_profile: computeRosseProfile,
-  compute_lookup_profile: computeLookupProfile,
   build_inner_points: buildInnerPoints,
   build_point_grid: buildPointGrid,
 };

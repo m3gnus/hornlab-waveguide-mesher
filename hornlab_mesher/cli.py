@@ -338,7 +338,7 @@ def _normalise_formula(value: Any) -> str:
 def _normalise_mode(config: Mapping[str, Any], mesh: Mapping[str, Any], enclosure: Mapping[str, Any]) -> str:
     raw = str(_pick(config, mesh, names=("mode",), default="")).strip().lower().replace("_", "-")
     enc_depth = _float(enclosure, mesh, config, names=("depth_mm", "depth", "encDepth"), default=0.0)
-    if raw in {"enclosure", "enclosed", "cabinet"} or enc_depth > 0:
+    if raw in {"enclosure", "enclosed"} or enc_depth > 0:
         return "enclosure"
     if raw in {"bare", "inner", "open"}:
         return "bare"
@@ -372,7 +372,7 @@ def _enclosure_from_config(
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
-    enclosure = _section(config, "enclosure", "cabinet")
+    enclosure = _section(config, "enclosure")
     cross = _section(config, "cross_section", "crossSection")
     morph = _section(config, "morph", "MORPH")
     source = _section(config, "source", "Source")
@@ -480,7 +480,7 @@ def build_from_config(
 ) -> BuildResult:
     params, formula, mode = build_geometry_params(config)
     mesh = _section(config, "mesh")
-    enclosure = _section(config, "enclosure", "cabinet")
+    enclosure = _section(config, "enclosure")
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure)
 
     gc = client or GeometryClient()

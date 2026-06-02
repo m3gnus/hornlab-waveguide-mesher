@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..geometry import AxiHornGeometry, BuiltGeometry
+from ..geometry import _AxiHornGeometry, BuiltGeometry
 from ..tags import PhysicalGroup
 from ._occ import (
     build_bspline_surface_from_rings,
@@ -11,7 +11,7 @@ from ._occ import (
 )
 
 
-def _validated_profile(geometry: AxiHornGeometry) -> np.ndarray:
+def _validated_profile(geometry: _AxiHornGeometry) -> np.ndarray:
     points = np.asarray(geometry.profile_points, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 2 or len(points) < 2:
         raise ValueError("profile_points must be an (N, 2) array with at least two points")
@@ -24,7 +24,7 @@ def _validated_profile(geometry: AxiHornGeometry) -> np.ndarray:
     return points
 
 
-def build_axisymmetric(geometry: AxiHornGeometry) -> BuiltGeometry:
+def _build_axisymmetric(geometry: _AxiHornGeometry) -> BuiltGeometry:
     profile = _validated_profile(geometry)
     rings = [
         superellipse_ring(

@@ -3,11 +3,11 @@
 Spawns a long-lived Node subprocess running
 ``hornlab-geometry/bin/geometry-cli.js`` and exchanges NDJSON requests
 over stdin/stdout. The CLI hosts the canonical JS geometry evaluators
-(``calculateOSSE``, ``calculateROSSE``, ``pchipEval``) so Python callers
+(``calculateOSSE``, ``calculateROSSE``) so Python callers
 share the same single source of truth as the WG browser UI.
 
-The ``hornlab-geometry`` sibling package must be co-located at either the
-repository root (standalone layout) or the HornLab workspace root (monorepo
+The ``hornlab-geometry`` sibling package must be co-located at the repository
+root (standalone layout) or at ``<HornLab>/hornlab-geometry/`` (monorepo
 layout).
 """
 
@@ -23,11 +23,11 @@ from typing import Any, Sequence
 
 import numpy as np
 
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 _HORNLAB_ROOT = Path(__file__).resolve().parents[2]
 _GEOMETRY_ROOT = (
-    _PACKAGE_ROOT / "hornlab-geometry"
-    if (_PACKAGE_ROOT / "hornlab-geometry").is_dir()
+    _REPO_ROOT / "hornlab-geometry"
+    if (_REPO_ROOT / "hornlab-geometry").is_dir()
     else _HORNLAB_ROOT / "hornlab-geometry"
 )
 _CLI_PATH = _GEOMETRY_ROOT / "bin" / "geometry-cli.js"
@@ -48,7 +48,8 @@ class GeometryClient:
         if not self._cli_path.is_file():
             raise FileNotFoundError(
                 f"Geometry CLI not found at {self._cli_path}. "
-                "The hornlab-geometry package must be co-located at the HornLab workspace root."
+                "The hornlab-geometry package must be bundled at the repository root "
+                "or co-located at the HornLab workspace root."
             )
         self._node_bin = node_bin
         self._proc: subprocess.Popen | None = None
@@ -167,25 +168,10 @@ class GeometryClient:
         y = np.asarray(result["y"], dtype=float)
         return x, y, float(result["total_length"])
 
-    def compute_lookup_profile(
-        self,
-        t_values: Sequence[float] | np.ndarray,
-        lookup_points: Sequence[Sequence[float]],
-    ) -> tuple[np.ndarray, np.ndarray, float]:
-        t_list = list(np.asarray(t_values, dtype=float).tolist())
-        pts = [[float(p[0]), float(p[1])] for p in lookup_points]
-        result = self._call(
-            "compute_lookup_profile",
-            {"t_values": t_list, "lookup_points": pts},
-        )
-        x = np.asarray(result["x"], dtype=float)
-        y = np.asarray(result["y"], dtype=float)
-        return x, y, float(result["total_length"])
-
     def build_inner_points(self, params: dict[str, Any]) -> dict[str, Any]:
         """Build the 3D `inner_points` grid for a full WG params dict.
 
-        ``params`` must include ``type`` (``OSSE``/``ROSSE``/``LOOKUP``/...) and
+        ``params`` must include ``type`` (``OSSE``/``R-OSSE``/``ROSSE``) and
         all WG geometry knobs the chosen profile expects, plus ``angularSegments``
         and ``lengthSegments``. Returns a dict with ``inner_points`` (flat list
         of length ``grid_n_phi * (grid_n_length + 1) * 3``), ``grid_n_phi``,

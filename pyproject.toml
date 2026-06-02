@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hornlab-waveguide-mesher"
 version = "0.1.0"
-description = "Canonical OSSE/R-OSSE waveguide geometry and Gmsh mesher with hidden ATH parity support"
+description = "OSSE/R-OSSE waveguide geometry and Gmsh mesher"
 requires-python = ">=3.10"
 dependencies = [
     "gmsh",

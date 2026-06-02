@@ -18,19 +18,15 @@ class CrossSection:
 
 @dataclass(frozen=True)
 class Enclosure:
-    """Optional enclosure/cabinet metadata.
-
-    The first mesher release keeps horn enclosures as surface metadata only.
-    Standalone cabinet meshes are represented by :class:`CabinetGeometry`.
-    """
+    """Optional waveguide rear-enclosure metadata."""
 
     depth_mm: float = 0.0
     wall_thickness_mm: float = 0.0
 
 
 @dataclass(frozen=True)
-class AxiHornGeometry:
-    """Horn profile defined by ``(z_mm, r_mm)`` control points."""
+class _AxiHornGeometry:
+    """Internal axial loft input used by the OSSE builder."""
 
     profile_points: NDArray[np.float64]
     throat_radius_mm: float
@@ -65,23 +61,12 @@ class RosseHornGeometry:
 
 
 @dataclass(frozen=True)
-class LookupHornGeometry:
-    """Lookup-table waveguide horn (PCHIP interpolation of (z, r) control points)."""
-
-    lookup_points: NDArray[np.float64]
-    cross_section: CrossSection = field(default_factory=CrossSection)
-    enclosure: Enclosure = field(default_factory=Enclosure)
-    n_phi: int = 64
-    n_axial: int = 32
-
-
-@dataclass(frozen=True)
 class OsseHornGeometry:
     """OSSE waveguide horn evaluated through the canonical WG JS pipeline.
 
     The (z, r) profile is computed via the geometry-cli subprocess so this
-    builder shares a single source of truth with the bundled JS geometry
-    evaluator. The mesh build is then handed to the axisymmetric builder.
+    builder shares a single source of truth with the WG browser UI. The mesh
+    build is then handed to an internal axial loft helper.
     """
 
     L_mm: float = 120.0
@@ -103,68 +88,11 @@ class OsseHornGeometry:
 
 
 @dataclass(frozen=True)
-class RectHornGeometry:
-    """Rectangular conical horn with per-axis expansion."""
-
-    primary_h_deg: float
-    primary_v_deg: float
-    mouth_width_mm: float
-    mouth_height_mm: float
-    throat_diameter_mm: float = 25.4
-    flare2_h_deg: float = 0.0
-    flare2_v_deg: float = 0.0
-    flare2_ratio: float = 0.7
-    throat_type: Literal["osse", "quadratic", "none"] = "osse"
-    throat_driver_deg: float = 15.5
-    throat_length_mm: float = 0.0
-    body_fillet_mm: float = 0.0
-    enclosure: Enclosure = field(default_factory=Enclosure)
-    n_phi: int = 80
-    n_length: int = 18
-
-
-@dataclass(frozen=True)
-class SlotConfig:
-    """Cabinet slot/aperture patch."""
-
-    opening_w_mm: float
-    depth_mm: float
-    height_mm: float
-    apex_width_mm: float = 0.0
-    apex_depth_mm: float = 0.0
-    topology: Literal["front", "side"] = "front"
-    exit_x_offset_mm: float = 0.0
-
-
-@dataclass(frozen=True)
-class DriverConfig:
-    """One circular velocity-source patch on a cabinet surface."""
-
-    diameter_mm: float
-    tag: int
-    position: Literal["slot_wall", "rear_panel"] = "rear_panel"
-    offset_mm: float = 0.0
-
-
-@dataclass(frozen=True)
-class CabinetGeometry:
-    """Surface-shell cabinet with front apertures and driver source patches."""
-
-    width_mm: float
-    depth_mm: float
-    height_mm: float
-    slots: list[SlotConfig] = field(default_factory=list)
-    drivers: list[DriverConfig] = field(default_factory=list)
-    aperture_width_mm: float = 0.0
-    aperture_height_mm: float = 0.0
-
-
-@dataclass(frozen=True)
 class HornEnclosure:
-    """Cabinet enclosure around a point-grid horn (WG ``enc_*`` payload family).
+    """Rear enclosure around a point-grid waveguide (WG ``enc_*`` payload family).
 
     Defaults mirror ``WaveguideParamsRequest`` so a caller can construct one
-    with only ``depth_mm`` set and get the WG-default cabinet shape.
+    with only ``depth_mm`` set and get the WG-default enclosure shape.
 
     ``plan_type``: 1=rounded rectangle, 2=ellipse, 3=superellipse.
     ``edge_type``: 1=rounded fillet, 2=chamfer.
@@ -184,11 +112,11 @@ class HornEnclosure:
 
 @dataclass(frozen=True)
 class PointGridHornGeometry:
-    """Waveguide horn surface from an already-evaluated point grid.
+    """WG-compatible horn surface from an already-evaluated point grid.
 
-    ``inner_points`` uses the bundled geometry CLI point-grid shape:
-    ``(n_phi, n_length + 1, 3)`` in millimetres. This keeps formula/profile
-    evaluation separate from Gmsh authoring.
+    ``inner_points`` uses the Waveguide Generator OCC payload shape:
+    ``(n_phi, n_length + 1, 3)`` in millimetres. This keeps WG in charge of
+    formulas/profile evaluation while the mesher owns Gmsh authoring.
 
     Three top-level cases, gated by ``enclosure`` and ``outer_points``:
 
@@ -197,7 +125,7 @@ class PointGridHornGeometry:
     * ``enclosure is None`` and ``outer_points is not None`` — freestanding
       wall-shell horn (case B). ``wall_thickness_mm`` is used by the legacy
       rear-disc fallback; the active path reuses outer wall boundary curves.
-    * ``enclosure is not None`` — horn inside a cabinet enclosure (case C).
+    * ``enclosure is not None`` — waveguide inside a rear enclosure (case C).
     """
 
     inner_points: NDArray[np.float64]
@@ -214,16 +142,12 @@ class PointGridHornGeometry:
 
 
 HornGeometry = (
-    AxiHornGeometry
-    | OsseHornGeometry
-    | LookupHornGeometry
-    | RectHornGeometry
-    | CabinetGeometry
+    OsseHornGeometry
     | PointGridHornGeometry
 )
 # Note: RosseHornGeometry is intentionally NOT in the buildable union — the
 # ROSSE curve is non-monotonic in z for typical parameter ranges, so
-# build_axisymmetric cannot consume it. Use compute_rosse_profile_points
+# the internal axial loft helper cannot consume it. Use compute_rosse_profile_points
 # (in builders.rosse_waveguide) for the curve, or hand the result to a
 # free-form sweep builder once one exists.
 

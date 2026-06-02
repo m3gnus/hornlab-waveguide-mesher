@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
 
 
-_ROSSE_CFG = """
+ROSSE_CFG = """
 R-OSSE = {
-  R = "130 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)"
-  r0 = 12.7
-  a = "22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)"
+  R = 160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)
+  r = 0.35
+  b = 0.4
+  m = 0.84
+  a = 22
   a0 = 15.5
+  r0 = 12.7
   k = 4
-  q = 1
+  q = 4
 }
 Mesh = {
   AngularSegments = 80
@@ -21,47 +22,44 @@ Mesh = {
 }
 """
 
-_OSSE_CFG = """
+OSSE_CFG = """
 OSSE = {
-  Length = 120
-  r0 = 12.7
-  Coverage.Angle = "60 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)"
-  Throat.Angle = 15.5
+  Length = 80
+  Throat.Diameter = 20
+  Coverage.Angle = 45 * cos(p)
+  Throat.Angle = 10
   OS.k = 1
   Term.n = 4
-}
-Mesh = {
-  AngularSegments = 64
-  LengthSegments = 16
-  WallThickness = 6
+  Term.q = 0.995
 }
 MORPH = {
   TargetShape = 1
 }
+Mesh = {
+  AngularSegments = 12
+  LengthSegments = 4
+  WallThickness = 5
+}
 """
 
-_OSSE_ENCLOSURE_CFG = """
+OSSE_ENCLOSURE_CFG = """
 OSSE = {
   Length = 80
-  r0 = 10
+  Throat.Diameter = 20
   Coverage.Angle = 45
   Throat.Angle = 10
   OS.k = 1
   Term.n = 4
+  Term.q = 0.995
 }
 Mesh = {
-  AngularSegments = 16
-  LengthSegments = 6
-  WallThickness = 5
-  ThroatResolution = 8
-  MouthResolution = 35
-  RearResolution = 40
+  AngularSegments = 12
+  LengthSegments = 4
+  WallThickness = 0
 }
 Mesh.Enclosure = {
   Depth = 120
-  Spacing = 20,20,20,20
   EdgeRadius = 6
-  EdgeType = 1
 }
 """
 
@@ -84,7 +82,8 @@ def test_build_geometry_params_accepts_rosse_alias():
 
 def test_load_config_accepts_ath_cfg_fixture(tmp_path):
     cfg_path = tmp_path / "rosse-simple.cfg"
-    cfg_path.write_text(_ROSSE_CFG, encoding="utf-8")
+    cfg_path.write_text(ROSSE_CFG, encoding="utf-8")
+
     config = load_config(cfg_path)
     params, formula, mode = build_geometry_params(config)
 
@@ -97,7 +96,7 @@ def test_load_config_accepts_ath_cfg_fixture(tmp_path):
 
 def test_load_config_accepts_ath_txt_extension(tmp_path):
     txt_path = tmp_path / "osse-simple.txt"
-    txt_path.write_text(_OSSE_CFG, encoding="utf-8")
+    txt_path.write_text(OSSE_CFG, encoding="utf-8")
 
     config = load_config(txt_path)
     params, formula, mode = build_geometry_params(config)
@@ -178,7 +177,8 @@ def test_build_from_config_rosse_enclosure(tmp_path):
 
 def test_build_from_ath_enclosure_fixture(tmp_path):
     cfg_path = tmp_path / "osse-with-enclosure.cfg"
-    cfg_path.write_text(_OSSE_ENCLOSURE_CFG, encoding="utf-8")
+    cfg_path.write_text(OSSE_ENCLOSURE_CFG, encoding="utf-8")
+
     result = build_from_config(
         load_config(cfg_path),
         tmp_path / "osse-with-enclosure.msh",

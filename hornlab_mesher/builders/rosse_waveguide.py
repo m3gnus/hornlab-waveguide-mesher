@@ -2,7 +2,7 @@
 
 ROSSE's axial coordinate is not monotonic in normalised ``t`` for typical
 parameter ranges (the curve folds back on itself near the mouth), so it
-cannot be fed straight into :func:`build_axisymmetric`. This module
+cannot be fed straight into the OSSE axial loft helper. This module
 exposes only :func:`compute_rosse_profile_points` for callers that want
 the (z, r) curve for plotting, analysis, or custom surface authoring.
 

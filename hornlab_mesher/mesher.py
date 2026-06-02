@@ -8,26 +8,18 @@ import meshio
 import numpy as np
 
 from .builders import (
-    build_axisymmetric,
-    build_cabinet,
-    build_lookup_waveguide,
     build_osse_waveguide,
     build_point_grid,
-    build_rectangular,
 )
 from .builders._occ import add_physical_groups
 from .density import configure_density
 from .geometry import (
-    AxiHornGeometry,
     BuiltGeometry,
-    CabinetGeometry,
     HornGeometry,
-    LookupHornGeometry,
     MeshDensity,
     MeshInfo,
     OsseHornGeometry,
     PointGridHornGeometry,
-    RectHornGeometry,
 )
 from .normals import (
     MeshOrientationError,
@@ -48,14 +40,6 @@ class MesherError(Exception):
 def _dispatch_builder(geometry: HornGeometry) -> BuiltGeometry:
     if isinstance(geometry, OsseHornGeometry):
         return build_osse_waveguide(geometry)
-    if isinstance(geometry, LookupHornGeometry):
-        return build_lookup_waveguide(geometry)
-    if isinstance(geometry, AxiHornGeometry):
-        return build_axisymmetric(geometry)
-    if isinstance(geometry, RectHornGeometry):
-        return build_rectangular(geometry)
-    if isinstance(geometry, CabinetGeometry):
-        return build_cabinet(geometry)
     if isinstance(geometry, PointGridHornGeometry):
         return build_point_grid(geometry)
     raise TypeError(f"unsupported geometry type: {type(geometry)!r}")

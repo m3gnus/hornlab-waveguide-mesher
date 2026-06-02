@@ -74,3 +74,21 @@ test('geometry-cli unknown op surfaces an error response', async () => {
   assert.equal(responses[0].id, 'bad');
   assert.match(responses[0].error, /unknown op/);
 });
+
+test('geometry-cli rejects non-OSSE point-grid types', async () => {
+  const { responses } = await runOps([{
+    id: 'lookup',
+    op: 'build_point_grid',
+    params: {
+      params: {
+        type: 'LOOKUP',
+        lookupPoints: [[0, 12.7], [100, 120]],
+        angularSegments: 8,
+        lengthSegments: 4,
+      },
+    },
+  }]);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].id, 'lookup');
+  assert.match(responses[0].error, /supports only OSSE or R-OSSE/);
+});

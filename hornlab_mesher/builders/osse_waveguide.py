@@ -2,14 +2,14 @@
 
 Evaluates the OSSE profile through the canonical WG JS pipeline (via the
 geometry-cli subprocess), then delegates the mesh build to
-:func:`build_axisymmetric`. This keeps a single source of truth for
-acoustic-waveguide formulas (WG owns the math) while reusing the existing
-axisymmetric loft for surface authoring.
+an internal axial loft helper. This keeps a single source of truth for
+acoustic-waveguide formulas (WG owns the math) while reusing one surface
+authoring path.
 
 :func:`compute_osse_inner_points` produces the same flat 3D point grid the
 WG OCC builder consumes, so downstream tools that speak the WG point-grid
-contract (BIGMEH, the WG /api/mesh/build endpoint, etc.) can construct an
-OSSE wall directly from parameters without needing a JS frontend.
+contract can construct an OSSE wall directly from parameters without needing
+a JS frontend.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from typing import Any, Optional
 
 import numpy as np
 
-from ..geometry import AxiHornGeometry, BuiltGeometry, OsseHornGeometry
+from ..geometry import _AxiHornGeometry, BuiltGeometry, OsseHornGeometry
 from ..geometry_client import GeometryClient, get_default_client
-from .axisymmetric import build_axisymmetric
+from .axisymmetric import _build_axisymmetric
 
 
 def compute_osse_profile_points(
@@ -60,16 +60,16 @@ def build_osse_waveguide(
     *,
     client: Optional[GeometryClient] = None,
 ) -> BuiltGeometry:
-    """Build an OSSE waveguide horn surface via the canonical evaluator + axisymmetric loft."""
+    """Build an OSSE waveguide horn surface via the canonical evaluator."""
     profile = compute_osse_profile_points(geometry, client=client)
-    axi = AxiHornGeometry(
+    axi = _AxiHornGeometry(
         profile_points=profile,
         throat_radius_mm=float(profile[0, 1]),
         cross_section=geometry.cross_section,
         enclosure=geometry.enclosure,
         n_phi=geometry.n_phi,
     )
-    return build_axisymmetric(axi)
+    return _build_axisymmetric(axi)
 
 
 def compute_osse_inner_points(
@@ -90,8 +90,7 @@ def compute_osse_inner_points(
 
     Returns a dict with ``inner_points`` (list of floats), ``grid_n_phi``,
     ``grid_n_length``, ``full_circle``, and ``angle_list`` — exactly what
-    the BIGMEH ``HornParams`` constructor and the WG /api/mesh/build
-    endpoint consume.
+    the Waveguide Generator mesh endpoint consumes.
     """
     if geometry.n_axial < 2:
         raise ValueError("OsseHornGeometry.n_axial must be at least 2 for inner-point grids")

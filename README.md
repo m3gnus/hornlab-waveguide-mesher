@@ -4,6 +4,10 @@ Canonical OSSE/R-OSSE waveguide geometry and Gmsh mesher extracted from
 HornLab. This is the package intended to replace ATH-style waveguide mesh
 generation in Boundary Lab.
 
+This repository is intentionally limited to OSSE and R-OSSE waveguide meshes.
+It does not ship standalone cabinet, slot, port, driver, rectangular horn, or
+lookup-table mesh builders.
+
 The repository contains two cooperating packages:
 
 - `hornlab_mesher`: Python Gmsh mesher, physical tags, mesh density, orientation
@@ -25,6 +29,8 @@ Implemented:
   - `athParitySampling: true`
   - `samplingMode: "ath-parity"`
 - Orientation validation and ABEC-compatible physical tags.
+- Non-OSSE geometry requests are rejected at the Python CLI and bundled
+  geometry CLI boundaries.
 
 Known remaining ATH-replacement work:
 
@@ -53,17 +59,14 @@ hornlab-waveguide examples/rosse-enclosure.toml -o runs/scratch/rosse.msh
 ## Python API
 
 ```python
-from hornlab_mesher import MeshDensity, PointGridHornGeometry, build_mesh
+from hornlab_mesher.cli import build_from_config
 
-geometry = PointGridHornGeometry(
-    inner_points=inner_points_mm,
-    outer_points=outer_points_mm,
-    wall_thickness_mm=6.0,
-)
-
-build_mesh(
-    geometry,
-    MeshDensity(throat_res_mm=4.0, mouth_res_mm=24.0),
+build_from_config(
+    {
+        "formula": "OSSE",
+        "profile": {"L_mm": 120, "r0_mm": 12.7, "a_deg": 60, "a0_deg": 15.5},
+        "mesh": {"angular_segments": 64, "length_segments": 32},
+    },
     "waveguide.msh",
 )
 ```
@@ -88,6 +91,3 @@ hornlab-waveguide config.toml -o waveguide.msh
 1. Keep this extraction buildable with the current `hornlab_mesher` import.
 2. Finish ATH source-cap and rear-return tessellation parity.
 3. Add a Boundary Lab mesh-generation adapter.
-4. Decide whether to publish `hornlab-geometry` as a separate NPM package or
-   keep it bundled as this repo's geometry engine.
-
