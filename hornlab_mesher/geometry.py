@@ -80,8 +80,8 @@ class OsseHornGeometry:
     """OSSE waveguide horn evaluated through the canonical WG JS pipeline.
 
     The (z, r) profile is computed via the geometry-cli subprocess so this
-    builder shares a single source of truth with the WG browser UI and the
-    Optimizer. The mesh build is then handed to the axisymmetric builder.
+    builder shares a single source of truth with the bundled JS geometry
+    evaluator. The mesh build is then handed to the axisymmetric builder.
     """
 
     L_mm: float = 120.0
@@ -184,11 +184,11 @@ class HornEnclosure:
 
 @dataclass(frozen=True)
 class PointGridHornGeometry:
-    """WG-compatible horn surface from an already-evaluated point grid.
+    """Waveguide horn surface from an already-evaluated point grid.
 
-    ``inner_points`` uses the Waveguide-Generator OCC payload shape:
-    ``(n_phi, n_length + 1, 3)`` in millimetres. This keeps WG in charge of
-    formulas/profile evaluation while the mesher owns Gmsh authoring.
+    ``inner_points`` uses the bundled geometry CLI point-grid shape:
+    ``(n_phi, n_length + 1, 3)`` in millimetres. This keeps formula/profile
+    evaluation separate from Gmsh authoring.
 
     Three top-level cases, gated by ``enclosure`` and ``outer_points``:
 

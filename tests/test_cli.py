@@ -5,8 +5,65 @@ from pathlib import Path
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_ATH_FIXTURES = _REPO_ROOT / "Waveguide-Generator" / "tests" / "fixtures" / "ath"
+_ROSSE_CFG = """
+R-OSSE = {
+  R = "130 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)"
+  r0 = 12.7
+  a = "22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)"
+  a0 = 15.5
+  k = 4
+  q = 1
+}
+Mesh = {
+  AngularSegments = 80
+  LengthSegments = 20
+  WallThickness = 6
+}
+"""
+
+_OSSE_CFG = """
+OSSE = {
+  Length = 120
+  r0 = 12.7
+  Coverage.Angle = "60 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)"
+  Throat.Angle = 15.5
+  OS.k = 1
+  Term.n = 4
+}
+Mesh = {
+  AngularSegments = 64
+  LengthSegments = 16
+  WallThickness = 6
+}
+MORPH = {
+  TargetShape = 1
+}
+"""
+
+_OSSE_ENCLOSURE_CFG = """
+OSSE = {
+  Length = 80
+  r0 = 10
+  Coverage.Angle = 45
+  Throat.Angle = 10
+  OS.k = 1
+  Term.n = 4
+}
+Mesh = {
+  AngularSegments = 16
+  LengthSegments = 6
+  WallThickness = 5
+  ThroatResolution = 8
+  MouthResolution = 35
+  RearResolution = 40
+}
+Mesh.Enclosure = {
+  Depth = 120
+  Spacing = 20,20,20,20
+  EdgeRadius = 6
+  EdgeType = 1
+}
+"""
 
 
 def test_build_geometry_params_accepts_rosse_alias():
@@ -25,8 +82,10 @@ def test_build_geometry_params_accepts_rosse_alias():
     assert params["wallThickness"] == 6.0
 
 
-def test_load_config_accepts_ath_cfg_fixture():
-    config = load_config(_ATH_FIXTURES / "rosse-simple.cfg")
+def test_load_config_accepts_ath_cfg_fixture(tmp_path):
+    cfg_path = tmp_path / "rosse-simple.cfg"
+    cfg_path.write_text(_ROSSE_CFG, encoding="utf-8")
+    config = load_config(cfg_path)
     params, formula, mode = build_geometry_params(config)
 
     assert formula == "R-OSSE"
@@ -37,9 +96,8 @@ def test_load_config_accepts_ath_cfg_fixture():
 
 
 def test_load_config_accepts_ath_txt_extension(tmp_path):
-    cfg_text = (_ATH_FIXTURES / "osse-simple.cfg").read_text(encoding="utf-8")
     txt_path = tmp_path / "osse-simple.txt"
-    txt_path.write_text(cfg_text, encoding="utf-8")
+    txt_path.write_text(_OSSE_CFG, encoding="utf-8")
 
     config = load_config(txt_path)
     params, formula, mode = build_geometry_params(config)
@@ -119,8 +177,10 @@ def test_build_from_config_rosse_enclosure(tmp_path):
 
 
 def test_build_from_ath_enclosure_fixture(tmp_path):
+    cfg_path = tmp_path / "osse-with-enclosure.cfg"
+    cfg_path.write_text(_OSSE_ENCLOSURE_CFG, encoding="utf-8")
     result = build_from_config(
-        load_config(_ATH_FIXTURES / "osse-with-enclosure.cfg"),
+        load_config(cfg_path),
         tmp_path / "osse-with-enclosure.msh",
     )
 

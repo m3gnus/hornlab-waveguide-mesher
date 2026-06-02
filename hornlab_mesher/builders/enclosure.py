@@ -1,20 +1,18 @@
 """Cabinet enclosure builder for point-grid horns.
 
-Supports closed-domain horns (``quadrants=1234``, i.e. the only path the WG
-frontend and Optimizer actually exercise in production) with:
+Supports closed-domain horns (``quadrants=1234``), the supported enclosure
+topology for this standalone package, with:
 
 * ``HornEnclosure.plan_type`` ``∈ {1, 2, 3}`` — rounded rectangle, ellipse,
   superellipse (exponent from ``plan_n``).
 * ``HornEnclosure.edge_type`` ``∈ {1, 2}`` — rounded fillet (3 profile
   thru-section) or chamfer (single ruled surface).
 
-The open-domain (``closed=False``) branch is intentionally not ported — the
-WG mesh route forces ``quadrants=1234`` so that code path is dead in
-production.
+The open-domain (``closed=False``) branch is intentionally not ported for
+enclosures.
 
 The pure XY-plane geometry math (rounded-rect, ellipse, superellipse
-samplers) is vendored from ``Waveguide-Generator/server/solver/waveguide_enclosure.py``
-without modification.
+samplers) is kept as pure Python so enclosure tests do not require a frontend.
 """
 
 from __future__ import annotations

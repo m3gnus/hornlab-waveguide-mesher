@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import meshio
 import numpy as np
@@ -15,9 +14,6 @@ from hornlab_mesher import (
     build_mesh,
 )
 
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_WG_SOLVER = _REPO_ROOT / "Waveguide-Generator" / "server" / "solver"
 
 _ASRO2_PARAMS = {
     "type": "R-OSSE",
@@ -235,12 +231,6 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
                     stack.append(nxt)
         sizes.append(size)
     return sorted(sizes, reverse=True)
-
-
-def test_wg_legacy_mesher_modules_are_deleted():
-    if _WG_SOLVER.exists():
-        assert not (_WG_SOLVER / "waveguide_builder.py").exists()
-        assert not (_WG_SOLVER / "waveguide_enclosure.py").exists()
 
 
 def test_ath_parity_sampling_matches_asro2_exported_grid():

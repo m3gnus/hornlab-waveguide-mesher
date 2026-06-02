@@ -144,12 +144,12 @@ def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]
 
 
 def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
-    """Configure WG-compatible Gmsh mesh-size fields.
+    """Configure waveguide-compatible Gmsh mesh-size fields.
 
-    Role names intentionally mirror Waveguide-Generator's OCC builder:
-    ``inner``/``mouth`` interpolate throat→mouth, free-standing ``outer`` and
-    ``rear`` use rear resolution, ``throat_disc`` uses throat resolution, and
-    enclosure groups use front/back quadrant interpolation when bounds exist.
+    Role names intentionally mirror the geometry builder: ``inner``/``mouth``
+    interpolate throat-to-mouth, free-standing ``outer`` and ``rear`` use rear
+    resolution, ``throat_disc`` uses throat resolution, and enclosure groups
+    use front/back quadrant interpolation when bounds exist.
     """
 
     import gmsh
