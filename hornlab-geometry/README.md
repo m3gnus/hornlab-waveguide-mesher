@@ -10,5 +10,5 @@ The public CLI rejects non-OSSE profile families.
 
 - **hornlab-mesher**: spawns the geometry CLI subprocess to evaluate OSSE or
   R-OSSE point grids before lofting Gmsh surfaces.
-- **Boundary Lab or other tools**: can use the CLI/API to generate OSSE or
-  R-OSSE point grids before meshing or solving.
+- **Applications and tools**: can use the CLI/API to generate OSSE or R-OSSE
+  point grids before meshing or solving.

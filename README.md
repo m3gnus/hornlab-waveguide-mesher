@@ -1,8 +1,9 @@
 # hornlab-waveguide-mesher
 
 Canonical OSSE/R-OSSE waveguide geometry and Gmsh mesher extracted from
-HornLab. This is the package intended to replace ATH-style waveguide mesh
-generation in Boundary Lab.
+HornLab. This package builds standalone waveguide meshes for acoustic BEM
+workflows and can replace ATH-style waveguide mesh generation wherever that
+format is currently used.
 
 This repository is intentionally limited to OSSE and R-OSSE waveguide meshes.
 It does not ship standalone cabinet, slot, port, driver, rectangular horn, or
@@ -71,14 +72,14 @@ build_from_config(
 )
 ```
 
-## Boundary Lab Integration Target
+## Integration Target
 
-Boundary Lab should call this package before solving:
+Applications should call this package before solving:
 
-1. Convert Boundary Lab waveguide parameters or imported ATH-style config into
+1. Convert waveguide parameters or imported ATH-style config into
    the JS geometry payload.
 2. Build a canonical `.msh` with ABEC-compatible physical groups.
-3. Pass that mesh into `hornlab-metal-bem` or Boundary Lab's existing solver.
+3. Pass that mesh into `hornlab-metal-bem` or another compatible solver.
 
 Recommended command/backend shape:
 
@@ -90,4 +91,4 @@ hornlab-waveguide config.toml -o waveguide.msh
 
 1. Keep this extraction buildable with the current `hornlab_mesher` import.
 2. Finish ATH source-cap and rear-return tessellation parity.
-3. Add a Boundary Lab mesh-generation adapter.
+3. Add integration adapters where downstream applications need them.
