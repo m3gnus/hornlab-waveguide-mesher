@@ -9,36 +9,18 @@ This repository is intentionally limited to OSSE and R-OSSE waveguide meshes.
 It does not ship standalone cabinet, slot, port, driver, rectangular horn, or
 lookup-table mesh builders.
 
-The repository contains two cooperating packages:
-
-- `hornlab_mesher`: Python Gmsh mesher, physical tags, mesh density, orientation
-  validation, and `.msh` output.
-- `hornlab-geometry`: JavaScript geometry evaluator used by the Python mesher
-  through the bundled NDJSON CLI.
-
-The Python package currently imports as `hornlab_mesher`; the distribution and
-repository name are `hornlab-waveguide-mesher`.
+The Python package imports as `hornlab_mesher`; the distribution and repository
+name are `hornlab-waveguide-mesher`.
 
 ## Status
 
 Implemented:
 
 - OSSE waveguide point-grid generation.
-- R-OSSE point-grid generation through the canonical JS evaluator.
+- R-OSSE point-grid generation.
 - Freestanding wall-shell and enclosure-capable point-grid meshing.
-- Hidden ATH parity sampling mode for ASRO2-style validation:
-  - `athParitySampling: true`
-  - `samplingMode: "ath-parity"`
 - Orientation validation and ABEC-compatible physical tags.
-- Non-OSSE geometry requests are rejected at the Python CLI and bundled
-  geometry CLI boundaries.
-
-Known remaining ATH-replacement work:
-
-- Full ATH tessellation/source-cap parity is not complete yet.
-- Current hidden parity mode matches ATH angular and axial sampling, but WG/HornLab
-  still produces a denser source cap and different Gmsh tessellation than ATH.
-- Keep ATH parity flags hidden/internal; do not expose them in public UI.
+- Non-OSSE geometry requests are rejected by the Python CLI/config parser.
 
 ## Install For Development
 
@@ -46,8 +28,7 @@ Known remaining ATH-replacement work:
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e ".[dev]"
-npm --prefix hornlab-geometry test
-python -m pytest tests/test_point_grid_contract.py -q
+python -m pytest tests -q
 ```
 
 ## Build A Mesh
@@ -60,7 +41,7 @@ hornlab-waveguide examples/rosse-enclosure.toml -o runs/scratch/rosse.msh
 ## Python API
 
 ```python
-from hornlab_mesher.cli import build_from_config
+from hornlab_mesher import build_from_config
 
 build_from_config(
     {
@@ -77,7 +58,7 @@ build_from_config(
 Applications should call this package before solving:
 
 1. Convert waveguide parameters or imported ATH-style config into
-   the JS geometry payload.
+   an OSSE or R-OSSE config.
 2. Build a canonical `.msh` with ABEC-compatible physical groups.
 3. Pass that mesh into `hornlab-metal-bem` or another compatible solver.
 
@@ -86,3 +67,8 @@ Recommended command/backend shape:
 ```bash
 hornlab-waveguide config.toml -o waveguide.msh
 ```
+
+## Scope
+
+The package deliberately does not include non-waveguide geometry families,
+optimization code, standalone cabinet generation, or a JavaScript runtime.

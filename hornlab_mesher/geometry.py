@@ -37,7 +37,7 @@ class _AxiHornGeometry:
 
 @dataclass(frozen=True)
 class RosseHornGeometry:
-    """R-OSSE waveguide horn evaluated through the canonical WG JS pipeline.
+    """R-OSSE waveguide profile parameters.
 
     ROSSE derives its axial length internally from ``R``, ``r0``, ``k``, ``a``,
     and ``a0`` (see ``calculateROSSE``), so unlike OSSE there is no separate
@@ -62,11 +62,9 @@ class RosseHornGeometry:
 
 @dataclass(frozen=True)
 class OsseHornGeometry:
-    """OSSE waveguide horn evaluated through the canonical WG JS pipeline.
+    """OSSE waveguide profile parameters.
 
-    The (z, r) profile is computed via the geometry-cli subprocess so this
-    builder shares a single source of truth with the WG browser UI. The mesh
-    build is then handed to an internal axial loft helper.
+    The mesh build is handed to an internal axial loft helper.
     """
 
     L_mm: float = 120.0
@@ -114,9 +112,8 @@ class HornEnclosure:
 class PointGridHornGeometry:
     """WG-compatible horn surface from an already-evaluated point grid.
 
-    ``inner_points`` uses the Waveguide Generator OCC payload shape:
-    ``(n_phi, n_length + 1, 3)`` in millimetres. This keeps WG in charge of
-    formulas/profile evaluation while the mesher owns Gmsh authoring.
+    ``inner_points`` has shape ``(n_phi, n_length + 1, 3)`` in millimetres.
+    Python owns both profile evaluation and Gmsh authoring.
 
     Three top-level cases, gated by ``enclosure`` and ``outer_points``:
 

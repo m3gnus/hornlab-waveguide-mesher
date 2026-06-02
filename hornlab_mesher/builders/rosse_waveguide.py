@@ -1,23 +1,11 @@
-"""R-OSSE curve evaluator (no full mesh builder).
-
-ROSSE's axial coordinate is not monotonic in normalised ``t`` for typical
-parameter ranges (the curve folds back on itself near the mouth), so it
-cannot be fed straight into the OSSE axial loft helper. This module
-exposes only :func:`compute_rosse_profile_points` for callers that want
-the (z, r) curve for plotting, analysis, or custom surface authoring.
-
-If a future builder handles folded curves (e.g. a free-form sweep that
-does not assume monotonic z), it can live alongside this evaluator.
-"""
+"""R-OSSE curve evaluator."""
 
 from __future__ import annotations
-
-from typing import Optional
 
 import numpy as np
 
 from ..geometry import RosseHornGeometry
-from ..geometry_client import GeometryClient, get_default_client
+from ..profiles import profile_points
 
 
 def _rosse_params(geometry: RosseHornGeometry) -> dict[str, float]:
@@ -40,8 +28,6 @@ def _rosse_params(geometry: RosseHornGeometry) -> dict[str, float]:
 
 def compute_rosse_profile_points(
     geometry: RosseHornGeometry,
-    *,
-    client: Optional[GeometryClient] = None,
 ) -> np.ndarray:
     """Return an ``(n_axial, 2)`` array of ``(x_mm, y_mm)`` curve points.
 
@@ -50,7 +36,4 @@ def compute_rosse_profile_points(
     mouth and folds back. Consumers should not assume it is a single-valued
     ``r(z)`` profile.
     """
-    gc = client or get_default_client()
-    t_values = np.linspace(0.0, 1.0, int(geometry.n_axial))
-    x, y, _L = gc.compute_rosse_profile(t_values, phi=0.0, **_rosse_params(geometry))
-    return np.column_stack([x, y])
+    return profile_points({"type": "R-OSSE", **_rosse_params(geometry)}, int(geometry.n_axial), phi=0.0)

@@ -15,8 +15,8 @@ except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 from .geometry import HornEnclosure, MeshDensity, PointGridHornGeometry
-from .geometry_client import GeometryClient
 from .mesher import build_mesh, load_mesh
+from .profiles import build_point_grid
 
 
 class ConfigError(ValueError):
@@ -475,20 +475,13 @@ def _reshape_grid(raw: Any, n_phi: int, n_length: int, name: str) -> np.ndarray:
 def build_from_config(
     config: Mapping[str, Any],
     output_path: str | Path,
-    *,
-    client: GeometryClient | None = None,
 ) -> BuildResult:
     params, formula, mode = build_geometry_params(config)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure)
 
-    gc = client or GeometryClient()
-    try:
-        grid = gc.build_point_grid(params)
-    finally:
-        if client is None:
-            gc.close()
+    grid = build_point_grid(params)
 
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
@@ -502,7 +495,7 @@ def build_from_config(
         outer_points=outer_points,
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
-        closed=True,
+        closed=bool(grid.get("full_circle", True)),
         enclosure=enclosure_obj,
     )
     density = MeshDensity(

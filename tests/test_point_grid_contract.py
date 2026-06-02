@@ -6,120 +6,9 @@ import meshio
 import numpy as np
 
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
-from hornlab_mesher import (
-    GeometryClient,
-    HornEnclosure,
-    MeshDensity,
-    PointGridHornGeometry,
-    build_mesh,
-)
-
-
-_ASRO2_PARAMS = {
-    "type": "R-OSSE",
-    "R": "160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)",
-    "r": 0.35,
-    "b": 0.4,
-    "m": 0.84,
-    "tmax": 1.0,
-    "a": "22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)",
-    "a0": 15.5,
-    "r0": 12.7,
-    "k": "4 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)",
-    "q": 4.0,
-    "angularSegments": 50,
-    "lengthSegments": 20,
-    "throatResolution": 5.0,
-    "mouthResolution": 8.0,
-    "quadrants": "1",
-    "wallThickness": 6.0,
-    "rearResolution": 25.0,
-    "encDepth": 0.0,
-    "sourceShape": 1,
-    "sourceRadius": -1.0,
-    "sourceCurv": 0,
-}
-
-_ATH_ASRO2_T_VALUES = np.asarray(
-    [
-        0.0,
-        0.031652775,
-        0.069285650,
-        0.111291038,
-        0.158158738,
-        0.208217141,
-        0.261010634,
-        0.315152186,
-        0.371049458,
-        0.427239696,
-        0.483180970,
-        0.538366332,
-        0.593546216,
-        0.647147114,
-        0.701376236,
-        0.753382922,
-        0.804185680,
-        0.854976845,
-        0.904174233,
-        0.953060714,
-        1.0,
-    ],
-    dtype=np.float64,
-)
-
-_ATH_ASRO2_PHI0_Z_MM = np.asarray(
-    [
-        0.0,
-        10.55795,
-        22.82474,
-        36.13612,
-        50.49133,
-        65.20920,
-        79.99040,
-        94.28462,
-        108.01910,
-        120.63596,
-        131.82684,
-        141.29410,
-        148.90752,
-        154.19315,
-        157.04063,
-        157.04101,
-        154.16048,
-        148.24877,
-        139.59949,
-        128.26674,
-        115.02068,
-    ],
-    dtype=np.float64,
-)
-
-_ATH_ASRO2_PHI0_R_MM = np.asarray(
-    [
-        12.70000,
-        16.16966,
-        20.92049,
-        26.90634,
-        34.29988,
-        42.90421,
-        52.67341,
-        63.37160,
-        75.10357,
-        87.57512,
-        100.63005,
-        114.06428,
-        127.92751,
-        141.62115,
-        155.42888,
-        168.27181,
-        180.00068,
-        190.37293,
-        198.48906,
-        203.91918,
-        205.83655,
-    ],
-    dtype=np.float64,
-)
+from hornlab_mesher import HornEnclosure, MeshDensity, build_mesh
+from hornlab_mesher.geometry import PointGridHornGeometry
+from hornlab_mesher.profiles import build_point_grid
 
 
 def _make_point_grid(
@@ -233,83 +122,52 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
     return sorted(sizes, reverse=True)
 
 
-def test_ath_parity_sampling_matches_asro2_exported_grid():
-    with GeometryClient() as client:
-        default_grid = client.build_point_grid(_ASRO2_PARAMS)
-        parity_grid = client.build_point_grid(
-            {**_ASRO2_PARAMS, "athParitySampling": True}
-        )
+def test_python_osse_point_grid_full_circle():
+    grid = build_point_grid({
+        "type": "OSSE",
+        "L": 120.0,
+        "r0": 12.7,
+        "a": 60.0,
+        "a0": 15.5,
+        "k": 1.0,
+        "n": 4.0,
+        "q": 0.995,
+        "angularSegments": 16,
+        "lengthSegments": 6,
+        "wallThickness": 5.0,
+    })
 
-    assert int(parity_grid["grid_n_phi"]) == 15
-    assert int(parity_grid["grid_n_length"]) == 20
-    assert parity_grid["full_circle"] is False
-
-    uniform_quarter = np.linspace(0.0, math.pi / 2.0, 15, dtype=np.float64)
-    parity_angles = np.asarray(parity_grid["angle_list"], dtype=np.float64)
-    default_angles = np.asarray(default_grid["angle_list"], dtype=np.float64)
-    assert np.allclose(parity_angles, uniform_quarter, rtol=0.0, atol=1.0e-12)
-    assert not np.allclose(default_angles, uniform_quarter, rtol=0.0, atol=1.0e-6)
-
-    assert np.allclose(
-        np.asarray(parity_grid["slice_map"], dtype=np.float64),
-        _ATH_ASRO2_T_VALUES,
-        rtol=0.0,
-        atol=1.0e-9,
-    )
-
-    inner = np.asarray(parity_grid["inner_points"], dtype=np.float64).reshape(15, 21, 3)
-    phi0 = inner[0]
-    assert np.allclose(phi0[:, 2], _ATH_ASRO2_PHI0_Z_MM, rtol=0.0, atol=2.0e-4)
-    assert np.allclose(
-        np.linalg.norm(phi0[:, :2], axis=1),
-        _ATH_ASRO2_PHI0_R_MM,
-        rtol=0.0,
-        atol=2.0e-4,
-    )
+    assert grid["full_circle"] is True
+    assert grid["grid_n_phi"] == 16
+    assert grid["grid_n_length"] == 6
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(16, 7, 3)
+    outer = np.asarray(grid["outer_points"], dtype=np.float64).reshape(16, 7, 3)
+    assert np.isclose(np.linalg.norm(inner[0, 0, :2]), 12.7)
+    assert np.isclose(inner[0, -1, 2], 120.0)
+    assert np.linalg.norm(outer[0, -1, :2]) > np.linalg.norm(inner[0, -1, :2])
 
 
-def test_ath_parity_topology_matches_asro2_source_cap(tmp_path):
-    with GeometryClient() as client:
-        grid = client.build_point_grid({**_ASRO2_PARAMS, "athParitySampling": True})
+def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
+    grid = build_point_grid({
+        "type": "R-OSSE",
+        "R": "150 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)",
+        "r0": 12.7,
+        "a": "45 + 5*cos(p)",
+        "a0": 15.5,
+        "k": 1.0,
+        "q": 1.0,
+        "angularSegments": 16,
+        "lengthSegments": 5,
+        "quadrants": "1",
+    })
 
-    n_phi = int(grid["grid_n_phi"])
-    n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
-    outer = np.asarray(grid["outer_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
-
-    msh_path = build_mesh(
-        PointGridHornGeometry(
-            inner_points=inner,
-            outer_points=outer,
-            closed=bool(grid["full_circle"]),
-            wall_thickness_mm=float(_ASRO2_PARAMS["wallThickness"]),
-            source_shape=int(_ASRO2_PARAMS["sourceShape"]),
-            source_radius_mm=float(_ASRO2_PARAMS["sourceRadius"]),
-            source_curv=int(_ASRO2_PARAMS["sourceCurv"]),
-            source_auto_angle_deg=float(_ASRO2_PARAMS["a0"]),
-            ath_parity_topology=True,
-        ),
-        MeshDensity(
-            throat_res_mm=float(_ASRO2_PARAMS["throatResolution"]),
-            mouth_res_mm=float(_ASRO2_PARAMS["mouthResolution"]),
-            rear_res_mm=float(_ASRO2_PARAMS["rearResolution"]),
-        ),
-        tmp_path / "asro2-ath-parity.msh",
-        scale_to_metres=False,
-    )
-
-    mesh = meshio.read(msh_path)
-    triangles, tags = _triangles_and_tags(mesh)
-    points = np.asarray(mesh.points, dtype=np.float64)
-    tag2_tris = triangles[tags == int(2)]
-    tag2_vertices = np.unique(tag2_tris.ravel())
-
-    assert int(np.count_nonzero(tags == 1)) == 2220
-    assert int(np.count_nonzero(tags == 2)) == 16
-    assert len(tag2_vertices) == 14
-    assert np.isclose(np.max(points[tag2_vertices, 2]), 1.728394143942964, atol=1.0e-9)
-    assert np.isclose(np.min(points[:, 2]), -6.89681378280849, atol=1.0e-9)
-    assert len(_tag_components(triangles, tags, 1)) == 1
+    assert grid["full_circle"] is False
+    assert grid["grid_n_phi"] == 5
+    angles = np.asarray(grid["angle_list"], dtype=np.float64)
+    assert np.allclose(angles, np.linspace(0.0, math.pi / 2.0, 5))
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(5, 6, 3)
+    assert np.isclose(np.linalg.norm(inner[0, 0, :2]), 12.7)
+    assert np.isclose(np.linalg.norm(inner[-1, -1, :2]), 150.0)
 
 
 def test_point_grid_mesh_has_canonical_wall_and_source_tags(tmp_path):
