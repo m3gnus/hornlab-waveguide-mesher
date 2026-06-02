@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hornlab-waveguide-mesher"
+version = "0.1.0"
+description = "Canonical OSSE/R-OSSE waveguide geometry and Gmsh mesher with hidden ATH parity support"
+requires-python = ">=3.10"
+dependencies = [
+    "gmsh",
+    "meshio",
+    "numpy",
+    "tomli; python_version < '3.11'",
+]
+
+[project.scripts]
+hornlab-waveguide = "hornlab_mesher.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["hornlab_mesher*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

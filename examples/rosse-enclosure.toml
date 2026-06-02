@@ -1,0 +1,31 @@
+formula = "ROSSE"
+
+[profile]
+R_mm = 150.0
+r0_mm = 12.7
+a_deg = 60.0
+a0_deg = 15.5
+k = 1.0
+q = 1.0
+
+[cross_section]
+exponent = 2.0
+aspect_ratio = 1.0
+
+[mesh]
+angular_segments = 64
+length_segments = 32
+throat_res_mm = 4.0
+mouth_res_mm = 26.0
+rear_res_mm = 25.0
+
+[enclosure]
+depth_mm = 220.0
+space_l_mm = 25.0
+space_t_mm = 25.0
+space_r_mm = 25.0
+space_b_mm = 25.0
+edge_mm = 18.0
+edge_type = 1
+plan_type = 1
+plan_n = 2.0

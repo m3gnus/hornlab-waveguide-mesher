@@ -1,0 +1,22 @@
+{
+  "name": "@hornlab/geometry",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Canonical parametric waveguide geometry: OSSE/R-OSSE/LOOKUP profiles, cross-sections, point grids, and ATH parity sampling.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./*": "./src/*",
+    "./engine": "./src/engine/index.js"
+  },
+  "bin": {
+    "hornlab-geometry-cli": "./bin/geometry-cli.js"
+  },
+  "files": [
+    "src",
+    "bin"
+  ],
+  "author": "Magnus Andersen",
+  "license": "MIT"
+}
