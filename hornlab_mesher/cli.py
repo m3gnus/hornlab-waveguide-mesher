@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 from .geometry import HornEnclosure, MeshDensity, PointGridHornGeometry
 from .mesher import build_mesh, load_mesh
-from .profiles import build_point_grid
+from .profiles import build_point_grid, eval_param
 
 
 class ConfigError(ValueError):
@@ -129,6 +129,13 @@ def parse_ath_config(content: str) -> dict[str, Any]:
                 out[dst] = _maybe_number(items[src])
         return out
 
+    def prefixed(prefix: str) -> dict[str, str]:
+        return {
+            key[len(prefix) :]: value
+            for key, value in flat.items()
+            if key.startswith(prefix) and len(key) > len(prefix)
+        }
+
     common_profile = mapped(
         profile_items,
         (
@@ -186,7 +193,7 @@ def parse_ath_config(content: str) -> dict[str, Any]:
             ),
         }
 
-    mesh_items = blocks.get("Mesh", {})
+    mesh_items = {**prefixed("Mesh."), **blocks.get("Mesh", {})}
     mesh = mapped(
         mesh_items,
         (
@@ -199,8 +206,14 @@ def parse_ath_config(content: str) -> dict[str, Any]:
             ("RearResolution", "rearResolution"),
         ),
     )
+    mesh["athParitySampling"] = True
 
-    morph_items = blocks.get("MORPH", blocks.get("Morph", {}))
+    morph_items = {
+        **prefixed("Morph."),
+        **prefixed("MORPH."),
+        **blocks.get("Morph", {}),
+        **blocks.get("MORPH", {}),
+    }
     morph = mapped(
         morph_items,
         (
@@ -216,7 +229,7 @@ def parse_ath_config(content: str) -> dict[str, Any]:
         ),
     )
 
-    enc_items = blocks.get("Mesh.Enclosure", {})
+    enc_items = {**prefixed("Mesh.Enclosure."), **blocks.get("Mesh.Enclosure", {})}
     enclosure: dict[str, Any] = {}
     if enc_items:
         enclosure = mapped(
@@ -242,7 +255,7 @@ def parse_ath_config(content: str) -> dict[str, Any]:
                     }
                 )
 
-    source_items = blocks.get("Source", {})
+    source_items = {**prefixed("Source."), **blocks.get("Source", {})}
     source = mapped(
         source_items,
         (
@@ -419,6 +432,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             morph, config, names=("morph_allow_shrinkage", "morphAllowShrinkage"), default=0
         ),
         "quadrants": str(_pick(mesh, config, names=("quadrants",), default="1234")),
+        "athParitySampling": _bool(
+            mesh,
+            config,
+            names=("ath_parity_sampling", "athParitySampling"),
+            default=False,
+        ),
         "throatResolution": _float(mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0),
         "mouthResolution": _float(mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0),
         "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=25.0),
@@ -490,12 +509,24 @@ def build_from_config(
     if grid.get("outer_points") is not None and enclosure_obj is None:
         outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
 
+    ath_parity_topology = _bool(
+        mesh,
+        config,
+        names=("ath_parity_topology", "athParityTopology", "ath_parity_sampling", "athParitySampling"),
+        default=bool(params.get("athParitySampling")),
+    ) and not bool(grid.get("full_circle", True))
+
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
         closed=bool(grid.get("full_circle", True)),
+        source_shape=int(float(params.get("sourceShape", 1) or 1)),
+        source_radius_mm=float(params.get("sourceRadius", -1) or -1),
+        source_curv=int(float(params.get("sourceCurv", 0) or 0)),
+        source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
+        ath_parity_topology=ath_parity_topology,
         enclosure=enclosure_obj,
     )
     density = MeshDensity(

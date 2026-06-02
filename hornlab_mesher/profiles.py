@@ -15,6 +15,33 @@ _DEFAULTS = {
     "b": 0.2,
 }
 
+_ATH_PARITY_T_20 = np.asarray(
+    [
+        0.0,
+        0.031652775,
+        0.069285650,
+        0.111291038,
+        0.158158738,
+        0.208217141,
+        0.261010634,
+        0.315152186,
+        0.371049458,
+        0.427239696,
+        0.483180970,
+        0.538366332,
+        0.593546216,
+        0.647147114,
+        0.701376236,
+        0.753382922,
+        0.804185680,
+        0.854976845,
+        0.904174233,
+        0.953060714,
+        1.0,
+    ],
+    dtype=np.float64,
+)
+
 _EVAL_GLOBALS = {
     "__builtins__": {},
     "abs": abs,
@@ -181,7 +208,24 @@ def _normalise_formula(value: Any) -> str:
     return raw
 
 
-def _angle_list(quadrants: str, angular_segments: int) -> tuple[np.ndarray, bool]:
+def _is_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "ath-parity"}
+    return bool(value)
+
+
+def _normalise_ath_angular_segments(raw_count: int) -> int:
+    count = max(4, int(round(float(raw_count))))
+    if count % 4 == 0:
+        return count
+    return max(8, int(math.ceil(count / 8.0) * 8))
+
+
+def _angle_list(quadrants: str, angular_segments: int, *, ath_parity: bool = False) -> tuple[np.ndarray, bool]:
+    if ath_parity:
+        angular_segments = _normalise_ath_angular_segments(angular_segments)
     q = "".join(ch for ch in str(quadrants or "1234") if ch in "1234")
     if not q or q == "1234":
         return np.linspace(0.0, math.tau, int(angular_segments), endpoint=False, dtype=np.float64), True
@@ -193,6 +237,23 @@ def _angle_list(quadrants: str, angular_segments: int) -> tuple[np.ndarray, bool
     start, stop = spans.get(q, (0.0, math.tau))
     n = max(2, int(round(int(angular_segments) * abs(stop - start) / math.tau)) + 1)
     return np.linspace(start, stop, n, endpoint=True, dtype=np.float64), False
+
+
+def _ath_parity_slice_map(n_length: int) -> np.ndarray:
+    steps = max(1, int(n_length))
+    ref_steps = len(_ATH_PARITY_T_20) - 1
+    if steps == ref_steps:
+        return _ATH_PARITY_T_20.copy()
+    out = np.empty(steps + 1, dtype=np.float64)
+    out[0] = 0.0
+    out[steps] = 1.0
+    for j in range(1, steps):
+        pos = (j / steps) * ref_steps
+        lo = int(math.floor(pos))
+        hi = min(ref_steps, lo + 1)
+        frac = pos - lo
+        out[j] = _ATH_PARITY_T_20[lo] + (_ATH_PARITY_T_20[hi] - _ATH_PARITY_T_20[lo]) * frac
+    return out
 
 
 def _cross_section(params: Mapping[str, Any]) -> tuple[float, float]:
@@ -213,14 +274,132 @@ def _superellipse_scale(phi: float, exponent: float, aspect_ratio: float) -> flo
     return 1.0 / max(denom, 1.0e-12)
 
 
+def _normalise3(vec: np.ndarray, fallback: tuple[float, float, float] = (0.0, -1.0, 0.0)) -> np.ndarray:
+    length = float(np.linalg.norm(vec))
+    if length <= 1.0e-12:
+        return np.asarray(fallback, dtype=np.float64)
+    return vec / length
+
+
+def _horn_indices(n_phi: int, n_length: int, *, full_circle: bool) -> np.ndarray:
+    indices: list[tuple[int, int, int]] = []
+    radial_steps = n_phi if full_circle else max(0, n_phi - 1)
+    for j in range(n_length):
+        for i in range(radial_steps):
+            row1 = j * n_phi
+            row2 = (j + 1) * n_phi
+            i2 = (i + 1) % n_phi if full_circle else i + 1
+            indices.append((row1 + i, row1 + i2, row2 + i2))
+            indices.append((row1 + i, row2 + i2, row2 + i))
+    return np.asarray(indices, dtype=np.int64)
+
+
+def _fill_missing_normals(normals: np.ndarray, vertices: np.ndarray, n_phi: int, n_length: int) -> None:
+    def has_normal(index: int) -> bool:
+        return float(np.linalg.norm(normals[index])) > 1.0e-12
+
+    for index in range(vertices.shape[0]):
+        if has_normal(index):
+            continue
+        row = index // n_phi
+        col = index % n_phi
+        neighbor_indices: list[int] = []
+        if col > 0:
+            neighbor_indices.append(index - 1)
+        if col < n_phi - 1:
+            neighbor_indices.append(index + 1)
+        if row > 0:
+            neighbor_indices.append(index - n_phi)
+        if row < n_length:
+            neighbor_indices.append(index + n_phi)
+
+        total = np.zeros(3, dtype=np.float64)
+        for neighbor in neighbor_indices:
+            if has_normal(neighbor):
+                total += normals[neighbor]
+        if float(np.linalg.norm(total)) <= 1.0e-12:
+            x = vertices[index, 0]
+            z = vertices[index, 2]
+            total = _normalise3(np.asarray([x, 0.0, z], dtype=np.float64))
+        normals[index] = total
+
+
+def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) -> np.ndarray:
+    n_phi, n_cols, _ = inner.shape
+    n_length = n_cols - 1
+    vertices = np.empty((n_phi * n_cols, 3), dtype=np.float64)
+    for j in range(n_cols):
+        for i in range(n_phi):
+            idx = j * n_phi + i
+            vertices[idx] = (inner[i, j, 0], inner[i, j, 2], inner[i, j, 1])
+
+    normals = np.zeros_like(vertices)
+    for a, b, c in _horn_indices(n_phi, n_length, full_circle=full_circle):
+        ab = vertices[b] - vertices[a]
+        ac = vertices[c] - vertices[a]
+        normal = np.cross(ab, ac)
+        normals[a] += normal
+        normals[b] += normal
+        normals[c] += normal
+    _fill_missing_normals(normals, vertices, n_phi, n_length)
+
+    sample_step = max(1, vertices.shape[0] // 64)
+    dot_sum = 0.0
+    samples = 0
+    for idx in range(0, vertices.shape[0], sample_step):
+        x = vertices[idx, 0]
+        z = vertices[idx, 2]
+        radial_len = math.hypot(float(x), float(z))
+        normal_len = float(np.linalg.norm(normals[idx]))
+        if radial_len <= 1.0e-9 or normal_len <= 1.0e-12:
+            continue
+        dot_sum += (normals[idx, 0] / normal_len) * (x / radial_len)
+        dot_sum += (normals[idx, 2] / normal_len) * (z / radial_len)
+        samples += 1
+    offset_sign = -1.0 if samples == 0 or dot_sum < 0.0 else 1.0
+
+    outer_vertices = np.empty_like(vertices)
+    for idx, vertex in enumerate(vertices):
+        row = idx // n_phi
+        normal = _normalise3(normals[idx])
+        if row == 0:
+            radial_len = math.hypot(float(normal[0]), float(normal[2]))
+            rx = normal[0] / radial_len if radial_len > 1.0e-12 else 0.0
+            rz = normal[2] / radial_len if radial_len > 1.0e-12 else 0.0
+            outer_vertices[idx] = (
+                vertex[0] + offset_sign * wall * rx,
+                vertex[1],
+                vertex[2] + offset_sign * wall * rz,
+            )
+        else:
+            outer_vertices[idx] = vertex + offset_sign * wall * normal
+
+    outer = np.empty_like(inner)
+    for j in range(n_cols):
+        for i in range(n_phi):
+            idx = j * n_phi + i
+            outer[i, j] = (outer_vertices[idx, 0], outer_vertices[idx, 2], outer_vertices[idx, 1])
+    outer[:, 0, 2] = inner[:, 0, 2] - wall
+    return outer
+
+
 def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     formula = _normalise_formula(params.get("type", "OSSE"))
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
         raise ValueError("lengthSegments must be a positive integer")
-    angles, full_circle = _angle_list(str(params.get("quadrants", "1234")), int(params.get("angularSegments", 64)))
+    ath_parity = _is_true(params.get("athParitySampling")) or str(params.get("samplingMode", "")).strip() == "ath-parity"
+    angles, full_circle = _angle_list(
+        str(params.get("quadrants", "1234")),
+        int(params.get("angularSegments", 64)),
+        ath_parity=ath_parity,
+    )
     exponent, aspect_ratio = _cross_section(params)
-    t_values = np.linspace(0.0, float(eval_param(params.get("tmax"), 0.0, 1.0)), n_length + 1)
+    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0))
+    if ath_parity:
+        t_values = _ath_parity_slice_map(n_length) * t_max
+    else:
+        t_values = np.linspace(0.0, t_max, n_length + 1)
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
@@ -237,12 +416,7 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
     if enc_depth <= 0.0 and wall > 0.0:
-        outer = inner.copy()
-        radial = np.linalg.norm(outer[:, :, :2], axis=2)
-        scale = (radial + wall) / np.maximum(radial, 1.0e-12)
-        outer[:, :, 0] *= scale
-        outer[:, :, 1] *= scale
-        outer[:, 0, 2] = inner[:, 0, 2] - wall
+        outer = _outer_offset_shell(inner, wall, full_circle=full_circle)
 
     return {
         "inner_points": inner.reshape(-1).tolist(),

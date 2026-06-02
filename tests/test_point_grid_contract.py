@@ -7,8 +7,116 @@ import numpy as np
 
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
 from hornlab_mesher import HornEnclosure, MeshDensity, build_mesh
+from hornlab_mesher.cli import build_from_config, parse_ath_config
 from hornlab_mesher.geometry import PointGridHornGeometry
 from hornlab_mesher.profiles import build_point_grid
+
+
+_ASRO2_PARAMS = {
+    "type": "R-OSSE",
+    "R": "160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)",
+    "r": 0.35,
+    "b": 0.4,
+    "m": 0.84,
+    "tmax": 1.0,
+    "a": "22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)",
+    "a0": 15.5,
+    "r0": 12.7,
+    "k": "4 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)",
+    "q": 4.0,
+    "angularSegments": 50,
+    "lengthSegments": 20,
+    "throatResolution": 5.0,
+    "mouthResolution": 8.0,
+    "quadrants": "1",
+    "wallThickness": 6.0,
+    "rearResolution": 25.0,
+    "encDepth": 0.0,
+    "sourceShape": 1,
+    "sourceRadius": -1.0,
+    "sourceCurv": 0,
+}
+
+_ATH_ASRO2_T_VALUES = np.asarray(
+    [
+        0.0,
+        0.031652775,
+        0.069285650,
+        0.111291038,
+        0.158158738,
+        0.208217141,
+        0.261010634,
+        0.315152186,
+        0.371049458,
+        0.427239696,
+        0.483180970,
+        0.538366332,
+        0.593546216,
+        0.647147114,
+        0.701376236,
+        0.753382922,
+        0.804185680,
+        0.854976845,
+        0.904174233,
+        0.953060714,
+        1.0,
+    ],
+    dtype=np.float64,
+)
+
+_ATH_ASRO2_PHI0_Z_MM = np.asarray(
+    [
+        0.0,
+        10.55795,
+        22.82474,
+        36.13612,
+        50.49133,
+        65.20920,
+        79.99040,
+        94.28462,
+        108.01910,
+        120.63596,
+        131.82684,
+        141.29410,
+        148.90752,
+        154.19315,
+        157.04063,
+        157.04101,
+        154.16048,
+        148.24877,
+        139.59949,
+        128.26674,
+        115.02068,
+    ],
+    dtype=np.float64,
+)
+
+_ATH_ASRO2_PHI0_R_MM = np.asarray(
+    [
+        12.70000,
+        16.16966,
+        20.92049,
+        26.90634,
+        34.29988,
+        42.90421,
+        52.67341,
+        63.37160,
+        75.10357,
+        87.57512,
+        100.63005,
+        114.06428,
+        127.92751,
+        141.62115,
+        155.42888,
+        168.27181,
+        180.00068,
+        190.37293,
+        198.48906,
+        203.91918,
+        205.83655,
+    ],
+    dtype=np.float64,
+)
 
 
 def _make_point_grid(
@@ -168,6 +276,118 @@ def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
     inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(5, 6, 3)
     assert np.isclose(np.linalg.norm(inner[0, 0, :2]), 12.7)
     assert np.isclose(np.linalg.norm(inner[-1, -1, :2]), 150.0)
+
+
+def test_ath_parity_sampling_matches_asro2_exported_grid():
+    default_grid = build_point_grid(_ASRO2_PARAMS)
+    parity_grid = build_point_grid({**_ASRO2_PARAMS, "athParitySampling": True})
+
+    assert int(parity_grid["grid_n_phi"]) == 15
+    assert int(parity_grid["grid_n_length"]) == 20
+    assert parity_grid["full_circle"] is False
+
+    uniform_quarter = np.linspace(0.0, math.pi / 2.0, 15, dtype=np.float64)
+    parity_angles = np.asarray(parity_grid["angle_list"], dtype=np.float64)
+    assert np.allclose(parity_angles, uniform_quarter, rtol=0.0, atol=1.0e-12)
+    assert len(default_grid["angle_list"]) != len(parity_grid["angle_list"])
+
+    assert np.allclose(
+        np.asarray(parity_grid["slice_map"], dtype=np.float64),
+        _ATH_ASRO2_T_VALUES,
+        rtol=0.0,
+        atol=1.0e-9,
+    )
+
+    inner = np.asarray(parity_grid["inner_points"], dtype=np.float64).reshape(15, 21, 3)
+    phi0 = inner[0]
+    assert np.allclose(phi0[:, 2], _ATH_ASRO2_PHI0_Z_MM, rtol=0.0, atol=2.0e-4)
+    assert np.allclose(
+        np.linalg.norm(phi0[:, :2], axis=1),
+        _ATH_ASRO2_PHI0_R_MM,
+        rtol=0.0,
+        atol=2.0e-4,
+    )
+
+
+def test_ath_config_build_uses_parity_sampling_and_topology(tmp_path):
+    cfg = parse_ath_config(
+        """
+R-OSSE = {
+  R = 160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)
+  r = 0.35
+  b = 0.4
+  m = 0.84
+  tmax = 1.0
+  a = 22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
+  a0 = 15.5
+  r0 = 12.7
+  k = 4 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
+  q = 4.0
+}
+Mesh = {
+  AngularSegments = 50
+  LengthSegments = 20
+  WallThickness = 6.0
+  Quadrants = 1
+  ThroatResolution = 5.0
+  MouthResolution = 8.0
+  RearResolution = 25.0
+}
+Source = {
+  Shape = 1
+  Radius = -1.0
+  Curv = 0
+}
+"""
+    )
+
+    assert cfg["mesh"]["athParitySampling"] is True
+    result = build_from_config(cfg, tmp_path / "asro2-parity.msh")
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+
+    assert int(np.count_nonzero(tags == 1)) == 2220
+    assert int(np.count_nonzero(tags == 2)) == 16
+    assert len(_tag_components(triangles, tags, 1)) == 1
+
+
+def test_flat_ath_config_keys_build_partial_source_group(tmp_path):
+    cfg = parse_ath_config(
+        """
+R-OSSE = {
+R = 160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)
+a = 22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
+a0 = 15.5
+b = 0.4
+k = 4 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
+m = 0.84
+q = 4
+r = 0.35
+r0 = 12.7
+}
+Mesh.AngularSegments = 50
+Mesh.LengthSegments = 20
+Mesh.MouthResolution = 8
+Mesh.Quadrants = 1
+Mesh.RearResolution = 25
+Mesh.ThroatResolution = 5
+Mesh.WallThickness = 6
+Source.Shape = 1
+Source.Radius = -1
+Source.Curv = 0
+"""
+    )
+
+    assert cfg["mesh"]["angularSegments"] == 50
+    assert cfg["mesh"]["lengthSegments"] == 20
+    assert cfg["mesh"]["quadrants"] == 1
+    assert cfg["source"]["sourceShape"] == 1
+    result = build_from_config(cfg, tmp_path / "flat-asro2-parity.msh")
+    mesh = meshio.read(result.mesh_path)
+    _, tags = _triangles_and_tags(mesh)
+
+    assert int(np.count_nonzero(tags == 1)) == 2220
+    assert int(np.count_nonzero(tags == 2)) == 16
 
 
 def test_point_grid_mesh_has_canonical_wall_and_source_tags(tmp_path):
