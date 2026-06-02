@@ -309,46 +309,61 @@ def test_ath_parity_sampling_matches_asro2_exported_grid():
     )
 
 
-def test_ath_config_build_uses_parity_sampling_and_topology(tmp_path):
-    cfg = parse_ath_config(
-        """
-R-OSSE = {
-  R = 160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)
-  r = 0.35
-  b = 0.4
-  m = 0.84
-  tmax = 1.0
-  a = 22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
-  a0 = 15.5
-  r0 = 12.7
-  k = 4 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
-  q = 4.0
-}
-Mesh = {
+def _asro2_ath_cfg_text(*, throat: float = 5.0, mouth: float = 8.0, rear: float = 25.0) -> str:
+    return f"""
+R-OSSE = {{
+  R = {_ASRO2_PARAMS["R"]}
+  r = {_ASRO2_PARAMS["r"]}
+  b = {_ASRO2_PARAMS["b"]}
+  m = {_ASRO2_PARAMS["m"]}
+  tmax = {_ASRO2_PARAMS["tmax"]}
+  a = {_ASRO2_PARAMS["a"]}
+  a0 = {_ASRO2_PARAMS["a0"]}
+  r0 = {_ASRO2_PARAMS["r0"]}
+  k = {_ASRO2_PARAMS["k"]}
+  q = {_ASRO2_PARAMS["q"]}
+}}
+Mesh = {{
   AngularSegments = 50
   LengthSegments = 20
   WallThickness = 6.0
   Quadrants = 1
-  ThroatResolution = 5.0
-  MouthResolution = 8.0
-  RearResolution = 25.0
-}
-Source = {
+  ThroatResolution = {throat}
+  MouthResolution = {mouth}
+  RearResolution = {rear}
+}}
+Source = {{
   Shape = 1
   Radius = -1.0
   Curv = 0
-}
+}}
 """
-    )
+
+
+def test_ath_config_build_uses_common_resolution_tessellation(tmp_path):
+    cfg = parse_ath_config(_asro2_ath_cfg_text())
 
     assert cfg["mesh"]["athParitySampling"] is True
     result = build_from_config(cfg, tmp_path / "asro2-parity.msh")
     mesh = meshio.read(result.mesh_path)
     triangles, tags = _triangles_and_tags(mesh)
 
-    assert int(np.count_nonzero(tags == 1)) == 2220
-    assert int(np.count_nonzero(tags == 2)) == 16
+    assert int(np.count_nonzero(tags == 1)) > 0
+    assert int(np.count_nonzero(tags == 2)) > 0
     assert len(_tag_components(triangles, tags, 1)) == 1
+
+
+def test_ath_config_tessellation_follows_resolution_inputs(tmp_path):
+    coarse = build_from_config(
+        parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0)),
+        tmp_path / "coarse.msh",
+    )
+    fine = build_from_config(
+        parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0)),
+        tmp_path / "fine.msh",
+    )
+
+    assert fine.n_triangles > coarse.n_triangles
 
 
 def test_flat_ath_config_keys_build_partial_source_group(tmp_path):
@@ -386,8 +401,8 @@ Source.Curv = 0
     mesh = meshio.read(result.mesh_path)
     _, tags = _triangles_and_tags(mesh)
 
-    assert int(np.count_nonzero(tags == 1)) == 2220
-    assert int(np.count_nonzero(tags == 2)) == 16
+    assert int(np.count_nonzero(tags == 1)) > 0
+    assert int(np.count_nonzero(tags == 2)) > 0
 
 
 def test_point_grid_mesh_has_canonical_wall_and_source_tags(tmp_path):

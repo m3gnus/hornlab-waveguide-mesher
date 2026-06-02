@@ -509,13 +509,6 @@ def build_from_config(
     if grid.get("outer_points") is not None and enclosure_obj is None:
         outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
 
-    ath_parity_topology = _bool(
-        mesh,
-        config,
-        names=("ath_parity_topology", "athParityTopology", "ath_parity_sampling", "athParitySampling"),
-        default=bool(params.get("athParitySampling")),
-    ) and not bool(grid.get("full_circle", True))
-
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -526,7 +519,6 @@ def build_from_config(
         source_radius_mm=float(params.get("sourceRadius", -1) or -1),
         source_curv=int(float(params.get("sourceCurv", 0) or 0)),
         source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
-        ath_parity_topology=ath_parity_topology,
         enclosure=enclosure_obj,
     )
     density = MeshDensity(
