@@ -394,6 +394,60 @@ def _add_occ_spline_span_wall_surfaces(
     return surfaces
 
 
+def _bspline_patch_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
+    if not closed:
+        return [list(range(n_phi))]
+    if n_phi < 4:
+        return [list(range(n_phi)) + [0]]
+    span_count = 4 if n_phi % 4 == 0 else 1
+    if span_count == 1:
+        return [list(range(n_phi)) + [0]]
+    step = n_phi // span_count
+    spans: list[list[int]] = []
+    for span in range(span_count):
+        start = span * step
+        stop = (span + 1) * step
+        if span == span_count - 1:
+            spans.append(list(range(start, n_phi)) + [0])
+        else:
+            spans.append(list(range(start, stop + 1)))
+    return spans
+
+
+def _add_occ_bspline_patch_wall_surfaces(
+    points: np.ndarray,
+    *,
+    closed: bool,
+) -> list[tuple[int, int]]:
+    """Build enclosure-mode horn walls as large OCC BSpline patches."""
+
+    gmsh = require_gmsh()
+    arr = _validated_grid(points, name="inner_points")
+    n_phi, n_len, _ = arr.shape
+    surfaces: list[tuple[int, int]] = []
+    degree_v = min(3, max(1, n_len - 1))
+    for indices in _bspline_patch_phi_groups(n_phi, closed=closed):
+        n_u = len(indices)
+        degree_u = min(3, max(1, n_u - 1))
+        point_tags: list[int] = []
+        for j in range(n_len):
+            for i in indices:
+                x, y, z = arr[i, j]
+                point_tags.append(
+                    int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
+                )
+        surf = int(
+            gmsh.model.occ.addBSplineSurface(
+                point_tags,
+                n_u,
+                degreeU=degree_u,
+                degreeV=degree_v,
+            )
+        )
+        surfaces.append((2, surf))
+    return surfaces
+
+
 def _add_geo_spline_span_mouth_rim_surfaces(
     builder: _GeoSurfaceBuilder,
     *,

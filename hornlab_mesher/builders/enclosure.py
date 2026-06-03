@@ -225,7 +225,7 @@ def _add_curve_loop_from_curves(curve_tags: list[int]) -> int:
     try:
         return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags], reorient=True))
     except TypeError:
-        return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags]))
+        return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(curve_tags)))
 
 
 def _add_reversed_curve_loop_from_curves(curve_tags: list[int]) -> int:
@@ -234,7 +234,63 @@ def _add_reversed_curve_loop_from_curves(curve_tags: list[int]) -> int:
     try:
         return int(gmsh.model.occ.addCurveLoop(reversed_tags, reorient=True))
     except TypeError:
-        return int(gmsh.model.occ.addCurveLoop(reversed_tags))
+        return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(reversed_tags)))
+
+
+def _curve_endpoints(curve_tag: int) -> tuple[int, int]:
+    gmsh = require_gmsh()
+    boundary = gmsh.model.getBoundary([(1, int(curve_tag))], oriented=False, combined=False)
+    point_tags = [int(tag) for dim, tag in boundary if int(dim) == 0]
+    if len(point_tags) != 2:
+        raise RuntimeError(f"could not resolve endpoints for curve {curve_tag}")
+    return point_tags[0], point_tags[1]
+
+
+def _ordered_curve_loop(curve_tags: list[int]) -> list[int]:
+    """Order and orient curve tags for Gmsh builds without addCurveLoop(reorient)."""
+
+    gmsh = require_gmsh()
+    tags = [int(c) for c in curve_tags]
+    if not tags:
+        return tags
+
+    gmsh.model.occ.synchronize()
+
+    def chain_from(start: int, rest: list[int]) -> list[int] | None:
+        loop_start, current_end = _curve_endpoints(start)
+        ordered = [start]
+        remaining = list(rest)
+
+        while remaining:
+            for index, curve in enumerate(remaining):
+                curve_start, curve_end = _curve_endpoints(curve)
+                if curve_start == current_end:
+                    ordered.append(curve)
+                    current_end = curve_end
+                    remaining.pop(index)
+                    break
+                if curve_end == current_end:
+                    ordered.append(-curve)
+                    current_end = curve_start
+                    remaining.pop(index)
+                    break
+            else:
+                return None
+
+        if current_end != loop_start:
+            return None
+        return ordered
+
+    for index, curve in enumerate(tags):
+        rest = tags[:index] + tags[index + 1 :]
+        ordered = chain_from(curve, rest)
+        if ordered is not None:
+            return ordered
+        ordered = chain_from(-curve, rest)
+        if ordered is not None:
+            return ordered
+
+    raise RuntimeError("could not order curves into a closed loop")
 
 
 def _add_ruled_section(loop_a: int, loop_b: int) -> list[tuple[int, int]]:
@@ -330,11 +386,12 @@ def _build_rounded_rectangle_enclosure_sector(
     if len(point_tags) < 2:
         raise RuntimeError("could not resolve open-domain mouth endpoints")
 
+    point_tags = list(dict.fromkeys(point_tags))
     coords = {tag: np.asarray(gmsh.model.getValue(0, tag, []), dtype=np.float64) for tag in point_tags}
     sx = 1.0 if sign_x >= 0.0 else -1.0
     sy = 1.0 if sign_y >= 0.0 else -1.0
-    mouth_x = max(point_tags, key=lambda tag: sx * float(coords[tag][0]))
-    mouth_y = max(point_tags, key=lambda tag: sy * float(coords[tag][1]))
+    mouth_x = min(point_tags, key=lambda tag: (abs(float(coords[tag][1])), -sx * float(coords[tag][0])))
+    mouth_y = min(point_tags, key=lambda tag: (abs(float(coords[tag][0])), -sy * float(coords[tag][1])))
 
     r = max(0.0, float(edge_depth))
     ox = float(bx1) if sx > 0.0 else float(bx0)

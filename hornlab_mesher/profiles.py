@@ -1,3 +1,11 @@
+"""Profile and point-grid facade.
+
+The implementation is split into formulas, morphing, and sampling modules, but
+callers import through this facade so the compatibility surface stays stable.
+Some underscored helpers remain importable for contract tests that pin imported
+ATH/WG behavior, but they are intentionally not advertised through `__all__`.
+"""
+
 from __future__ import annotations
 
 from .profile_common import (
@@ -48,43 +56,6 @@ from .profile_sampling import (
 )
 
 __all__ = [
-    "_ATH_T_20",
-    "_ATH_T_9",
-    "_DEFAULTS",
-    "_angle_list",
-    "_apply_morphing",
-    "_ath_default_zmap",
-    "_axial_sample_map",
-    "_circle_morph_target_radius",
-    "_configured_morph_half_dimension",
-    "_coverage_angle_from_guiding_curve",
-    "_cross_section",
-    "_custom_zmap",
-    "_deg",
-    "_fill_missing_normals",
-    "_guiding_curve_active",
-    "_guiding_curve_target_radius",
-    "_guiding_curve_type",
-    "_horn_indices",
-    "_invert_osse_coverage_angle",
-    "_is_true",
-    "_mirror_quadrant_angles",
-    "_morph_active",
-    "_morph_angle_list",
-    "_morph_factor",
-    "_morph_target_radius_at_angle",
-    "_morph_target_shape",
-    "_normalise3",
-    "_normalise_ath_angular_segments",
-    "_normalise_formula",
-    "_normalise_sampling_mode",
-    "_osse_radius",
-    "_outer_offset_shell",
-    "_parse_number_list",
-    "_rounded_rect_quadrant_angles",
-    "_rounded_rect_radius",
-    "_superellipse_scale",
-    "_zmap_number_list",
     "build_point_grid",
     "calculate_osse",
     "calculate_rosse",

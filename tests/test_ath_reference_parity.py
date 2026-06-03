@@ -5,10 +5,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import meshio
 
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
 from hornlab_mesher.cli import _bool, _enclosure_from_config, _reshape_grid, _section
 from hornlab_mesher.geometry import PointGridHornGeometry
+from hornlab_mesher.mesher import _triangles_and_physical_tags
 from hornlab_mesher.profiles import build_point_grid, eval_param
 from hornlab_mesher.builders.point_grid import build_point_grid as build_point_grid_geometry
 
@@ -39,6 +41,36 @@ def _reference_file(case: str, suffix: str) -> Path:
     if not matches:
         raise FileNotFoundError(f"no ATH {suffix} export for {case}")
     return matches[0]
+
+
+def _reference_mesh_file(case: str) -> Path:
+    mesh_path = ATH_REFERENCE_ROOT / case / "ABEC_FreeStanding" / f"{case}.msh"
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"no ATH .msh reference for {case}")
+    return mesh_path
+
+
+def _points_in_mm(mesh: meshio.Mesh) -> np.ndarray:
+    points = np.asarray(mesh.points, dtype=np.float64)
+    span = float(np.max(np.ptp(points, axis=0)))
+    return points * 1000.0 if span < 10.0 else points
+
+
+def _physical_tag_counts(mesh: meshio.Mesh) -> dict[int, int]:
+    _triangles, tags = _triangles_and_physical_tags(mesh)
+    unique, counts = np.unique(tags, return_counts=True)
+    return {int(tag): int(count) for tag, count in zip(unique, counts)}
+
+
+def _assert_counts_close(actual: dict[int, int], expected: dict[int, int], *, rtol: float) -> None:
+    assert set(actual) == set(expected)
+    for tag, expected_count in expected.items():
+        actual_count = actual[tag]
+        limit = max(2.0, rtol * float(expected_count))
+        assert abs(actual_count - expected_count) <= limit, (
+            f"tag {tag} count {actual_count} differs from ATH {expected_count} "
+            f"by more than {limit:.1f}"
+        )
 
 
 def _built_geometry_from_ath_case(case: str):
@@ -160,7 +192,7 @@ def test_solana_point_grid_matches_ath_reference_exports(case: str):
         (
             "250728solana",
             {
-                "inner": 72,
+                "inner": 4,
                 "throat_disc": 4,
                 "interface": 12,
                 "enclosure": 44,
@@ -171,7 +203,7 @@ def test_solana_point_grid_matches_ath_reference_exports(case: str):
         (
             "250728solana-q",
             {
-                "inner": 18,
+                "inner": 1,
                 "throat_disc": 1,
                 "interface": 3,
                 "enclosure": 11,
@@ -181,7 +213,7 @@ def test_solana_point_grid_matches_ath_reference_exports(case: str):
         ),
     ],
 )
-def test_solana_enclosure_topology_matches_ath_geo(case: str, expected_groups: dict[str, int]):
+def test_solana_enclosure_topology_uses_fast_wall_groups(case: str, expected_groups: dict[str, int]):
     gmsh = pytest.importorskip("gmsh")
     initialized_here = False
     if not gmsh.isInitialized():
@@ -199,6 +231,41 @@ def test_solana_enclosure_topology_matches_ath_geo(case: str, expected_groups: d
             gmsh.finalize()
 
     assert actual_groups == expected_groups
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+@pytest.mark.parametrize("case", ["250728solana", "250728solana-q"])
+def test_solana_enclosure_mesh_stays_close_to_ath_reference(case: str, tmp_path: Path):
+    generated = build_from_config(
+        load_config(ATH_REFERENCE_ROOT / case / "config.txt"),
+        tmp_path / f"{case}.msh",
+    )
+    actual_mesh = meshio.read(generated.mesh_path)
+    reference_mesh = meshio.read(_reference_mesh_file(case))
+
+    actual_points = _points_in_mm(actual_mesh)
+    reference_points = _points_in_mm(reference_mesh)
+    assert np.allclose(
+        np.min(actual_points, axis=0),
+        np.min(reference_points, axis=0),
+        rtol=0.0,
+        atol=1.0,
+    )
+    assert np.allclose(
+        np.max(actual_points, axis=0),
+        np.max(reference_points, axis=0),
+        rtol=0.0,
+        atol=1.0,
+    )
+
+    actual_triangles, _actual_tags = _triangles_and_physical_tags(actual_mesh)
+    reference_triangles, _reference_tags = _triangles_and_physical_tags(reference_mesh)
+    assert abs(len(actual_triangles) - len(reference_triangles)) <= 0.15 * len(reference_triangles)
+    _assert_counts_close(
+        _physical_tag_counts(actual_mesh),
+        _physical_tag_counts(reference_mesh),
+        rtol=0.25,
+    )
 
 
 @pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")

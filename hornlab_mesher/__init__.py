@@ -1,3 +1,11 @@
+"""Public API for HornLab waveguide mesh generation.
+
+Most callers should use `build_from_config` for config-driven builds or
+`build_mesh` with a geometry dataclass for direct Python builds. Lower-level
+formula and builder helpers are exported only when they are stable enough for
+tests or integration tooling to depend on.
+"""
+
 from __future__ import annotations
 
 from .builders import (
@@ -20,13 +28,13 @@ from .tags import PhysicalGroup
 
 
 def build_from_config(*args, **kwargs):
-    from .cli import build_from_config as _build_from_config
+    from .config_builder import build_from_config as _build_from_config
 
     return _build_from_config(*args, **kwargs)
 
 
 def build_geometry_params(*args, **kwargs):
-    from .cli import build_geometry_params as _build_geometry_params
+    from .config_builder import build_geometry_params as _build_geometry_params
 
     return _build_geometry_params(*args, **kwargs)
 

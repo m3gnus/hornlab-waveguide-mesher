@@ -6,6 +6,7 @@ import meshio
 import numpy as np
 
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
+from hornlab_mesher.builders.enclosure import _add_curve_loop_from_curves
 from hornlab_mesher import HornEnclosure, MeshDensity, build_mesh
 from hornlab_mesher.cli import build_from_config, parse_ath_config
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
@@ -549,6 +550,36 @@ def test_open_sector_fill_uses_single_gmsh_surface():
             gmsh.finalize()
 
 
+def test_enclosure_curve_loop_orders_unordered_curves():
+    import gmsh
+
+    initialized_here = False
+    try:
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            initialized_here = True
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("curve-loop-order-test")
+
+        p0 = gmsh.model.occ.addPoint(0.0, 0.0, 0.0)
+        p1 = gmsh.model.occ.addPoint(1.0, 0.0, 0.0)
+        p2 = gmsh.model.occ.addPoint(1.0, 1.0, 0.0)
+        p3 = gmsh.model.occ.addPoint(0.0, 1.0, 0.0)
+        c0 = gmsh.model.occ.addLine(p0, p1)
+        c1 = gmsh.model.occ.addLine(p1, p2)
+        c2 = gmsh.model.occ.addLine(p2, p3)
+        c3 = gmsh.model.occ.addLine(p3, p0)
+
+        loop = _add_curve_loop_from_curves([c2, c0, c3, c1])
+        surface = gmsh.model.occ.addPlaneSurface([loop])
+
+        assert surface > 0
+    finally:
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()
+
+
 def test_point_grid_enclosure_mesh_has_canonical_tags(tmp_path):
     msh_path = build_mesh(
         PointGridHornGeometry(
@@ -576,6 +607,48 @@ def test_point_grid_enclosure_mesh_has_canonical_tags(tmp_path):
     tags = _triangle_tags(mesh)
     assert tags
     assert {1, 2}.issubset(set(tags))
+
+
+def test_open_quarter_enclosure_uses_symmetry_axis_mouth_endpoints(tmp_path):
+    mouth = np.asarray(
+        [
+            [60.0, 0.0],
+            [92.0, 28.0],
+            [110.0, 75.0],
+            [74.0, 104.0],
+            [0.0, 115.0],
+        ],
+        dtype=np.float64,
+    )
+    inner = np.zeros((mouth.shape[0], 6, 3), dtype=np.float64)
+    for index, scale in enumerate(np.linspace(0.25, 1.0, inner.shape[1])):
+        inner[:, index, 0] = mouth[:, 0] * scale
+        inner[:, index, 1] = mouth[:, 1] * scale
+        inner[:, index, 2] = 120.0 * index / (inner.shape[1] - 1)
+
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=inner,
+            closed=False,
+            preserve_grid=True,
+            enclosure=HornEnclosure(
+                depth_mm=180.0,
+                space_l_mm=20.0,
+                space_t_mm=20.0,
+                space_r_mm=20.0,
+                space_b_mm=20.0,
+                edge_mm=8.0,
+                edge_type=1,
+                plan_type=1,
+                depth_margin_mm=5.0,
+            ),
+        ),
+        MeshDensity(throat_res_mm=10.0, mouth_res_mm=18.0, rear_res_mm=30.0),
+        tmp_path / "bulged-quarter-enclosure.msh",
+    )
+
+    mesh = meshio.read(msh_path)
+    assert mesh.cells_dict["triangle"].size > 0
 
 
 def test_point_grid_enclosure_mesh_supports_multiple_interface_slices(tmp_path):

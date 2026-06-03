@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -122,6 +123,14 @@ class HornInterface:
     offset_mm: float
 
 
+class PointGridBuildMode(str, Enum):
+    """Topology mode implied by point-grid geometry options."""
+
+    BARE = "bare"
+    FREESTANDING = "freestanding"
+    ENCLOSURE = "enclosure"
+
+
 @dataclass(frozen=True)
 class PointGridHornGeometry:
     """WG-compatible horn surface from an already-evaluated point grid.
@@ -131,12 +140,12 @@ class PointGridHornGeometry:
 
     Three top-level cases, gated by ``enclosure`` and ``outer_points``:
 
-    * ``enclosure is None`` and ``outer_points is None`` — inner-only horn
+    * ``enclosure is None`` and ``outer_points is None`` - inner-only horn
       (case A).
-    * ``enclosure is None`` and ``outer_points is not None`` — freestanding
+    * ``enclosure is None`` and ``outer_points is not None`` - freestanding
       wall-shell horn (case B). ``wall_thickness_mm`` is used by the legacy
       rear-disc fallback; the active path reuses outer wall boundary curves.
-    * ``enclosure is not None`` — waveguide inside a rear enclosure (case C).
+    * ``enclosure is not None`` - waveguide inside a rear enclosure (case C).
     """
 
     inner_points: NDArray[np.float64]
@@ -153,12 +162,20 @@ class PointGridHornGeometry:
     wg_topology: bool = True
     enclosure: HornEnclosure | None = None
 
+    @property
+    def build_mode(self) -> PointGridBuildMode:
+        if self.enclosure is not None:
+            return PointGridBuildMode.ENCLOSURE
+        if self.outer_points is not None:
+            return PointGridBuildMode.FREESTANDING
+        return PointGridBuildMode.BARE
+
 
 HornGeometry = (
     OsseHornGeometry
     | PointGridHornGeometry
 )
-# Note: RosseHornGeometry is intentionally NOT in the buildable union — the
+# Note: RosseHornGeometry is intentionally NOT in the buildable union - the
 # ROSSE curve is non-monotonic in z for typical parameter ranges, so
 # the internal axial loft helper cannot consume it. Use compute_rosse_profile_points
 # (in builders.rosse_waveguide) for the curve, or hand the result to a
