@@ -209,6 +209,11 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         mesh_groups.get("rear", []),
         curve_groups.get("rear", []),
     )
+    add_field(
+        f"{float(density.interface_res_mm or density.mouth_res_mm):.12g}",
+        mesh_groups.get("interface", []),
+        curve_groups.get("interface", []),
+    )
 
     enclosure_resolution_values: list[float] = []
     if geometry.enclosure_bounds:
@@ -284,6 +289,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         float(density.throat_res_mm),
         float(density.mouth_res_mm),
         float(density.rear_res_mm),
+        float(density.interface_res_mm or density.mouth_res_mm),
     ]
     sizes.extend(enclosure_resolution_values)
     sizes = [v for v in sizes if math.isfinite(v) and v > 0.0]

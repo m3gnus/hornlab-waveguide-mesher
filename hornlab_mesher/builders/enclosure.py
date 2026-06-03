@@ -7,9 +7,8 @@ Supports closed-domain waveguides (``quadrants=1234``) with:
 * ``HornEnclosure.edge_type`` ``∈ {1, 2}`` — rounded fillet (3 profile
   thru-section) or chamfer (single ruled surface).
 
-The open-domain (``closed=False``) branch is intentionally not ported — the
-WG mesh route forces ``quadrants=1234`` so that code path is dead in
-production.
+Open-domain rounded-rectangle sectors share the same sector builder used by
+the closed-domain four-sector path.
 
 The pure XY-plane geometry math (rounded-rect, ellipse, superellipse
 samplers) is vendored from ``Waveguide-Generator/server/solver/waveguide_enclosure.py``
@@ -308,6 +307,183 @@ def _classify_enclosure_surfaces(
     return {"front": front, "back": back, "sides": sides}
 
 
+def _build_rounded_rectangle_enclosure_sector(
+    *,
+    mouth_curves: list[int],
+    bx0: float,
+    bx1: float,
+    by0: float,
+    by1: float,
+    z_front: float,
+    z_back: float,
+    edge_depth: float,
+    front_mesh_size: float,
+    back_mesh_size: float,
+    sign_x: float = 1.0,
+    sign_y: float = 1.0,
+) -> dict[str, Any]:
+    """Build one rounded-rectangle enclosure sector bounded by symmetry axes."""
+
+    gmsh = require_gmsh()
+    endpoints = gmsh.model.getBoundary([(1, int(c)) for c in mouth_curves], oriented=False, combined=False)
+    point_tags = [int(tag) for dim, tag in endpoints if int(dim) == 0]
+    if len(point_tags) < 2:
+        raise RuntimeError("could not resolve open-domain mouth endpoints")
+
+    coords = {tag: np.asarray(gmsh.model.getValue(0, tag, []), dtype=np.float64) for tag in point_tags}
+    sx = 1.0 if sign_x >= 0.0 else -1.0
+    sy = 1.0 if sign_y >= 0.0 else -1.0
+    mouth_x = max(point_tags, key=lambda tag: sx * float(coords[tag][0]))
+    mouth_y = max(point_tags, key=lambda tag: sy * float(coords[tag][1]))
+
+    r = max(0.0, float(edge_depth))
+    ox = float(bx1) if sx > 0.0 else float(bx0)
+    oy = float(by1) if sy > 0.0 else float(by0)
+    fx = ox - sx * r
+    fy = oy - sy * r
+    zf = float(z_front)
+    zfo = zf - r
+    zb = float(z_back)
+    zbo = zb + r
+
+    def pt(x: float, y: float, z: float, size: float) -> int:
+        return int(gmsh.model.occ.addPoint(float(x), float(y), float(z), float(size)))
+
+    def line(a: int, b: int) -> int:
+        return int(gmsh.model.occ.addLine(int(a), int(b)))
+
+    def arc(a: int, c: int, b: int) -> int:
+        return int(gmsh.model.occ.addCircleArc(int(a), int(c), int(b)))
+
+    def surface(curves: list[int], *, plane: bool = False) -> tuple[int, int]:
+        loop = _add_curve_loop_from_curves(curves)
+        if plane:
+            try:
+                return (2, int(gmsh.model.occ.addPlaneSurface([loop])))
+            except Exception:
+                pass
+        return (2, int(gmsh.model.occ.addSurfaceFilling(loop)))
+
+    origin_back = pt(0.0, 0.0, zb, back_mesh_size)
+    px_f = pt(fx, 0.0, zf, front_mesh_size)
+    px_o_f = pt(ox, 0.0, zfo, front_mesh_size)
+    px_o_b = pt(ox, 0.0, zbo, back_mesh_size)
+    px_b = pt(fx, 0.0, zb, back_mesh_size)
+    py_f = pt(0.0, fy, zf, front_mesh_size)
+    py_o_f = pt(0.0, oy, zfo, front_mesh_size)
+    py_o_b = pt(0.0, oy, zbo, back_mesh_size)
+    py_b = pt(0.0, fy, zb, back_mesh_size)
+    c_f = pt(fx, fy, zf, front_mesh_size)
+    c_x_f = pt(ox, fy, zfo, front_mesh_size)
+    c_y_f = pt(fx, oy, zfo, front_mesh_size)
+    c_x_b = pt(ox, fy, zbo, back_mesh_size)
+    c_y_b = pt(fx, oy, zbo, back_mesh_size)
+    c_b = pt(fx, fy, zb, back_mesh_size)
+
+    cx_axis_f = pt(fx, 0.0, zfo, front_mesh_size)
+    cx_axis_b = pt(fx, 0.0, zbo, back_mesh_size)
+    cy_axis_f = pt(0.0, fy, zfo, front_mesh_size)
+    cy_axis_b = pt(0.0, fy, zbo, back_mesh_size)
+    corner_front_center = pt(fx, fy, zfo, front_mesh_size)
+    corner_back_center = pt(fx, fy, zbo, back_mesh_size)
+
+    l_mouth_x = line(mouth_x, px_f)
+    l_front_x = line(px_f, c_f)
+    l_front_y = line(py_f, c_f)
+    l_mouth_y = line(mouth_y, py_f)
+    front = surface([int(c) for c in mouth_curves] + [l_mouth_y, l_front_y, -l_front_x, -l_mouth_x], plane=True)
+
+    l_x_front_outer = line(px_o_f, c_x_f)
+    l_x_outer = line(px_o_f, px_o_b)
+    l_x_outer_corner = line(c_x_f, c_x_b)
+    l_x_back_outer = line(px_o_b, c_x_b)
+    l_x_back_inset = line(px_b, c_b)
+    l_back_x_axis = line(px_b, origin_back)
+    l_back_y_axis = line(origin_back, py_b)
+    l_back_y_inset = line(py_b, c_b)
+    l_y_front_outer = line(py_o_f, c_y_f)
+    l_y_outer = line(py_o_f, py_o_b)
+    l_y_outer_corner = line(c_y_f, c_y_b)
+    l_y_back_outer = line(py_o_b, c_y_b)
+
+    a_x_front_axis = arc(px_f, cx_axis_f, px_o_f) if r > 0.0 else line(px_f, px_o_f)
+    a_x_front_corner = arc(c_f, corner_front_center, c_x_f) if r > 0.0 else line(c_f, c_x_f)
+    a_x_back_axis = arc(px_o_b, cx_axis_b, px_b) if r > 0.0 else line(px_o_b, px_b)
+    a_x_back_corner = arc(c_x_b, corner_back_center, c_b) if r > 0.0 else line(c_x_b, c_b)
+    a_y_front_axis = arc(py_f, cy_axis_f, py_o_f) if r > 0.0 else line(py_f, py_o_f)
+    a_y_front_corner = arc(c_f, corner_front_center, c_y_f) if r > 0.0 else line(c_f, c_y_f)
+    a_y_back_axis = arc(py_o_b, cy_axis_b, py_b) if r > 0.0 else line(py_o_b, py_b)
+    a_y_back_corner = arc(c_y_b, corner_back_center, c_b) if r > 0.0 else line(c_y_b, c_b)
+    a_corner_front = arc(c_x_f, corner_front_center, c_y_f) if r > 0.0 else line(c_x_f, c_y_f)
+    a_corner_back = arc(c_x_b, corner_back_center, c_y_b) if r > 0.0 else line(c_x_b, c_y_b)
+
+    x_front_edge = surface([a_x_front_axis, l_x_front_outer, -a_x_front_corner, -l_front_x])
+    x_side = surface([l_x_outer, l_x_back_outer, -l_x_outer_corner, -l_x_front_outer], plane=True)
+    x_back_edge = surface([a_x_back_axis, l_x_back_inset, -a_x_back_corner, -l_x_back_outer])
+    back = surface([l_back_x_axis, l_back_y_axis, l_back_y_inset, -l_x_back_inset], plane=True)
+    y_front_edge = surface([a_y_front_axis, l_y_front_outer, -a_y_front_corner, -l_front_y])
+    corner_front = surface([a_x_front_corner, a_corner_front, -a_y_front_corner])
+    corner_side = surface([l_x_outer_corner, a_corner_back, -l_y_outer_corner, -a_corner_front])
+    corner_back = surface([a_x_back_corner, -a_y_back_corner, -a_corner_back])
+    y_back_edge = surface([a_y_back_axis, l_back_y_inset, -a_y_back_corner, -l_y_back_outer])
+    y_side = surface([l_y_outer, l_y_back_outer, -l_y_outer_corner, -l_y_front_outer], plane=True)
+
+    dimtags = [
+        front,
+        x_front_edge,
+        x_side,
+        x_back_edge,
+        back,
+        y_front_edge,
+        corner_front,
+        corner_side,
+        corner_back,
+        y_back_edge,
+        y_side,
+    ]
+    tags = [tag for _, tag in dimtags]
+    front_edges = [x_front_edge[1], y_front_edge[1], corner_front[1]]
+    back_edges = [x_back_edge[1], y_back_edge[1], corner_back[1]]
+    return {
+        "dimtags": dimtags,
+        "front": [front[1]],
+        "back": [back[1]],
+        "sides": [tag for tag in tags if tag not in {front[1], back[1], *front_edges, *back_edges}],
+        "front_edges": front_edges,
+        "back_edges": back_edges,
+        "bounds": {
+            "bx0": float(bx0),
+            "bx1": float(bx1),
+            "by0": float(by0),
+            "by1": float(by1),
+            "z_front": z_front,
+            "z_back": z_back,
+            "cx": 0.5 * (float(bx0) + float(bx1)),
+            "cy": 0.5 * (float(by0) + float(by1)),
+        },
+    }
+
+
+def _quadrant_for_curve(curve_tag: int) -> tuple[float, float]:
+    gmsh = require_gmsh()
+    x0, y0, _z0, x1, y1, _z1 = gmsh.model.getBoundingBox(1, int(curve_tag))
+    sx = 1.0 if abs(float(x1)) >= abs(float(x0)) else -1.0
+    sy = 1.0 if abs(float(y1)) >= abs(float(y0)) else -1.0
+    return sx, sy
+
+
+def _merge_enclosure_parts(parts: list[dict[str, Any]], bounds: dict[str, float]) -> dict[str, Any]:
+    return {
+        "dimtags": [dimtag for part in parts for dimtag in part["dimtags"]],
+        "front": [tag for part in parts for tag in part["front"]],
+        "back": [tag for part in parts for tag in part["back"]],
+        "sides": [tag for part in parts for tag in part["sides"]],
+        "front_edges": [tag for part in parts for tag in part["front_edges"]],
+        "back_edges": [tag for part in parts for tag in part["back_edges"]],
+        "bounds": bounds,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main builder
 # ---------------------------------------------------------------------------
@@ -335,9 +511,11 @@ def build_enclosure_box(
             "bounds":       {bx0, bx1, by0, by1, z_front, z_back, cx, cy},
         }
 
-    Raises ``NotImplementedError`` for ``plan_type != 1`` or ``edge_type != 1``
-    or ``closed=False`` — those configurations exist in WG but are not yet
-    ported to hornlab-mesher.
+    Raises ``NotImplementedError`` for unsupported plan/edge/open-domain
+    combinations. Implemented plan values are ``1`` rounded rectangle,
+    ``2`` ellipse, and ``3`` superellipse; implemented edge values are ``1``
+    rounded fillet and ``2`` chamfer. Open-domain support currently requires
+    rounded-rectangle plan geometry.
     """
 
     if int(enclosure.plan_type) not in (1, 2, 3):
@@ -349,10 +527,6 @@ def build_enclosure_box(
         raise NotImplementedError(
             f"HornEnclosure.edge_type={enclosure.edge_type} not yet supported "
             "by hornlab-mesher (only edge_type ∈ {1, 2} implemented)."
-        )
-    if not closed:
-        raise NotImplementedError(
-            "Open-domain enclosure (closed=False) is not yet supported."
         )
     if not inner_dimtags:
         raise ValueError("build_enclosure_box requires non-empty inner_dimtags")
@@ -379,9 +553,9 @@ def build_enclosure_box(
         enc_depth = min_enc_depth
     z_back = z_front - enc_depth
 
-    bx0 = x_min - float(enclosure.space_l_mm)
+    bx0 = 0.0 if not closed and x_min >= -1.0e-6 else x_min - float(enclosure.space_l_mm)
     bx1 = x_max + float(enclosure.space_r_mm)
-    by0 = y_min - float(enclosure.space_b_mm)
+    by0 = 0.0 if not closed and y_min >= -1.0e-6 else y_min - float(enclosure.space_b_mm)
     by1 = y_max + float(enclosure.space_t_mm)
 
     bounds = {
@@ -399,10 +573,55 @@ def build_enclosure_box(
     half_h = 0.5 * (by1 - by0)
     clamped_edge = max(0.0, min(float(enclosure.edge_mm), half_w - 0.1, half_h - 0.1))
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
+    front_mesh_size = float(enclosure.front_mesh_size_mm or 0.0)
+    back_mesh_size = float(enclosure.back_mesh_size_mm or 0.0)
 
     mouth_curves = _boundary_curves_at_z_extreme(inner_dimtags, want_min_z=False)
     if not mouth_curves:
         raise RuntimeError("could not resolve inner-wall mouth boundary curves")
+    if not closed:
+        if int(enclosure.plan_type) != 1:
+            raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
+        return _build_rounded_rectangle_enclosure_sector(
+            mouth_curves=mouth_curves,
+            bx0=bx0,
+            bx1=bx1,
+            by0=by0,
+            by1=by1,
+            z_front=z_front,
+            z_back=z_back,
+            edge_depth=edge_depth,
+            front_mesh_size=front_mesh_size,
+            back_mesh_size=back_mesh_size,
+        )
+    if int(enclosure.plan_type) == 1 and int(enclosure.edge_type) == 1:
+        grouped: dict[tuple[float, float], list[int]] = {
+            (1.0, 1.0): [],
+            (-1.0, 1.0): [],
+            (-1.0, -1.0): [],
+            (1.0, -1.0): [],
+        }
+        for curve in mouth_curves:
+            grouped[_quadrant_for_curve(curve)].append(int(curve))
+        if all(grouped[key] for key in grouped):
+            parts = [
+                _build_rounded_rectangle_enclosure_sector(
+                    mouth_curves=grouped[key],
+                    bx0=bx0,
+                    bx1=bx1,
+                    by0=by0,
+                    by1=by1,
+                    z_front=z_front,
+                    z_back=z_back,
+                    edge_depth=edge_depth,
+                    front_mesh_size=front_mesh_size,
+                    back_mesh_size=back_mesh_size,
+                    sign_x=key[0],
+                    sign_y=key[1],
+                )
+                for key in ((1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0))
+            ]
+            return _merge_enclosure_parts(parts, bounds)
     mouth_loop = _add_curve_loop_from_curves(mouth_curves)
 
     # Minimum BSpline corner radius: an interpolating BSpline through a true
@@ -425,7 +644,7 @@ def build_enclosure_box(
     )
     # Defensive: the outer ring must lie exactly in the z_front plane so the
     # two-loop addPlaneSurface call below doesn't silently fall back to
-    # addSurfaceFilling (which breaks parity by warping the hole-cut face).
+    # addSurfaceFilling (which diverges from ATH by warping the hole-cut face).
     ring0_pts[:, 2] = z_front
     ring0_wire, ring0_curves, _ring0_eps = _make_wire(ring0_pts, closed=True)
     ring0_loop = int(gmsh.model.occ.addCurveLoop([int(c) for c in ring0_curves]))

@@ -14,7 +14,7 @@ try:  # pragma: no cover - exercised only on Python 3.10
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from .geometry import HornEnclosure, MeshDensity, PointGridHornGeometry
+from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGeometry
 from .mesher import build_mesh, load_mesh
 from .profiles import build_point_grid, eval_param
 
@@ -73,6 +73,45 @@ def _maybe_number(value: Any) -> Any:
     if not np.isfinite(out):
         return text
     return int(out) if out.is_integer() else out
+
+
+def _number_list(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        out: list[float] = []
+        for item in value:
+            try:
+                number = float(item)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(number):
+                out.append(number)
+        return out
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return [number] if np.isfinite(number) else []
+    text = str(value).strip()
+    if not text:
+        return []
+    parts = [part.strip() for part in text.split(",")]
+    out = []
+    for part in parts:
+        if not part:
+            continue
+        try:
+            number = float(part)
+        except ValueError:
+            continue
+        if np.isfinite(number):
+            out.append(number)
+    return out
+
+
+def _first_number(*sources: Mapping[str, Any], names: tuple[str, ...], default: float) -> float:
+    value = _pick(*sources, names=names, default=default)
+    numbers = _number_list(value)
+    return float(numbers[0]) if numbers else float(default)
 
 
 def _parse_ath_blocks(content: str) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
@@ -198,16 +237,23 @@ def parse_ath_config(content: str) -> dict[str, Any]:
         mesh_items,
         (
             ("AngularSegments", "angularSegments"),
+            ("CornerSegments", "cornerSegments"),
             ("LengthSegments", "lengthSegments"),
             ("WallThickness", "wallThickness"),
             ("Quadrants", "quadrants"),
             ("ThroatResolution", "throatResolution"),
             ("MouthResolution", "mouthResolution"),
             ("RearResolution", "rearResolution"),
+            ("SubdomainSlices", "subdomainSlices"),
+            ("InterfaceOffset", "interfaceOffset"),
+            ("InterfaceResolution", "interfaceResolution"),
+            ("SamplingMode", "samplingMode"),
         ),
     )
-    mesh["athParitySampling"] = True
-
+    zmap_points = mesh_items.get("ZMapPoints", mesh_items.get("ZMap"))
+    if zmap_points is not None:
+        mesh["zMapPoints"] = zmap_points
+    mesh.setdefault("samplingMode", "zmap" if zmap_points is not None else "ath-default-zmap")
     morph_items = {
         **prefixed("Morph."),
         **prefixed("MORPH."),
@@ -226,6 +272,33 @@ def parse_ath_config(content: str) -> dict[str, Any]:
             ("Rate", "morphRate"),
             ("FixedPart", "morphFixed"),
             ("AllowShrinkage", "morphAllowShrinkage"),
+        ),
+    )
+
+    gcurve_items = {
+        **prefixed("GCurve."),
+        **prefixed("GCURVE."),
+        **blocks.get("GCurve", {}),
+        **blocks.get("GCURVE", {}),
+    }
+    gcurve = mapped(
+        gcurve_items,
+        (
+            ("Type", "gcurveType"),
+            ("Width", "gcurveWidth"),
+            ("AspectRatio", "gcurveAspectRatio"),
+            ("Dist", "gcurveDist"),
+            ("Distance", "gcurveDist"),
+            ("Rot", "gcurveRot"),
+            ("SF", "gcurveSF"),
+            ("SF.a", "gcurveSfA"),
+            ("SF.b", "gcurveSfB"),
+            ("SF.m1", "gcurveSfM1"),
+            ("SF.m2", "gcurveSfM2"),
+            ("SF.n1", "gcurveSfN1"),
+            ("SF.n2", "gcurveSfN2"),
+            ("SF.n3", "gcurveSfN3"),
+            ("SE.n", "gcurveSeN"),
         ),
     )
 
@@ -269,6 +342,8 @@ def parse_ath_config(content: str) -> dict[str, Any]:
     config: dict[str, Any] = {"formula": formula, "profile": profile, "mesh": mesh}
     if morph:
         config["morph"] = morph
+    if gcurve:
+        config["gcurve"] = gcurve
     if enclosure:
         config["enclosure"] = enclosure
     if source:
@@ -379,6 +454,16 @@ def _enclosure_from_config(
         plan_type=_int(enclosure, names=("plan_type", "planType", "encPlanType"), default=1),
         plan_n=_float(enclosure, names=("plan_n", "planN", "encPlanN"), default=2.0),
         depth_margin_mm=_float(enclosure, names=("depth_margin_mm", "depth_margin", "encDepthMargin"), default=1.0),
+        front_mesh_size_mm=_first_number(
+            enclosure,
+            names=("front_mesh_size_mm", "frontMeshSize", "enc_front_resolution", "encFrontResolution"),
+            default=0.0,
+        ),
+        back_mesh_size_mm=_first_number(
+            enclosure,
+            names=("back_mesh_size_mm", "backMeshSize", "enc_back_resolution", "encBackResolution"),
+            default=0.0,
+        ),
     )
 
 
@@ -388,6 +473,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     enclosure = _section(config, "enclosure")
     cross = _section(config, "cross_section", "crossSection")
     morph = _section(config, "morph", "MORPH")
+    gcurve = _section(config, "gcurve", "GCurve", "GCURVE")
     source = _section(config, "source", "Source")
 
     formula = _normalise_formula(_pick(config, profile, names=("formula", "type"), default="OSSE"))
@@ -410,6 +496,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         wall_thickness = 0.0
     if mode == "enclosure":
         wall_thickness = 0.0
+    z_map_points = _pick(mesh, config, names=("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints"), default=None)
+    default_sampling_mode = "zmap" if z_map_points is not None else "uniform"
 
     common: dict[str, Any] = {
         "type": formula,
@@ -419,7 +507,21 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "k": _scalar_or_expr(profile, config, names=("k",), default=1.0),
         "q": _scalar_or_expr(profile, config, names=("q",), default=1.0 if formula == "R-OSSE" else 0.995),
         "angularSegments": _int(mesh, config, names=("angular_segments", "angularSegments"), default=64),
+        "cornerSegments": _int(mesh, config, names=("corner_segments", "cornerSegments"), default=0),
         "lengthSegments": _int(mesh, config, names=("length_segments", "lengthSegments"), default=32),
+        "samplingMode": _pick(
+            mesh,
+            config,
+            names=("sampling_mode", "samplingMode"),
+            default=default_sampling_mode,
+        ),
+        "athParitySampling": _bool(
+            mesh,
+            config,
+            names=("ath_parity_sampling", "athParitySampling"),
+            default=False,
+        ),
+        "zMapPoints": z_map_points,
         "wallThickness": wall_thickness,
         "encDepth": enc_depth,
         "morphTarget": _scalar_or_expr(morph, config, names=("morph_target", "morphTarget"), default=0),
@@ -431,16 +533,35 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "morphAllowShrinkage": _scalar_or_expr(
             morph, config, names=("morph_allow_shrinkage", "morphAllowShrinkage"), default=0
         ),
-        "quadrants": str(_pick(mesh, config, names=("quadrants",), default="1234")),
-        "athParitySampling": _bool(
-            mesh,
-            config,
-            names=("ath_parity_sampling", "athParitySampling"),
-            default=False,
+        "gcurveType": _scalar_or_expr(gcurve, config, names=("gcurve_type", "gcurveType"), default=0),
+        "gcurveWidth": _scalar_or_expr(gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0),
+        "gcurveAspectRatio": _scalar_or_expr(
+            gcurve, config, names=("gcurve_aspect_ratio", "gcurveAspectRatio"), default=1
         ),
+        "gcurveDist": _scalar_or_expr(gcurve, config, names=("gcurve_dist", "gcurveDist"), default=0),
+        "gcurveRot": _scalar_or_expr(gcurve, config, names=("gcurve_rot_deg", "gcurveRot"), default=0),
+        "gcurveSF": _pick(gcurve, config, names=("gcurve_sf", "gcurveSf", "gcurveSF"), default=""),
+        "gcurveSf": _pick(gcurve, config, names=("gcurve_sf", "gcurveSf", "gcurveSF"), default=""),
+        "gcurveSeN": _scalar_or_expr(gcurve, config, names=("gcurve_se_n", "gcurveSeN"), default=3),
+        "gcurveSfA": _scalar_or_expr(gcurve, config, names=("gcurve_sf_a", "gcurveSfA"), default=1),
+        "gcurveSfB": _scalar_or_expr(gcurve, config, names=("gcurve_sf_b", "gcurveSfB"), default=1),
+        "gcurveSfM1": _scalar_or_expr(gcurve, config, names=("gcurve_sf_m1", "gcurveSfM1"), default=4),
+        "gcurveSfM2": _scalar_or_expr(gcurve, config, names=("gcurve_sf_m2", "gcurveSfM2"), default=None),
+        "gcurveSfN1": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n1", "gcurveSfN1"), default=2),
+        "gcurveSfN2": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n2", "gcurveSfN2"), default=2),
+        "gcurveSfN3": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n3", "gcurveSfN3"), default=2),
+        "quadrants": str(_pick(mesh, config, names=("quadrants",), default="1234")),
         "throatResolution": _float(mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0),
         "mouthResolution": _float(mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0),
         "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=25.0),
+        "subdomainSlices": _scalar_or_expr(mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""),
+        "interfaceOffset": _scalar_or_expr(mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=0.0),
+        "interfaceResolution": _float(
+            mesh,
+            config,
+            names=("interface_res_mm", "interfaceResolution"),
+            default=12.0,
+        ),
         "sourceShape": _scalar_or_expr(source, config, names=("source_shape", "sourceShape"), default=1),
         "sourceRadius": _scalar_or_expr(source, config, names=("source_radius_mm", "sourceRadius"), default=-1),
         "sourceCurv": _scalar_or_expr(source, config, names=("source_curv", "sourceCurv"), default=0),
@@ -483,6 +604,27 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     return common, formula, mode
 
 
+def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[HornInterface, ...]:
+    offsets = _number_list(params.get("interfaceOffset"))
+    if not offsets:
+        return ()
+
+    slices = [int(round(value)) for value in _number_list(params.get("subdomainSlices"))]
+    if not slices:
+        return ()
+
+    interfaces: list[HornInterface] = []
+    last_ring = int(n_length)
+    for slice_index, offset in zip(slices, offsets):
+        if offset <= 0.0:
+            continue
+        # ATH configs address grid slices; keep valid indices and ignore
+        # out-of-range declarations rather than guessing a different topology.
+        if 0 <= int(slice_index) <= last_ring:
+            interfaces.append(HornInterface(slice_index=int(slice_index), offset_mm=float(offset)))
+    return tuple(interfaces)
+
+
 def _reshape_grid(raw: Any, n_phi: int, n_length: int, name: str) -> np.ndarray:
     arr = np.asarray(raw, dtype=np.float64)
     expected = n_phi * (n_length + 1) * 3
@@ -509,6 +651,7 @@ def build_from_config(
     if grid.get("outer_points") is not None and enclosure_obj is None:
         outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
 
+    interface_offsets = _number_list(params.get("interfaceOffset"))
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -519,6 +662,8 @@ def build_from_config(
         source_radius_mm=float(params.get("sourceRadius", -1) or -1),
         source_curv=int(float(params.get("sourceCurv", 0) or 0)),
         source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
+        interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
+        interfaces=_interfaces_from_params(params, n_length),
         enclosure=enclosure_obj,
     )
     density = MeshDensity(
@@ -527,6 +672,7 @@ def build_from_config(
         rear_res_mm=_float(mesh, names=("rear_res_mm", "rear_res", "rearResolution"), default=25.0),
         enc_front_res_mm=_pick(mesh, enclosure, names=("enc_front_res_mm", "enc_front_resolution", "encFrontResolution"), default=None),
         enc_back_res_mm=_pick(mesh, enclosure, names=("enc_back_res_mm", "enc_back_resolution", "encBackResolution"), default=None),
+        interface_res_mm=_float(mesh, names=("interface_res_mm", "interface_res", "interfaceResolution"), default=12.0),
     )
     scale_to_metres = _bool(mesh, names=("scale_to_metres", "scaleToMetres"), default=True)
     mesh_path = build_mesh(geometry, density, output_path, scale_to_metres=scale_to_metres)

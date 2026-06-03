@@ -15,7 +15,7 @@ _DEFAULTS = {
     "b": 0.2,
 }
 
-_ATH_PARITY_T_20 = np.asarray(
+_ATH_T_20 = np.asarray(
     [
         0.0,
         0.031652775,
@@ -105,7 +105,136 @@ def _osse_radius(z: float, p: float, params: Mapping[str, Any], *, r0: float, a_
     return base + term
 
 
-def calculate_osse(z: float, p: float, params: Mapping[str, Any]) -> tuple[float, float]:
+def _parse_number_list(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+    else:
+        try:
+            parts = list(value)
+        except TypeError:
+            return []
+    out: list[float] = []
+    for part in parts:
+        if part == "":
+            continue
+        out.append(float(eval_param(part, 0.0, 0.0)))
+    return out
+
+
+def _guiding_curve_type(params: Mapping[str, Any], p: float) -> int:
+    return int(round(eval_param(params.get("gcurveType"), p, 0.0)))
+
+
+def _guiding_curve_active(params: Mapping[str, Any], p: float) -> bool:
+    return _guiding_curve_type(params, p) in {1, 2} and eval_param(params.get("gcurveWidth"), p, 0.0) > 0.0
+
+
+def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
+    curve_type = _guiding_curve_type(params, p)
+    width = eval_param(params.get("gcurveWidth"), p, 0.0)
+    if curve_type == 0 or width <= 0.0:
+        return 0.0
+    aspect = eval_param(params.get("gcurveAspectRatio"), p, 1.0)
+    if aspect <= 0.0:
+        raise ValueError("gcurveAspectRatio must be positive")
+
+    rotation = math.radians(eval_param(params.get("gcurveRot"), p, 0.0))
+    pr = p - rotation
+    cos_p = math.cos(pr)
+    sin_p = math.sin(pr)
+
+    if curve_type == 1:
+        exponent = max(2.0, eval_param(params.get("gcurveSeN"), p, 3.0))
+        a = width / 2.0
+        b = a * aspect
+        term = abs(cos_p / a) ** exponent + abs(sin_p / b) ** exponent
+        return term ** (-1.0 / exponent)
+
+    if curve_type != 2:
+        raise ValueError(f"unsupported GCurve type {curve_type}")
+
+    sf = _parse_number_list(params.get("gcurveSf", params.get("gcurveSF")))
+    if len(sf) >= 6:
+        sf_a, sf_b, sf_m1, sf_n1, sf_n2, sf_n3 = sf[:6]
+        sf_m2 = sf_m1
+    else:
+        sf_a = eval_param(params.get("gcurveSfA"), p, 1.0)
+        sf_b = eval_param(params.get("gcurveSfB"), p, 1.0)
+        sf_m1 = eval_param(params.get("gcurveSfM1"), p, 4.0)
+        raw_m2 = params.get("gcurveSfM2")
+        sf_m2 = eval_param(raw_m2, p, sf_m1) if raw_m2 is not None else sf_m1
+        sf_n1 = eval_param(params.get("gcurveSfN1"), p, 2.0)
+        sf_n2 = eval_param(params.get("gcurveSfN2"), p, 2.0)
+        sf_n3 = eval_param(params.get("gcurveSfN3"), p, 2.0)
+    sf_a = max(abs(sf_a), 1.0e-12)
+    sf_b = max(abs(sf_b), 1.0e-12)
+    sf_n1 = max(abs(sf_n1), 1.0e-12)
+    t1 = abs(math.cos((sf_m1 * pr) / 4.0) / sf_a) ** sf_n2
+    t2 = abs(math.sin((sf_m2 * pr) / 4.0) / sf_b) ** sf_n3
+    r_norm = (t1 + t2) ** (-1.0 / sf_n1)
+    sx = width / 2.0
+    sy = sx * aspect
+    return math.hypot(r_norm * cos_p * sx, r_norm * sin_p * sy)
+
+
+def _invert_osse_coverage_angle(
+    target_radius: float,
+    z_main: float,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    a0_deg: float,
+    r0_main: float,
+) -> float:
+    low = 0.5
+    high = 89.0
+    for _ in range(24):
+        mid = 0.5 * (low + high)
+        radius = _osse_radius(z_main, p, params, r0=r0_main, a_deg=mid, a0_deg=a0_deg)
+        if radius < target_radius:
+            low = mid
+        else:
+            high = mid
+    return 0.5 * (low + high)
+
+
+def _coverage_angle_from_guiding_curve(
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    main_length: float,
+    a0_deg: float,
+    r0_main: float,
+) -> float | None:
+    if not _guiding_curve_active(params, p):
+        return None
+    target_radius = _guiding_curve_target_radius(p, params)
+    if target_radius <= 0.0:
+        return None
+    dist = eval_param(params.get("gcurveDist"), p, 1.0)
+    target_z = main_length * dist if 0.0 < dist <= 1.0 else dist
+    if target_z <= 0.0 or not math.isfinite(target_z):
+        target_z = main_length
+    target_z = min(main_length, target_z)
+    return _invert_osse_coverage_angle(
+        target_radius,
+        target_z,
+        p,
+        params,
+        a0_deg=a0_deg,
+        r0_main=r0_main,
+    )
+
+
+def calculate_osse(
+    z: float,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    coverage_angle: float | None = None,
+) -> tuple[float, float]:
     L = eval_param(params.get("L"), p, 120.0)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
@@ -120,7 +249,19 @@ def calculate_osse(z: float, p: float, params: Mapping[str, Any]) -> tuple[float
     elif z <= ext_len + slot_len:
         radius = r0_main
     else:
-        radius = _osse_radius(z - ext_len - slot_len, p, params, r0=r0_main, a_deg=a_deg, a0_deg=a0_deg)
+        main_z = z - ext_len - slot_len
+        active_a_deg = coverage_angle
+        if active_a_deg is None:
+            active_a_deg = _coverage_angle_from_guiding_curve(
+                p,
+                params,
+                main_length=L,
+                a0_deg=a0_deg,
+                r0_main=r0_main,
+            )
+        if active_a_deg is None:
+            active_a_deg = a_deg
+        radius = _osse_radius(main_z, p, params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg)
 
     x = float(z)
     y = float(radius)
@@ -212,7 +353,7 @@ def _is_true(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "ath-parity"}
+        return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
 
 
@@ -223,10 +364,195 @@ def _normalise_ath_angular_segments(raw_count: int) -> int:
     return max(8, int(math.ceil(count / 8.0) * 8))
 
 
-def _angle_list(quadrants: str, angular_segments: int, *, ath_parity: bool = False) -> tuple[np.ndarray, bool]:
-    if ath_parity:
-        angular_segments = _normalise_ath_angular_segments(angular_segments)
+def _morph_target_shape(params: Mapping[str, Any], p: float) -> int:
+    return int(round(eval_param(params.get("morphTarget"), p, 0.0)))
+
+
+def _morph_active(params: Mapping[str, Any], p: float) -> bool:
+    return _morph_target_shape(params, p) in {1, 2}
+
+
+def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corner_radius: float) -> float:
+    abs_cos = abs(math.cos(phi))
+    abs_sin = abs(math.sin(phi))
+    if abs_cos < 1.0e-9:
+        return half_height
+    if abs_sin < 1.0e-9:
+        return half_width
+
+    r = min(max(corner_radius, 0.0), half_width, half_height)
+    if r <= 1.0e-9:
+        return min(half_width / abs_cos, half_height / abs_sin)
+
+    y_at_x = (half_width * abs_sin) / abs_cos
+    if y_at_x <= half_height - r + 1.0e-9:
+        return half_width / abs_cos
+    x_at_y = (half_height * abs_cos) / abs_sin
+    if x_at_y <= half_width - r + 1.0e-9:
+        return half_height / abs_sin
+
+    cx = half_width - r
+    cy = half_height - r
+    b = -2.0 * (abs_cos * cx + abs_sin * cy)
+    c = cx * cx + cy * cy - r * r
+    disc = max(0.0, b * b - 4.0 * c)
+    return (-b + math.sqrt(disc)) / 2.0
+
+
+def _configured_morph_half_dimension(
+    value: Any,
+    phi: float,
+    *,
+    fallback_radius: float,
+) -> float:
+    dimension = eval_param(value, phi, 0.0)
+    if dimension <= 0.0:
+        return max(0.0, float(fallback_radius))
+    return dimension / 2.0
+
+
+def _circle_morph_target_radius(current_radius: float, phi: float, params: Mapping[str, Any]) -> float:
+    half_width = _configured_morph_half_dimension(params.get("morphWidth"), phi, fallback_radius=current_radius)
+    half_height = _configured_morph_half_dimension(params.get("morphHeight"), phi, fallback_radius=current_radius)
+    return max(half_width, half_height)
+
+
+def _morph_target_radius_at_angle(current_radius: float, phi: float, params: Mapping[str, Any]) -> float:
+    target = _morph_target_shape(params, phi)
+    if target == 0:
+        return current_radius
+    if target == 2:
+        return _circle_morph_target_radius(current_radius, phi, params)
+    if target != 1:
+        raise ValueError(f"unsupported Morph target {target}")
+    half_width = _configured_morph_half_dimension(params.get("morphWidth"), phi, fallback_radius=current_radius)
+    half_height = _configured_morph_half_dimension(params.get("morphHeight"), phi, fallback_radius=current_radius)
+    corner = eval_param(params.get("morphCorner"), phi, 0.0)
+    return _rounded_rect_radius(phi, half_width, half_height, corner)
+
+
+def _morph_factor(
+    t: float,
+    phi: float,
+    params: Mapping[str, Any],
+    *,
+    morph_start: float | None = None,
+) -> float:
+    if not _morph_active(params, phi):
+        return 0.0
+    if morph_start is None:
+        morph_start = eval_param(params.get("morphFixed"), phi, 0.0)
+    if t <= morph_start:
+        return 0.0
+    rate = eval_param(params.get("morphRate"), phi, 3.0)
+    denom = max(1.0e-9, 1.0 - morph_start)
+    return min(1.0, max(0.0, (t - morph_start) / denom)) ** rate
+
+
+def _apply_morphing(
+    current_radius: float,
+    mouth_radius: float,
+    t: float,
+    phi: float,
+    params: Mapping[str, Any],
+    *,
+    morph_start: float | None = None,
+) -> float:
+    factor = _morph_factor(t, phi, params, morph_start=morph_start)
+    if factor <= 0.0:
+        return current_radius
+    # OS-SE morphing is a directional target-mouth rule:
+    # rm(z, phi) = r(z, phi) + f(z) * (rM(phi) - r(L, phi)).
+    target_radius = _morph_target_radius_at_angle(mouth_radius, phi, params)
+    allow_shrinkage = _is_true(params.get("morphAllowShrinkage"))
+    safe_target = target_radius if allow_shrinkage else max(mouth_radius, target_radius)
+    return current_radius + (safe_target - mouth_radius) * factor
+
+
+def _rounded_rect_quadrant_angles(
+    points_per_quadrant: int,
+    half_width: float,
+    half_height: float,
+    corner_radius: float,
+    corner_segments: int,
+) -> np.ndarray:
+    points_per_quadrant = max(1, int(points_per_quadrant))
+    corner_radius = min(max(float(corner_radius), 0.0), half_width, half_height)
+    if corner_radius <= 1.0e-9:
+        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+
+    theta1 = math.atan2(half_height - corner_radius, half_width)
+    theta2 = math.atan2(half_height, half_width - corner_radius)
+    corner_segments = max(0, int(corner_segments))
+    side_segments = max(1, points_per_quadrant - corner_segments - (1 if corner_segments > 0 else 0))
+    side1_segments = max(1, int(round(side_segments * theta1 / max(theta1 + (math.pi / 2.0 - theta2), 1.0e-12))))
+    side2_segments = max(1, side_segments - side1_segments)
+
+    angles: list[float] = []
+    for i in range(side1_segments + 1):
+        angles.append(theta1 * i / side1_segments)
+    cx = half_width - corner_radius
+    cy = half_height - corner_radius
+    for i in range(1, corner_segments + 1):
+        u = i / (corner_segments + 1)
+        corner_phi = u * math.pi / 2.0
+        angles.append(math.atan2(cy + corner_radius * math.sin(corner_phi), cx + corner_radius * math.cos(corner_phi)))
+    angles.append(theta2)
+    for i in range(1, side2_segments + 1):
+        angles.append(theta2 + (math.pi / 2.0 - theta2) * i / side2_segments)
+    return np.asarray(angles, dtype=np.float64)
+
+
+def _mirror_quadrant_angles(q1: np.ndarray) -> np.ndarray:
+    q = [float(v) for v in q1]
+    full: list[float] = []
+    full.extend(q)
+    full.extend(math.pi - v for v in reversed(q[:-1]))
+    full.extend(math.pi + v for v in q[1:])
+    full.extend(math.tau - v for v in reversed(q[1:-1]))
+    return np.asarray(full, dtype=np.float64)
+
+
+def _morph_angle_list(params: Mapping[str, Any], angular_segments: int) -> np.ndarray | None:
+    if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
+        return None
+    width = eval_param(params.get("morphWidth"), 0.0, 0.0)
+    height = eval_param(params.get("morphHeight"), 0.0, 0.0)
+    if width <= 0.0 or height <= 0.0:
+        return None
+    half_width = width / 2.0
+    half_height = height / 2.0
+    corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
+    configured_corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
+    points_per_quadrant = max(1, int(round(angular_segments / 4.0)) + configured_corner_segments)
+    internal_corner_segments = max(0, configured_corner_segments + 1 if corner > 0.0 else 0)
+    return _mirror_quadrant_angles(
+        _rounded_rect_quadrant_angles(
+            points_per_quadrant,
+            half_width,
+            half_height,
+            corner,
+            internal_corner_segments,
+        )
+    )
+
+
+def _angle_list(params: Mapping[str, Any]) -> tuple[np.ndarray, bool]:
+    quadrants = str(params.get("quadrants", "1234"))
+    angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
+    morphed_full = _morph_angle_list(params, angular_segments)
     q = "".join(ch for ch in str(quadrants or "1234") if ch in "1234")
+    if morphed_full is not None:
+        if not q or q == "1234":
+            return morphed_full, True
+        if q == "1":
+            return morphed_full[morphed_full <= math.pi / 2.0 + 1.0e-12], False
+        if q == "12":
+            return morphed_full[morphed_full <= math.pi + 1.0e-12], False
+        if q == "14":
+            selected = morphed_full[(morphed_full <= math.pi / 2.0 + 1.0e-12) | (morphed_full >= 3.0 * math.pi / 2.0 - 1.0e-12)]
+            selected = np.where(selected > math.pi, selected - math.tau, selected)
+            return np.sort(selected), False
     if not q or q == "1234":
         return np.linspace(0.0, math.tau, int(angular_segments), endpoint=False, dtype=np.float64), True
     spans = {
@@ -239,11 +565,30 @@ def _angle_list(quadrants: str, angular_segments: int, *, ath_parity: bool = Fal
     return np.linspace(start, stop, n, endpoint=True, dtype=np.float64), False
 
 
-def _ath_parity_slice_map(n_length: int) -> np.ndarray:
+_ATH_T_9 = np.asarray(
+    [
+        0.0,
+        0.038238500,
+        0.114045714,
+        0.239636857,
+        0.417665786,
+        0.620386214,
+        0.792462929,
+        0.908557000,
+        0.973433571,
+        1.0,
+    ],
+    dtype=np.float64,
+)
+
+
+def _ath_default_zmap(n_length: int) -> np.ndarray:
     steps = max(1, int(n_length))
-    ref_steps = len(_ATH_PARITY_T_20) - 1
+    if steps == len(_ATH_T_9) - 1:
+        return _ATH_T_9.copy()
+    ref_steps = len(_ATH_T_20) - 1
     if steps == ref_steps:
-        return _ATH_PARITY_T_20.copy()
+        return _ATH_T_20.copy()
     out = np.empty(steps + 1, dtype=np.float64)
     out[0] = 0.0
     out[steps] = 1.0
@@ -252,8 +597,99 @@ def _ath_parity_slice_map(n_length: int) -> np.ndarray:
         lo = int(math.floor(pos))
         hi = min(ref_steps, lo + 1)
         frac = pos - lo
-        out[j] = _ATH_PARITY_T_20[lo] + (_ATH_PARITY_T_20[hi] - _ATH_PARITY_T_20[lo]) * frac
+        out[j] = _ATH_T_20[lo] + (_ATH_T_20[hi] - _ATH_T_20[lo]) * frac
     return out
+
+
+def _normalise_sampling_mode(value: Any, *, ath_parity_sampling: Any = None, z_map_points: Any = None) -> str:
+    if _is_true(ath_parity_sampling):
+        return "ath-default-zmap"
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if not raw:
+        return "zmap" if z_map_points is not None else "uniform"
+    if raw in {"uniform", "linear", "canonical", "default"}:
+        return "uniform"
+    if raw in {"ath", "ath-parity", "ath-zmap", "ath-default", "ath-default-zmap", "default-zmap"}:
+        return "ath-default-zmap"
+    if raw in {"zmap", "z-map", "custom", "custom-zmap", "custom-z-map"}:
+        return "zmap"
+    raise ValueError(f"samplingMode must be uniform, ath-default-zmap, or zmap, got {value!r}")
+
+
+def _zmap_number_list(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts: list[Any] = [part.strip() for part in value.replace(";", ",").split(",")]
+    else:
+        try:
+            parts = list(value)
+        except TypeError:
+            return []
+
+    out: list[float] = []
+    for part in parts:
+        if isinstance(part, (list, tuple)):
+            out.extend(_zmap_number_list(part))
+            continue
+        if part == "":
+            continue
+        out.append(float(eval_param(part, 0.0, 0.0)))
+    return out
+
+
+def _custom_zmap(n_length: int, z_map_points: Any) -> np.ndarray:
+    steps = max(1, int(n_length))
+    values = _zmap_number_list(z_map_points)
+    if not values:
+        raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
+
+    if len(values) == steps + 1 and math.isclose(values[0], 0.0, abs_tol=1.0e-12) and math.isclose(values[-1], 1.0, abs_tol=1.0e-12):
+        out = np.asarray(values, dtype=np.float64)
+    else:
+        if len(values) % 2 != 0:
+            raise ValueError("zMapPoints must be x,y control-point pairs or a full n+1 sample map")
+        controls = [(float(values[i]), float(values[i + 1])) for i in range(0, len(values), 2)]
+        controls = [(0.0, 0.0), *controls, (1.0, 1.0)]
+        xs = np.asarray([item[0] for item in controls], dtype=np.float64)
+        ys = np.asarray([item[1] for item in controls], dtype=np.float64)
+        if not np.all(np.isfinite(xs)) or not np.all(np.isfinite(ys)):
+            raise ValueError("zMapPoints must contain finite values")
+        if np.any(xs < -1.0e-12) or np.any(xs > 1.0 + 1.0e-12):
+            raise ValueError("zMapPoints x values must be within 0..1")
+        if np.any(ys < -1.0e-12) or np.any(ys > 1.0 + 1.0e-12):
+            raise ValueError("zMapPoints y values must be within 0..1")
+        if np.any(np.diff(xs) <= 1.0e-12):
+            raise ValueError("zMapPoints x values must be strictly increasing")
+        if np.any(np.diff(ys) < -1.0e-12):
+            raise ValueError("zMapPoints y values must be non-decreasing")
+        out = np.interp(np.linspace(0.0, 1.0, steps + 1, dtype=np.float64), xs, ys)
+
+    if not np.all(np.isfinite(out)):
+        raise ValueError("zMapPoints must produce finite samples")
+    if len(out) != steps + 1:
+        raise ValueError(f"zMapPoints produced {len(out)} samples; expected {steps + 1}")
+    if np.any(np.diff(out) < -1.0e-12):
+        raise ValueError("zMapPoints samples must be non-decreasing")
+    out[0] = 0.0
+    out[-1] = 1.0
+    return out
+
+
+def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndarray, str]:
+    z_map_points = params.get("zMapPoints", params.get("zmapPoints", params.get("ZMapPoints")))
+    mode = _normalise_sampling_mode(
+        params.get("samplingMode", params.get("sampling_mode")),
+        ath_parity_sampling=params.get("athParitySampling", params.get("ath_parity_sampling")),
+        z_map_points=z_map_points,
+    )
+    if mode == "uniform":
+        return np.linspace(0.0, 1.0, max(1, int(n_length)) + 1, dtype=np.float64), mode
+    if mode == "ath-default-zmap":
+        return _ath_default_zmap(n_length), mode
+    if mode == "zmap":
+        return _custom_zmap(n_length, z_map_points), mode
+    raise AssertionError(f"unhandled sampling mode {mode!r}")
 
 
 def _cross_section(params: Mapping[str, Any]) -> tuple[float, float]:
@@ -388,28 +824,60 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
         raise ValueError("lengthSegments must be a positive integer")
-    ath_parity = _is_true(params.get("athParitySampling")) or str(params.get("samplingMode", "")).strip() == "ath-parity"
-    angles, full_circle = _angle_list(
-        str(params.get("quadrants", "1234")),
-        int(params.get("angularSegments", 64)),
-        ath_parity=ath_parity,
-    )
+    angles, full_circle = _angle_list(params)
     exponent, aspect_ratio = _cross_section(params)
     t_max = float(eval_param(params.get("tmax"), 0.0, 1.0))
-    if ath_parity:
-        t_values = _ath_parity_slice_map(n_length) * t_max
+    t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+    t_values = t_unit_values * t_max
+    configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
+    morph_start_idx = int(np.searchsorted(t_values, configured_morph_start, side="left"))
+    if morph_start_idx >= len(t_values):
+        snapped_morph_start = float(t_values[-1])
     else:
-        t_values = np.linspace(0.0, t_max, n_length + 1)
+        snapped_morph_start = float(t_values[morph_start_idx])
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
+        shrink_coverage = None
+        if formula == "OSSE" and _morph_active(params, float(phi)) and _is_true(params.get("morphAllowShrinkage")):
+            total = osse_total_length(params, float(phi))
+            mouth_z, mouth_radius = calculate_osse(total, float(phi), params)
+            target_radius = _morph_target_radius_at_angle(float(mouth_radius) * scale, float(phi), params)
+            if target_radius < float(mouth_radius) * scale:
+                ext_len = max(0.0, eval_param(params.get("throatExtLength"), float(phi), 0.0))
+                slot_len = max(0.0, eval_param(params.get("slotLength"), float(phi), 0.0))
+                ext_angle = _deg(params.get("throatExtAngle"), float(phi), 0.0)
+                r0_base = eval_param(params.get("r0"), float(phi), 12.7)
+                r0_main = r0_base + ext_len * math.tan(ext_angle)
+                a0_deg = eval_param(params.get("a0"), float(phi), 15.5)
+                shrink_coverage = _invert_osse_coverage_angle(
+                    target_radius / max(scale, 1.0e-12),
+                    float(mouth_z) - ext_len - slot_len,
+                    float(phi),
+                    params,
+                    a0_deg=a0_deg,
+                    r0_main=r0_main,
+                )
         if formula == "OSSE":
             total = osse_total_length(params, float(phi))
-            curve = [calculate_osse(float(t) * total, float(phi), params) for t in t_values]
+            curve = [
+                calculate_osse(float(t) * total, float(phi), params, coverage_angle=shrink_coverage)
+                for t in t_values
+            ]
         else:
             curve = [calculate_rosse(float(t), float(phi), params) for t in t_values]
+        mouth_radial = float(curve[-1][1]) * scale
         for j, (z, radius) in enumerate(curve):
             radial = float(radius) * scale
+            if shrink_coverage is None:
+                radial = _apply_morphing(
+                    radial,
+                    mouth_radial,
+                    float(t_values[j]),
+                    float(phi),
+                    params,
+                    morph_start=snapped_morph_start,
+                )
             inner[i, j] = (radial * math.cos(float(phi)), radial * math.sin(float(phi)), float(z))
 
     outer = None
@@ -426,4 +894,5 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         "full_circle": bool(full_circle),
         "angle_list": angles.tolist(),
         "slice_map": t_values.tolist(),
+        "sampling_mode": sampling_mode,
     }

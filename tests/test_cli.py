@@ -92,6 +92,7 @@ def test_load_config_accepts_ath_cfg_fixture(tmp_path):
     assert params["type"] == "R-OSSE"
     assert "cos(p)" in params["R"]
     assert params["angularSegments"] == 80
+    assert params["samplingMode"] == "ath-default-zmap"
 
 
 def test_load_config_accepts_ath_txt_extension(tmp_path):
@@ -105,6 +106,133 @@ def test_load_config_accepts_ath_txt_extension(tmp_path):
     assert mode == "freestanding"
     assert "cos(p)" in params["a"]
     assert params["morphTarget"] == 1
+
+
+def test_parse_ath_config_preserves_gcurve_metadata(tmp_path):
+    cfg_path = tmp_path / "gcurve.cfg"
+    cfg_path.write_text(
+        """
+OSSE = {
+  Length = 80
+}
+GCurve.Type = 2
+GCurve.Width = 75
+GCurve.SF = 1,1,8,0.6,5,2
+Mesh.LengthSegments = 4
+Mesh.SubdomainSlices = 2,4
+Mesh.InterfaceOffset = 10
+Mesh.InterfaceResolution = 12
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(cfg_path)
+    params, formula, _mode = build_geometry_params(config)
+
+    assert formula == "OSSE"
+    assert params["gcurveType"] == 2
+    assert params["gcurveWidth"] == 75
+    assert params["gcurveSF"] == "1,1,8,0.6,5,2"
+    assert params["subdomainSlices"] == "2,4"
+    assert params["interfaceOffset"] == 10
+    assert params["interfaceResolution"] == 12
+
+
+def test_parse_ath_config_preserves_interface_arrays(tmp_path):
+    cfg_path = tmp_path / "interfaces.cfg"
+    cfg_path.write_text(
+        """
+OSSE = {
+  Length = 80
+}
+Mesh.SubdomainSlices = 2,4
+Mesh.InterfaceOffset = 6,9
+Mesh.InterfaceResolution = 12
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(cfg_path)
+    params, formula, _mode = build_geometry_params(config)
+
+    assert formula == "OSSE"
+    assert params["subdomainSlices"] == "2,4"
+    assert params["interfaceOffset"] == "6,9"
+    assert params["samplingMode"] == "ath-default-zmap"
+
+
+def test_parse_ath_config_preserves_zmap_points(tmp_path):
+    cfg_path = tmp_path / "zmap.cfg"
+    cfg_path.write_text(
+        """
+OSSE = {
+  Length = 80
+}
+Mesh.LengthSegments = 4
+Mesh.ZMapPoints = 0.5,0.1,0.75,0.7
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(cfg_path)
+    params, formula, _mode = build_geometry_params(config)
+
+    assert formula == "OSSE"
+    assert config["mesh"]["samplingMode"] == "zmap"
+    assert config["mesh"]["zMapPoints"] == "0.5,0.1,0.75,0.7"
+    assert params["samplingMode"] == "zmap"
+    assert params["zMapPoints"] == "0.5,0.1,0.75,0.7"
+
+
+def test_build_from_config_accepts_ath_morph(tmp_path):
+    result = build_from_config(
+        {
+            "formula": "OSSE",
+            "profile": {
+                "L": 80.0,
+                "r0": 12.7,
+                "a": 45.0,
+                "a0": 10.0,
+            },
+            "morph": {
+                "morphTarget": 1,
+                "morphWidth": 320,
+                "morphHeight": 320,
+            },
+            "mesh": {
+                "angularSegments": 12,
+                "lengthSegments": 4,
+            },
+        },
+        tmp_path / "morph.msh",
+    )
+
+    assert result.n_vertices > 0
+
+
+def test_build_from_config_accepts_ath_gcurve(tmp_path):
+    result = build_from_config(
+        {
+            "formula": "OSSE",
+            "profile": {
+                "L": 80.0,
+                "r0": 12.7,
+                "a": 45.0,
+                "a0": 10.0,
+            },
+            "gcurve": {
+                "gcurveType": 2,
+                "gcurveWidth": 75,
+            },
+            "mesh": {
+                "angularSegments": 12,
+                "lengthSegments": 4,
+            },
+        },
+        tmp_path / "gcurve.msh",
+    )
+
+    assert result.n_vertices > 0
 
 
 def test_build_from_config_osse_freestanding(tmp_path):

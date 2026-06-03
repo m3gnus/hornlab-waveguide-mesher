@@ -8,7 +8,7 @@ import numpy as np
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
 from hornlab_mesher import HornEnclosure, MeshDensity, build_mesh
 from hornlab_mesher.cli import build_from_config, parse_ath_config
-from hornlab_mesher.geometry import PointGridHornGeometry
+from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
 from hornlab_mesher.profiles import build_point_grid
 
 
@@ -278,27 +278,45 @@ def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
     assert np.isclose(np.linalg.norm(inner[-1, -1, :2]), 150.0)
 
 
-def test_ath_parity_sampling_matches_asro2_exported_grid():
+def test_sampling_modes_distinguish_uniform_and_ath_default_zmap():
     default_grid = build_point_grid(_ASRO2_PARAMS)
-    parity_grid = build_point_grid({**_ASRO2_PARAMS, "athParitySampling": True})
+    ath_grid = build_point_grid({**_ASRO2_PARAMS, "samplingMode": "ath-default-zmap"})
 
-    assert int(parity_grid["grid_n_phi"]) == 15
-    assert int(parity_grid["grid_n_length"]) == 20
-    assert parity_grid["full_circle"] is False
+    assert default_grid["sampling_mode"] == "uniform"
+    assert np.allclose(
+        np.asarray(default_grid["slice_map"], dtype=np.float64),
+        np.linspace(0.0, 1.0, 21, dtype=np.float64),
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+    assert ath_grid["sampling_mode"] == "ath-default-zmap"
+    assert not np.allclose(
+        np.asarray(default_grid["slice_map"], dtype=np.float64),
+        np.asarray(ath_grid["slice_map"], dtype=np.float64),
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+
+
+def test_ath_default_zmap_sampling_matches_asro2_exported_grid():
+    grid = build_point_grid({**_ASRO2_PARAMS, "samplingMode": "ath-default-zmap"})
+
+    assert int(grid["grid_n_phi"]) == 15
+    assert int(grid["grid_n_length"]) == 20
+    assert grid["full_circle"] is False
 
     uniform_quarter = np.linspace(0.0, math.pi / 2.0, 15, dtype=np.float64)
-    parity_angles = np.asarray(parity_grid["angle_list"], dtype=np.float64)
-    assert np.allclose(parity_angles, uniform_quarter, rtol=0.0, atol=1.0e-12)
-    assert len(default_grid["angle_list"]) != len(parity_grid["angle_list"])
+    angles = np.asarray(grid["angle_list"], dtype=np.float64)
+    assert np.allclose(angles, uniform_quarter, rtol=0.0, atol=1.0e-12)
 
     assert np.allclose(
-        np.asarray(parity_grid["slice_map"], dtype=np.float64),
+        np.asarray(grid["slice_map"], dtype=np.float64),
         _ATH_ASRO2_T_VALUES,
         rtol=0.0,
         atol=1.0e-9,
     )
 
-    inner = np.asarray(parity_grid["inner_points"], dtype=np.float64).reshape(15, 21, 3)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(15, 21, 3)
     phi0 = inner[0]
     assert np.allclose(phi0[:, 2], _ATH_ASRO2_PHI0_Z_MM, rtol=0.0, atol=2.0e-4)
     assert np.allclose(
@@ -306,6 +324,30 @@ def test_ath_parity_sampling_matches_asro2_exported_grid():
         _ATH_ASRO2_PHI0_R_MM,
         rtol=0.0,
         atol=2.0e-4,
+    )
+
+
+def test_custom_zmap_sampling_interpolates_control_points():
+    grid = build_point_grid(
+        {
+            "type": "OSSE",
+            "L": 100.0,
+            "r0": 12.7,
+            "a": 45.0,
+            "a0": 10.0,
+            "lengthSegments": 4,
+            "angularSegments": 8,
+            "samplingMode": "zmap",
+            "zMapPoints": "0.5,0.1,0.75,0.7",
+        }
+    )
+
+    assert grid["sampling_mode"] == "zmap"
+    assert np.allclose(
+        np.asarray(grid["slice_map"], dtype=np.float64),
+        np.asarray([0.0, 0.05, 0.1, 0.7, 1.0], dtype=np.float64),
+        rtol=0.0,
+        atol=1.0e-12,
     )
 
 
@@ -343,8 +385,8 @@ Source = {{
 def test_ath_config_build_uses_common_resolution_tessellation(tmp_path):
     cfg = parse_ath_config(_asro2_ath_cfg_text())
 
-    assert cfg["mesh"]["athParitySampling"] is True
-    result = build_from_config(cfg, tmp_path / "asro2-parity.msh")
+    assert cfg["mesh"]["samplingMode"] == "ath-default-zmap"
+    result = build_from_config(cfg, tmp_path / "asro2-ath.msh")
     mesh = meshio.read(result.mesh_path)
     triangles, tags = _triangles_and_tags(mesh)
 
@@ -397,7 +439,7 @@ Source.Curv = 0
     assert cfg["mesh"]["lengthSegments"] == 20
     assert cfg["mesh"]["quadrants"] == 1
     assert cfg["source"]["sourceShape"] == 1
-    result = build_from_config(cfg, tmp_path / "flat-asro2-parity.msh")
+    result = build_from_config(cfg, tmp_path / "flat-asro2-ath.msh")
     mesh = meshio.read(result.mesh_path)
     _, tags = _triangles_and_tags(mesh)
 
@@ -534,3 +576,41 @@ def test_point_grid_enclosure_mesh_has_canonical_tags(tmp_path):
     tags = _triangle_tags(mesh)
     assert tags
     assert {1, 2}.issubset(set(tags))
+
+
+def test_point_grid_enclosure_mesh_supports_multiple_interface_slices(tmp_path):
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=_make_point_grid(n_phi=24, n_length=10, r1=90.0),
+            closed=True,
+            preserve_grid=True,
+            interfaces=(
+                HornInterface(slice_index=4, offset_mm=8.0),
+                HornInterface(slice_index=10, offset_mm=12.0),
+            ),
+            enclosure=HornEnclosure(
+                depth_mm=220.0,
+                space_l_mm=45.0,
+                space_t_mm=35.0,
+                space_r_mm=45.0,
+                space_b_mm=35.0,
+                edge_mm=8.0,
+                edge_type=1,
+                plan_type=1,
+                plan_n=2.0,
+                depth_margin_mm=12.0,
+            ),
+        ),
+        MeshDensity(
+            throat_res_mm=8.0,
+            mouth_res_mm=18.0,
+            rear_res_mm=30.0,
+            interface_res_mm=10.0,
+        ),
+        tmp_path / "enclosed-interfaces.msh",
+    )
+
+    mesh = meshio.read(msh_path)
+    tags = _triangle_tags(mesh)
+    assert tags
+    assert 4 in set(tags)

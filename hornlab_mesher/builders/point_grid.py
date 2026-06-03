@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from ..geometry import BuiltGeometry, PointGridHornGeometry
+from ..geometry import BuiltGeometry, HornInterface, PointGridHornGeometry
 from ..tags import PhysicalGroup
 from ._occ import (
     build_surface_from_points,
@@ -14,9 +14,6 @@ from ._occ import (
     require_gmsh,
 )
 from .enclosure import (
-    _add_curve_loop_from_curves,
-    _boundary_curves_at_z_extreme,
-    _make_wire,
     build_enclosure_box,
 )
 
@@ -98,7 +95,7 @@ class _SharedSurfaceBuilder:
 
 
 class _GeoSurfaceBuilder:
-    """Gmsh built-in-kernel helper for ATH-compatible spline surfaces."""
+    """Gmsh built-in-kernel helper for spline-grouped surfaces."""
 
     def __init__(self) -> None:
         self.gmsh = require_gmsh()
@@ -220,11 +217,52 @@ def _add_grid_wall_surfaces(
     return surfaces
 
 
-def _ath_phi_spans(n_phi: int, *, closed: bool) -> list[tuple[int, int]]:
-    if closed or n_phi < 3:
-        return [(0, n_phi - 1)]
+def _spline_span_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
+    """Group angular samples into stable spline spans.
+
+    Closed rings are split on symmetry/cardinal boundaries. If the angular
+    grid can also represent exact octants, wall surfaces use those shorter
+    spans to reduce spline span size while preserving symmetry.
+    """
+    if closed:
+        if n_phi < 8:
+            return [[*range(n_phi), 0]]
+        span_count = 8 if n_phi % 8 == 0 else 4
+        step = max(1, n_phi // span_count)
+        spans: list[list[int]] = []
+        for span in range(span_count):
+            start = span * step
+            stop = (span + 1) * step
+            if span == span_count - 1:
+                indices = list(range(start, n_phi)) + [0]
+            else:
+                indices = list(range(start, stop + 1))
+            spans.append(indices)
+        return spans
+    if n_phi < 3:
+        return [list(range(n_phi))]
     mid = n_phi // 2
-    return [(0, mid), (mid, n_phi - 1)]
+    return [list(range(0, mid + 1)), list(range(mid, n_phi))]
+
+
+def _source_cap_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
+    """Group source-cap boundary splines by symmetry sectors."""
+    if not closed:
+        return _spline_span_phi_groups(n_phi, closed=False)
+    if n_phi < 4:
+        return [[*range(n_phi), 0]]
+    span_count = 4
+    step = max(1, n_phi // span_count)
+    spans: list[list[int]] = []
+    for span in range(span_count):
+        start = span * step
+        stop = (span + 1) * step
+        if span == span_count - 1:
+            indices = list(range(start, n_phi)) + [0]
+        else:
+            indices = list(range(start, stop + 1))
+        spans.append(indices)
+    return spans
 
 
 def _snap_open_symmetry_grid(points: np.ndarray, *, closed: bool) -> np.ndarray:
@@ -235,25 +273,21 @@ def _snap_open_symmetry_grid(points: np.ndarray, *, closed: bool) -> np.ndarray:
     return out
 
 
-def _ath_outer_axial_indices(inner_points: np.ndarray) -> list[int]:
+def _outer_wall_axial_ring_indices(inner_points: np.ndarray) -> list[int]:
+    """Select axial rings used by the outer return wall.
+
+    The throat ring is always present. Intermediate rings are retained until
+    the horn reaches the mouth-side maximum-z plane, avoiding a degenerate
+    outer-wall strip at the mouth rim.
+    """
     z_by_ring = np.mean(inner_points[:, :, 2], axis=0)
     max_z = float(np.max(z_by_ring))
-    tol = max(1.0e-6, 1.0e-9 * max(1.0, abs(max_z)))
+    tol = max(1.0e-3, 1.0e-8 * max(1.0, abs(max_z)))
     return [
         j
         for j in range(1, inner_points.shape[1])
         if float(z_by_ring[j]) < max_z - tol
     ]
-
-
-def _ath_rear_extra(throat_radius: float, geometry: PointGridHornGeometry) -> float:
-    extra = 0.5 * _source_cap_height(throat_radius, geometry)
-    if geometry.source_auto_angle_deg is None:
-        return extra
-    cos_angle = math.cos(math.radians(float(geometry.source_auto_angle_deg)))
-    if abs(cos_angle) <= 1.0e-9:
-        return extra
-    return extra / abs(cos_angle)
 
 
 def _add_mouth_rim_surfaces(
@@ -354,7 +388,7 @@ def _add_rear_return_and_cap(
     return transition, cap
 
 
-def _add_geo_ath_span_wall_surfaces(
+def _add_geo_spline_span_wall_surfaces(
     builder: _GeoSurfaceBuilder,
     name: str,
     *,
@@ -364,10 +398,12 @@ def _add_geo_ath_span_wall_surfaces(
     reverse: bool = False,
 ) -> list[tuple[int, int]]:
     surfaces: list[tuple[int, int]] = []
-    for start, end in _ath_phi_spans(n_phi, closed=closed):
-        prev_phi = builder.spline([(name, i, 0) for i in range(start, end + 1)])
+    for indices in _spline_span_phi_groups(n_phi, closed=closed):
+        start = indices[0]
+        end = indices[-1]
+        prev_phi = builder.spline([(name, i, 0) for i in indices])
         for j in range(n_len - 1):
-            next_phi = builder.spline([(name, i, j + 1) for i in range(start, end + 1)])
+            next_phi = builder.spline([(name, i, j + 1) for i in indices])
             left = builder.line((name, start, j), (name, start, j + 1))
             right = builder.line((name, end, j), (name, end, j + 1))
             curves = (
@@ -380,7 +416,35 @@ def _add_geo_ath_span_wall_surfaces(
     return surfaces
 
 
-def _add_geo_ath_mouth_rim_surfaces(
+def _add_occ_spline_span_wall_surfaces(
+    builder: _SharedSurfaceBuilder,
+    name: str,
+    *,
+    n_phi: int,
+    n_len: int,
+    closed: bool,
+    reverse: bool = False,
+) -> list[tuple[int, int]]:
+    surfaces: list[tuple[int, int]] = []
+    for indices in _spline_span_phi_groups(n_phi, closed=closed):
+        start = indices[0]
+        end = indices[-1]
+        prev_phi = builder.bspline_tags([builder.point(name, i, 0) for i in indices])
+        for j in range(n_len - 1):
+            next_phi = builder.bspline_tags([builder.point(name, i, j + 1) for i in indices])
+            left = builder.line((name, start, j), (name, start, j + 1))
+            right = builder.line((name, end, j), (name, end, j + 1))
+            curves = (
+                [prev_phi, right, -next_phi, -left]
+                if reverse
+                else [next_phi, -right, -prev_phi, left]
+            )
+            surfaces.append(builder.surface(curves))
+            prev_phi = next_phi
+    return surfaces
+
+
+def _add_geo_spline_span_mouth_rim_surfaces(
     builder: _GeoSurfaceBuilder,
     *,
     n_phi: int,
@@ -391,16 +455,18 @@ def _add_geo_ath_mouth_rim_surfaces(
     surfaces: list[tuple[int, int]] = []
     ji = inner_len - 1
     jo = outer_len - 1
-    for start, end in _ath_phi_spans(n_phi, closed=closed):
-        inner_phi = builder.spline([("inner", i, ji) for i in range(start, end + 1)])
-        outer_phi = builder.spline([("outer", i, jo) for i in range(start, end + 1)])
+    for indices in _spline_span_phi_groups(n_phi, closed=closed):
+        start = indices[0]
+        end = indices[-1]
+        inner_phi = builder.spline([("inner", i, ji) for i in indices])
+        outer_phi = builder.spline([("outer", i, jo) for i in indices])
         left = builder.line(("inner", start, ji), ("outer", start, jo))
         right = builder.line(("inner", end, ji), ("outer", end, jo))
         surfaces.append(builder.surface([outer_phi, -right, -inner_phi, left]))
     return surfaces
 
 
-def _add_geo_ath_rear_cap(
+def _add_geo_spline_span_rear_cap(
     builder: _GeoSurfaceBuilder,
     rear_points: np.ndarray,
     *,
@@ -426,28 +492,44 @@ def _add_geo_ath_rear_cap(
         for i in range(n_phi)
     }
     cap: list[tuple[int, int]] = []
-    for start, end in _ath_phi_spans(n_phi, closed=closed):
-        phi_curve = builder.spline([("outer", i, 0) for i in range(start, end + 1)])
+    for indices in _spline_span_phi_groups(n_phi, closed=closed):
+        start = indices[0]
+        end = indices[-1]
+        phi_curve = builder.spline([("outer", i, 0) for i in indices])
         cap.append(builder.surface([radial_lines[start], phi_curve, -radial_lines[end]]))
     return cap
 
 
-def _add_geo_ath_source_surface(
+def _add_geo_source_cap_surfaces(
     builder: _GeoSurfaceBuilder,
     inner_points: np.ndarray,
     geometry: PointGridHornGeometry,
     *,
     mesh_size: float,
 ) -> list[tuple[int, int]]:
-    if geometry.closed or int(geometry.source_shape) != 1:
+    if int(geometry.source_shape) != 1:
         return []
 
     n_phi = inner_points.shape[0]
     ring = inner_points[:, 0, :]
     center = np.mean(ring, axis=0)
+    center[2] = float(np.mean(ring[:, 2]))
+    if geometry.closed:
+        center_tag = builder.add_point(center, mesh_size=mesh_size)
+        radial_lines = {
+            i: builder.line_tags(center_tag, builder.point("inner", i, 0))
+            for i in range(n_phi)
+        }
+        cap: list[tuple[int, int]] = []
+        for indices in _source_cap_phi_groups(n_phi, closed=True):
+            start = indices[0]
+            end = indices[-1]
+            phi_curve = builder.spline([("inner", i, 0) for i in indices])
+            cap.append(builder.surface([radial_lines[start], phi_curve, -radial_lines[end]]))
+        return cap
+
     center[0] = 0.0
     center[1] = 0.0
-    center[2] = float(np.mean(ring[:, 2]))
 
     throat_radius = _throat_radius(inner_points, closed=False)
     if throat_radius <= 1.0e-9:
@@ -476,12 +558,51 @@ def _add_geo_ath_source_surface(
     boundary = [
         arc_start,
         *[
-            builder.spline([("inner", i, 0) for i in range(start, end + 1)])
-            for start, end in _ath_phi_spans(n_phi, closed=False)
+            builder.spline([("inner", i, 0) for i in indices])
+            for indices in _spline_span_phi_groups(n_phi, closed=False)
         ],
         -arc_end,
     ]
     return [builder.surface(boundary, sphere_center_tag=sphere_center_tag)]
+
+
+def _add_occ_source_cap_surfaces(
+    builder: _SharedSurfaceBuilder,
+    inner_points: np.ndarray,
+    geometry: PointGridHornGeometry,
+) -> list[tuple[int, int]]:
+    if int(geometry.source_shape) != 1:
+        return []
+
+    n_phi = inner_points.shape[0]
+    ring = inner_points[:, 0, :]
+    center = np.mean(ring, axis=0)
+    center[2] = float(np.mean(ring[:, 2]))
+    if not geometry.closed:
+        center[0] = 0.0
+        center[1] = 0.0
+    center_tag = builder.add_point(center)
+    radial_lines = {
+        i: builder.line_tags(center_tag, builder.point("inner", i, 0))
+        for i in range(n_phi)
+    }
+
+    cap: list[tuple[int, int]] = []
+    spans = _source_cap_phi_groups(n_phi, closed=geometry.closed)
+    if geometry.closed:
+        for indices in spans:
+            start = indices[0]
+            end = indices[-1]
+            phi_curve = builder.bspline_tags([builder.point("inner", i, 0) for i in indices])
+            cap.append(builder.surface([radial_lines[start], phi_curve, -radial_lines[end]]))
+        return cap
+
+    boundary: list[int] = []
+    for indices in spans:
+        boundary.append(builder.bspline_tags([builder.point("inner", i, 0) for i in indices]))
+    if boundary:
+        cap.append(builder.surface([radial_lines[0], *boundary, -radial_lines[n_phi - 1]]))
+    return cap
 
 
 def _source_cap_radius(
@@ -589,8 +710,8 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
     if geometry.outer_points is None:
         raise ValueError("freestanding point-grid build requires outer_points")
     outer_points = _validated_grid(geometry.outer_points, name="outer_points")
-    if geometry.ath_parity_topology:
-        return _build_ath_parity_freestanding_point_grid(
+    if geometry.wg_topology:
+        return _build_wg_freestanding_point_grid(
             geometry,
             inner_points,
             outer_points,
@@ -682,7 +803,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
     )
 
 
-def _build_ath_parity_freestanding_point_grid(
+def _build_wg_freestanding_point_grid(
     geometry: PointGridHornGeometry,
     inner_points: np.ndarray,
     outer_points: np.ndarray,
@@ -691,20 +812,12 @@ def _build_ath_parity_freestanding_point_grid(
     outer_points = _snap_open_symmetry_grid(outer_points, closed=geometry.closed)
 
     n_phi, inner_len, _ = inner_points.shape
-    throat_radius = _throat_radius(inner_points, closed=geometry.closed)
-    rear_z = float(
-        np.mean(inner_points[:, 0, 2])
-        - float(geometry.wall_thickness_mm)
-        - _ath_rear_extra(throat_radius, geometry)
-    )
-    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
-    rear_points = _snap_open_symmetry_grid(rear_points[:, np.newaxis, :], closed=geometry.closed)[:, 0, :]
-
-    outer_indices = _ath_outer_axial_indices(inner_points)
+    outer_indices = _outer_wall_axial_ring_indices(inner_points)
     outer_topology = np.empty((n_phi, len(outer_indices) + 1, 3), dtype=np.float64)
-    outer_topology[:, 0, :] = rear_points
+    outer_topology[:, 0, :] = outer_points[:, 0, :]
     for out_j, src_j in enumerate(outer_indices, start=1):
         outer_topology[:, out_j, :] = outer_points[:, src_j, :]
+    rear_points = outer_topology[:, 0, :]
 
     builder = _GeoSurfaceBuilder()
     inner_mesh_sizes = np.full(inner_points.shape[:2], 8.0, dtype=np.float64)
@@ -712,14 +825,14 @@ def _build_ath_parity_freestanding_point_grid(
     builder.add_grid("inner", inner_points, mesh_size=inner_mesh_sizes)
     builder.add_grid("outer", outer_topology, mesh_size=25.0)
 
-    wall = _add_geo_ath_span_wall_surfaces(
+    wall = _add_geo_spline_span_wall_surfaces(
         builder,
         "inner",
         n_phi=n_phi,
         n_len=inner_len,
         closed=geometry.closed,
     )
-    outer_wall = _add_geo_ath_span_wall_surfaces(
+    outer_wall = _add_geo_spline_span_wall_surfaces(
         builder,
         "outer",
         n_phi=n_phi,
@@ -727,21 +840,21 @@ def _build_ath_parity_freestanding_point_grid(
         closed=geometry.closed,
         reverse=True,
     )
-    mouth_dimtags = _add_geo_ath_mouth_rim_surfaces(
+    mouth_dimtags = _add_geo_spline_span_mouth_rim_surfaces(
         builder,
         n_phi=n_phi,
         inner_len=inner_len,
         outer_len=outer_topology.shape[1],
         closed=geometry.closed,
     )
-    rear_cap = _add_geo_ath_rear_cap(
+    rear_cap = _add_geo_spline_span_rear_cap(
         builder,
         rear_points,
         n_phi=n_phi,
         closed=geometry.closed,
         mesh_size=25.0,
     )
-    throat = _add_geo_ath_source_surface(
+    throat = _add_geo_source_cap_surfaces(
         builder,
         inner_points,
         geometry,
@@ -779,90 +892,6 @@ def _build_ath_parity_freestanding_point_grid(
     )
 
 
-def _build_mouth_rim_from_boundaries(
-    inner_dimtags: list[tuple[int, int]],
-    outer_dimtags: list[tuple[int, int]],
-) -> list[tuple[int, int]]:
-    """Annular ruled mouth rim using actual inner+outer wall boundary curves.
-
-    Mirrors WG ``_build_mouth_rim_from_boundaries`` / ``_build_annular_surface_from_boundaries``.
-    Requires a prior ``occ.synchronize()``.
-    """
-
-    gmsh = require_gmsh()
-    inner_curves = _boundary_curves_at_z_extreme(inner_dimtags, want_min_z=False)
-    outer_curves = _boundary_curves_at_z_extreme(outer_dimtags, want_min_z=False)
-    if not inner_curves or not outer_curves:
-        return []
-    try:
-        iw = _add_curve_loop_from_curves(inner_curves)
-        ow = _add_curve_loop_from_curves(outer_curves)
-    except Exception:
-        return []
-    return list(
-        gmsh.model.occ.addThruSections(
-            [int(iw), int(ow)], makeSolid=False, makeRuled=True
-        )
-    )
-
-
-def _build_mouth_rim_from_control_points(
-    inner_points: np.ndarray, outer_points: np.ndarray, *, closed: bool = True
-) -> list[tuple[int, int]]:
-    """Fallback mouth rim: build inner+outer mouth wires from control points."""
-
-    gmsh = require_gmsh()
-    j_mouth = inner_points.shape[1] - 1
-    w_inner, _, _ = _make_wire(inner_points[:, j_mouth, :], closed=closed)
-    w_outer, _, _ = _make_wire(outer_points[:, j_mouth, :], closed=closed)
-    return list(
-        gmsh.model.occ.addThruSections(
-            [int(w_inner), int(w_outer)], makeSolid=False, makeRuled=True
-        )
-    )
-
-
-def _build_rear_disc_assembly(
-    outer_points: np.ndarray,
-    *,
-    closed: bool = True,
-    outer_dimtags: list[tuple[int, int]] | None = None,
-) -> list[tuple[int, int]]:
-    """Flat rear disc that closes the freestanding wall shell at the outer throat ring.
-
-    Preferred path: reuse the outer-wall throat boundary curves so the disc
-    shares topology with the outer wall. Fallback: build the wire from the
-    `outer_points[:, 0, :]` control ring.
-    """
-
-    gmsh = require_gmsh()
-
-    if outer_dimtags:
-        throat_curves = _boundary_curves_at_z_extreme(outer_dimtags, want_min_z=True)
-        if throat_curves:
-            try:
-                loop = _add_curve_loop_from_curves(throat_curves)
-                try:
-                    disc_fill = int(gmsh.model.occ.addPlaneSurface([int(loop)]))
-                except Exception:
-                    disc_fill = int(gmsh.model.occ.addSurfaceFilling(int(loop)))
-                return [(2, disc_fill)]
-            except Exception:
-                pass
-
-    throat_ring = outer_points[:, 0, :]
-    if not closed:
-        return make_planar_sector_fill_from_ring(throat_ring, source_axis="z")
-
-    wire, curves, _ = _make_wire(throat_ring, closed=closed)
-    loop = _add_curve_loop_from_curves(curves)
-    try:
-        disc_fill = int(gmsh.model.occ.addPlaneSurface([int(loop)]))
-    except Exception:
-        disc_fill = int(gmsh.model.occ.addSurfaceFilling(int(loop)))
-    return [(2, disc_fill)]
-
-
 def _validated_grid(points: np.ndarray, *, name: str) -> np.ndarray:
     arr = np.asarray(points, dtype=np.float64)
     if arr.ndim != 3 or arr.shape[2] != 3:
@@ -874,40 +903,160 @@ def _validated_grid(points: np.ndarray, *, name: str) -> np.ndarray:
     return arr
 
 
+def _interface_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
+    if not closed:
+        return [list(range(n_phi))]
+    if n_phi < 4:
+        return [[*range(n_phi), 0]]
+    step = max(1, n_phi // 4)
+    groups: list[list[int]] = []
+    for group in range(4):
+        start = group * step
+        stop = (group + 1) * step
+        if group == 3:
+            groups.append(list(range(start, n_phi)) + [0])
+        else:
+            groups.append(list(range(start, stop + 1)))
+    return groups
+
+
+def _split_interface_group(indices: list[int]) -> list[list[int]]:
+    if len(indices) < 3:
+        return [indices]
+    mid = len(indices) // 2
+    return [indices[: mid + 1], indices[mid:]]
+
+
+def _normalise_interface_specs(geometry: PointGridHornGeometry, n_length: int) -> tuple[HornInterface, ...]:
+    if geometry.interfaces:
+        return tuple(
+            HornInterface(slice_index=int(spec.slice_index), offset_mm=float(spec.offset_mm))
+            for spec in geometry.interfaces
+            if float(spec.offset_mm) > 0.0 and 0 <= int(spec.slice_index) < n_length
+        )
+    if geometry.interface_offset_mm <= 0.0:
+        return ()
+    return (HornInterface(slice_index=n_length - 1, offset_mm=float(geometry.interface_offset_mm)),)
+
+
+def _add_offset_interface_surfaces(
+    inner_points: np.ndarray,
+    *,
+    slice_index: int,
+    closed: bool,
+    offset_mm: float,
+) -> list[tuple[int, int]]:
+    if offset_mm <= 0.0:
+        return []
+
+    gmsh = require_gmsh()
+    base = np.asarray(inner_points[:, int(slice_index), :], dtype=np.float64)
+    offset = np.array(base, dtype=np.float64, copy=True)
+    offset[:, 2] += float(offset_mm)
+    center = np.asarray(
+        (
+            float(np.mean(base[:, 0])) if closed else 0.0,
+            float(np.mean(base[:, 1])) if closed else 0.0,
+            float(np.mean(offset[:, 2])),
+        ),
+        dtype=np.float64,
+    )
+
+    base_tags = [
+        int(gmsh.model.occ.addPoint(float(p[0]), float(p[1]), float(p[2])))
+        for p in base
+    ]
+    offset_tags = [
+        int(gmsh.model.occ.addPoint(float(p[0]), float(p[1]), float(p[2])))
+        for p in offset
+    ]
+    center_tag = int(gmsh.model.occ.addPoint(float(center[0]), float(center[1]), float(center[2])))
+    radial_lines = {
+        i: int(gmsh.model.occ.addLine(center_tag, offset_tags[i]))
+        for i in range(len(offset_tags))
+    }
+
+    def spline(tags: list[int]) -> int:
+        return int(gmsh.model.occ.addBSpline([int(tag) for tag in tags]))
+
+    def line(a: int, b: int) -> int:
+        return int(gmsh.model.occ.addLine(int(a), int(b)))
+
+    def surface(curves: list[int], *, plane: bool = False) -> tuple[int, int]:
+        try:
+            loop = int(gmsh.model.occ.addCurveLoop([int(c) for c in curves], reorient=True))
+        except TypeError:
+            loop = int(gmsh.model.occ.addCurveLoop([int(c) for c in curves]))
+        if plane:
+            try:
+                return (2, int(gmsh.model.occ.addPlaneSurface([loop])))
+            except Exception:
+                pass
+        return (2, int(gmsh.model.occ.addSurfaceFilling(loop)))
+
+    surfaces: list[tuple[int, int]] = []
+    for group in _interface_phi_groups(len(base_tags), closed=closed):
+        offset_curves: list[int] = []
+        for span in _split_interface_group(group):
+            base_curve = spline([base_tags[i] for i in span])
+            offset_curve = spline([offset_tags[i] for i in span])
+            left = line(base_tags[span[0]], offset_tags[span[0]])
+            right = line(base_tags[span[-1]], offset_tags[span[-1]])
+            surfaces.append(surface([base_curve, right, -offset_curve, -left]))
+            offset_curves.append(offset_curve)
+        surfaces.append(surface([radial_lines[group[0]], *offset_curves, -radial_lines[group[-1]]], plane=True))
+    return surfaces
+
+
 def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")
 
     if geometry.outer_points is not None and geometry.enclosure is None:
         return _build_freestanding_point_grid(geometry)
 
-    wall = build_surface_from_points(
-        inner_points,
-        closed=geometry.closed,
-        preserve_grid=geometry.preserve_grid,
-    )
-    require_gmsh().model.occ.synchronize()
-
-    if geometry.closed:
-        throat = make_planar_fill_from_boundary(
-            wall,
-            source_axis="z",
-            use_min=True,
-            closed=True,
+    if geometry.enclosure is not None:
+        inner_points = _snap_open_symmetry_grid(inner_points, closed=geometry.closed)
+        span_builder = _SharedSurfaceBuilder()
+        span_builder.add_grid("inner", inner_points)
+        n_phi, n_len, _ = inner_points.shape
+        wall = _add_occ_spline_span_wall_surfaces(
+            span_builder,
+            "inner",
+            n_phi=n_phi,
+            n_len=n_len,
+            closed=geometry.closed,
         )
-        if not throat:
-            throat = make_planar_fill_from_ring(inner_points[:, 0, :])
+        throat = _add_occ_source_cap_surfaces(span_builder, inner_points, geometry)
+        require_gmsh().model.occ.synchronize()
     else:
-        throat = make_planar_sector_fill_from_ring(
-            inner_points[:, 0, :],
-            source_axis="z",
+        wall = build_surface_from_points(
+            inner_points,
+            closed=geometry.closed,
+            preserve_grid=geometry.preserve_grid,
         )
-        if not throat:
+        require_gmsh().model.occ.synchronize()
+
+        if geometry.closed:
             throat = make_planar_fill_from_boundary(
                 wall,
                 source_axis="z",
                 use_min=True,
-                closed=False,
+                closed=True,
             )
+            if not throat:
+                throat = make_planar_fill_from_ring(inner_points[:, 0, :])
+        else:
+            throat = make_planar_sector_fill_from_ring(
+                inner_points[:, 0, :],
+                source_axis="z",
+            )
+            if not throat:
+                throat = make_planar_fill_from_boundary(
+                    wall,
+                    source_axis="z",
+                    use_min=True,
+                    closed=False,
+                )
 
     wall_tags = [tag for _, tag in wall]
     throat_tags = [tag for _, tag in throat]
@@ -917,74 +1066,52 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         "throat_disc": list(throat_tags),
     }
     rigid_wall_tags: list[int] = list(wall_tags)
+    enclosure_tags: list[int] = []
+    interface_tags: list[int] = []
     enclosure_bounds: dict[str, float] | None = None
 
-    if geometry.outer_points is not None and geometry.enclosure is None:
-        outer_points = _validated_grid(geometry.outer_points, name="outer_points")
-
-        outer_wall = build_surface_from_points(
-            outer_points,
-            closed=geometry.closed,
-            preserve_grid=geometry.preserve_grid,
-        )
-        require_gmsh().model.occ.synchronize()
-
-        # Mouth rim: preferred path reuses inner+outer wall boundary curves.
-        mouth_dimtags = _build_mouth_rim_from_boundaries(wall, outer_wall)
-        if not mouth_dimtags:
-            mouth_dimtags = _build_mouth_rim_from_control_points(
-                inner_points, outer_points, closed=geometry.closed
-            )
-
-        # Rear disc: preferred path reuses outer-wall throat boundary curves.
-        rear_dimtags = _build_rear_disc_assembly(
-            outer_points,
-            closed=geometry.closed,
-            outer_dimtags=outer_wall,
-        )
-        require_gmsh().model.occ.synchronize()
-
-        outer_tags = [tag for _, tag in outer_wall]
-        mouth_tags = [tag for dim, tag in mouth_dimtags if int(dim) == 2]
-        rear_tags = [tag for dim, tag in rear_dimtags if int(dim) == 2]
-
-        # Throat disc stays attached only to the inner wall — the freestanding
-        # throat cavity is intentionally hollow so the source patch never
-        # connects directly to the shell or rear closure.
-        rigid_wall_tags.extend(outer_tags)
-        rigid_wall_tags.extend(mouth_tags)
-        rigid_wall_tags.extend(rear_tags)
-
-        mesh_surface_groups["outer"] = list(outer_tags)
-        mesh_surface_groups["mouth"] = list(mouth_tags)
-        mesh_surface_groups["rear"] = list(rear_tags)
-        mesh_surface_groups["rear_cap"] = list(rear_tags)
-
     if geometry.enclosure is not None:
+        interface_dimtags: list[tuple[int, int]] = []
+        for interface in _normalise_interface_specs(geometry, inner_points.shape[1]):
+            interface_dimtags.extend(
+                _add_offset_interface_surfaces(
+                    inner_points,
+                    slice_index=int(interface.slice_index),
+                    closed=geometry.closed,
+                    offset_mm=float(interface.offset_mm),
+                )
+            )
+        interface_tags = [tag for _, tag in interface_dimtags]
+        if interface_tags:
+            mesh_surface_groups["interface"] = list(interface_tags)
         enc_data = build_enclosure_box(
             inner_dimtags=wall,
             inner_points=inner_points,
             enclosure=geometry.enclosure,
             closed=geometry.closed,
         )
-        enc_tags = [tag for _, tag in enc_data["dimtags"]]
-        rigid_wall_tags.extend(enc_tags)
+        enclosure_tags = [tag for _, tag in enc_data["dimtags"]]
         # All enclosure surfaces join the "enclosure" group so density.py's
         # z-interpolated front/back side-wall formula applies. The roundover
         # surfaces additionally appear in the front/back edge groups so the
         # panel-bilinear formula clamps them via the Min field.
-        mesh_surface_groups["enclosure"] = list(enc_tags)
+        mesh_surface_groups["enclosure"] = list(enclosure_tags)
         mesh_surface_groups["enclosure_edges_front"] = list(enc_data["front_edges"])
         mesh_surface_groups["enclosure_edges_back"] = list(enc_data["back_edges"])
         enclosure_bounds = dict(enc_data["bounds"])
 
     z0 = float(np.mean(inner_points[:, 0, 2]))
     z1 = float(np.mean(inner_points[:, -1, 2]))
+    surface_groups = {
+        int(PhysicalGroup.RIGID_WALL): rigid_wall_tags,
+        int(PhysicalGroup.PRIMARY_SOURCE): throat_tags,
+    }
+    if enclosure_tags:
+        surface_groups[int(PhysicalGroup.ENCLOSURE_WALL)] = enclosure_tags
+    if interface_tags:
+        surface_groups[int(PhysicalGroup.INTERFACE)] = interface_tags
     return BuiltGeometry(
-        surface_groups={
-            int(PhysicalGroup.RIGID_WALL): rigid_wall_tags,
-            int(PhysicalGroup.PRIMARY_SOURCE): throat_tags,
-        },
+        surface_groups=surface_groups,
         axial_bounds_mm=(z0, z1),
         source_axis="z",
         mesh_surface_groups=mesh_surface_groups,

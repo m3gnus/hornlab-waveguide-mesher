@@ -106,6 +106,20 @@ class HornEnclosure:
     plan_type: Literal[1, 2, 3] = 1
     plan_n: float = 2.0
     depth_margin_mm: float = 1.0
+    front_mesh_size_mm: float | None = None
+    back_mesh_size_mm: float | None = None
+
+
+@dataclass(frozen=True)
+class HornInterface:
+    """Offset interface surface tied to a point-grid axial slice.
+
+    ``slice_index`` is the zero-based point-grid ring index. The legacy
+    single ``interface_offset_mm`` path maps to the final mouth slice.
+    """
+
+    slice_index: int
+    offset_mm: float
 
 
 @dataclass(frozen=True)
@@ -134,7 +148,9 @@ class PointGridHornGeometry:
     source_radius_mm: float = -1.0
     source_curv: int = 0
     source_auto_angle_deg: float | None = None
-    ath_parity_topology: bool = False
+    interface_offset_mm: float = 0.0
+    interfaces: tuple[HornInterface, ...] = ()
+    wg_topology: bool = True
     enclosure: HornEnclosure | None = None
 
 
@@ -158,6 +174,7 @@ class MeshDensity:
     rear_res_mm: float = 25.0
     enc_front_res_mm: float | str | None = None
     enc_back_res_mm: float | str | None = None
+    interface_res_mm: float | None = None
     min_size_mm: float | None = None
     max_size_mm: float | None = None
 

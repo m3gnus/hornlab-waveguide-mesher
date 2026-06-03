@@ -8,11 +8,15 @@ class PhysicalGroup(IntEnum):
 
     RIGID_WALL = 1
     PRIMARY_SOURCE = 2
+    ENCLOSURE_WALL = 3
+    INTERFACE = 4
 
 
 PHYSICAL_NAMES: dict[int, str] = {
     PhysicalGroup.RIGID_WALL: "SD1G0",
     PhysicalGroup.PRIMARY_SOURCE: "SD1D1001",
+    PhysicalGroup.ENCLOSURE_WALL: "SD2G0",
+    PhysicalGroup.INTERFACE: "I1-2",
 }
 
 
