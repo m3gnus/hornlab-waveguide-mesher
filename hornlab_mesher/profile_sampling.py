@@ -5,13 +5,13 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .profile_common import _deg, _is_true, _normalise_formula, eval_param
+from .profile_common import _is_true, _normalise_formula, eval_param
 from .profile_formulas import calculate_osse, calculate_rosse, osse_total_length
 from .profile_morph import (
     _apply_morphing,
-    _invert_osse_coverage_angle,
+    _guiding_curve_type,
+    _guiding_curve_active,
     _morph_active,
-    _morph_target_radius_at_angle,
     _morph_target_shape,
     _rounded_rect_quadrant_angles,
 )
@@ -369,12 +369,17 @@ def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) ->
 
 def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     formula = _normalise_formula(params.get("type", "OSSE"))
+    curve_type = _guiding_curve_type(params, 0.0)
+    if curve_type not in {0, 1, 2}:
+        raise ValueError(f"unsupported GCurve type {curve_type}")
+    if formula == "R-OSSE" and _guiding_curve_active(params, 0.0):
+        raise ValueError("guiding curves are only supported with formula OSSE")
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
         raise ValueError("lengthSegments must be a positive integer")
     angles, full_circle = _angle_list(params)
     exponent, aspect_ratio = _cross_section(params)
-    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0))
+    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
     t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
     t_values = t_unit_values * t_max
     configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
@@ -386,30 +391,10 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
-        shrink_coverage = None
-        if formula == "OSSE" and _morph_active(params, float(phi)) and _is_true(params.get("morphAllowShrinkage")):
-            total = osse_total_length(params, float(phi))
-            mouth_z, mouth_radius = calculate_osse(total, float(phi), params)
-            target_radius = _morph_target_radius_at_angle(float(mouth_radius) * scale, float(phi), params)
-            if target_radius < float(mouth_radius) * scale:
-                ext_len = max(0.0, eval_param(params.get("throatExtLength"), float(phi), 0.0))
-                slot_len = max(0.0, eval_param(params.get("slotLength"), float(phi), 0.0))
-                ext_angle = _deg(params.get("throatExtAngle"), float(phi), 0.0)
-                r0_base = eval_param(params.get("r0"), float(phi), 12.7)
-                r0_main = r0_base + ext_len * math.tan(ext_angle)
-                a0_deg = eval_param(params.get("a0"), float(phi), 15.5)
-                shrink_coverage = _invert_osse_coverage_angle(
-                    target_radius / max(scale, 1.0e-12),
-                    float(mouth_z) - ext_len - slot_len,
-                    float(phi),
-                    params,
-                    a0_deg=a0_deg,
-                    r0_main=r0_main,
-                )
         if formula == "OSSE":
             total = osse_total_length(params, float(phi))
             curve = [
-                calculate_osse(float(t) * total, float(phi), params, coverage_angle=shrink_coverage)
+                calculate_osse(float(t) * total, float(phi), params)
                 for t in t_values
             ]
         else:
@@ -417,15 +402,14 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         mouth_radial = float(curve[-1][1]) * scale
         for j, (z, radius) in enumerate(curve):
             radial = float(radius) * scale
-            if shrink_coverage is None:
-                radial = _apply_morphing(
-                    radial,
-                    mouth_radial,
-                    float(t_values[j]),
-                    float(phi),
-                    params,
-                    morph_start=snapped_morph_start,
-                )
+            radial = _apply_morphing(
+                radial,
+                mouth_radial,
+                float(t_values[j]),
+                float(phi),
+                params,
+                morph_start=snapped_morph_start,
+            )
             inner[i, j] = (radial * math.cos(float(phi)), radial * math.sin(float(phi)), float(z))
 
     outer = None

@@ -258,6 +258,31 @@ def test_python_osse_point_grid_full_circle():
     assert np.linalg.norm(outer[0, -1, :2]) > np.linalg.norm(inner[0, -1, :2])
 
 
+def test_python_osse_point_grid_ignores_rosse_tmax_key():
+    base = {
+        "type": "OSSE",
+        "L": 120.0,
+        "r0": 12.7,
+        "a": 60.0,
+        "a0": 15.5,
+        "k": 1.0,
+        "n": 4.0,
+        "q": 0.995,
+        "angularSegments": 16,
+        "lengthSegments": 6,
+        "wallThickness": 0.0,
+    }
+
+    grid = build_point_grid({**base, "tmax": 0.5})
+
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(16, 7, 3)
+    assert np.isclose(inner[0, -1, 2], 120.0)
+    assert np.allclose(
+        np.asarray(grid["slice_map"], dtype=np.float64),
+        np.linspace(0.0, 1.0, 7, dtype=np.float64),
+    )
+
+
 def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
     grid = build_point_grid({
         "type": "R-OSSE",
@@ -279,6 +304,23 @@ def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
     inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(5, 6, 3)
     assert np.isclose(np.linalg.norm(inner[0, 0, :2]), 12.7)
     assert np.isclose(np.linalg.norm(inner[-1, -1, :2]), 150.0)
+
+
+def test_python_rosse_point_grid_rejects_guiding_curve():
+    with pytest.raises(ValueError, match="guiding curves"):
+        build_point_grid({
+            "type": "R-OSSE",
+            "R": 150.0,
+            "r0": 12.7,
+            "a": 45.0,
+            "a0": 15.5,
+            "k": 1.0,
+            "q": 1.0,
+            "angularSegments": 16,
+            "lengthSegments": 5,
+            "gcurveType": 1,
+            "gcurveWidth": 100.0,
+        })
 
 
 def test_sampling_modes_distinguish_uniform_and_ath_default_zmap():

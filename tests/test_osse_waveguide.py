@@ -10,6 +10,7 @@ from hornlab_mesher import (
     compute_osse_profile_points,
     load_mesh,
 )
+from hornlab_mesher.profiles import profile_points
 from hornlab_mesher.builders._occ import superellipse_ring
 
 
@@ -24,6 +25,25 @@ def test_compute_osse_profile_points_endpoints():
     assert points[-1, 0] == 120.0
     assert np.isclose(points[0, 1], 12.7)
     # Mouth radius pinned 2026-05-18 from canonical WG evaluator.
+    assert np.isclose(points[-1, 1], 210.25359737777225)
+
+
+def test_osse_profile_points_ignore_rosse_tmax_key():
+    params = {
+        "type": "OSSE",
+        "L": 120.0,
+        "r0": 12.7,
+        "a": 60.0,
+        "a0": 15.5,
+        "k": 1.0,
+        "n": 4.0,
+        "q": 0.995,
+        "tmax": 0.5,
+    }
+
+    points = profile_points(params, 5)
+
+    assert points[-1, 0] == 120.0
     assert np.isclose(points[-1, 1], 210.25359737777225)
 
 

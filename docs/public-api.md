@@ -49,9 +49,9 @@ Supported buildable geometry at the public boundary:
 - `OsseHornGeometry`
 - `PointGridHornGeometry` via `hornlab_mesher.geometry`
 
-`RosseHornGeometry` is exported as a parameter dataclass, but it is not part of
-the current `HornGeometry` build union. Use the config path or point-grid path
-for R-OSSE mesh generation.
+`RosseHornGeometry` is exported as a 2D profile-parameter dataclass, but it is
+not part of the current `HornGeometry` build union. Use the config path or
+point-grid path for R-OSSE mesh generation.
 
 ### Mesh Inspection
 

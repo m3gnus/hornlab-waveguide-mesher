@@ -176,6 +176,107 @@ def _normalise_formula(value: Any) -> str:
     return raw
 
 
+def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:
+    for source in sources:
+        for name in names:
+            if name in source and source[name] is not None:
+                return True
+    return False
+
+
+def _validate_formula_specific_keys(
+    formula: str,
+    profile: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> None:
+    if formula == "OSSE":
+        names = ("R_mm", "R", "tmax", "m", "r", "b")
+        if _has_any(profile, config, names=names):
+            raise ConfigError("R-OSSE-only profile keys are not valid with formula OSSE")
+        return
+
+    names = ("L_mm", "L", "n", "s", "rot_deg", "rot")
+    if _has_any(profile, config, names=names):
+        raise ConfigError("OSSE-only profile keys are not valid with formula R-OSSE")
+
+
+def _static_float_or_none(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(out):
+        raise ConfigError(f"numeric config value must be finite, got {value!r}")
+    return out
+
+
+def _gcurve_type_width(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> tuple[int | None, float | None]:
+    raw_type = _pick(gcurve, config, names=("gcurve_type", "gcurveType"), default=0)
+    raw_width = _pick(gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0)
+    type_value = _static_float_or_none(raw_type)
+    width = _static_float_or_none(raw_width)
+    curve_type = int(round(type_value)) if type_value is not None else None
+    return curve_type, width
+
+
+def _has_gcurve_keys(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+    names = (
+        "gcurve_type",
+        "gcurveType",
+        "gcurve_width_mm",
+        "gcurveWidth",
+        "gcurve_aspect_ratio",
+        "gcurveAspectRatio",
+        "gcurve_dist",
+        "gcurveDist",
+        "gcurve_rot_deg",
+        "gcurveRot",
+        "gcurve_sf",
+        "gcurveSf",
+        "gcurveSF",
+        "gcurve_se_n",
+        "gcurveSeN",
+        "gcurve_sf_a",
+        "gcurveSfA",
+        "gcurve_sf_b",
+        "gcurveSfB",
+        "gcurve_sf_m1",
+        "gcurveSfM1",
+        "gcurve_sf_m2",
+        "gcurveSfM2",
+        "gcurve_sf_n1",
+        "gcurveSfN1",
+        "gcurve_sf_n2",
+        "gcurveSfN2",
+        "gcurve_sf_n3",
+        "gcurveSfN3",
+    )
+    return _has_any(gcurve, config, names=names)
+
+
+def _gcurve_could_be_active(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+    curve_type, width = _gcurve_type_width(gcurve, config)
+    if curve_type is None or width is None:
+        return _has_gcurve_keys(gcurve, config)
+    return curve_type in {1, 2} and width > 0.0
+
+
+def _validate_static_gcurve_type(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    curve_type, _width = _gcurve_type_width(gcurve, config)
+    if curve_type is not None and curve_type not in {0, 1, 2}:
+        raise ConfigError(f"unsupported GCurve type {curve_type}")
+
+
+def _validate_formula_features(
+    formula: str,
+    gcurve: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> None:
+    _validate_static_gcurve_type(gcurve, config)
+    if formula == "R-OSSE" and _gcurve_could_be_active(gcurve, config):
+        raise ConfigError("guiding curves are only supported with formula OSSE")
+
+
 def _normalise_mode(config: Mapping[str, Any], mesh: Mapping[str, Any], enclosure: Mapping[str, Any]) -> str:
     raw = str(_pick(config, mesh, names=("mode",), default="")).strip().lower().replace("_", "-")
     enc_depth = _float(enclosure, mesh, config, names=("depth_mm", "depth", "encDepth"), default=0.0)
@@ -308,6 +409,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     source = _section(config, "source", "Source")
 
     formula = _normalise_formula(_pick(config, profile, names=("formula", "type"), default="OSSE"))
+    _validate_formula_specific_keys(formula, profile, config)
+    _validate_formula_features(formula, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure)
     enc_depth = 0.0
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure)

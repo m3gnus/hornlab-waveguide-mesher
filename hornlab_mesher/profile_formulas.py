@@ -147,7 +147,8 @@ def calculate_rosse(t: float, p: float, params: Mapping[str, Any]) -> tuple[floa
 
 def profile_points(params: Mapping[str, Any], n_axial: int, phi: float = 0.0) -> np.ndarray:
     formula = _normalise_formula(params.get("type", "OSSE"))
-    t_values = np.linspace(0.0, float(eval_param(params.get("tmax"), phi, 1.0)), int(n_axial))
+    t_max = float(eval_param(params.get("tmax"), phi, 1.0)) if formula == "R-OSSE" else 1.0
+    t_values = np.linspace(0.0, t_max, int(n_axial))
     points = np.empty((len(t_values), 2), dtype=np.float64)
     if formula == "OSSE":
         total = osse_total_length(params, phi)

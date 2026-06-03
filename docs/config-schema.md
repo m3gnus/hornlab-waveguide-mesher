@@ -89,6 +89,10 @@ For R-OSSE with throat extension enabled, `tmax` samples the normalized total
 profile including the extension, slot, and main R-OSSE curve. Values below
 `1.0` therefore truncate before the final mouth point.
 
+Formula-specific keys are rejected when used with the other formula. For
+example, `R_mm`, `m`, `r`, `b`, and `tmax` are invalid with `OSSE`, while
+`L_mm`, `n`, `s`, and `rot_deg` are invalid with `R-OSSE`.
+
 Numeric profile keys may be numbers or expression strings. Expression strings
 are evaluated later by the profile layer where supported.
 
@@ -174,6 +178,9 @@ See `docs/geometry-contract.md` for target-shape semantics.
 ## Guiding Curve Keys
 
 Use `[gcurve]`, `[GCurve]`, or `[GCURVE]`.
+
+Guiding curves are supported for OSSE only. R-OSSE configs with an active
+guiding curve are rejected instead of silently ignoring the keys.
 
 | Canonical TOML/JSON key | Aliases | Default |
 | --- | --- | --- |

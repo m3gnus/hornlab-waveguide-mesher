@@ -42,8 +42,10 @@ class RosseHornGeometry:
 
     ROSSE derives its axial length internally from ``R``, ``r0``, ``k``, ``a``,
     and ``a0`` (see ``calculateROSSE``), so unlike OSSE there is no separate
-    ``L`` knob. Defaults for ``m`` / ``r`` / ``b`` use WG canonical values when
-    left at ``None``.
+    ``L`` knob. This dataclass is intentionally limited to the 2D profile
+    helper inputs; use config-driven point-grid builds for full R-OSSE meshes.
+    Defaults for ``m`` / ``r`` / ``b`` use WG canonical values when left at
+    ``None``.
     """
 
     R_mm: float = 150.0
@@ -58,9 +60,6 @@ class RosseHornGeometry:
     throat_ext_length_mm: float = 0.0
     throat_ext_angle_deg: float = 0.0
     slot_length_mm: float = 0.0
-    cross_section: CrossSection = field(default_factory=CrossSection)
-    enclosure: Enclosure = field(default_factory=Enclosure)
-    n_phi: int = 64
     n_axial: int = 32
 
 

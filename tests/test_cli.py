@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
 
 
@@ -80,6 +82,25 @@ def test_build_geometry_params_accepts_rosse_alias():
     assert params["type"] == "R-OSSE"
     assert params["R"] == 130.0
     assert params["wallThickness"] == 6.0
+
+
+def test_build_geometry_params_rejects_wrong_formula_profile_keys():
+    with pytest.raises(ValueError, match="R-OSSE-only"):
+        build_geometry_params({"formula": "OSSE", "profile": {"R_mm": 130.0}})
+
+    with pytest.raises(ValueError, match="OSSE-only"):
+        build_geometry_params({"formula": "R-OSSE", "profile": {"L_mm": 120.0}})
+
+
+def test_build_geometry_params_rejects_rosse_guiding_curve():
+    with pytest.raises(ValueError, match="guiding curves"):
+        build_geometry_params(
+            {
+                "formula": "R-OSSE",
+                "profile": {"R_mm": 130.0},
+                "gcurve": {"gcurveType": 1, "gcurveWidth": 100.0},
+            }
+        )
 
 
 def test_load_config_accepts_ath_cfg_fixture(tmp_path):

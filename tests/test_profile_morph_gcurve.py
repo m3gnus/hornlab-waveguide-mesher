@@ -89,6 +89,23 @@ def test_morph_fixed_part_is_unchanged_before_transition():
     assert np.allclose(morphed[:, : fixed_stop + 1], raw[:, : fixed_stop + 1], rtol=0.0, atol=1.0e-9)
 
 
+def test_osse_shrink_morph_respects_fixed_part():
+    raw, _ = _inner_grid(_base_osse_params())
+    morphed, t_values = _inner_grid(
+        {
+            **_base_osse_params(),
+            "morphTarget": 2,
+            "morphWidth": 20.0,
+            "morphHeight": 20.0,
+            "morphFixed": 0.5,
+            "morphAllowShrinkage": 1,
+        }
+    )
+
+    fixed_stop = int(np.searchsorted(t_values, 0.5, side="left"))
+    assert np.allclose(morphed[:, : fixed_stop + 1], raw[:, : fixed_stop + 1], rtol=0.0, atol=1.0e-9)
+
+
 def test_rectangle_morph_mouth_reaches_directional_target():
     params = {
         **_base_osse_params(),

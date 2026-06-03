@@ -107,6 +107,9 @@ Supported guiding curve targets:
 - `GCurve.Type = 1`: superellipse.
 - `GCurve.Type = 2`: superformula.
 
+Guiding curves are an OS-SE/OSSE feature in this implementation. R-OSSE with
+an active guiding curve must fail explicitly.
+
 Unsupported guiding curve types must fail explicitly.
 
 ## Morphing
