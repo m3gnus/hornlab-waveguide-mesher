@@ -239,7 +239,6 @@ def _looks_like_metres(points: np.ndarray) -> bool:
 
 
 def _validate_mesh_file(path: Path) -> None:
-    info = load_mesh(path)
     mesh = meshio.read(path)
     _, phys = _triangles_and_physical_tags(mesh)
     tags = {int(tag) for tag in phys.tolist()}

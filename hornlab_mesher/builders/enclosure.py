@@ -716,8 +716,6 @@ def build_enclosure_box(
     generated.extend(_add_ruled_section(current_profile, back_outer_wire))
     current_profile = back_outer_wire
     current_curves = back_outer_curves
-    profile_pts = back_outer_eps
-
     # --- Back roundover (mirror image of front: outer -> inset at z_back). ---
     if edge_depth > 0.0:
         if int(enclosure.edge_type) == 1:
@@ -733,7 +731,6 @@ def build_enclosure_box(
                 back_edges.extend(section)
                 prev_wire = ring_wire
                 current_curves = ring_curves
-                profile_pts = ring_eps
             current_profile = prev_wire
         else:
             ring_wire, ring_curves, ring_eps = make_ring(z_back, 0.0)
@@ -742,7 +739,6 @@ def build_enclosure_box(
             back_edges.extend(section)
             current_profile = ring_wire
             current_curves = ring_curves
-            profile_pts = ring_eps
 
     # --- Back cap: planar surface from final inset wire at z_back. ---
     back_cap_loop = _add_reversed_curve_loop_from_curves(current_curves)

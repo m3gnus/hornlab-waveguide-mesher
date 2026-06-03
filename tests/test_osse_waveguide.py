@@ -7,7 +7,6 @@ from hornlab_mesher import (
     MeshDensity,
     OsseHornGeometry,
     build_mesh,
-    build_osse_waveguide,
     compute_osse_profile_points,
     load_mesh,
 )
