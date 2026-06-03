@@ -29,16 +29,16 @@ def _split_interface_group(indices: list[int]) -> list[list[int]]:
     return [indices[: mid + 1], indices[mid:]]
 
 
-def _normalise_interface_specs(geometry: PointGridHornGeometry, n_length: int) -> tuple[HornInterface, ...]:
+def _normalise_interface_specs(geometry: PointGridHornGeometry, n_rings: int) -> tuple[HornInterface, ...]:
     if geometry.interfaces:
         return tuple(
             HornInterface(slice_index=int(spec.slice_index), offset_mm=float(spec.offset_mm))
             for spec in geometry.interfaces
-            if float(spec.offset_mm) > 0.0 and 0 <= int(spec.slice_index) < n_length
+            if float(spec.offset_mm) > 0.0 and 0 <= int(spec.slice_index) < n_rings
         )
     if geometry.interface_offset_mm <= 0.0:
         return ()
-    return (HornInterface(slice_index=n_length - 1, offset_mm=float(geometry.interface_offset_mm)),)
+    return (HornInterface(slice_index=max(0, n_rings - 2), offset_mm=float(geometry.interface_offset_mm)),)
 
 
 def _add_offset_interface_surfaces(

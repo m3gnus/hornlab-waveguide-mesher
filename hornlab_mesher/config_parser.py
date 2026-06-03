@@ -120,6 +120,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("OS.k", "k"),
             ("q", "q"),
             ("Term.q", "q"),
+            ("Throat.Ext.Length", "throatExtLength"),
+            ("Throat.Ext.Angle", "throatExtAngle"),
+            ("Slot.Length", "slotLength"),
         ),
     )
     if "throat_diameter" in common_profile and "r0" not in common_profile:
@@ -142,9 +145,6 @@ def parse_text_config(content: str) -> dict[str, Any]:
                     ("Term.s", "s"),
                     ("h", "h"),
                     ("OS.h", "h"),
-                    ("Throat.Ext.Length", "throatExtLength"),
-                    ("Throat.Ext.Angle", "throatExtAngle"),
-                    ("Slot.Length", "slotLength"),
                     ("Rot", "rot"),
                 ),
             ),

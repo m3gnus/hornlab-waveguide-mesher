@@ -108,6 +108,29 @@ def _float(*sources: Mapping[str, Any], names: tuple[str, ...], default: float) 
     return out
 
 
+def _optional_float(*sources: Mapping[str, Any], names: tuple[str, ...]) -> float | None:
+    value = _pick(*sources, names=names, default=None)
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{names[0]} must be numeric, got {value!r}") from exc
+    if not np.isfinite(out):
+        raise ConfigError(f"{names[0]} must be finite, got {value!r}")
+    return out
+
+
+def _numeric_param(value: Any, *, name: str) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{name} must be numeric when deriving a driver adapter, got {value!r}") from exc
+    if not np.isfinite(out):
+        raise ConfigError(f"{name} must be finite, got {value!r}")
+    return out
+
+
 def _scalar_or_expr(*sources: Mapping[str, Any], names: tuple[str, ...], default: Any) -> Any:
     value = _pick(*sources, names=names, default=default)
     if isinstance(value, str):
@@ -197,6 +220,84 @@ def _enclosure_from_config(
     )
 
 
+def _diameter_radius_mm(
+    *sources: Mapping[str, Any],
+    mm_names: tuple[str, ...],
+    inch_names: tuple[str, ...],
+) -> float | None:
+    diameter_mm = _optional_float(*sources, names=mm_names)
+    if diameter_mm is not None:
+        return 0.5 * diameter_mm
+    diameter_in = _optional_float(*sources, names=inch_names)
+    if diameter_in is not None:
+        return 0.5 * diameter_in * 25.4
+    return None
+
+
+def _apply_driver_adapter(
+    common: dict[str, Any],
+    profile: Mapping[str, Any],
+    config: Mapping[str, Any],
+) -> None:
+    driver_radius = _diameter_radius_mm(
+        profile,
+        config,
+        mm_names=(
+            "driver_throat_diameter_mm",
+            "driver_throat_diameter",
+            "driverThroatDiameterMm",
+            "driverThroatDiameter",
+        ),
+        inch_names=("driver_throat_diameter_in", "driverThroatDiameterIn"),
+    )
+    waveguide_radius = _diameter_radius_mm(
+        profile,
+        config,
+        mm_names=(
+            "waveguide_throat_diameter_mm",
+            "waveguide_throat_diameter",
+            "waveguideThroatDiameterMm",
+            "waveguideThroatDiameter",
+        ),
+        inch_names=("waveguide_throat_diameter_in", "waveguideThroatDiameterIn"),
+    )
+    if driver_radius is None and waveguide_radius is None:
+        return
+    if driver_radius is None or waveguide_radius is None:
+        raise ConfigError("driver adapter requires both driver and waveguide throat diameters")
+    if driver_radius <= 0.0 or waveguide_radius <= 0.0:
+        raise ConfigError("driver and waveguide throat diameters must be > 0")
+    if waveguide_radius < driver_radius:
+        raise ConfigError("driver adapter cannot shrink from waveguide throat to driver throat")
+
+    delta_radius = waveguide_radius - driver_radius
+    common["r0"] = driver_radius
+    if delta_radius <= 1.0e-12:
+        common["throatExtLength"] = 0.0
+        common["throatExtAngle"] = 0.0
+        return
+
+    ext_len = _numeric_param(common.get("throatExtLength", 0.0), name="throatExtLength")
+    ext_angle_deg = _numeric_param(common.get("throatExtAngle", 0.0), name="throatExtAngle")
+    if ext_len <= 0.0 and abs(ext_angle_deg) <= 1.0e-12:
+        raise ConfigError("driver adapter requires throatExtLength or throatExtAngle")
+    if ext_len <= 0.0:
+        tan_angle = np.tan(np.deg2rad(ext_angle_deg))
+        if tan_angle <= 1.0e-12:
+            raise ConfigError("throatExtAngle must be > 0 when deriving driver adapter length")
+        common["throatExtLength"] = delta_radius / tan_angle
+        return
+    if abs(ext_angle_deg) <= 1.0e-12:
+        common["throatExtAngle"] = float(np.rad2deg(np.arctan(delta_radius / ext_len)))
+        return
+
+    derived_radius = driver_radius + ext_len * np.tan(np.deg2rad(ext_angle_deg))
+    if abs(derived_radius - waveguide_radius) > 1.0e-6:
+        raise ConfigError(
+            "driver adapter throatExtLength/throatExtAngle do not reach waveguide throat diameter"
+        )
+
+
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
@@ -236,6 +337,13 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=15.5),
         "k": _scalar_or_expr(profile, config, names=("k",), default=1.0),
         "q": _scalar_or_expr(profile, config, names=("q",), default=1.0 if formula == "R-OSSE" else 0.995),
+        "throatExtLength": _scalar_or_expr(
+            profile, config, names=("throat_ext_length_mm", "throatExtLength"), default=0.0
+        ),
+        "throatExtAngle": _scalar_or_expr(
+            profile, config, names=("throat_ext_angle_deg", "throatExtAngle"), default=0.0
+        ),
+        "slotLength": _scalar_or_expr(profile, config, names=("slot_length_mm", "slotLength"), default=0.0),
         "angularSegments": _int(mesh, config, names=("angular_segments", "angularSegments"), default=64),
         "cornerSegments": _int(mesh, config, names=("corner_segments", "cornerSegments"), default=0),
         "lengthSegments": _int(mesh, config, names=("length_segments", "lengthSegments"), default=32),
@@ -302,6 +410,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             },
         },
     }
+    _apply_driver_adapter(common, profile, config)
 
     if formula == "OSSE":
         common.update(
@@ -309,13 +418,6 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 "L": _scalar_or_expr(profile, config, names=("L_mm", "L"), default=120.0),
                 "n": _scalar_or_expr(profile, config, names=("n",), default=4.0),
                 "s": _scalar_or_expr(profile, config, names=("s",), default=0.0),
-                "throatExtLength": _scalar_or_expr(
-                    profile, config, names=("throat_ext_length_mm", "throatExtLength"), default=0.0
-                ),
-                "throatExtAngle": _scalar_or_expr(
-                    profile, config, names=("throat_ext_angle_deg", "throatExtAngle"), default=0.0
-                ),
-                "slotLength": _scalar_or_expr(profile, config, names=("slot_length_mm", "slotLength"), default=0.0),
                 "rot": _scalar_or_expr(profile, config, names=("rot_deg", "rot"), default=0.0),
             }
         )

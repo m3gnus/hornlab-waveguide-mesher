@@ -29,8 +29,8 @@ def superellipse_ring(
         raise ValueError("radius must be finite and > 0")
     p = max(float(exponent), 0.25)
     aspect = max(float(aspect_ratio), 1e-6)
-    a = radius * math.sqrt(aspect)
-    b = radius / math.sqrt(aspect)
+    a = radius * aspect
+    b = radius
 
     pts = np.empty((n_phi, 3), dtype=np.float64)
     for i in range(n_phi):

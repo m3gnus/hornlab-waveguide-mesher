@@ -10,6 +10,7 @@ from hornlab_mesher import (
     compute_osse_profile_points,
     load_mesh,
 )
+from hornlab_mesher.builders._occ import superellipse_ring
 
 
 def test_compute_osse_profile_points_endpoints():
@@ -61,3 +62,16 @@ def test_build_osse_waveguide_superellipse_cross_section(tmp_path):
     )
     info = load_mesh(path)
     assert info.n_triangles > 0
+
+
+def test_axisymmetric_superellipse_aspect_ratio_matches_point_grid_semantics():
+    ring = superellipse_ring(
+        z=0.0,
+        radius=10.0,
+        exponent=2.0,
+        aspect_ratio=1.5,
+        n_phi=8,
+    )
+
+    assert np.isclose(float(np.max(ring[:, 0])), 15.0)
+    assert np.isclose(float(np.max(ring[:, 1])), 10.0)

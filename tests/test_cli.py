@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
 
 
@@ -93,6 +95,79 @@ def test_load_config_accepts_ath_cfg_fixture(tmp_path):
     assert "cos(p)" in params["R"]
     assert params["angularSegments"] == 80
     assert params["samplingMode"] == "ath-default-zmap"
+
+
+def test_rosse_config_preserves_throat_extension_keys(tmp_path):
+    cfg_path = tmp_path / "rosse-extension.cfg"
+    cfg_path.write_text(
+        """
+R-OSSE = {
+  R = 150
+  r0 = 10
+  a = 45
+  a0 = 12
+  k = 1
+  q = 1
+  Throat.Ext.Length = 12
+  Throat.Ext.Angle = 20
+  Slot.Length = 5
+}
+Mesh = {
+  AngularSegments = 16
+  LengthSegments = 8
+}
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(cfg_path)
+    params, formula, _mode = build_geometry_params(config)
+
+    assert formula == "R-OSSE"
+    assert params["throatExtLength"] == 12
+    assert params["throatExtAngle"] == 20
+    assert params["slotLength"] == 5
+
+
+def test_driver_adapter_derives_extension_length_from_inch_diameters():
+    params, formula, _mode = build_geometry_params(
+        {
+            "formula": "R-OSSE",
+            "profile": {
+                "R": 150.0,
+                "driver_throat_diameter_in": 1.0,
+                "waveguide_throat_diameter_in": 1.4,
+                "throatExtAngle": 15.0,
+            },
+            "mesh": {"angular_segments": 16, "length_segments": 8},
+        }
+    )
+
+    expected_length = (0.5 * (1.4 - 1.0) * 25.4) / math.tan(math.radians(15.0))
+    assert formula == "R-OSSE"
+    assert math.isclose(params["r0"], 12.7)
+    assert math.isclose(params["throatExtLength"], expected_length)
+    assert params["throatExtAngle"] == 15.0
+
+
+def test_driver_adapter_derives_extension_angle_from_length():
+    params, _formula, _mode = build_geometry_params(
+        {
+            "formula": "OSSE",
+            "profile": {
+                "L": 100.0,
+                "driver_throat_diameter_mm": 25.4,
+                "waveguide_throat_diameter_mm": 35.56,
+                "throatExtLength": 20.0,
+            },
+            "mesh": {"angular_segments": 16, "length_segments": 8},
+        }
+    )
+
+    expected_angle = math.degrees(math.atan((17.78 - 12.7) / 20.0))
+    assert math.isclose(params["r0"], 12.7)
+    assert params["throatExtLength"] == 20.0
+    assert math.isclose(params["throatExtAngle"], expected_angle)
 
 
 def test_load_config_accepts_ath_txt_extension(tmp_path):

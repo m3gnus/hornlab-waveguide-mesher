@@ -58,6 +58,11 @@ builds an inner wall, outer wall, mouth rim, rear cap, and source cap.
 Enclosure mode builds the inner horn, source cap, optional interfaces, and
 enclosure surfaces around the mouth.
 
+Supported point-grid source shapes are explicit: `source_shape = 0` builds a
+flat throat disc/sector, and `source_shape = 1` builds a rounded throat cap.
+Unsupported source shapes must raise instead of silently omitting physical tag
+`2`.
+
 ## Surface Group Handoff
 
 Builders return `BuiltGeometry`, not a mesh file. The important fields are:

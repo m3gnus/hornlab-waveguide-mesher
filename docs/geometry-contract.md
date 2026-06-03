@@ -84,6 +84,9 @@ Implementation rules:
 - `r`, `m`, `b`, and `q` shape apex radius, apex shift, bending, and throat
   transition.
 - `L` is derived from the requested mouth radius and profile parameters.
+- Throat extension and slot length are explicit axial sections before the main
+  R-OSSE curve, using the post-extension radius as the main R-OSSE throat
+  radius.
 
 ## Guiding Curve
 

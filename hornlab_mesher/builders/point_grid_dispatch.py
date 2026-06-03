@@ -16,7 +16,12 @@ from ._occ import (
 from .enclosure import build_enclosure_box
 from .point_grid_freestanding import _build_freestanding_point_grid
 from .point_grid_interfaces import _add_offset_interface_surfaces, _normalise_interface_specs
-from .point_grid_sources import _add_occ_source_cap_surfaces
+from .point_grid_sources import (
+    SOURCE_SHAPE_FLAT_DISC,
+    SOURCE_SHAPE_ROUNDED_CAP,
+    _add_occ_source_cap_surfaces,
+    _validate_source_shape,
+)
 from .point_grid_surfaces import (
     _SharedSurfaceBuilder,
     _add_occ_bspline_patch_wall_surfaces,
@@ -26,6 +31,7 @@ from .point_grid_surfaces import (
 
 def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")
+    source_shape = _validate_source_shape(geometry)
     build_mode = geometry.build_mode
 
     if build_mode is PointGridBuildMode.FREESTANDING:
@@ -51,7 +57,11 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         )
         require_gmsh().model.occ.synchronize()
 
-        if geometry.closed:
+        if source_shape == SOURCE_SHAPE_ROUNDED_CAP:
+            cap_builder = _SharedSurfaceBuilder()
+            cap_builder.add_grid("inner", inner_points)
+            throat = _add_occ_source_cap_surfaces(cap_builder, inner_points, geometry)
+        elif source_shape == SOURCE_SHAPE_FLAT_DISC and geometry.closed:
             throat = make_planar_fill_from_boundary(
                 wall,
                 source_axis="z",
@@ -60,7 +70,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             )
             if not throat:
                 throat = make_planar_fill_from_ring(inner_points[:, 0, :])
-        else:
+        elif source_shape == SOURCE_SHAPE_FLAT_DISC:
             throat = make_planar_sector_fill_from_ring(
                 inner_points[:, 0, :],
                 source_axis="z",
@@ -72,6 +82,8 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                     use_min=True,
                     closed=False,
                 )
+        else:
+            raise AssertionError(f"unhandled source shape {source_shape!r}")
 
     wall_tags = [tag for _, tag in wall]
     throat_tags = [tag for _, tag in throat]

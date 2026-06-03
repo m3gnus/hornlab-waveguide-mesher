@@ -52,6 +52,19 @@ Common keys for OSSE and R-OSSE:
 | `a0_deg` | `a0` | `15.5` |
 | `k` | none | `1.0` |
 | `q` | none | `0.995` for OSSE, `1.0` for R-OSSE |
+| `throat_ext_length_mm` | `throatExtLength` | `0.0` |
+| `throat_ext_angle_deg` | `throatExtAngle` | `0.0` |
+| `slot_length_mm` | `slotLength` | `0.0` |
+| `driver_throat_diameter_mm` | `driverThroatDiameter`, `driverThroatDiameterMm` | none |
+| `driver_throat_diameter_in` | `driverThroatDiameterIn` | none |
+| `waveguide_throat_diameter_mm` | `waveguideThroatDiameter`, `waveguideThroatDiameterMm` | none |
+| `waveguide_throat_diameter_in` | `waveguideThroatDiameterIn` | none |
+
+Driver adapter keys are convenience inputs. When both driver and waveguide
+throat diameters are provided, `r0` becomes the driver throat radius and the
+throat extension is derived from either `throatExtAngle` or `throatExtLength`.
+If both extension length and angle are provided, they must reach the requested
+waveguide throat diameter.
 
 OSSE-only keys:
 
@@ -60,9 +73,6 @@ OSSE-only keys:
 | `L_mm` | `L` | `120.0` |
 | `n` | none | `4.0` |
 | `s` | none | `0.0` |
-| `throat_ext_length_mm` | `throatExtLength` | `0.0` |
-| `throat_ext_angle_deg` | `throatExtAngle` | `0.0` |
-| `slot_length_mm` | `slotLength` | `0.0` |
 | `rot_deg` | `rot` | `0.0` |
 
 R-OSSE-only keys:
@@ -74,6 +84,10 @@ R-OSSE-only keys:
 | `m` | none | formula default when omitted |
 | `r` | none | formula default when omitted |
 | `b` | none | formula default when omitted |
+
+For R-OSSE with throat extension enabled, `tmax` samples the normalized total
+profile including the extension, slot, and main R-OSSE curve. Values below
+`1.0` therefore truncate before the final mouth point.
 
 Numeric profile keys may be numbers or expression strings. Expression strings
 are evaluated later by the profile layer where supported.
@@ -184,9 +198,9 @@ Use `[source]` or `[Source]`.
 
 | Canonical TOML/JSON key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `source_shape` | `sourceShape` | `1` | Current builders create source surfaces only for shape `1`. |
+| `source_shape` | `sourceShape` | `1` | `0` builds a flat disc/sector source; `1` builds a rounded cap source. |
 | `source_radius_mm` | `sourceRadius` | `-1` | Positive values override the automatic cap radius. |
-| `source_curv` | `sourceCurv` | `0` | `-1` flips source cap curvature direction. |
+| `source_curv` | `sourceCurv` | `0` | `-1` flips rounded source cap curvature direction. |
 
 `sourceVelocityProfile` is imported from text configs but is not currently used
 by the mesh builder.

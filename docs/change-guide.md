@@ -57,11 +57,11 @@ Source surfaces are built from the throat ring and assigned physical tag `2`
 
 Current behavior:
 
-- `source_shape = 1` builds source surfaces.
-- Other source shapes return no source surfaces in builder helpers, which makes
-  final mesh validation fail because tag `2` is missing.
-- Positive `source_radius_mm` overrides automatic cap radius.
-- `source_curv = -1` flips cap curvature direction.
+- `source_shape = 0` builds a flat throat disc/sector source.
+- `source_shape = 1` builds a rounded throat cap source.
+- Other source shapes fail explicitly before final mesh validation.
+- Positive `source_radius_mm` overrides automatic rounded-cap radius.
+- `source_curv = -1` flips rounded-cap curvature direction.
 - `source_auto_angle_deg` comes from the normalized throat angle.
 
 When changing source behavior:

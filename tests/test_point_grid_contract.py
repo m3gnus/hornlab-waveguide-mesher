@@ -4,10 +4,12 @@ import math
 
 import meshio
 import numpy as np
+import pytest
 
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
 from hornlab_mesher.builders.enclosure import _add_curve_loop_from_curves
-from hornlab_mesher import HornEnclosure, MeshDensity, build_mesh
+from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
+from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
 from hornlab_mesher.cli import build_from_config, parse_ath_config
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
 from hornlab_mesher.profiles import build_point_grid
@@ -466,6 +468,66 @@ def test_point_grid_mesh_has_canonical_wall_and_source_tags(tmp_path):
     assert {1, 2}.issubset(set(tags))
 
 
+def test_point_grid_flat_source_shape_builds_disc_at_throat_plane(tmp_path):
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=_make_point_grid(),
+            closed=True,
+            wall_thickness_mm=0.0,
+            preserve_grid=True,
+            source_shape=0,
+        ),
+        MeshDensity(throat_res_mm=8.0, mouth_res_mm=16.0, rear_res_mm=24.0),
+        tmp_path / "flat-source.msh",
+        scale_to_metres=False,
+    )
+
+    mesh = meshio.read(msh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    source_points = np.unique(triangles[tags == 2])
+    source_z = np.asarray(mesh.points, dtype=np.float64)[source_points, 2]
+    assert np.ptp(source_z) < 1.0e-9
+    assert np.isclose(source_z[0], 0.0, atol=1.0e-9)
+
+
+def test_point_grid_rounded_source_shape_builds_cap(tmp_path):
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=_make_point_grid(),
+            closed=True,
+            wall_thickness_mm=0.0,
+            preserve_grid=True,
+            source_shape=1,
+            source_radius_mm=60.0,
+        ),
+        MeshDensity(throat_res_mm=8.0, mouth_res_mm=16.0, rear_res_mm=24.0),
+        tmp_path / "rounded-source.msh",
+        scale_to_metres=False,
+    )
+
+    mesh = meshio.read(msh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    source_points = np.unique(triangles[tags == 2])
+    source_z = np.asarray(mesh.points, dtype=np.float64)[source_points, 2]
+    assert float(np.max(source_z)) > 1.0
+    assert np.isclose(float(np.min(source_z)), 0.0, atol=1.0e-9)
+
+
+def test_point_grid_unsupported_source_shape_fails_explicitly(tmp_path):
+    with pytest.raises(MesherError, match="source_shape=2 is not supported"):
+        build_mesh(
+            PointGridHornGeometry(
+                inner_points=_make_point_grid(),
+                closed=True,
+                wall_thickness_mm=0.0,
+                preserve_grid=True,
+                source_shape=2,
+            ),
+            MeshDensity(throat_res_mm=8.0, mouth_res_mm=16.0, rear_res_mm=24.0),
+            tmp_path / "bad-source.msh",
+        )
+
+
 def test_open_quarter_point_grid_mesh_has_source_sector(tmp_path):
     msh_path = build_mesh(
         PointGridHornGeometry(
@@ -687,3 +749,27 @@ def test_point_grid_enclosure_mesh_supports_multiple_interface_slices(tmp_path):
     tags = _triangle_tags(mesh)
     assert tags
     assert 4 in set(tags)
+
+
+def test_legacy_interface_offset_defaults_to_slice_before_mouth():
+    geometry = PointGridHornGeometry(
+        inner_points=_make_point_grid(n_length=10),
+        closed=True,
+        interface_offset_mm=8.0,
+    )
+
+    specs = _normalise_interface_specs(geometry, geometry.inner_points.shape[1])
+    assert len(specs) == 1
+    assert specs[0].slice_index == 9
+
+
+def test_explicit_interface_can_still_target_mouth_slice():
+    geometry = PointGridHornGeometry(
+        inner_points=_make_point_grid(n_length=10),
+        closed=True,
+        interfaces=(HornInterface(slice_index=10, offset_mm=8.0),),
+    )
+
+    specs = _normalise_interface_specs(geometry, geometry.inner_points.shape[1])
+    assert len(specs) == 1
+    assert specs[0].slice_index == 10

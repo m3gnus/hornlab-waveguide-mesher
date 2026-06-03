@@ -83,7 +83,17 @@ def _rosse_length(params: Mapping[str, Any], p: float) -> float:
     return (math.sqrt(discriminant) - c2) / (2 * c3)
 
 
-def calculate_rosse(t: float, p: float, params: Mapping[str, Any]) -> tuple[float, float]:
+def rosse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
+    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
+    ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
+    r0_main = r0_base + ext_len * math.tan(ext_angle)
+    main_params = {**params, "r0": r0_main}
+    return ext_len + slot_len + _rosse_length(main_params, p)
+
+
+def _calculate_rosse_main(t: float, p: float, params: Mapping[str, Any]) -> tuple[float, float]:
     R = eval_param(params.get("R"), p, 150.0)
     r0 = eval_param(params.get("r0"), p, 12.7)
     k = eval_param(params.get("k"), p, _DEFAULTS["k"])
@@ -104,6 +114,35 @@ def calculate_rosse(t: float, p: float, params: Mapping[str, Any]) -> tuple[floa
     mouth_r = max(0.0, R + L * (1 - math.sqrt(1 + c3 * (t - 1) ** 2)))
     y = (1 - t**q) * throat_r + (t**q) * mouth_r
     return x, y
+
+
+def calculate_rosse(t: float, p: float, params: Mapping[str, Any]) -> tuple[float, float]:
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
+    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
+    ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
+    r0_main = r0_base + ext_len * math.tan(ext_angle)
+    main_params = {**params, "r0": r0_main}
+    main_length = _rosse_length(main_params, p)
+
+    if ext_len <= 0.0 and slot_len <= 0.0:
+        return _calculate_rosse_main(t, p, main_params)
+
+    full_length = ext_len + slot_len + main_length
+    if full_length <= 1.0e-12:
+        return 0.0, r0_base
+
+    axial_pos = max(0.0, float(t)) * full_length
+    if axial_pos <= ext_len:
+        return axial_pos, r0_base + axial_pos * math.tan(ext_angle)
+    if axial_pos <= ext_len + slot_len:
+        return axial_pos, r0_main
+
+    if main_length <= 1.0e-12:
+        return ext_len + slot_len, r0_main
+    main_t = (axial_pos - ext_len - slot_len) / main_length
+    x, y = _calculate_rosse_main(main_t, p, main_params)
+    return x + ext_len + slot_len, y
 
 
 def profile_points(params: Mapping[str, Any], n_axial: int, phi: float = 0.0) -> np.ndarray:

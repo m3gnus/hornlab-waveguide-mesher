@@ -55,6 +55,9 @@ class RosseHornGeometry:
     m: float | None = None
     r: float | None = None
     b: float | None = None
+    throat_ext_length_mm: float = 0.0
+    throat_ext_angle_deg: float = 0.0
+    slot_length_mm: float = 0.0
     cross_section: CrossSection = field(default_factory=CrossSection)
     enclosure: Enclosure = field(default_factory=Enclosure)
     n_phi: int = 64
