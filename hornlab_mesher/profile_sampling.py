@@ -393,9 +393,19 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
         if formula == "OSSE":
             total = osse_total_length(params, float(phi))
+            h_bulge = eval_param(params.get("h"), float(phi), 0.0)
             curve = [
-                calculate_osse(float(t) * total, float(phi), params)
-                for t in t_values
+                (
+                    z,
+                    radius + h_bulge * math.sin(float(t_unit) * math.pi),
+                )
+                for t_unit, (z, radius) in zip(
+                    t_unit_values,
+                    (
+                        calculate_osse(float(t) * total, float(phi), params)
+                        for t in t_values
+                    ),
+                )
             ]
         else:
             curve = [calculate_rosse(float(t), float(phi), params) for t in t_values]

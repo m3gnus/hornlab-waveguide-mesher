@@ -13,6 +13,7 @@ from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
 from hornlab_mesher.cli import build_from_config, parse_ath_config
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
 from hornlab_mesher.profiles import build_point_grid
+from hornlab_mesher.viewport import build_viewport_geometry_from_config
 
 
 _ASRO2_PARAMS = {
@@ -256,6 +257,70 @@ def test_python_osse_point_grid_full_circle():
     assert np.isclose(np.linalg.norm(inner[0, 0, :2]), 12.7)
     assert np.isclose(inner[0, -1, 2], 120.0)
     assert np.linalg.norm(outer[0, -1, :2]) > np.linalg.norm(inner[0, -1, :2])
+
+
+def test_viewport_geometry_from_config_returns_enclosure_rings():
+    geometry = build_viewport_geometry_from_config(
+        {
+            "formula": "OSSE",
+            "mode": "enclosure",
+            "profile": {
+                "L": 120.0,
+                "r0": 12.7,
+                "a": 60.0,
+                "a0": 15.5,
+                "k": 1.0,
+                "n": 4.0,
+                "q": 0.995,
+            },
+            "mesh": {
+                "angularSegments": 16,
+                "lengthSegments": 6,
+                "wallThickness": 0.0,
+            },
+            "enclosure": {
+                "depth": 150.0,
+                "space_l": 25.0,
+                "space_t": 25.0,
+                "space_r": 25.0,
+                "space_b": 25.0,
+                "edge": 10.0,
+                "edgeType": 1,
+            },
+        }
+    )
+
+    grid = geometry["grid"]
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    enclosure = geometry["enclosure"]
+    assert enclosure is not None
+
+    mouth = np.asarray(enclosure["mouth_points"], dtype=np.float64).reshape(n_phi, 3)
+    front = np.asarray(enclosure["front_outer_points"], dtype=np.float64).reshape(-1, 3)
+    back = np.asarray(enclosure["back_outer_points"], dtype=np.float64).reshape(-1, 3)
+    assert np.allclose(mouth, inner[:, -1, :])
+    assert front.shape[0] >= 16
+    assert back.shape == front.shape
+    assert np.isclose(front[:, 2].max(), inner[:, -1, 2].max())
+    assert back[:, 2].max() < front[:, 2].max()
+    assert front[:, 0].max() > mouth[:, 0].max()
+    assert front[:, 1].max() > mouth[:, 1].max()
+    assert enclosure["edge_depth"] > 0
+    assert [ring["role"] for ring in enclosure["profile_rings"]] == [
+        "front_inset",
+        "front_edge",
+        "front_edge",
+        "side_back_outer",
+        "back_edge",
+        "back_edge",
+    ]
+    point_counts = {
+        len(np.asarray(ring["points"], dtype=np.float64).reshape(-1, 3))
+        for ring in enclosure["profile_rings"]
+    }
+    assert len(point_counts) == 1
 
 
 def test_python_osse_point_grid_ignores_rosse_tmax_key():

@@ -8,6 +8,69 @@ import numpy as np
 from .profile_common import _DEFAULTS, _deg, _normalise_formula, _osse_radius, eval_param
 from .profile_morph import _coverage_angle_from_guiding_curve
 
+
+def _circular_arc_radius(
+    z_main: float,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    r0_main: float,
+    mouth_radius: float,
+    length: float,
+) -> float:
+    p1 = (0.0, r0_main)
+    p2 = (length, mouth_radius)
+    center: tuple[float, float] | None = None
+    arc_radius = eval_param(
+        params.get("circArcRadius", params.get("circ_arc_radius")),
+        p,
+        0.0,
+    )
+
+    if math.isfinite(arc_radius) and arc_radius > 0.0:
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        chord = math.hypot(dx, dy)
+        if chord > 0.0 and arc_radius >= chord / 2.0:
+            mid_x = (p1[0] + p2[0]) / 2.0
+            mid_y = (p1[1] + p2[1]) / 2.0
+            offset = math.sqrt(max(0.0, arc_radius * arc_radius - (chord / 2.0) ** 2))
+            nx = -dy / chord
+            ny = dx / chord
+            c1 = (mid_x + nx * offset, mid_y + ny * offset)
+            c2 = (mid_x - nx * offset, mid_y - ny * offset)
+            center = c1 if mouth_radius > r0_main else c2
+
+    if center is None:
+        term_angle = eval_param(
+            params.get("circArcTermAngle", params.get("circ_arc_term_angle")),
+            p,
+            1.0,
+        )
+        tangent_angle = math.radians(term_angle)
+        tx = math.cos(tangent_angle)
+        ty = math.sin(tangent_angle)
+        nx = -ty
+        ny = tx
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        dot = dx * nx + dy * ny
+        if abs(dot) > 1.0e-6:
+            arc_radius = -((dx * dx + dy * dy) / (2.0 * dot))
+            center = (p2[0] + nx * arc_radius, p2[1] + ny * arc_radius)
+
+    if center is None or not math.isfinite(arc_radius) or arc_radius == 0.0:
+        return mouth_radius
+
+    dx_center = z_main - center[0]
+    under = arc_radius * arc_radius - dx_center * dx_center
+    if under < 0.0:
+        return mouth_radius
+
+    sign = 1.0 if mouth_radius - center[1] >= 0.0 else -1.0
+    return center[1] + sign * math.sqrt(under)
+
+
 def calculate_osse(
     z: float,
     p: float,
@@ -41,7 +104,22 @@ def calculate_osse(
             )
         if active_a_deg is None:
             active_a_deg = a_deg
-        radius = _osse_radius(main_z, p, params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg)
+        throat_profile = int(
+            eval_param(params.get("throatProfile", params.get("throat_profile")), p, 1.0)
+            or 1
+        )
+        if throat_profile == 3:
+            mouth_radius = r0_main + L * math.tan(math.radians(active_a_deg))
+            radius = _circular_arc_radius(
+                main_z,
+                p,
+                params,
+                r0_main=r0_main,
+                mouth_radius=mouth_radius,
+                length=L,
+            )
+        else:
+            radius = _osse_radius(main_z, p, params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg)
 
     x = float(z)
     y = float(radius)
