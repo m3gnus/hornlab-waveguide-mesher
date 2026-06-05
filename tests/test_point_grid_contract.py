@@ -323,6 +323,40 @@ def test_viewport_geometry_from_config_returns_enclosure_rings():
     assert len(point_counts) == 1
 
 
+def test_viewport_enclosure_edge_clamps_to_smallest_margin():
+    geometry = build_viewport_geometry_from_config(
+        {
+            "formula": "OSSE",
+            "mode": "enclosure",
+            "profile": {
+                "L": 120.0,
+                "r0": 12.7,
+                "a": 60.0,
+                "a0": 15.5,
+                "k": 1.0,
+                "n": 4.0,
+                "q": 0.995,
+            },
+            "mesh": {
+                "angularSegments": 16,
+                "lengthSegments": 6,
+                "wallThickness": 0.0,
+            },
+            "enclosure": {
+                "depth": 150.0,
+                "space_l": 8.0,
+                "space_t": 8.0,
+                "space_r": 8.0,
+                "space_b": 8.0,
+                "edge": 12.0,
+                "edgeType": 1,
+            },
+        }
+    )
+
+    assert geometry["enclosure"]["edge_mm"] == 8.0
+
+
 def test_python_osse_point_grid_ignores_rosse_tmax_key():
     base = {
         "type": "OSSE",
@@ -776,6 +810,37 @@ def test_point_grid_enclosure_mesh_has_canonical_tags(tmp_path):
     tags = _triangle_tags(mesh)
     assert tags
     assert {1, 2}.issubset(set(tags))
+
+
+def test_point_grid_enclosure_edge_may_equal_margin_and_clamps_above_it(tmp_path):
+    for edge_type in (1, 2):
+        for edge_mm in (8.0, 12.0):
+            msh_path = build_mesh(
+                PointGridHornGeometry(
+                    inner_points=_make_point_grid(n_phi=24, n_length=10, r1=90.0),
+                    closed=True,
+                    preserve_grid=True,
+                    enclosure=HornEnclosure(
+                        depth_mm=220.0,
+                        space_l_mm=8.0,
+                        space_t_mm=8.0,
+                        space_r_mm=8.0,
+                        space_b_mm=8.0,
+                        edge_mm=edge_mm,
+                        edge_type=edge_type,
+                        plan_type=1,
+                        plan_n=2.0,
+                        depth_margin_mm=12.0,
+                    ),
+                ),
+                MeshDensity(throat_res_mm=8.0, mouth_res_mm=18.0, rear_res_mm=30.0),
+                tmp_path / f"enclosed_edge_{edge_type}_{edge_mm:g}.msh",
+            )
+
+            mesh = meshio.read(msh_path)
+            tags = _triangle_tags(mesh)
+            assert tags
+            assert {1, 2}.issubset(set(tags))
 
 
 def test_open_quarter_enclosure_uses_symmetry_axis_mouth_endpoints(tmp_path):

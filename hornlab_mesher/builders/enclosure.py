@@ -225,7 +225,10 @@ def _add_curve_loop_from_curves(curve_tags: list[int]) -> int:
     try:
         return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags], reorient=True))
     except TypeError:
-        return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(curve_tags)))
+        try:
+            return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(curve_tags)))
+        except RuntimeError:
+            return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags]))
 
 
 def _add_reversed_curve_loop_from_curves(curve_tags: list[int]) -> int:
@@ -234,7 +237,10 @@ def _add_reversed_curve_loop_from_curves(curve_tags: list[int]) -> int:
     try:
         return int(gmsh.model.occ.addCurveLoop(reversed_tags, reorient=True))
     except TypeError:
-        return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(reversed_tags)))
+        try:
+            return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(reversed_tags)))
+        except RuntimeError:
+            return int(gmsh.model.occ.addCurveLoop(reversed_tags))
 
 
 def _curve_endpoints(curve_tag: int) -> tuple[int, int]:
@@ -628,7 +634,25 @@ def build_enclosure_box(
 
     half_w = 0.5 * (bx1 - bx0)
     half_h = 0.5 * (by1 - by0)
-    clamped_edge = max(0.0, min(float(enclosure.edge_mm), half_w - 0.1, half_h - 0.1))
+    margin_edge_limit = max(
+        0.0,
+        min(
+            float(enclosure.space_l_mm),
+            float(enclosure.space_t_mm),
+            float(enclosure.space_r_mm),
+            float(enclosure.space_b_mm),
+        ),
+    )
+    clamped_edge = max(
+        0.0,
+        min(float(enclosure.edge_mm), margin_edge_limit, half_w - 0.1, half_h - 0.1),
+    )
+    if margin_edge_limit > 0.0 and clamped_edge >= margin_edge_limit:
+        # Exact tangency is valid user input, but it pinches the front baffle
+        # face enough for OCC/Gmsh to fail. Keep a tiny modeling clearance
+        # while still enforcing edge_mm <= smallest enclosure margin.
+        tangent_clearance = min(1e-3, margin_edge_limit * 1e-3)
+        clamped_edge = max(0.0, margin_edge_limit - tangent_clearance)
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
     front_mesh_size = float(enclosure.front_mesh_size_mm or 0.0)
     back_mesh_size = float(enclosure.back_mesh_size_mm or 0.0)

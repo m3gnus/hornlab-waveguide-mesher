@@ -85,7 +85,19 @@ def build_enclosure_viewport_grid(
     bounds = _enclosure_bounds(inner_points, enclosure, closed=closed)
     half_w = 0.5 * (bounds["bx1"] - bounds["bx0"])
     half_h = 0.5 * (bounds["by1"] - bounds["by0"])
-    clamped_edge = max(0.0, min(float(enclosure.edge_mm), half_w - 0.1, half_h - 0.1))
+    margin_edge_limit = max(
+        0.0,
+        min(
+            float(enclosure.space_l_mm),
+            float(enclosure.space_t_mm),
+            float(enclosure.space_r_mm),
+            float(enclosure.space_b_mm),
+        ),
+    )
+    clamped_edge = max(
+        0.0,
+        min(float(enclosure.edge_mm), margin_edge_limit, half_w - 0.1, half_h - 0.1),
+    )
     enc_depth = bounds["z_front"] - bounds["z_back"]
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
     min_bspline_r = 0.1
