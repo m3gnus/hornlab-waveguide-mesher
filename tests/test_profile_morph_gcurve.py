@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from hornlab_mesher.profiles import (
+    _apply_morphing,
     _guiding_curve_target_radius,
     _morph_target_radius_at_angle,
     _rounded_rect_radius,
@@ -163,6 +164,32 @@ def test_morph_does_not_shrink_without_explicit_permission():
     )
 
     assert np.all(_radii(morphed) >= _radii(raw) - 1.0e-9)
+
+
+def test_zero_morph_dimensions_preserve_raw_mouth_dimensions_for_interior_slices():
+    params = {
+        "morphTarget": 1,
+        "morphWidth": 0.0,
+        "morphHeight": 0.0,
+        "morphRate": 1.0,
+        "morphFixed": 0.0,
+        "morphAllowShrinkage": 1,
+    }
+
+    assert math.isclose(
+        _apply_morphing(
+            50.0,
+            100.0,
+            0.5,
+            0.0,
+            params,
+            implicit_half_width=100.0,
+            implicit_half_height=80.0,
+        ),
+        50.0,
+        rel_tol=0.0,
+        abs_tol=1.0e-9,
+    )
 
 
 def test_guiding_curve_inverts_coverage_so_profile_passes_through_curve():

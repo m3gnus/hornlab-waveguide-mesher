@@ -414,8 +414,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             raw_radials[i, j] = float(radius) * scale
             z_values[i, j] = float(z)
 
-    implicit_half_widths = np.max(np.abs(raw_radials * np.cos(angles)[:, None]), axis=0)
-    implicit_half_heights = np.max(np.abs(raw_radials * np.sin(angles)[:, None]), axis=0)
+    implicit_half_width = float(np.max(np.abs(raw_radials[:, -1] * np.cos(angles))))
+    implicit_half_height = float(np.max(np.abs(raw_radials[:, -1] * np.sin(angles))))
 
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
@@ -429,8 +429,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
                 float(phi),
                 params,
                 morph_start=snapped_morph_start,
-                implicit_half_width=float(implicit_half_widths[j]),
-                implicit_half_height=float(implicit_half_heights[j]),
+                implicit_half_width=implicit_half_width,
+                implicit_half_height=implicit_half_height,
             )
             inner[i, j] = (
                 radial * math.cos(float(phi)),
