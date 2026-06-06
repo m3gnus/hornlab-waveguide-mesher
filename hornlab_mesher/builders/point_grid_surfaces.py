@@ -246,17 +246,19 @@ def _add_mouth_rim_surfaces(
     n_phi: int,
     n_len: int,
     closed: bool,
+    outer_len: int | None = None,
 ) -> list[tuple[int, int]]:
-    j = n_len - 1
+    ji = n_len - 1
+    jo = (outer_len if outer_len is not None else n_len) - 1
     surfaces: list[tuple[int, int]] = []
     for i in _phi_segments(n_phi, closed=closed):
         ni = (i + 1) % n_phi
         surfaces.append(
             builder.quad(
-                ("inner", i, j),
-                ("inner", ni, j),
-                ("outer", ni, j),
-                ("outer", i, j),
+                ("inner", i, ji),
+                ("inner", ni, ji),
+                ("outer", ni, jo),
+                ("outer", i, jo),
             )
         )
     return surfaces
@@ -268,58 +270,58 @@ def _rear_rim_points(
     rear_z: float,
 ) -> np.ndarray:
     n_phi = outer_points.shape[0]
-    closed = np.allclose(outer_points[0, :, :], outer_points[-1, :, :], rtol=0.0, atol=1.0e-9)
-    throat_center = (
-        np.mean(outer_points[:, 0, :2], axis=0)
-        if closed
-        else np.asarray([0.0, 0.0], dtype=np.float64)
-    )
-    throat_offsets = outer_points[:, 0, :2] - throat_center
-    throat_radii = np.linalg.norm(throat_offsets, axis=1)
-    valid_throat = throat_radii > 1.0e-9
-    throat_radius = (
-        float(np.mean(throat_radii[valid_throat]))
-        if np.any(valid_throat)
-        else float(np.mean(throat_radii))
-    )
-    rear_radius = throat_radius
-
-    if outer_points.shape[1] >= 2:
-        next_center = (
-            np.mean(outer_points[:, 1, :2], axis=0)
-            if closed
-            else np.asarray([0.0, 0.0], dtype=np.float64)
-        )
-        next_radii = np.linalg.norm(outer_points[:, 1, :2] - next_center, axis=1)
-        valid_next = next_radii > 1.0e-9
-        next_radius = (
-            float(np.mean(next_radii[valid_next]))
-            if np.any(valid_next)
-            else float(np.mean(next_radii))
-        )
-        throat_z = float(np.mean(outer_points[:, 0, 2]))
-        next_z = float(np.mean(outer_points[:, 1, 2]))
-        dz = next_z - throat_z
-        if abs(dz) > 1.0e-9:
-            t = (float(rear_z) - throat_z) / dz
-            rear_radius = throat_radius + (next_radius - throat_radius) * t
-
-    if not np.isfinite(rear_radius) or rear_radius <= 1.0e-9:
-        rear_radius = throat_radius
-
     out = np.empty((n_phi, 3), dtype=np.float64)
     for i in range(n_phi):
-        direction = throat_offsets[i]
-        length = float(np.linalg.norm(direction))
-        if length <= 1.0e-12:
-            angle = 2.0 * np.pi * i / max(1, n_phi)
-            unit = np.asarray([np.cos(angle), np.sin(angle)], dtype=np.float64)
-        else:
-            unit = direction / length
-        out[i, 0] = throat_center[0] + unit[0] * rear_radius
-        out[i, 1] = throat_center[1] + unit[1] * rear_radius
+        p0 = outer_points[i, 0]
+        if outer_points.shape[1] < 2:
+            out[i] = (p0[0], p0[1], rear_z)
+            continue
+        p1 = outer_points[i, 1]
+        dz = float(p1[2] - p0[2])
+        if abs(dz) <= 1.0e-9:
+            out[i] = (p0[0], p0[1], rear_z)
+            continue
+        t = (float(rear_z) - float(p0[2])) / dz
+        out[i] = p0 + (p1 - p0) * t
         out[i, 2] = rear_z
     return out
+
+
+def _add_rear_cap(
+    builder: _SharedSurfaceBuilder,
+    rear_points: np.ndarray,
+    *,
+    grid_name: str,
+    n_phi: int,
+    closed: bool,
+) -> list[tuple[int, int]]:
+    center_xy = (
+        (float(np.mean(rear_points[:, 0])), float(np.mean(rear_points[:, 1])))
+        if closed
+        else (0.0, 0.0)
+    )
+    center_tag = builder.add_point(
+        (
+            center_xy[0],
+            center_xy[1],
+            float(np.mean(rear_points[:, 2])),
+        )
+    )
+    radial_lines = {
+        i: builder.line_tags(builder.point(grid_name, i, 0), center_tag)
+        for i in range(n_phi)
+    }
+
+    cap: list[tuple[int, int]] = []
+    cap_boundary: list[int] = []
+    for i in _phi_segments(n_phi, closed=closed):
+        ni = (i + 1) % n_phi
+        cap_boundary.append(builder.line((grid_name, i, 0), (grid_name, ni, 0)))
+        if closed:
+            cap.append(builder.surface([cap_boundary[-1], radial_lines[ni], -radial_lines[i]]))
+    if not closed and cap_boundary:
+        cap.append(builder.surface([*cap_boundary, radial_lines[n_phi - 1], -radial_lines[0]]))
+    return cap
 
 
 def _add_rear_return_and_cap(

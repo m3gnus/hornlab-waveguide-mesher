@@ -235,7 +235,7 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
     return sorted(sizes, reverse=True)
 
 
-def test_rear_rim_points_continue_average_slope_as_circle():
+def test_rear_rim_points_extend_local_outer_profile_to_rear_plane():
     n_phi = 32
     outer = np.empty((n_phi, 2, 3), dtype=np.float64)
     for i in range(n_phi):
@@ -246,14 +246,11 @@ def test_rear_rim_points_continue_average_slope_as_circle():
         outer[i, 1] = (next_radius * math.cos(phi), next_radius * math.sin(phi), 10.0)
 
     rear = _rear_rim_points(outer, rear_z=-5.0)
-    radii = np.linalg.norm(rear[:, :2], axis=1)
-    expected = float(np.mean(np.linalg.norm(outer[:, 0, :2], axis=1)))
-    expected += (
-        float(np.mean(np.linalg.norm(outer[:, 1, :2], axis=1))) - expected
-    ) * -0.5
 
-    assert np.max(radii) - np.min(radii) < 1.0e-9
-    assert math.isclose(float(radii[0]), expected, rel_tol=0.0, abs_tol=1.0e-9)
+    t = -0.5
+    expected = outer[:, 0, :] + (outer[:, 1, :] - outer[:, 0, :]) * t
+    expected[:, 2] = -5.0
+    assert np.allclose(rear, expected, rtol=0.0, atol=1.0e-9)
     assert np.allclose(rear[:, 2], -5.0)
 
 

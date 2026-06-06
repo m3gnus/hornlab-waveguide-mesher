@@ -8,8 +8,6 @@ from ._occ import require_gmsh
 from .point_grid_sources import (
     _add_geo_source_cap_surfaces,
     _add_source_surfaces,
-    _source_cap_height,
-    _throat_radius,
 )
 from .point_grid_surfaces import (
     _GeoSurfaceBuilder,
@@ -19,7 +17,7 @@ from .point_grid_surfaces import (
     _add_geo_spline_span_wall_surfaces,
     _add_grid_wall_surfaces,
     _add_mouth_rim_surfaces,
-    _add_rear_return_and_cap,
+    _add_rear_cap,
     _rear_rim_points,
     _snap_open_symmetry_grid,
     _validated_grid,
@@ -80,9 +78,15 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         )
 
     n_phi, n_len, _ = inner_points.shape
+    rear_z = float(np.mean(inner_points[:, 0, 2]) - float(geometry.wall_thickness_mm))
+    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+    outer_topology = np.empty((n_phi, n_len + 1, 3), dtype=np.float64)
+    outer_topology[:, 0, :] = rear_points
+    outer_topology[:, 1:, :] = outer_points
+
     builder = _SharedSurfaceBuilder()
     builder.add_grid("inner", inner_points)
-    builder.add_grid("outer", outer_points)
+    builder.add_grid("outer", outer_topology)
 
     wall = _add_grid_wall_surfaces(
         builder,
@@ -95,7 +99,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         builder,
         "outer",
         n_phi=n_phi,
-        n_len=n_len,
+        n_len=outer_topology.shape[1],
         closed=geometry.closed,
         reverse=True,
     )
@@ -103,21 +107,13 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         builder,
         n_phi=n_phi,
         n_len=n_len,
+        outer_len=outer_topology.shape[1],
         closed=geometry.closed,
     )
-    rear_extra = 0.5 * _source_cap_height(
-        _throat_radius(inner_points, closed=geometry.closed),
-        geometry,
-    )
-    rear_z = float(
-        np.mean(inner_points[:, 0, 2])
-        - float(geometry.wall_thickness_mm)
-        - rear_extra
-    )
-    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
-    rear_transition, rear_cap = _add_rear_return_and_cap(
+    rear_cap = _add_rear_cap(
         builder,
         rear_points,
+        grid_name="outer",
         n_phi=n_phi,
         closed=geometry.closed,
     )
@@ -126,14 +122,12 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
     wall_tags = [tag for _, tag in wall]
     outer_tags = [tag for _, tag in outer_wall]
     mouth_tags = [tag for _, tag in mouth_dimtags]
-    rear_transition_tags = [tag for _, tag in rear_transition]
     rear_tags = [tag for _, tag in rear_cap]
     throat_tags = [tag for _, tag in throat]
     rigid_wall_tags = [
         *wall_tags,
         *outer_tags,
         *mouth_tags,
-        *rear_transition_tags,
         *rear_tags,
     ]
 
@@ -151,7 +145,6 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
             "throat_disc": throat_tags,
             "outer": outer_tags,
             "mouth": mouth_tags,
-            "rear_transition": rear_transition_tags,
             "rear": rear_tags,
             "rear_cap": rear_tags,
         },
