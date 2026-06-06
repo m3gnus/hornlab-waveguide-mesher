@@ -388,7 +388,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         snapped_morph_start = float(t_values[-1])
     else:
         snapped_morph_start = float(t_values[morph_start_idx])
-    inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
+    raw_radials = np.empty((len(angles), n_length + 1), dtype=np.float64)
+    z_values = np.empty((len(angles), n_length + 1), dtype=np.float64)
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
         if formula == "OSSE":
@@ -409,9 +410,18 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             ]
         else:
             curve = [calculate_rosse(float(t), float(phi), params) for t in t_values]
-        mouth_radial = float(curve[-1][1]) * scale
         for j, (z, radius) in enumerate(curve):
-            radial = float(radius) * scale
+            raw_radials[i, j] = float(radius) * scale
+            z_values[i, j] = float(z)
+
+    implicit_half_widths = np.max(np.abs(raw_radials * np.cos(angles)[:, None]), axis=0)
+    implicit_half_heights = np.max(np.abs(raw_radials * np.sin(angles)[:, None]), axis=0)
+
+    inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
+    for i, phi in enumerate(angles):
+        mouth_radial = float(raw_radials[i, -1])
+        for j in range(n_length + 1):
+            radial = float(raw_radials[i, j])
             radial = _apply_morphing(
                 radial,
                 mouth_radial,
@@ -419,8 +429,14 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
                 float(phi),
                 params,
                 morph_start=snapped_morph_start,
+                implicit_half_width=float(implicit_half_widths[j]),
+                implicit_half_height=float(implicit_half_heights[j]),
             )
-            inner[i, j] = (radial * math.cos(float(phi)), radial * math.sin(float(phi)), float(z))
+            inner[i, j] = (
+                radial * math.cos(float(phi)),
+                radial * math.sin(float(phi)),
+                float(z_values[i, j]),
+            )
 
     outer = None
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))

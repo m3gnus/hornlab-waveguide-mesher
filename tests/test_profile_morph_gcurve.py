@@ -126,6 +126,31 @@ def test_rectangle_morph_mouth_reaches_directional_target():
     assert np.allclose(mouth_radii, expected, rtol=0.0, atol=1.0e-9)
 
 
+def test_rectangle_morph_uses_implicit_raw_slice_extents_when_dimensions_omitted():
+    params = {
+        **_base_osse_params(),
+        "morphTarget": 1,
+        "morphWidth": 0.0,
+        "morphHeight": 0.0,
+        "morphCorner": 12.0,
+        "morphAllowShrinkage": 1,
+    }
+    raw, _ = _inner_grid({**params, "morphTarget": 0})
+    morphed, _ = _inner_grid(params)
+
+    raw_mouth = raw[:, -1]
+    half_width = float(np.max(np.abs(raw_mouth[:, 0])))
+    half_height = float(np.max(np.abs(raw_mouth[:, 1])))
+    angles = np.arctan2(morphed[:, -1, 1], morphed[:, -1, 0])
+    mouth_radii = _radii(morphed[:, -1])
+    expected = np.asarray(
+        [_rounded_rect_radius(float(phi), half_width, half_height, 12.0) for phi in angles],
+        dtype=np.float64,
+    )
+
+    assert np.allclose(mouth_radii, expected, rtol=0.0, atol=1.0e-9)
+
+
 def test_morph_does_not_shrink_without_explicit_permission():
     raw, _ = _inner_grid(_base_osse_params())
     morphed, _ = _inner_grid(

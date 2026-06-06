@@ -153,29 +153,72 @@ def _configured_morph_half_dimension(
     phi: float,
     *,
     fallback_radius: float,
+    implicit_half_dimension: float | None = None,
 ) -> float:
     dimension = eval_param(value, phi, 0.0)
     if dimension <= 0.0:
+        if implicit_half_dimension is not None and implicit_half_dimension > 0.0:
+            return float(implicit_half_dimension)
         return max(0.0, float(fallback_radius))
     return dimension / 2.0
 
 
-def _circle_morph_target_radius(current_radius: float, phi: float, params: Mapping[str, Any]) -> float:
-    half_width = _configured_morph_half_dimension(params.get("morphWidth"), phi, fallback_radius=current_radius)
-    half_height = _configured_morph_half_dimension(params.get("morphHeight"), phi, fallback_radius=current_radius)
+def _circle_morph_target_radius(
+    current_radius: float,
+    phi: float,
+    params: Mapping[str, Any],
+    *,
+    implicit_half_width: float | None = None,
+    implicit_half_height: float | None = None,
+) -> float:
+    half_width = _configured_morph_half_dimension(
+        params.get("morphWidth"),
+        phi,
+        fallback_radius=current_radius,
+        implicit_half_dimension=implicit_half_width,
+    )
+    half_height = _configured_morph_half_dimension(
+        params.get("morphHeight"),
+        phi,
+        fallback_radius=current_radius,
+        implicit_half_dimension=implicit_half_height,
+    )
     return max(half_width, half_height)
 
 
-def _morph_target_radius_at_angle(current_radius: float, phi: float, params: Mapping[str, Any]) -> float:
+def _morph_target_radius_at_angle(
+    current_radius: float,
+    phi: float,
+    params: Mapping[str, Any],
+    *,
+    implicit_half_width: float | None = None,
+    implicit_half_height: float | None = None,
+) -> float:
     target = _morph_target_shape(params, phi)
     if target == 0:
         return current_radius
     if target == 2:
-        return _circle_morph_target_radius(current_radius, phi, params)
+        return _circle_morph_target_radius(
+            current_radius,
+            phi,
+            params,
+            implicit_half_width=implicit_half_width,
+            implicit_half_height=implicit_half_height,
+        )
     if target != 1:
         raise ValueError(f"unsupported Morph target {target}")
-    half_width = _configured_morph_half_dimension(params.get("morphWidth"), phi, fallback_radius=current_radius)
-    half_height = _configured_morph_half_dimension(params.get("morphHeight"), phi, fallback_radius=current_radius)
+    half_width = _configured_morph_half_dimension(
+        params.get("morphWidth"),
+        phi,
+        fallback_radius=current_radius,
+        implicit_half_dimension=implicit_half_width,
+    )
+    half_height = _configured_morph_half_dimension(
+        params.get("morphHeight"),
+        phi,
+        fallback_radius=current_radius,
+        implicit_half_dimension=implicit_half_height,
+    )
     corner = eval_param(params.get("morphCorner"), phi, 0.0)
     return _rounded_rect_radius(phi, half_width, half_height, corner)
 
@@ -206,13 +249,21 @@ def _apply_morphing(
     params: Mapping[str, Any],
     *,
     morph_start: float | None = None,
+    implicit_half_width: float | None = None,
+    implicit_half_height: float | None = None,
 ) -> float:
     factor = _morph_factor(t, phi, params, morph_start=morph_start)
     if factor <= 0.0:
         return current_radius
     # OS-SE morphing is a directional target-mouth rule:
     # rm(z, phi) = r(z, phi) + f(z) * (rM(phi) - r(L, phi)).
-    target_radius = _morph_target_radius_at_angle(mouth_radius, phi, params)
+    target_radius = _morph_target_radius_at_angle(
+        mouth_radius,
+        phi,
+        params,
+        implicit_half_width=implicit_half_width,
+        implicit_half_height=implicit_half_height,
+    )
     allow_shrinkage = _is_true(params.get("morphAllowShrinkage"))
     safe_target = target_radius if allow_shrinkage else max(mouth_radius, target_radius)
     return current_radius + (safe_target - mouth_radius) * factor
