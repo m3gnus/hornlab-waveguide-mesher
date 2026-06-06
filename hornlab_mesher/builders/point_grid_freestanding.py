@@ -67,17 +67,17 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
     if geometry.outer_points is None:
         raise ValueError("freestanding point-grid build requires outer_points")
     outer_points = _validated_grid(geometry.outer_points, name="outer_points")
+    outer_points = _restored_outer_throat_points(
+        inner_points,
+        outer_points,
+        wall_thickness_mm=float(geometry.wall_thickness_mm),
+    )
     if geometry.wg_topology:
         return _build_wg_freestanding_point_grid(
             geometry,
             inner_points,
             outer_points,
         )
-    outer_points = _restored_outer_throat_points(
-        inner_points,
-        outer_points,
-        wall_thickness_mm=float(geometry.wall_thickness_mm),
-    )
 
     n_phi, n_len, _ = inner_points.shape
     builder = _SharedSurfaceBuilder()
@@ -170,11 +170,13 @@ def _build_wg_freestanding_point_grid(
 
     n_phi, inner_len, _ = inner_points.shape
     outer_indices = _outer_wall_axial_ring_indices(inner_points)
-    outer_topology = np.empty((n_phi, len(outer_indices) + 1, 3), dtype=np.float64)
-    outer_topology[:, 0, :] = outer_points[:, 0, :]
-    for out_j, src_j in enumerate(outer_indices, start=1):
+    rear_z = float(np.mean(inner_points[:, 0, 2]) - float(geometry.wall_thickness_mm))
+    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+    outer_topology = np.empty((n_phi, len(outer_indices) + 2, 3), dtype=np.float64)
+    outer_topology[:, 0, :] = rear_points
+    outer_topology[:, 1, :] = outer_points[:, 0, :]
+    for out_j, src_j in enumerate(outer_indices, start=2):
         outer_topology[:, out_j, :] = outer_points[:, src_j, :]
-    rear_points = outer_topology[:, 0, :]
 
     builder = _GeoSurfaceBuilder()
     inner_mesh_sizes = np.full(inner_points.shape[:2], 8.0, dtype=np.float64)

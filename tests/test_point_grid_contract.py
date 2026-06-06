@@ -9,6 +9,7 @@ import pytest
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
 from hornlab_mesher.builders.enclosure import _add_curve_loop_from_curves
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
+from hornlab_mesher.builders.point_grid_surfaces import _rear_rim_points
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
 from hornlab_mesher.cli import build_from_config, parse_ath_config
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
@@ -232,6 +233,28 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
                     stack.append(nxt)
         sizes.append(size)
     return sorted(sizes, reverse=True)
+
+
+def test_rear_rim_points_continue_average_slope_as_circle():
+    n_phi = 32
+    outer = np.empty((n_phi, 2, 3), dtype=np.float64)
+    for i in range(n_phi):
+        phi = math.tau * i / n_phi
+        throat_radius = 20.0 + 3.0 * math.cos(2.0 * phi)
+        next_radius = 30.0 + 6.0 * math.sin(phi)
+        outer[i, 0] = (throat_radius * math.cos(phi), throat_radius * math.sin(phi), 0.0)
+        outer[i, 1] = (next_radius * math.cos(phi), next_radius * math.sin(phi), 10.0)
+
+    rear = _rear_rim_points(outer, rear_z=-5.0)
+    radii = np.linalg.norm(rear[:, :2], axis=1)
+    expected = float(np.mean(np.linalg.norm(outer[:, 0, :2], axis=1)))
+    expected += (
+        float(np.mean(np.linalg.norm(outer[:, 1, :2], axis=1))) - expected
+    ) * -0.5
+
+    assert np.max(radii) - np.min(radii) < 1.0e-9
+    assert math.isclose(float(radii[0]), expected, rel_tol=0.0, abs_tol=1.0e-9)
+    assert np.allclose(rear[:, 2], -5.0)
 
 
 def test_python_osse_point_grid_full_circle():
