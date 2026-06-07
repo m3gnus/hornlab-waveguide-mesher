@@ -134,6 +134,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if formula == "OSSE":
         profile = {
             **common_profile,
+            "_athLengthMode": "total",
             **mapped(
                 profile_items,
                 (
@@ -152,6 +153,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     else:
         profile = {
             **common_profile,
+            "_athLengthMode": "total",
             **mapped(
                 profile_items,
                 (

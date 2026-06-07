@@ -47,6 +47,29 @@ def test_osse_profile_points_ignore_rosse_tmax_key():
     assert np.isclose(points[-1, 1], 210.25359737777225)
 
 
+def test_osse_ath_total_length_keeps_slot_inside_length():
+    params = {
+        "type": "OSSE",
+        "L": 150.0,
+        "r0": 18.0,
+        "a": 52.0,
+        "a0": 0.0,
+        "k": 0.9,
+        "s": 0.9,
+        "n": 3.0,
+        "q": 0.996,
+        "slotLength": 45.0,
+        "_athLengthMode": "total",
+    }
+
+    points = profile_points(params, 5)
+
+    assert points[-1, 0] == 150.0
+    assert np.isclose(points[1, 0], 37.5)
+    assert np.isclose(points[1, 1], 18.0)
+    assert points[-1, 1] < 220.0
+
+
 def test_build_osse_waveguide_smoke(tmp_path):
     path = build_mesh(
         OsseHornGeometry(

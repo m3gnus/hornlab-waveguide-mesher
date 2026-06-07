@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .profile_common import _is_true, _normalise_formula, eval_param
-from .profile_formulas import calculate_osse, calculate_rosse, osse_total_length
+from .profile_formulas import calculate_osse, calculate_rosse, osse_length_config, osse_total_length
 from .profile_morph import (
     _apply_morphing,
     _guiding_curve_type,
@@ -420,12 +420,19 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
         mouth_radial = float(raw_radials[i, -1])
+        if formula == "OSSE":
+            main_length, total_length, ext_len, slot_len = osse_length_config(params, float(phi))
+        else:
+            main_length, total_length, ext_len, slot_len = 0.0, 0.0, 0.0, 0.0
         for j in range(n_length + 1):
             radial = float(raw_radials[i, j])
+            morph_t = float(t_values[j])
+            if formula == "OSSE" and main_length > 1.0e-12 and total_length > 1.0e-12:
+                morph_t = min(1.0, max(0.0, (float(z_values[i, j]) - ext_len - slot_len) / main_length))
             radial = _apply_morphing(
                 radial,
                 mouth_radial,
-                float(t_values[j]),
+                morph_t,
                 float(phi),
                 params,
                 morph_start=snapped_morph_start,

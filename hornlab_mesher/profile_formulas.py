@@ -78,10 +78,8 @@ def calculate_osse(
     *,
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
-    L = eval_param(params.get("L"), p, 120.0)
+    L, _, ext_len, slot_len = osse_length_config(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
-    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
-    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
     r0_main = r0_base + ext_len * math.tan(ext_angle)
     a_deg = eval_param(params.get("a"), p, 60.0)
@@ -93,11 +91,12 @@ def calculate_osse(
         radius = r0_main
     else:
         main_z = z - ext_len - slot_len
+        main_params = {**params, "L": L}
         active_a_deg = coverage_angle
         if active_a_deg is None:
             active_a_deg = _coverage_angle_from_guiding_curve(
                 p,
-                params,
+                main_params,
                 main_length=L,
                 a0_deg=a0_deg,
                 r0_main=r0_main,
@@ -113,13 +112,13 @@ def calculate_osse(
             radius = _circular_arc_radius(
                 main_z,
                 p,
-                params,
+                main_params,
                 r0_main=r0_main,
                 mouth_radius=mouth_radius,
                 length=L,
             )
         else:
-            radius = _osse_radius(main_z, p, params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg)
+            radius = _osse_radius(main_z, p, main_params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg)
 
     x = float(z)
     y = float(radius)
@@ -133,12 +132,18 @@ def calculate_osse(
     return x, y
 
 
+def osse_length_config(params: Mapping[str, Any], p: float = 0.0) -> tuple[float, float, float, float]:
+    raw_L = max(0.0, eval_param(params.get("L"), p, 120.0))
+    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
+    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
+    length_mode = params.get("_athLengthMode", params.get("athLengthMode", params.get("lengthMode")))
+    if length_mode == "total":
+        return max(0.0, raw_L - ext_len - slot_len), raw_L, ext_len, slot_len
+    return raw_L, raw_L + ext_len + slot_len, ext_len, slot_len
+
+
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
-    return (
-        eval_param(params.get("L"), p, 120.0)
-        + max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
-        + max(0.0, eval_param(params.get("slotLength"), p, 0.0))
-    )
+    return osse_length_config(params, p)[1]
 
 
 def _rosse_length(params: Mapping[str, Any], p: float) -> float:

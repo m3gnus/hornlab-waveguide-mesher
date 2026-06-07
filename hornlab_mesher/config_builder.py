@@ -513,6 +513,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             },
         },
     }
+    length_mode = _pick(
+        profile,
+        config,
+        names=("_athLengthMode", "athLengthMode", "length_mode", "lengthMode"),
+        default=None,
+    )
+    if length_mode is not None:
+        common["_athLengthMode"] = length_mode
     _apply_driver_adapter(common, profile, config)
 
     if formula == "OSSE":

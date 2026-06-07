@@ -116,6 +116,7 @@ def test_load_config_accepts_ath_cfg_fixture(tmp_path):
     assert "cos(p)" in params["R"]
     assert params["angularSegments"] == 80
     assert params["samplingMode"] == "ath-default-zmap"
+    assert params["_athLengthMode"] == "total"
 
 
 def test_rosse_config_preserves_throat_extension_keys(tmp_path):
