@@ -266,25 +266,28 @@ def _normalise3(vec: np.ndarray, fallback: tuple[float, float, float] = (0.0, -1
 
 
 def _horn_indices(n_phi: int, n_length: int, *, full_circle: bool) -> np.ndarray:
-    indices: list[tuple[int, int, int]] = []
     radial_steps = n_phi if full_circle else max(0, n_phi - 1)
-    for j in range(n_length):
-        for i in range(radial_steps):
-            row1 = j * n_phi
-            row2 = (j + 1) * n_phi
-            i2 = (i + 1) % n_phi if full_circle else i + 1
-            indices.append((row1 + i, row1 + i2, row2 + i2))
-            indices.append((row1 + i, row2 + i2, row2 + i))
-    return np.asarray(indices, dtype=np.int64)
+    if n_length <= 0 or radial_steps <= 0:
+        return np.empty((0, 3), dtype=np.int64)
+    j = np.repeat(np.arange(n_length, dtype=np.int64), radial_steps)
+    i = np.tile(np.arange(radial_steps, dtype=np.int64), n_length)
+    row1 = j * n_phi
+    row2 = row1 + n_phi
+    i2 = (i + 1) % n_phi if full_circle else i + 1
+    first = np.stack([row1 + i, row1 + i2, row2 + i2], axis=1)
+    second = np.stack([row1 + i, row2 + i2, row2 + i], axis=1)
+    indices = np.empty((first.shape[0] * 2, 3), dtype=np.int64)
+    indices[0::2] = first
+    indices[1::2] = second
+    return indices
 
 
 def _fill_missing_normals(normals: np.ndarray, vertices: np.ndarray, n_phi: int, n_length: int) -> None:
     def has_normal(index: int) -> bool:
         return float(np.linalg.norm(normals[index])) > 1.0e-12
 
-    for index in range(vertices.shape[0]):
-        if has_normal(index):
-            continue
+    missing = np.flatnonzero(np.linalg.norm(normals, axis=1) <= 1.0e-12)
+    for index in missing:
         row = index // n_phi
         col = index % n_phi
         neighbor_indices: list[int] = []
@@ -311,58 +314,55 @@ def _fill_missing_normals(normals: np.ndarray, vertices: np.ndarray, n_phi: int,
 def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) -> np.ndarray:
     n_phi, n_cols, _ = inner.shape
     n_length = n_cols - 1
-    vertices = np.empty((n_phi * n_cols, 3), dtype=np.float64)
-    for j in range(n_cols):
-        for i in range(n_phi):
-            idx = j * n_phi + i
-            vertices[idx] = (inner[i, j, 0], inner[i, j, 2], inner[i, j, 1])
+    # Grid order is (phi, column); flatten to column-major vertex rows with
+    # the y/z components swapped, matching the triangle index convention.
+    vertices = np.ascontiguousarray(
+        inner[:, :, (0, 2, 1)].transpose(1, 0, 2).reshape(n_phi * n_cols, 3)
+    )
 
     normals = np.zeros_like(vertices)
-    for a, b, c in _horn_indices(n_phi, n_length, full_circle=full_circle):
-        ab = vertices[b] - vertices[a]
-        ac = vertices[c] - vertices[a]
-        normal = np.cross(ab, ac)
-        normals[a] += normal
-        normals[b] += normal
-        normals[c] += normal
+    tris = _horn_indices(n_phi, n_length, full_circle=full_circle)
+    if tris.shape[0]:
+        ab = vertices[tris[:, 1]] - vertices[tris[:, 0]]
+        ac = vertices[tris[:, 2]] - vertices[tris[:, 0]]
+        face_normals = np.cross(ab, ac)
+        np.add.at(normals, tris.ravel(), np.repeat(face_normals, 3, axis=0))
     _fill_missing_normals(normals, vertices, n_phi, n_length)
 
-    sample_step = max(1, vertices.shape[0] // 64)
-    dot_sum = 0.0
-    samples = 0
-    for idx in range(0, vertices.shape[0], sample_step):
-        x = vertices[idx, 0]
-        z = vertices[idx, 2]
-        radial_len = math.hypot(float(x), float(z))
-        normal_len = float(np.linalg.norm(normals[idx]))
-        if radial_len <= 1.0e-9 or normal_len <= 1.0e-12:
-            continue
-        dot_sum += (normals[idx, 0] / normal_len) * (x / radial_len)
-        dot_sum += (normals[idx, 2] / normal_len) * (z / radial_len)
-        samples += 1
-    offset_sign = -1.0 if samples == 0 or dot_sum < 0.0 else 1.0
+    sample_idx = np.arange(0, vertices.shape[0], max(1, vertices.shape[0] // 64))
+    sample_x = vertices[sample_idx, 0]
+    sample_z = vertices[sample_idx, 2]
+    radial_len = np.hypot(sample_x, sample_z)
+    normal_len = np.linalg.norm(normals[sample_idx], axis=1)
+    valid = (radial_len > 1.0e-9) & (normal_len > 1.0e-12)
+    dot_sum = float(
+        np.sum(
+            (normals[sample_idx[valid], 0] / normal_len[valid]) * (sample_x[valid] / radial_len[valid])
+            + (normals[sample_idx[valid], 2] / normal_len[valid]) * (sample_z[valid] / radial_len[valid])
+        )
+    )
+    offset_sign = -1.0 if not np.any(valid) or dot_sum < 0.0 else 1.0
 
-    outer_vertices = np.empty_like(vertices)
-    for idx, vertex in enumerate(vertices):
-        row = idx // n_phi
-        normal = _normalise3(normals[idx])
-        if row == 0:
-            radial_len = math.hypot(float(normal[0]), float(normal[2]))
-            rx = normal[0] / radial_len if radial_len > 1.0e-12 else 0.0
-            rz = normal[2] / radial_len if radial_len > 1.0e-12 else 0.0
-            outer_vertices[idx] = (
-                vertex[0] + offset_sign * wall * rx,
-                vertex[1],
-                vertex[2] + offset_sign * wall * rz,
-            )
-        else:
-            outer_vertices[idx] = vertex + offset_sign * wall * normal
+    # Unit normals with the _normalise3 fallback for degenerate rows.
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    degenerate = lengths[:, 0] <= 1.0e-12
+    unit = np.divide(normals, np.where(lengths > 1.0e-12, lengths, 1.0))
+    unit[degenerate] = (0.0, -1.0, 0.0)
 
-    outer = np.empty_like(inner)
-    for j in range(n_cols):
-        for i in range(n_phi):
-            idx = j * n_phi + i
-            outer[i, j] = (outer_vertices[idx, 0], outer_vertices[idx, 2], outer_vertices[idx, 1])
+    outer_vertices = vertices + offset_sign * wall * unit
+    # Throat ring (row 0) is offset radially in the xz plane only.
+    throat = unit[:n_phi]
+    throat_radial_len = np.hypot(throat[:, 0], throat[:, 2])
+    safe_len = np.where(throat_radial_len > 1.0e-12, throat_radial_len, 1.0)
+    rx = np.where(throat_radial_len > 1.0e-12, throat[:, 0] / safe_len, 0.0)
+    rz = np.where(throat_radial_len > 1.0e-12, throat[:, 2] / safe_len, 0.0)
+    outer_vertices[:n_phi, 0] = vertices[:n_phi, 0] + offset_sign * wall * rx
+    outer_vertices[:n_phi, 1] = vertices[:n_phi, 1]
+    outer_vertices[:n_phi, 2] = vertices[:n_phi, 2] + offset_sign * wall * rz
+
+    outer = np.ascontiguousarray(
+        outer_vertices.reshape(n_cols, n_phi, 3).transpose(1, 0, 2)[:, :, (0, 2, 1)]
+    )
     outer[:, 0, 2] = inner[:, 0, 2] - wall
     return outer
 

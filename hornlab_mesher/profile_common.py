@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from typing import Any, Mapping
 
 
@@ -31,6 +32,19 @@ _EVAL_GLOBALS = {
     "e": math.e,
 }
 
+@lru_cache(maxsize=16384)
+def _eval_text_param(text: str, p: float) -> float:
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    expr = text.replace("^", "**")
+    try:
+        return float(eval(expr, _EVAL_GLOBALS, {"p": p}))
+    except Exception as exc:
+        raise ValueError(f"invalid parameter expression {text!r}") from exc
+
+
 def eval_param(value: Any, p: float = 0.0, default: float = 0.0) -> float:
     if value is None:
         return float(default)
@@ -39,15 +53,7 @@ def eval_param(value: Any, p: float = 0.0, default: float = 0.0) -> float:
     text = str(value).strip()
     if not text:
         return float(default)
-    try:
-        return float(text)
-    except ValueError:
-        pass
-    expr = text.replace("^", "**")
-    try:
-        return float(eval(expr, _EVAL_GLOBALS, {"p": float(p)}))
-    except Exception as exc:
-        raise ValueError(f"invalid parameter expression {value!r}") from exc
+    return _eval_text_param(text, float(p))
 
 
 def _deg(value: Any, p: float = 0.0, default: float = 0.0) -> float:
