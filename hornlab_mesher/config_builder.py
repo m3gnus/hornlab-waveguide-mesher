@@ -16,7 +16,7 @@ import numpy as np
 
 from .config_parser import ConfigError
 from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGeometry
-from .mesher import build_mesh, load_mesh
+from .mesher import build_mesh_with_info
 from .profiles import build_point_grid, eval_param
 
 
@@ -628,8 +628,9 @@ def build_from_config(
         interface_res_mm=_float(mesh, names=("interface_res_mm", "interface_res", "interfaceResolution"), default=12.0),
     )
     scale_to_metres = _bool(mesh, names=("scale_to_metres", "scaleToMetres"), default=True)
-    mesh_path = build_mesh(geometry, density, output_path, scale_to_metres=scale_to_metres)
-    info = load_mesh(mesh_path)
+    mesh_path, info = build_mesh_with_info(
+        geometry, density, output_path, scale_to_metres=scale_to_metres
+    )
     return BuildResult(
         mesh_path=mesh_path,
         formula=formula,

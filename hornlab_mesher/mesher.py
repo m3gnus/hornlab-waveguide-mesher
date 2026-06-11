@@ -53,6 +53,27 @@ def build_mesh(
 ) -> Path:
     """Build a tagged, validated Gmsh ``.msh`` file."""
 
+    return build_mesh_with_info(
+        geometry,
+        density,
+        output_path,
+        scale_to_metres=scale_to_metres,
+    )[0]
+
+
+def build_mesh_with_info(
+    geometry: HornGeometry,
+    density: MeshDensity | str | Path | None = None,
+    output_path: str | Path | None = None,
+    scale_to_metres: bool = True,
+) -> tuple[Path, MeshInfo]:
+    """Build a ``.msh`` file and return it with the inspection info.
+
+    Equivalent to ``build_mesh`` followed by ``load_mesh``, but the info is
+    collected from the post-processed arrays at write time so the file is not
+    read back.
+    """
+
     if isinstance(density, (str, Path)) and output_path is None:
         output_path = density
         density = None
@@ -95,7 +116,7 @@ def build_mesh(
                 raw_path = Path(tmp.name)
             gmsh.write(str(raw_path))
 
-            _postprocess_mesh(
+            info = _postprocess_mesh(
                 raw_path,
                 out_path,
                 built.source_axis,
@@ -104,8 +125,8 @@ def build_mesh(
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
             )
             raw_path.unlink(missing_ok=True)
-            _validate_mesh_file(out_path)
-            return out_path
+            _validate_physical_tags(set(info.physical_groups))
+            return out_path, info
         except Exception as exc:
             raise MesherError(f"mesh build failed: {exc}") from exc
         finally:
@@ -140,7 +161,7 @@ def _postprocess_mesh(
     *,
     symmetry_snap_axes: tuple[str, ...] = (),
     symmetry_snap_tol_mm: float = 1.0e-6,
-) -> None:
+) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
     if len(triangles) == 0:
@@ -179,6 +200,10 @@ def _postprocess_mesh(
         points = points * 0.001
 
     used_tags = sorted({int(tag) for tag in phys.tolist()})
+    physical_names = {
+        int(tag): PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}")
+        for tag in used_tags
+    }
     out_mesh = meshio.Mesh(
         points=points,
         cells=[("triangle", triangles.astype(np.int64))],
@@ -187,11 +212,19 @@ def _postprocess_mesh(
             "gmsh:geometrical": [phys.astype(np.int32)],
         },
         field_data={
-            PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}"): np.array([int(tag), 2], dtype=np.int32)
-            for tag in used_tags
+            name: np.array([tag, 2], dtype=np.int32)
+            for tag, name in physical_names.items()
         },
     )
     meshio.write(out_path, out_mesh, file_format="gmsh22", binary=False)
+    return MeshInfo(
+        path=out_path,
+        n_vertices=int(len(points)),
+        n_triangles=int(len(triangles)),
+        physical_groups=physical_names,
+        bounding_box=(np.min(points, axis=0), np.max(points, axis=0)),
+        units="m" if _looks_like_metres(points) else "mm",
+    )
 
 
 def _snap_symmetry_planes(points: np.ndarray, axes: tuple[str, ...], tolerance: float) -> None:
@@ -238,10 +271,7 @@ def _looks_like_metres(points: np.ndarray) -> bool:
     return bool(np.max(span) < 10.0)
 
 
-def _validate_mesh_file(path: Path) -> None:
-    mesh = meshio.read(path)
-    _, phys = _triangles_and_physical_tags(mesh)
-    tags = {int(tag) for tag in phys.tolist()}
+def _validate_physical_tags(tags: set[int]) -> None:
     if int(PhysicalGroup.PRIMARY_SOURCE) not in tags:
         raise MesherError("mesh has no primary source physical group (tag 2)")
     if int(PhysicalGroup.RIGID_WALL) not in tags:

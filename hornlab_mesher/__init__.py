@@ -23,7 +23,7 @@ from .geometry import (
     OsseHornGeometry,
     RosseHornGeometry,
 )
-from .mesher import MesherError, build_mesh, load_mesh
+from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
 from .tags import PhysicalGroup
 
 
@@ -58,6 +58,7 @@ __all__ = [
     "build_from_config",
     "build_geometry_params",
     "build_mesh",
+    "build_mesh_with_info",
     "build_osse_waveguide",
     "compute_osse_inner_points",
     "compute_osse_profile_points",

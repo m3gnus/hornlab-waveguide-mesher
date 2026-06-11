@@ -44,6 +44,11 @@ path = build_mesh(
 `build_mesh(geometry, density=None, output_path=None, scale_to_metres=True)`
 writes a tagged, validated Gmsh `.msh` file and returns its path.
 
+`build_mesh_with_info(...)` takes the same arguments and returns
+`(path, MeshInfo)`; the info is collected at write time so the file is not
+read back. Prefer it over `build_mesh` + `load_mesh` when the inspection
+info is needed for a mesh built in the same call.
+
 Supported buildable geometry at the public boundary:
 
 - `OsseHornGeometry`
