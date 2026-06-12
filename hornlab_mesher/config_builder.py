@@ -8,7 +8,7 @@ final `BuildResult`. The CLI imports these helpers but does not own this
 translation layer.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -29,6 +29,13 @@ class BuildResult:
     n_triangles: int
     units: str
     physical_groups: dict[int, str]
+    # Quadrant coverage of the built grid and the solver symmetry flag a
+    # reduced mesh requires (hornlab-metal-bem SolveConfig.native_symmetry_plane).
+    quadrants: str = "1234"
+    native_symmetry_plane: str | None = None
+    # Per physical-group mesh validity: edge stats in mm plus the highest
+    # frequency the group resolves at the configured elements-per-wavelength.
+    mesh_report: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +46,9 @@ class BuildResult:
             "n_triangles": self.n_triangles,
             "units": self.units,
             "physical_groups": {str(k): v for k, v in self.physical_groups.items()},
+            "quadrants": self.quadrants,
+            "native_symmetry_plane": self.native_symmetry_plane,
+            "mesh_report": self.mesh_report,
         }
 
 
@@ -565,6 +575,42 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     return common, formula, mode
 
 
+def _normalised_quadrants(value: Any) -> str:
+    q = "".join(ch for ch in str(value or "1234") if ch in "1234")
+    return q or "1234"
+
+
+def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
+    """Map grid quadrant coverage to the metal solver's symmetry-plane flag.
+
+    Quadrant 1 spans x >= 0, y >= 0 and mirrors about both the yz and xz
+    planes; "12" spans y >= 0 (xz mirror); "14" spans x >= 0 (yz mirror).
+    """
+
+    return {
+        "1": "yz+xz",
+        "12": "xz",
+        "14": "yz",
+    }.get(_normalised_quadrants(quadrants))
+
+
+def _mesh_report(
+    info_physical_groups: Mapping[int, str],
+    edge_stats_mm: Mapping[int, Mapping[str, float]],
+    density: MeshDensity,
+) -> dict[str, dict[str, float]]:
+    epw = max(float(density.elements_per_wavelength), 1.0)
+    c_mm_s = float(density.speed_of_sound_m_s) * 1000.0
+    report: dict[str, dict[str, float]] = {}
+    for tag, stats in edge_stats_mm.items():
+        name = info_physical_groups.get(int(tag), str(tag))
+        max_edge = float(stats.get("max_edge_mm", 0.0))
+        entry = {key: float(value) for key, value in stats.items()}
+        entry["valid_f_max_hz"] = c_mm_s / (epw * max_edge) if max_edge > 0.0 else float("inf")
+        report[name] = entry
+    return report
+
+
 def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[HornInterface, ...]:
     offsets = _number_list(params.get("interfaceOffset"))
     if not offsets:
@@ -649,11 +695,24 @@ def build_from_config(
         # No default: density falls back to mouth_res_mm, matching ATH where
         # Mesh.InterfaceResolution is obsolete and interfaces use the mouth size.
         interface_res_mm=_optional_float(mesh, names=("interface_res_mm", "interface_res", "interfaceResolution")),
+        max_frequency_hz=_optional_float(
+            mesh,
+            config,
+            names=("max_frequency_hz", "maxFrequencyHz", "maxFrequency", "f_max_hz", "fMaxHz"),
+        ),
+        elements_per_wavelength=_float(
+            mesh, names=("elements_per_wavelength", "elementsPerWavelength"), default=6.0
+        ),
+        speed_of_sound_m_s=_float(
+            mesh, names=("speed_of_sound_m_s", "speedOfSound"), default=343.0
+        ),
+        curvature_segments=_int(mesh, names=("curvature_segments", "curvatureSegments"), default=0),
     )
     scale_to_metres = _bool(mesh, names=("scale_to_metres", "scaleToMetres"), default=True)
     mesh_path, info = build_mesh_with_info(
         geometry, density, output_path, scale_to_metres=scale_to_metres
     )
+    quadrants = _normalised_quadrants(params.get("quadrants"))
     return BuildResult(
         mesh_path=mesh_path,
         formula=formula,
@@ -662,6 +721,9 @@ def build_from_config(
         n_triangles=info.n_triangles,
         units=info.units,
         physical_groups=info.physical_groups,
+        quadrants=quadrants,
+        native_symmetry_plane=_native_symmetry_plane_for_quadrants(quadrants),
+        mesh_report=_mesh_report(info.physical_groups, info.edge_stats_mm, density),
     )
 
 

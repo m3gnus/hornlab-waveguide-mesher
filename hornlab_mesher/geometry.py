@@ -200,6 +200,20 @@ class MeshDensity:
     interface_res_mm: float | None = None
     min_size_mm: float | None = None
     max_size_mm: float | None = None
+    # Frequency-aware sizing: when max_frequency_hz is set, every resolution
+    # is clamped to c / (elements_per_wavelength * f) so the mesh stays valid
+    # for the requested band; the mm knobs above still apply where finer.
+    max_frequency_hz: float | None = None
+    elements_per_wavelength: float = 6.0
+    speed_of_sound_m_s: float = 343.0
+    # Gmsh Mesh.MeshSizeFromCurvature segments per 2*pi (0 disables).
+    curvature_segments: int = 0
+
+    def frequency_ceiling_mm(self) -> float | None:
+        if not self.max_frequency_hz or self.max_frequency_hz <= 0.0:
+            return None
+        epw = max(float(self.elements_per_wavelength), 1.0)
+        return (float(self.speed_of_sound_m_s) * 1000.0) / (epw * float(self.max_frequency_hz))
 
 
 @dataclass
@@ -224,3 +238,6 @@ class MeshInfo:
     physical_groups: dict[int, str]
     bounding_box: tuple[NDArray[np.float64], NDArray[np.float64]]
     units: Literal["m", "mm"]
+    # Per physical tag edge-length statistics in millimetres:
+    # {tag: {"median_edge_mm": ..., "p95_edge_mm": ..., "max_edge_mm": ...}}.
+    edge_stats_mm: dict[int, dict[str, float]] = field(default_factory=dict)

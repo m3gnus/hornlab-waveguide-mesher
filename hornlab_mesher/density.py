@@ -161,15 +161,29 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         if surfaces
     }
 
+    # Frequency-aware ceiling: clamp every resolution so the requested band
+    # stays resolved at the configured elements-per-wavelength target. The mm
+    # knobs still apply wherever they are finer.
+    freq_ceiling = density.frequency_ceiling_mm()
+
+    def _sz(value: float) -> float:
+        out = float(value)
+        return min(out, freq_ceiling) if freq_ceiling else out
+
+    throat_res = _sz(density.throat_res_mm)
+    mouth_res = _sz(density.mouth_res_mm)
+    rear_res = _sz(density.rear_res_mm)
+    interface_res = _sz(density.interface_res_mm or density.mouth_res_mm)
+
     coord = {"x": "x", "y": "y", "z": "z"}[geometry.source_axis]
     a0, a1 = geometry.axial_bounds_mm
     span = max(abs(a1 - a0), 1e-9)
-    slope = (float(density.mouth_res_mm) - float(density.throat_res_mm)) / span
-    intercept = float(density.throat_res_mm) - slope * float(a0)
+    slope = (mouth_res - throat_res) / span
+    intercept = throat_res - slope * float(a0)
     # Clamp the throat-to-mouth interpolation so geometry beyond the nominal
     # axial bounds (e.g. R-OSSE rollback) never extrapolates past either size.
-    res_lo = min(float(density.throat_res_mm), float(density.mouth_res_mm))
-    res_hi = max(float(density.throat_res_mm), float(density.mouth_res_mm))
+    res_lo = min(throat_res, mouth_res)
+    res_hi = max(throat_res, mouth_res)
     axial_formula = (
         f"min(max({intercept:.12g} + ({slope:.12g}) * {coord}, {res_lo:.12g}), {res_hi:.12g})"
     )
@@ -199,24 +213,24 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         )
 
     free_standing_wall_mode = bool(mesh_groups.get("outer")) and not bool(mesh_groups.get("enclosure"))
-    outer_formula = f"{float(density.rear_res_mm):.12g}" if free_standing_wall_mode else axial_formula
+    outer_formula = f"{rear_res:.12g}" if free_standing_wall_mode else axial_formula
     add_field(
         outer_formula,
         mesh_groups.get("outer", []),
         curve_groups.get("outer", []),
     )
     add_field(
-        f"{float(density.throat_res_mm):.12g}",
+        f"{throat_res:.12g}",
         mesh_groups.get("throat_disc", []),
         curve_groups.get("throat_disc", []),
     )
     add_field(
-        f"{float(density.rear_res_mm):.12g}",
+        f"{rear_res:.12g}",
         mesh_groups.get("rear", []),
         curve_groups.get("rear", []),
     )
     add_field(
-        f"{float(density.interface_res_mm or density.mouth_res_mm):.12g}",
+        f"{interface_res:.12g}",
         mesh_groups.get("interface", []),
         curve_groups.get("interface", []),
     )
@@ -231,8 +245,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         z_front = float(bounds["z_front"])
         z_back = float(bounds["z_back"])
 
-        front_q = _parse_quadrant_resolutions(density.enc_front_res_mm, density.mouth_res_mm)
-        back_q = _parse_quadrant_resolutions(density.enc_back_res_mm, density.mouth_res_mm)
+        front_q = [_sz(v) for v in _parse_quadrant_resolutions(density.enc_front_res_mm, mouth_res)]
+        back_q = [_sz(v) for v in _parse_quadrant_resolutions(density.enc_back_res_mm, mouth_res)]
         enclosure_resolution_values.extend(front_q)
         enclosure_resolution_values.extend(back_q)
 
@@ -273,7 +287,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             curve_groups.get("enclosure_edges_back", []),
         )
     else:
-        fallback_formula = f"{float(density.mouth_res_mm):.12g}"
+        fallback_formula = f"{mouth_res:.12g}"
         for group_key in (
             "enclosure_sides",
             "enclosure_edges_front",
@@ -291,20 +305,19 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [
-        float(density.throat_res_mm),
-        float(density.mouth_res_mm),
-        float(density.rear_res_mm),
-        float(density.interface_res_mm or density.mouth_res_mm),
-    ]
+    sizes = [throat_res, mouth_res, rear_res, interface_res]
     sizes.extend(enclosure_resolution_values)
     sizes = [v for v in sizes if math.isfinite(v) and v > 0.0]
     if not sizes:
         sizes = [10.0]
     min_size = float(density.min_size_mm) if density.min_size_mm else min(sizes) * 0.5
     max_size = float(density.max_size_mm) if density.max_size_mm else max(sizes) * 1.5
+    if freq_ceiling:
+        # The global cap must honor the band too: surfaces outside every
+        # Restrict field fall back to MeshSizeMax.
+        max_size = min(max_size, freq_ceiling)
     gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
     gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", max(0, int(density.curvature_segments)))

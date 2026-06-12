@@ -610,3 +610,67 @@ def test_auto_source_cap_is_flat_at_zero_throat_angle(tmp_path):
         source_vertex_ids.update(block.data[data == source_tag].ravel().tolist())
     source_z = mesh.points[sorted(source_vertex_ids), 2]
     assert float(np.max(np.abs(source_z))) < 1.0e-9
+
+
+def test_build_result_reports_symmetry_hint_for_quadrant_grids(tmp_path):
+    base = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {"angular_segments": 16, "length_segments": 4, "wall_thickness_mm": 0.0, "mode": "bare"},
+    }
+
+    full = build_from_config(base, tmp_path / "full.msh")
+    assert full.quadrants == "1234"
+    assert full.native_symmetry_plane is None
+
+    quarter_cfg = {**base, "mesh": {**base["mesh"], "quadrants": "1"}}
+    quarter = build_from_config(quarter_cfg, tmp_path / "quarter.msh")
+    assert quarter.quadrants == "1"
+    assert quarter.native_symmetry_plane == "yz+xz"
+    assert quarter.as_dict()["native_symmetry_plane"] == "yz+xz"
+
+
+def test_build_result_mesh_report_carries_validity_frequencies(tmp_path):
+    result = build_from_config(
+        {
+            "formula": "OSSE",
+            "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+            "mesh": {"angular_segments": 16, "length_segments": 4},
+        },
+        tmp_path / "report.msh",
+    )
+
+    assert set(result.mesh_report) == set(result.physical_groups.values())
+    for stats in result.mesh_report.values():
+        assert stats["median_edge_mm"] > 0.0
+        assert stats["max_edge_mm"] >= stats["median_edge_mm"]
+        # valid f = c / (epw * max_edge) with the 6 e/w, 343 m/s defaults
+        assert math.isclose(
+            stats["valid_f_max_hz"], 343000.0 / (6.0 * stats["max_edge_mm"]), rel_tol=1.0e-9
+        )
+
+
+def test_frequency_aware_sizing_clamps_coarse_mm_resolutions(tmp_path):
+    base = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 100.0, "r0_mm": 12.7, "a_deg": 45.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 32,
+            "length_segments": 8,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 30.0,
+            "rear_res_mm": 30.0,
+        },
+    }
+
+    coarse = build_from_config(base, tmp_path / "coarse.msh")
+    banded_cfg = {**base, "mesh": {**base["mesh"], "max_frequency_hz": 10000.0}}
+    banded = build_from_config(banded_cfg, tmp_path / "banded.msh")
+
+    # Ceiling at 10 kHz / 6 e/w is 5.717 mm; the 30 mm walls must refine.
+    assert banded.n_triangles > 2.0 * coarse.n_triangles
+    wall = banded.mesh_report["SD1G0"]
+    assert wall["median_edge_mm"] < 7.0
+    assert wall["valid_f_max_hz"] > 0.5 * 10000.0
+    # mm knobs finer than the ceiling stay in charge.
+    assert banded.mesh_report["SD1D1001"]["median_edge_mm"] < 5.5

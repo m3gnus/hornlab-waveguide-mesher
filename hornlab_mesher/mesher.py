@@ -196,6 +196,7 @@ def _postprocess_mesh(
         raise MeshOrientationError(
             f"watertight mesh has {report.inconsistent_edges} inconsistent shared edges"
         )
+    edge_stats = _edge_stats_by_tag(points, triangles, phys)
     if scale_to_metres:
         points = points * 0.001
 
@@ -224,7 +225,35 @@ def _postprocess_mesh(
         physical_groups=physical_names,
         bounding_box=(np.min(points, axis=0), np.max(points, axis=0)),
         units="m" if _looks_like_metres(points) else "mm",
+        edge_stats_mm=edge_stats,
     )
+
+
+def _edge_stats_by_tag(
+    points_mm: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+) -> dict[int, dict[str, float]]:
+    """Per physical tag edge-length statistics in millimetres."""
+
+    stats: dict[int, dict[str, float]] = {}
+    for tag in sorted({int(value) for value in phys.tolist()}):
+        tris = triangles[phys == tag]
+        if len(tris) == 0:
+            continue
+        edges = np.concatenate(
+            [
+                np.linalg.norm(points_mm[tris[:, 0]] - points_mm[tris[:, 1]], axis=1),
+                np.linalg.norm(points_mm[tris[:, 1]] - points_mm[tris[:, 2]], axis=1),
+                np.linalg.norm(points_mm[tris[:, 2]] - points_mm[tris[:, 0]], axis=1),
+            ]
+        )
+        stats[int(tag)] = {
+            "median_edge_mm": float(np.median(edges)),
+            "p95_edge_mm": float(np.percentile(edges, 95)),
+            "max_edge_mm": float(np.max(edges)),
+        }
+    return stats
 
 
 def _snap_symmetry_planes(points: np.ndarray, axes: tuple[str, ...], tolerance: float) -> None:
