@@ -131,6 +131,7 @@ class PointGridBuildMode(str, Enum):
     BARE = "bare"
     FREESTANDING = "freestanding"
     ENCLOSURE = "enclosure"
+    INFINITE_BAFFLE = "infinite-baffle"
 
 
 @dataclass(frozen=True)
@@ -163,11 +164,14 @@ class PointGridHornGeometry:
     interfaces: tuple[HornInterface, ...] = ()
     wg_topology: bool = True
     enclosure: HornEnclosure | None = None
+    infinite_baffle: bool = False
 
     @property
     def build_mode(self) -> PointGridBuildMode:
         if self.enclosure is not None:
             return PointGridBuildMode.ENCLOSURE
+        if self.infinite_baffle:
+            return PointGridBuildMode.INFINITE_BAFFLE
         if self.outer_points is not None:
             return PointGridBuildMode.FREESTANDING
         return PointGridBuildMode.BARE

@@ -334,7 +334,19 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     _reject_unsupported_ath_keys(flat, profile_items, mesh_items)
 
-    config: dict[str, Any] = {"formula": formula, "profile": profile, "mesh": mesh}
+    # ABEC.SimType selects the mesh topology: 1 = infinite baffle (the ATH
+    # default), 2 = free standing. An enclosure implies a free-standing sim.
+    sim_type = _maybe_number(flat.get("ABEC.SimType"))
+    if sim_type is None:
+        sim_type = 2 if enclosure else 1
+    if sim_type not in (1, 2):
+        raise ConfigError(
+            f"ABEC.SimType = {sim_type!r} is not supported; use 1 (infinite baffle) or 2 (free standing)"
+        )
+    if sim_type == 1 and enclosure:
+        raise ConfigError("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
+
+    config: dict[str, Any] = {"formula": formula, "profile": profile, "mesh": mesh, "simType": sim_type}
     if morph:
         config["morph"] = morph
     if gcurve:

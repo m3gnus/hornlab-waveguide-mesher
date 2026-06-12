@@ -284,9 +284,26 @@ def _normalise_mode(config: Mapping[str, Any], mesh: Mapping[str, Any], enclosur
         return "enclosure"
     if raw in {"bare", "inner", "open"}:
         return "bare"
-    if raw in {"", "free-standing", "freestanding", "free"}:
+    if raw in {"infinite-baffle", "infinitebaffle", "ib", "baffle"}:
+        return "infinite-baffle"
+    if raw == "":
+        # Imported ATH text configs carry ABEC.SimType (1 = infinite baffle,
+        # 2 = free standing); native configs without a mode stay freestanding.
+        sim_type = _pick(config, mesh, names=("simType", "sim_type"), default=None)
+        if sim_type is not None:
+            try:
+                sim_int = int(float(sim_type))
+            except (TypeError, ValueError) as exc:
+                raise ConfigError(f"simType must be 1 or 2, got {sim_type!r}") from exc
+            if sim_int == 1:
+                return "infinite-baffle"
+            if sim_int == 2:
+                return "freestanding"
+            raise ConfigError(f"simType must be 1 or 2, got {sim_type!r}")
         return "freestanding"
-    raise ConfigError(f"mode must be freestanding, enclosure, or bare, got {raw!r}")
+    if raw in {"free-standing", "freestanding", "free"}:
+        return "freestanding"
+    raise ConfigError(f"mode must be freestanding, enclosure, bare, or infinite-baffle, got {raw!r}")
 
 
 def _enclosure_from_config(
@@ -419,16 +436,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     elif mode == "enclosure":
         raise ConfigError("enclosure mode requires enclosure.depth_mm > 0")
 
-    default_wall = 0.0 if mode in {"bare", "enclosure"} else 6.0
+    default_wall = 0.0 if mode in {"bare", "enclosure", "infinite-baffle"} else 6.0
     wall_thickness = _float(
         mesh,
         config,
         names=("wall_thickness_mm", "wall_thickness", "wallThickness"),
         default=default_wall,
     )
-    if mode == "bare":
-        wall_thickness = 0.0
-    if mode == "enclosure":
+    if mode in {"bare", "enclosure", "infinite-baffle"}:
         wall_thickness = 0.0
     z_map_points = _pick(mesh, config, names=("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints"), default=None)
     default_sampling_mode = "zmap" if z_map_points is not None else "uniform"
@@ -608,6 +623,7 @@ def build_from_config(
         interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
         interfaces=_interfaces_from_params(params, n_length),
         enclosure=enclosure_obj,
+        infinite_baffle=(mode == "infinite-baffle"),
     )
     density = MeshDensity(
         throat_res_mm=_float(mesh, names=("throat_res_mm", "throat_res", "throatResolution"), default=4.0),

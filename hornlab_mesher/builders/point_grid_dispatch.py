@@ -97,6 +97,29 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     interface_tags: list[int] = []
     enclosure_bounds: dict[str, float] | None = None
 
+    if build_mode is PointGridBuildMode.INFINITE_BAFFLE:
+        # ABEC infinite-baffle topology: the mouth aperture is closed by a
+        # planar subdomain interface (I1-2) lying in the baffle plane.
+        if geometry.closed:
+            mouth_fill = make_planar_fill_from_ring(inner_points[:, -1, :])
+        else:
+            mouth_fill = make_planar_sector_fill_from_ring(
+                inner_points[:, -1, :],
+                source_axis="z",
+            )
+        if not mouth_fill:
+            mouth_fill = make_planar_fill_from_boundary(
+                wall,
+                source_axis="z",
+                use_min=False,
+                closed=geometry.closed,
+            )
+        if not mouth_fill:
+            raise RuntimeError("failed to build the infinite-baffle mouth interface surface")
+        require_gmsh().model.occ.synchronize()
+        interface_tags = [tag for _, tag in mouth_fill]
+        mesh_surface_groups["interface"] = list(interface_tags)
+
     if geometry.enclosure is not None:
         interface_dimtags: list[tuple[int, int]] = []
         for interface in _normalise_interface_specs(geometry, inner_points.shape[1]):

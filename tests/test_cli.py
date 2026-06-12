@@ -8,6 +8,7 @@ from hornlab_mesher.cli import build_from_config, build_geometry_params, load_co
 
 
 ROSSE_CFG = """
+ABEC.SimType = 2
 R-OSSE = {
   R = 160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)
   r = 0.35
@@ -27,6 +28,7 @@ Mesh = {
 """
 
 OSSE_CFG = """
+ABEC.SimType = 2
 OSSE = {
   Length = 80
   Throat.Diameter = 20
@@ -428,7 +430,9 @@ OS.k = 0.9
 
 def test_ath_text_import_injects_ath_defaults(tmp_path):
     cfg_path = tmp_path / "flat-osse.cfg"
-    cfg_path.write_text(ATH_FLAT_OSSE_CFG, encoding="utf-8")
+    # SimType 2 keeps freestanding mode so the wall-thickness default is
+    # observable (infinite-baffle mode forces the wall to zero).
+    cfg_path.write_text(ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n", encoding="utf-8")
 
     params, formula, _mode = build_geometry_params(load_config(cfg_path))
 
@@ -527,3 +531,55 @@ def test_ath_text_import_rejects_unsupported_geometry_keys(tmp_path):
     ok_path.write_text(ATH_FLAT_OSSE_CFG + "Throat.Profile = 1\nMesh.RearShape = 1\n", encoding="utf-8")
     params, _formula, _mode = build_geometry_params(load_config(ok_path))
     assert params["a0"] == 0
+
+
+def test_ath_sim_type_selects_mesh_topology_mode(tmp_path):
+    base = ATH_FLAT_OSSE_CFG
+
+    cfg_path = tmp_path / "default-simtype.cfg"
+    cfg_path.write_text(base, encoding="utf-8")
+    _params, _formula, mode = build_geometry_params(load_config(cfg_path))
+    assert mode == "infinite-baffle"
+
+    cfg_path.write_text(base + "ABEC.SimType = 1\n", encoding="utf-8")
+    _params, _formula, mode = build_geometry_params(load_config(cfg_path))
+    assert mode == "infinite-baffle"
+
+    cfg_path.write_text(base + "ABEC.SimType = 2\n", encoding="utf-8")
+    _params, _formula, mode = build_geometry_params(load_config(cfg_path))
+    assert mode == "freestanding"
+
+    cfg_path.write_text(base + "ABEC.SimType = 3\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="SimType"):
+        load_config(cfg_path)
+
+
+def test_toml_dict_config_without_mode_stays_freestanding():
+    _params, _formula, mode = build_geometry_params(
+        {
+            "formula": "OSSE",
+            "profile": {"L_mm": 80.0, "r0_mm": 10.0},
+            "mesh": {"angular_segments": 12, "length_segments": 4},
+        }
+    )
+    assert mode == "freestanding"
+
+
+def test_infinite_baffle_build_closes_mouth_with_interface(tmp_path):
+    cfg_path = tmp_path / "ib.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "Mesh.AngularSegments = 12\nMesh.LengthSegments = 4\n",
+        encoding="utf-8",
+    )
+
+    result = build_from_config(load_config(cfg_path), tmp_path / "ib.msh")
+
+    assert result.mode == "infinite-baffle"
+    assert result.physical_groups[1] == "SD1G0"
+    assert result.physical_groups[2] == "SD1D1001"
+    assert result.physical_groups[4] == "I1-2"
+
+    import meshio
+
+    mesh = meshio.read(result.mesh_path)
+    assert float(mesh.points[:, 2].min()) >= -1.0e-9
