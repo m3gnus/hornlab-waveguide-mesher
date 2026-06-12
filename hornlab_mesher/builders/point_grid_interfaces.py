@@ -38,7 +38,9 @@ def _normalise_interface_specs(geometry: PointGridHornGeometry, n_rings: int) ->
         )
     if geometry.interface_offset_mm <= 0.0:
         return ()
-    return (HornInterface(slice_index=max(0, n_rings - 2), offset_mm=float(geometry.interface_offset_mm)),)
+    # Legacy single-offset interfaces sit at the mouth ring, matching ATH's
+    # default subdomain interface at the end of the profile.
+    return (HornInterface(slice_index=max(0, n_rings - 1), offset_mm=float(geometry.interface_offset_mm)),)
 
 
 def _add_offset_interface_surfaces(

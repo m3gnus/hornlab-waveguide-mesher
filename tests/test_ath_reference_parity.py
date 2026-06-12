@@ -129,17 +129,19 @@ def test_rosse_point_grid_matches_ath_reference_exports(case: str):
 @pytest.mark.parametrize(
     ("case", "expected_groups"),
     [
+        # Outer counts grew by two patches per quadrant when the freestanding
+        # outer wall was extended to the rear cap (commit 817aea5).
         (
             "asro2",
-            {"inner": 40, "outer": 36, "mouth": 2, "rear": 2, "rear_cap": 2, "throat_disc": 1},
+            {"inner": 40, "outer": 38, "mouth": 2, "rear": 2, "rear_cap": 2, "throat_disc": 1},
         ),
         (
             "250917asro68",
-            {"inner": 160, "outer": 144, "mouth": 8, "rear": 8, "rear_cap": 8, "throat_disc": 4},
+            {"inner": 160, "outer": 152, "mouth": 8, "rear": 8, "rear_cap": 8, "throat_disc": 4},
         ),
         (
             "250917asro68q",
-            {"inner": 40, "outer": 36, "mouth": 2, "rear": 2, "rear_cap": 2, "throat_disc": 1},
+            {"inner": 40, "outer": 38, "mouth": 2, "rear": 2, "rear_cap": 2, "throat_disc": 1},
         ),
     ],
 )

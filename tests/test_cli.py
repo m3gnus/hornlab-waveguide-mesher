@@ -232,7 +232,8 @@ Mesh.InterfaceResolution = 12
     assert params["gcurveType"] == 2
     assert params["gcurveWidth"] == 75
     assert params["gcurveSF"] == "1,1,8,0.6,5,2"
-    assert params["subdomainSlices"] == "2,4"
+    # ATH slice indices shift by one onto grid rings (last slice = mouth).
+    assert params["subdomainSlices"] == "3,5"
     assert params["interfaceOffset"] == 10
     assert params["interfaceResolution"] == 12
 
@@ -255,7 +256,8 @@ Mesh.InterfaceResolution = 12
     params, formula, _mode = build_geometry_params(config)
 
     assert formula == "OSSE"
-    assert params["subdomainSlices"] == "2,4"
+    # ATH slice indices shift by one onto grid rings (last slice = mouth).
+    assert params["subdomainSlices"] == "3,5"
     assert params["interfaceOffset"] == "6,9"
     assert params["samplingMode"] == "ath-default-zmap"
 

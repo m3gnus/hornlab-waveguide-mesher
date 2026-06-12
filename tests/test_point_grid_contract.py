@@ -943,7 +943,9 @@ def test_point_grid_enclosure_mesh_supports_multiple_interface_slices(tmp_path):
     assert 4 in set(tags)
 
 
-def test_legacy_interface_offset_defaults_to_slice_before_mouth():
+def test_legacy_interface_offset_defaults_to_mouth_ring():
+    # ATH's default subdomain interface sits at the end of the profile
+    # (solana reference: mouth z 140 + offset 10 = interface plane z 150).
     geometry = PointGridHornGeometry(
         inner_points=_make_point_grid(n_length=10),
         closed=True,
@@ -952,7 +954,7 @@ def test_legacy_interface_offset_defaults_to_slice_before_mouth():
 
     specs = _normalise_interface_specs(geometry, geometry.inner_points.shape[1])
     assert len(specs) == 1
-    assert specs[0].slice_index == 9
+    assert specs[0].slice_index == 10
 
 
 def test_explicit_interface_can_still_target_mouth_slice():

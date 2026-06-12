@@ -227,6 +227,22 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("SamplingMode", "samplingMode"),
         ),
     )
+    # ATH SubdomainSlices index the segments 0..LengthSegments-1, where the
+    # last slice is the mouth; internal indices address grid rings, so shift
+    # by one (Ath 4.8.2 User Guide 6.7). An explicit empty value stays empty.
+    raw_slices = mesh.get("subdomainSlices")
+    if raw_slices is not None and str(raw_slices).strip():
+        shifted: list[str] = []
+        for part in str(raw_slices).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                shifted.append(str(int(float(part)) + 1))
+            except ValueError as exc:
+                raise ConfigError(f"Mesh.SubdomainSlices must be integers, got {part!r}") from exc
+        mesh["subdomainSlices"] = ",".join(shifted)
+
     zmap_points = mesh_items.get("ZMapPoints", mesh_items.get("ZMap"))
     if zmap_points is not None:
         mesh["zMapPoints"] = zmap_points
