@@ -965,3 +965,32 @@ def test_explicit_interface_can_still_target_mouth_slice():
     specs = _normalise_interface_specs(geometry, geometry.inner_points.shape[1])
     assert len(specs) == 1
     assert specs[0].slice_index == 10
+
+
+def test_ath_default_zmap_osse_matches_m2_clone_reference_rings():
+    # ATH m2-clone (OSSE, Length=150, 32 segments) ring z values from ATH's
+    # own mesh.geo, normalized by length. The OSSE default z-map bezier must
+    # reproduce them to ~1e-3 of normalized length.
+    from hornlab_mesher.profile_sampling import _ath_default_zmap
+
+    ath_rings_mm = np.asarray(
+        [
+            0.0, 1.151, 2.614, 4.460, 6.816, 9.513, 12.784, 16.682, 20.945,
+            26.031, 31.65, 38.153, 44.983, 52.676, 60.799, 69.276, 77.812,
+            86.517, 94.876, 102.809, 110.245, 116.775, 122.919, 128.154,
+            132.821, 136.663, 140.101, 142.909, 145.147, 147.014, 148.385,
+            149.371, 150.0,
+        ],
+        dtype=np.float64,
+    )
+
+    ours = _ath_default_zmap(32, "OSSE")
+
+    assert ours.shape == (33,)
+    assert np.max(np.abs(ours - ath_rings_mm / 150.0)) < 1.5e-3
+
+
+def test_ath_default_zmap_rosse_keeps_exact_reference_table():
+    from hornlab_mesher.profile_sampling import _ATH_T_20, _ath_default_zmap
+
+    assert np.array_equal(_ath_default_zmap(20, "R-OSSE"), _ATH_T_20)

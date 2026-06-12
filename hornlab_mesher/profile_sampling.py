@@ -153,10 +153,35 @@ _ATH_T_9 = np.asarray(
 )
 
 
-def _ath_default_zmap(n_length: int) -> np.ndarray:
+# ATH's default OSSE axial slice distribution is a cubic bezier from (0, 0)
+# to (1, 1) with control points (0.5, 0.1) and (0.5, 0.95), evaluated at
+# uniform abscissa steps. Fitted against the ATH m2-clone 32-segment grid and
+# the solana 9-segment GridExport; both match to ~1e-3 of normalized length.
+_ATH_OSSE_ZMAP_BEZIER = ((0.5, 0.1), (0.5, 0.95))
+
+
+def _bezier_zmap(n_length: int, controls: tuple[tuple[float, float], tuple[float, float]]) -> np.ndarray:
+    steps = max(1, int(n_length))
+    (x1, y1), (x2, y2) = controls
+    s = np.linspace(0.0, 1.0, 100001)
+    one_minus = 1.0 - s
+    bx = 3.0 * x1 * s * one_minus**2 + 3.0 * x2 * s * s * one_minus + s**3
+    by = 3.0 * y1 * s * one_minus**2 + 3.0 * y2 * s * s * one_minus + s**3
+    out = np.interp(np.linspace(0.0, 1.0, steps + 1), bx, by)
+    out[0] = 0.0
+    out[steps] = 1.0
+    return out
+
+
+def _ath_default_zmap(n_length: int, formula: str = "OSSE") -> np.ndarray:
     steps = max(1, int(n_length))
     if steps == len(_ATH_T_9) - 1:
+        # Exact ATH 9-segment export (solana reference case).
         return _ATH_T_9.copy()
+    if formula != "R-OSSE":
+        return _bezier_zmap(steps, _ATH_OSSE_ZMAP_BEZIER)
+    # R-OSSE keeps the exact 20-segment ATH reference table (asro cases) and
+    # interpolates it for other segment counts.
     ref_steps = len(_ATH_T_20) - 1
     if steps == ref_steps:
         return _ATH_T_20.copy()
@@ -257,7 +282,7 @@ def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndar
     if mode == "uniform":
         return np.linspace(0.0, 1.0, max(1, int(n_length)) + 1, dtype=np.float64), mode
     if mode == "ath-default-zmap":
-        return _ath_default_zmap(n_length), mode
+        return _ath_default_zmap(n_length, _normalise_formula(params.get("type", "OSSE"))), mode
     if mode == "zmap":
         return _custom_zmap(n_length, z_map_points), mode
     raise AssertionError(f"unhandled sampling mode {mode!r}")
