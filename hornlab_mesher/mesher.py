@@ -169,6 +169,7 @@ def _postprocess_mesh(
 
     points = np.asarray(mesh.points, dtype=np.float64)
     _snap_symmetry_planes(points, symmetry_snap_axes, symmetry_snap_tol_mm)
+    triangles, phys = _remove_symmetry_plane_slivers(points, triangles, phys, symmetry_snap_axes)
     triangles, phys, _ = remove_degenerate_triangles(points, triangles, phys)
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
@@ -227,6 +228,52 @@ def _postprocess_mesh(
         units="m" if _looks_like_metres(points) else "mm",
         edge_stats_mm=edge_stats,
     )
+
+
+_SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25
+
+
+def _remove_symmetry_plane_slivers(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+    symmetry_snap_axes: tuple[str, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Drop snap-flattened sliver triangles lying entirely in a symmetry plane.
+
+    Snapping near-plane vertices exactly onto the symmetry planes can flatten
+    seam slivers into the plane. Solvers reject in-plane triangles (the plane
+    is an image plane, not a physical boundary), so remove the negligible-area
+    artifacts and fail loudly if a substantial triangle ends up in-plane,
+    which would indicate a real geometry defect.
+    """
+
+    if not symmetry_snap_axes or len(triangles) == 0:
+        return triangles, phys
+    axis_index = {"x": 0, "y": 1, "z": 2}
+    keep = np.ones(len(triangles), dtype=bool)
+    corners = points[triangles]
+    for axis in symmetry_snap_axes:
+        idx = axis_index.get(axis)
+        if idx is None:
+            continue
+        in_plane = np.all(np.abs(corners[:, :, idx]) <= 1.0e-9, axis=1)
+        if not np.any(in_plane):
+            continue
+        areas = 0.5 * np.linalg.norm(
+            np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]),
+            axis=1,
+        )
+        large = in_plane & (areas > _SYMMETRY_SLIVER_MAX_AREA_MM2)
+        if np.any(large):
+            raise MesherError(
+                f"{int(np.sum(large))} non-sliver triangle(s) lie entirely in the "
+                f"{axis}=0 symmetry plane; the geometry is defective"
+            )
+        keep &= ~in_plane
+    if np.all(keep):
+        return triangles, phys
+    return triangles[keep], phys[keep]
 
 
 def _edge_stats_by_tag(

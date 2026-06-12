@@ -996,3 +996,40 @@ def test_ath_default_zmap_rosse_keeps_exact_reference_table():
     from hornlab_mesher.profile_sampling import _ATH_T_20, _ath_default_zmap
 
     assert np.array_equal(_ath_default_zmap(20, "R-OSSE"), _ATH_T_20)
+
+
+def test_symmetry_plane_slivers_are_removed_and_real_defects_raise():
+    from hornlab_mesher.mesher import MesherError, _remove_symmetry_plane_slivers
+
+    points = np.asarray(
+        [
+            # sliver entirely in x=0 (tiny area)
+            [0.0, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.0, 0.05, 0.1],
+            # normal triangle off the plane
+            [1.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+            # large triangle entirely in x=0 (real defect)
+            [0.0, 0.0, 5.0],
+            [0.0, 10.0, 5.0],
+            [0.0, 5.0, 15.0],
+        ],
+        dtype=np.float64,
+    )
+    sliver_and_normal = np.asarray([[0, 1, 2], [3, 4, 5]], dtype=np.int64)
+    phys = np.asarray([1, 1], dtype=np.int32)
+
+    kept, kept_phys = _remove_symmetry_plane_slivers(points, sliver_and_normal, phys, ("x", "y"))
+    assert len(kept) == 1
+    assert kept[0].tolist() == [3, 4, 5]
+    assert kept_phys.tolist() == [1]
+
+    with_defect = np.asarray([[3, 4, 5], [6, 7, 8]], dtype=np.int64)
+    with pytest.raises(MesherError, match="symmetry plane"):
+        _remove_symmetry_plane_slivers(points, with_defect, np.asarray([1, 1], dtype=np.int32), ("x",))
+
+    # no symmetry axes: untouched
+    same, _ = _remove_symmetry_plane_slivers(points, with_defect, np.asarray([1, 1], dtype=np.int32), ())
+    assert len(same) == 2
