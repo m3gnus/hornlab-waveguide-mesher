@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .profile_common import _is_true, _osse_radius, _parse_number_list, eval_param
+from .profile_common import _osse_radius, _parse_number_list, eval_param
 
 def _guiding_curve_type(params: Mapping[str, Any], p: float) -> int:
     return int(round(eval_param(params.get("gcurveType"), p, 0.0)))
@@ -155,10 +155,13 @@ def _configured_morph_half_dimension(
     fallback_radius: float,
     implicit_half_dimension: float | None = None,
 ) -> float:
+    # A resolved half-dimension from the grid builder wins over the raw config
+    # value: it already folds in implicit-extent derivation and the
+    # no-shrinkage dimension floor.
+    if implicit_half_dimension is not None and implicit_half_dimension > 0.0:
+        return float(implicit_half_dimension)
     dimension = eval_param(value, phi, 0.0)
     if dimension <= 0.0:
-        if implicit_half_dimension is not None and implicit_half_dimension > 0.0:
-            return float(implicit_half_dimension)
         return max(0.0, float(fallback_radius))
     return dimension / 2.0
 
@@ -257,6 +260,9 @@ def _apply_morphing(
         return current_radius
     # OS-SE morphing is a directional target-mouth rule:
     # rm(z, phi) = r(z, phi) + f(z) * (rM(phi) - r(L, phi)).
+    # No-shrinkage gating happens at the dimension level when the grid builder
+    # resolves the target half-dimensions, not per azimuth: ATH keeps the mouth
+    # an exact target curve and enlarges the target dimensions instead.
     target_radius = _morph_target_radius_at_angle(
         mouth_radius,
         phi,
@@ -264,9 +270,7 @@ def _apply_morphing(
         implicit_half_width=implicit_half_width,
         implicit_half_height=implicit_half_height,
     )
-    allow_shrinkage = _is_true(params.get("morphAllowShrinkage"))
-    safe_target = target_radius if allow_shrinkage else max(mouth_radius, target_radius)
-    return current_radius + (safe_target - mouth_radius) * factor
+    return current_radius + (target_radius - mouth_radius) * factor
 
 
 def _rounded_rect_quadrant_angles(
@@ -276,16 +280,29 @@ def _rounded_rect_quadrant_angles(
     corner_radius: float,
     corner_segments: int,
 ) -> np.ndarray:
+    """First-quadrant azimuth samples for a rounded-rectangle morph target.
+
+    ATH always samples the corner arc with four profiles per quadrant (both
+    wall-tangency endpoints plus two interior points at 30/60 degrees of arc
+    parameter) regardless of Mesh.CornerSegments, which only grows the total
+    point budget. The remaining segments are uniform in azimuth on the two
+    wall spans, split proportionally to their angular extents. Verified
+    against the ATH m2-clone (CornerSegments 4) and solana (CornerSegments 1)
+    reference grids.
+    """
     points_per_quadrant = max(1, int(points_per_quadrant))
     corner_radius = min(max(float(corner_radius), 0.0), half_width, half_height)
+    del corner_segments  # budget-only in ATH; the arc structure is fixed
     if corner_radius <= 1.0e-9:
         return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
 
     theta1 = math.atan2(half_height - corner_radius, half_width)
     theta2 = math.atan2(half_height, half_width - corner_radius)
-    corner_segments = max(0, int(corner_segments))
-    side_segments = max(1, points_per_quadrant - corner_segments - (1 if corner_segments > 0 else 0))
-    side1_segments = max(1, int(round(side_segments * theta1 / max(theta1 + (math.pi / 2.0 - theta2), 1.0e-12))))
+    arc_segments = 3
+    side_segments = max(2, points_per_quadrant - arc_segments)
+    span1 = theta1
+    span2 = math.pi / 2.0 - theta2
+    side1_segments = max(1, int(round(side_segments * span1 / max(span1 + span2, 1.0e-12))))
     side2_segments = max(1, side_segments - side1_segments)
 
     angles: list[float] = []
@@ -293,45 +310,9 @@ def _rounded_rect_quadrant_angles(
         angles.append(theta1 * i / side1_segments)
     cx = half_width - corner_radius
     cy = half_height - corner_radius
-    for i in range(1, corner_segments + 1):
-        u = i / (corner_segments + 1)
-        corner_phi = u * math.pi / 2.0
+    for i in range(1, arc_segments + 1):
+        corner_phi = (i / arc_segments) * math.pi / 2.0
         angles.append(math.atan2(cy + corner_radius * math.sin(corner_phi), cx + corner_radius * math.cos(corner_phi)))
-    angles.append(theta2)
     for i in range(1, side2_segments + 1):
         angles.append(theta2 + (math.pi / 2.0 - theta2) * i / side2_segments)
     return np.asarray(angles, dtype=np.float64)
-
-
-def _mirror_quadrant_angles(q1: np.ndarray) -> np.ndarray:
-    q = [float(v) for v in q1]
-    full: list[float] = []
-    full.extend(q)
-    full.extend(math.pi - v for v in reversed(q[:-1]))
-    full.extend(math.pi + v for v in q[1:])
-    full.extend(math.tau - v for v in reversed(q[1:-1]))
-    return np.asarray(full, dtype=np.float64)
-
-
-def _morph_angle_list(params: Mapping[str, Any], angular_segments: int) -> np.ndarray | None:
-    if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
-        return None
-    width = eval_param(params.get("morphWidth"), 0.0, 0.0)
-    height = eval_param(params.get("morphHeight"), 0.0, 0.0)
-    if width <= 0.0 or height <= 0.0:
-        return None
-    half_width = width / 2.0
-    half_height = height / 2.0
-    corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
-    configured_corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
-    points_per_quadrant = max(1, int(round(angular_segments / 4.0)) + configured_corner_segments)
-    internal_corner_segments = max(0, configured_corner_segments + 1 if corner > 0.0 else 0)
-    return _mirror_quadrant_angles(
-        _rounded_rect_quadrant_angles(
-            points_per_quadrant,
-            half_width,
-            half_height,
-            corner,
-            internal_corner_segments,
-        )
-    )

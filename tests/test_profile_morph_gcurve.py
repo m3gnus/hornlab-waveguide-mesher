@@ -127,7 +127,7 @@ def test_rectangle_morph_mouth_reaches_directional_target():
     assert np.allclose(mouth_radii, expected, rtol=0.0, atol=1.0e-9)
 
 
-def test_rectangle_morph_uses_implicit_raw_slice_extents_when_dimensions_omitted():
+def test_rectangle_morph_uses_ceiled_implicit_extents_when_dimensions_omitted():
     params = {
         **_base_osse_params(),
         "morphTarget": 1,
@@ -139,9 +139,11 @@ def test_rectangle_morph_uses_implicit_raw_slice_extents_when_dimensions_omitted
     raw, _ = _inner_grid({**params, "morphTarget": 0})
     morphed, _ = _inner_grid(params)
 
+    # ATH derives implicit target dimensions by rounding the raw mouth
+    # extents up to whole millimetres per half-dimension.
     raw_mouth = raw[:, -1]
-    half_width = float(np.max(np.abs(raw_mouth[:, 0])))
-    half_height = float(np.max(np.abs(raw_mouth[:, 1])))
+    half_width = float(math.ceil(np.max(np.abs(raw_mouth[:, 0])) - 1.0e-9))
+    half_height = float(math.ceil(np.max(np.abs(raw_mouth[:, 1])) - 1.0e-9))
     angles = np.arctan2(morphed[:, -1, 1], morphed[:, -1, 0])
     mouth_radii = _radii(morphed[:, -1])
     expected = np.asarray(

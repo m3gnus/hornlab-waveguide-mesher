@@ -6,7 +6,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .profile_common import _is_true, _normalise_formula, eval_param
-from .profile_formulas import calculate_osse, calculate_rosse, osse_length_config, osse_total_length
+from .profile_formulas import calculate_osse, calculate_rosse, osse_length_config
 from .profile_morph import (
     _apply_morphing,
     _guiding_curve_type,
@@ -61,34 +61,57 @@ def _mirror_quadrant_angles(q1: np.ndarray) -> np.ndarray:
     return np.asarray(full, dtype=np.float64)
 
 
-def _morph_angle_list(params: Mapping[str, Any], angular_segments: int) -> np.ndarray | None:
+def _morph_angle_list(
+    params: Mapping[str, Any],
+    angular_segments: int,
+    *,
+    half_width: float | None = None,
+    half_height: float | None = None,
+) -> np.ndarray | None:
     if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
         return None
-    width = eval_param(params.get("morphWidth"), 0.0, 0.0)
-    height = eval_param(params.get("morphHeight"), 0.0, 0.0)
-    if width <= 0.0 or height <= 0.0:
+    if half_width is None or half_height is None:
+        width = eval_param(params.get("morphWidth"), 0.0, 0.0)
+        height = eval_param(params.get("morphHeight"), 0.0, 0.0)
+        if width <= 0.0 or height <= 0.0:
+            # Implicit target extents are not known yet; the grid builder
+            # re-derives the angle list once it has resolved them.
+            return None
+        half_width = width / 2.0
+        half_height = height / 2.0
+    if half_width <= 0.0 or half_height <= 0.0:
         return None
-    half_width = width / 2.0
-    half_height = height / 2.0
     corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
-    configured_corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
-    points_per_quadrant = max(1, int(round(angular_segments / 4.0)) + configured_corner_segments)
-    internal_corner_segments = max(0, configured_corner_segments + 1 if corner > 0.0 else 0)
+    corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
+    # ATH adds CornerSegments to the angular point budget and rounds the
+    # total up to a whole number of points per quadrant (m2-clone: 100 + 4 ->
+    # 104; solana: 36 + 1 -> 40).
+    points_per_quadrant = max(1, int(math.ceil((angular_segments + corner_segments) / 4.0)))
     return _mirror_quadrant_angles(
         _rounded_rect_quadrant_angles(
             points_per_quadrant,
             half_width,
             half_height,
             corner,
-            internal_corner_segments,
+            corner_segments,
         )
     )
 
 
-def _angle_list(params: Mapping[str, Any]) -> tuple[np.ndarray, bool]:
+def _angle_list(
+    params: Mapping[str, Any],
+    *,
+    morph_half_width: float | None = None,
+    morph_half_height: float | None = None,
+) -> tuple[np.ndarray, bool]:
     quadrants = str(params.get("quadrants", "1234"))
     angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
-    morphed_full = _morph_angle_list(params, angular_segments)
+    morphed_full = _morph_angle_list(
+        params,
+        angular_segments,
+        half_width=morph_half_width,
+        half_height=morph_half_height,
+    )
     q = "".join(ch for ch in str(quadrants or "1234") if ch in "1234")
     if morphed_full is not None:
         if not q or q == "1234":
@@ -367,33 +390,26 @@ def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) ->
     return outer
 
 
-def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
-    formula = _normalise_formula(params.get("type", "OSSE"))
-    curve_type = _guiding_curve_type(params, 0.0)
-    if curve_type not in {0, 1, 2}:
-        raise ValueError(f"unsupported GCurve type {curve_type}")
-    if formula == "R-OSSE" and _guiding_curve_active(params, 0.0):
-        raise ValueError("guiding curves are only supported with formula OSSE")
-    n_length = int(params.get("lengthSegments", 32))
-    if n_length < 1:
-        raise ValueError("lengthSegments must be a positive integer")
-    angles, full_circle = _angle_list(params)
-    exponent, aspect_ratio = _cross_section(params)
-    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
-    t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
-    t_values = t_unit_values * t_max
-    configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
-    morph_start_idx = int(np.searchsorted(t_values, configured_morph_start, side="left"))
-    if morph_start_idx >= len(t_values):
-        snapped_morph_start = float(t_values[-1])
-    else:
-        snapped_morph_start = float(t_values[morph_start_idx])
+def _raw_radial_grid(
+    params: Mapping[str, Any],
+    angles: np.ndarray,
+    t_values: np.ndarray,
+    t_unit_values: np.ndarray,
+    formula: str,
+    exponent: float,
+    aspect_ratio: float,
+    n_length: int,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
     raw_radials = np.empty((len(angles), n_length + 1), dtype=np.float64)
     z_values = np.empty((len(angles), n_length + 1), dtype=np.float64)
+    max_fixed_len = 0.0
+    max_total_len = 0.0
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
         if formula == "OSSE":
-            total = osse_total_length(params, float(phi))
+            _main_len, total, ext_len, slot_len = osse_length_config(params, float(phi))
+            max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
+            max_total_len = max(max_total_len, float(total))
             h_bulge = eval_param(params.get("h"), float(phi), 0.0)
             curve = [
                 (
@@ -413,22 +429,80 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         for j, (z, radius) in enumerate(curve):
             raw_radials[i, j] = float(radius) * scale
             z_values[i, j] = float(z)
+    return raw_radials, z_values, max_fixed_len, max_total_len
 
-    implicit_half_width = float(np.max(np.abs(raw_radials[:, -1] * np.cos(angles))))
-    implicit_half_height = float(np.max(np.abs(raw_radials[:, -1] * np.sin(angles))))
+
+def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
+    formula = _normalise_formula(params.get("type", "OSSE"))
+    curve_type = _guiding_curve_type(params, 0.0)
+    if curve_type not in {0, 1, 2}:
+        raise ValueError(f"unsupported GCurve type {curve_type}")
+    if formula == "R-OSSE" and _guiding_curve_active(params, 0.0):
+        raise ValueError("guiding curves are only supported with formula OSSE")
+    n_length = int(params.get("lengthSegments", 32))
+    if n_length < 1:
+        raise ValueError("lengthSegments must be a positive integer")
+    angles, full_circle = _angle_list(params)
+    exponent, aspect_ratio = _cross_section(params)
+    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
+    t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+    t_values = t_unit_values * t_max
+    raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
+        params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
+    )
+
+    raw_half_width = float(np.max(np.abs(raw_radials[:, -1] * np.cos(angles))))
+    raw_half_height = float(np.max(np.abs(raw_radials[:, -1] * np.sin(angles))))
+
+    morph_target = _morph_target_shape(params, 0.0)
+    resolved_half_width: float | None = None
+    resolved_half_height: float | None = None
+    if morph_target in {1, 2}:
+        # ATH derives implicit target extents by rounding the raw mouth
+        # extents up to whole millimetres per half-dimension.
+        width = eval_param(params.get("morphWidth"), 0.0, 0.0)
+        height = eval_param(params.get("morphHeight"), 0.0, 0.0)
+        resolved_half_width = width / 2.0 if width > 0.0 else float(math.ceil(raw_half_width - 1.0e-9))
+        resolved_half_height = height / 2.0 if height > 0.0 else float(math.ceil(raw_half_height - 1.0e-9))
+        if not _is_true(params.get("morphAllowShrinkage")):
+            # No-shrinkage gates the target dimensions against the raw mouth
+            # extents; the mouth still becomes the exact (enlarged) target.
+            resolved_half_width = max(resolved_half_width, raw_half_width)
+            resolved_half_height = max(resolved_half_height, raw_half_height)
+        if morph_target == 1:
+            new_angles, full_circle = _angle_list(
+                params,
+                morph_half_width=resolved_half_width,
+                morph_half_height=resolved_half_height,
+            )
+            if len(new_angles) != len(angles) or not np.allclose(new_angles, angles):
+                angles = new_angles
+                raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
+                    params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
+                )
+
+    configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
+    morph_start_idx = int(np.searchsorted(t_values, configured_morph_start, side="left"))
+    if morph_start_idx >= len(t_values):
+        snapped_morph_start = float(t_values[-1])
+    else:
+        snapped_morph_start = float(t_values[morph_start_idx])
+    if formula == "OSSE" and max_total_len > 1.0e-12 and max_fixed_len > 0.0:
+        # ATH keeps the throat-extension/slot region unmorphed by reserving
+        # ceil(n * (ext + slot) / L) axial slices and starting the morph at
+        # that grid slice.
+        reserved_idx = min(n_length, int(math.ceil(n_length * max_fixed_len / max_total_len - 1.0e-9)))
+        snapped_morph_start = max(snapped_morph_start, float(t_unit_values[reserved_idx]))
 
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
         mouth_radial = float(raw_radials[i, -1])
-        if formula == "OSSE":
-            main_length, total_length, ext_len, slot_len = osse_length_config(params, float(phi))
-        else:
-            main_length, total_length, ext_len, slot_len = 0.0, 0.0, 0.0, 0.0
         for j in range(n_length + 1):
             radial = float(raw_radials[i, j])
+            # Morph progress is the global normalized axial position (z / L
+            # for OSSE), identical for every azimuth: ATH does not shift the
+            # blend by the per-azimuth slot length.
             morph_t = float(t_values[j])
-            if formula == "OSSE" and main_length > 1.0e-12 and total_length > 1.0e-12:
-                morph_t = min(1.0, max(0.0, (float(z_values[i, j]) - ext_len - slot_len) / main_length))
             radial = _apply_morphing(
                 radial,
                 mouth_radial,
@@ -436,8 +510,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
                 float(phi),
                 params,
                 morph_start=snapped_morph_start,
-                implicit_half_width=implicit_half_width,
-                implicit_half_height=implicit_half_height,
+                implicit_half_width=resolved_half_width,
+                implicit_half_height=resolved_half_height,
             )
             inner[i, j] = (
                 radial * math.cos(float(phi)),
