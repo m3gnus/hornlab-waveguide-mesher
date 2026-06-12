@@ -309,3 +309,71 @@ def test_tritonia_scale_and_vertical_offset_match_ath_reference():
     mouth = inner[:, -1, :]
     assert abs(float(np.max(np.abs(mouth[:, 0]))) - 208.0 * 0.702) < 1.0e-6
     assert abs(float(np.max(np.abs(mouth[:, 1] - 80.0))) - 180.0 * 0.702) < 1.0e-6
+
+
+def _read_geo_point_grid(path: Path, n_rings: int, n_phi: int) -> np.ndarray:
+    import re
+
+    points: list[tuple[int, float, float, float]] = []
+    pattern = re.compile(r"Point\((\d+)\)=\{([-\d.]+),([-\d.]+),([-\d.]+),")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = pattern.match(line)
+        if match:
+            points.append(
+                (int(match.group(1)), float(match.group(2)), float(match.group(3)), float(match.group(4)))
+            )
+    points.sort()
+    grid = np.asarray([[x, y, z] for _tag, x, y, z in points], dtype=np.float64)
+    assert grid.shape == (n_rings * n_phi, 3)
+    return grid.reshape(n_rings, n_phi, 3)
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+def test_m2_clone_point_grid_matches_ath_mesh_geo():
+    # The m2-clone case exercises azimuth-dependent Coverage.Angle,
+    # Slot.Length, and Term.n expressions plus an implicit rounded-rect morph
+    # with corner segments. ATH's mesh.geo is the exact point grid it built.
+    case_dir = ATH_REFERENCE_ROOT / "m2-clone"
+    reference = _read_geo_point_grid(case_dir / "mesh.geo", n_rings=33, n_phi=104)
+
+    params, formula, mode = build_geometry_params(load_config(case_dir / "config.txt"))
+    assert formula == "OSSE"
+    assert mode == "infinite-baffle"
+
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    assert (n_phi, n_length + 1) == (104, 33)
+
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    deviation = np.linalg.norm(inner.transpose(1, 0, 2) - reference, axis=2)
+    # Mouth and throat rings are exact; interior rings carry the residual of
+    # the fitted default z-map bezier (see _ATH_OSSE_ZMAP_BEZIER).
+    assert float(deviation[0].max()) < 2.0e-3
+    assert float(deviation[-1].max()) < 2.0e-3
+    assert float(deviation.max()) < 0.5
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+def test_m2_clone_infinite_baffle_build_matches_abec_mesh(tmp_path):
+    case_dir = ATH_REFERENCE_ROOT / "m2-clone"
+    result = build_from_config(load_config(case_dir / "config.txt"), tmp_path / "m2-clone.msh")
+
+    assert result.mode == "infinite-baffle"
+    assert result.physical_groups[1] == "SD1G0"
+    assert result.physical_groups[2] == "SD1D1001"
+    assert result.physical_groups[4] == "I1-2"
+
+    actual = meshio.read(result.mesh_path)
+    points = _points_in_mm(actual)
+    assert float(points[:, 2].min()) >= -1.0e-6
+    assert abs(float(points[:, 2].max()) - 150.0) < 1.0e-3
+
+    reference = meshio.read(case_dir / "ABEC_InfiniteBaffle" / "m2-clone.msh")
+    reference_points = _points_in_mm(reference)
+    # ATH's ABEC mesh is the quadrant-1 quarter model; ours is the full mesh.
+    assert abs(float(points[:, 0].max()) - float(reference_points[:, 0].max())) < 1.0
+    assert abs(float(points[:, 1].max()) - float(reference_points[:, 1].max())) < 1.0
+    actual_triangles, _tags = _triangles_and_physical_tags(actual)
+    reference_triangles, _ref_tags = _triangles_and_physical_tags(reference)
+    assert abs(len(actual_triangles) - 4 * len(reference_triangles)) <= 0.3 * 4 * len(reference_triangles)

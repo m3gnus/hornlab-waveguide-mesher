@@ -49,14 +49,18 @@ Supported quadrant sampling is defined by the profile layer:
 
 The point-grid dispatcher selects topology from `PointGridHornGeometry.build_mode`:
 
-- `bare`: `enclosure is None` and `outer_points is None`.
+- `bare`: `enclosure is None`, `outer_points is None`, not infinite baffle.
+- `infinite-baffle`: `infinite_baffle` is set and `enclosure is None`.
 - `freestanding`: `enclosure is None` and `outer_points is not None`.
 - `enclosure`: `enclosure is not None`.
 
-Bare mode builds the inner horn surface and a source cap. Freestanding mode
-builds an inner wall, outer wall, mouth rim, rear cap, and source cap.
-Enclosure mode builds the inner horn, source cap, optional interfaces, and
-enclosure surfaces around the mouth.
+Bare mode builds the inner horn surface and a source cap. Infinite-baffle
+mode (ABEC.SimType = 1, the ATH default for imported text configs) builds the
+bare topology plus a planar mouth-aperture subdomain interface tagged `I1-2`
+in the baffle plane; it has no outer wall, rear cap, or geometry behind the
+throat plane. Freestanding mode builds an inner wall, outer wall, mouth rim,
+rear cap, and source cap. Enclosure mode builds the inner horn, source cap,
+optional interfaces, and enclosure surfaces around the mouth.
 
 Supported point-grid source shapes are explicit: `source_shape = 0` builds a
 flat throat disc/sector, and `source_shape = 1` builds a rounded throat cap.

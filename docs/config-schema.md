@@ -18,11 +18,15 @@ Unsupported extensions fail before any geometry is built.
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
 | `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, and `ROSSE`. `ROSSE` normalizes to `R-OSSE`. |
-| `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `enclosure`, and `enclosed`. |
+| `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
+| `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
+| `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
 | `output.path` | top-level `path`, `output_path`, CLI `-o` | none | Required by the CLI unless `-o/--output` is passed. |
 
 If enclosure depth is positive, mode becomes `enclosure` even when `mode` is
-omitted. `enclosure` mode requires `enclosure.depth_mm > 0`.
+omitted. `enclosure` mode requires `enclosure.depth_mm > 0`. `infinite-baffle`
+mode builds the inner surface, source, and a planar mouth-aperture interface
+(`I1-2`) with no outer wall or rear cap.
 
 ## Sections
 
@@ -49,8 +53,8 @@ Common keys for OSSE and R-OSSE:
 | --- | --- | --- |
 | `r0_mm` | `r0` | `12.7` |
 | `a_deg` | `a` | `60.0` |
-| `a0_deg` | `a0` | `15.5` |
-| `k` | none | `1.0` |
+| `a0_deg` | `a0` | `15.5` (`0` for text imports, the ATH default) |
+| `k` | imported `OS.k`, `Term.k` | `1.0` |
 | `q` | none | `0.995` for OSSE, `1.0` for R-OSSE |
 | `throat_ext_length_mm` | `throatExtLength` | `0.0` |
 | `throat_ext_angle_deg` | `throatExtAngle` | `0.0` |
@@ -70,9 +74,9 @@ OSSE-only keys:
 
 | Canonical TOML/JSON key | Aliases | Default |
 | --- | --- | --- |
-| `L_mm` | `L` | `120.0` |
+| `L_mm` | `L` | `120.0` (mandatory for text imports) |
 | `n` | none | `4.0` |
-| `s` | none | `0.0` |
+| `s` | none | `0.0` (`0.7` for text imports, the ATH default) |
 | `rot_deg` | `rot` | `0.0` |
 
 R-OSSE-only keys:
@@ -110,19 +114,20 @@ Use `[cross_section]` or `[crossSection]`.
 | Canonical TOML/JSON key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
 | `angular_segments` | `angularSegments` | `64` | Normalized to an ATH-compatible multiple by the profile sampler. |
-| `corner_segments` | `cornerSegments` | `0` | Adds rounded-rectangle morph corner samples. |
+| `corner_segments` | `cornerSegments` | `0` | Grows the angular point budget for rounded-rectangle morphs; the corner arc itself always carries four profiles per quadrant. |
 | `length_segments` | `lengthSegments` | `32` | Produces `length_segments + 1` axial rings. |
-| `sampling_mode` | `samplingMode` | `uniform` or `zmap` | Defaults to `zmap` when `z_map_points` is set. |
+| `sampling_mode` | `samplingMode` | `uniform` or `zmap` | Defaults to `zmap` when `z_map_points` is set. Text imports default to `ath-default-zmap`. |
+| `vertical_offset_mm` | `verticalOffset` | `0.0` | Rigid +y translation applied after `scale`. |
 | `ath_parity_sampling` | `athParitySampling` | `false` | Forces `ath-default-zmap`. |
 | `z_map_points` | `zMapPoints`, `zmapPoints`, `ZMapPoints` | none | Full sample map or x,y control pairs in `[0, 1]`. |
-| `wall_thickness_mm` | `wall_thickness`, `wallThickness` | `6.0` freestanding, `0.0` otherwise | Forced to `0.0` for `bare` and `enclosure`. |
+| `wall_thickness_mm` | `wall_thickness`, `wallThickness` | `6.0` freestanding (`5.0` for text imports), `0.0` otherwise | Forced to `0.0` for `bare`, `enclosure`, and `infinite-baffle`. |
 | `quadrants` | none | `1234` | `1`, `12`, `14`, and `1234` are supported by the sampler. |
-| `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` | Mesh density, not grid shape. |
-| `mouth_res_mm` | `mouth_res`, `mouthResolution` | `26.0` | Mesh density, not grid shape. |
-| `rear_res_mm` | `rear_res`, `rearResolution` | `25.0` | Mesh density, not grid shape. |
-| `subdomain_slices` | `subdomainSlices` | empty | Comma/list of point-grid slice indices for interfaces. |
-| `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. |
-| `interface_res_mm` | `interface_res`, `interfaceResolution` | `12.0` | Mesh density for interface surfaces. |
+| `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |
+| `mouth_res_mm` | `mouth_res`, `mouthResolution` | `26.0` (`8.0` for text imports) | Mesh density, not grid shape. |
+| `rear_res_mm` | `rear_res`, `rearResolution` | `25.0` (`10.0` for text imports) | Mesh density, not grid shape. |
+| `subdomain_slices` | `subdomainSlices` | empty | Comma/list of point-grid ring indices for interfaces. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
+| `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. |
+| `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
 | `preserve_grid` | `preserveGrid` | `false` | Used by the bare inner-surface builder. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
 
@@ -226,23 +231,51 @@ OSSE = {
 
 Imported text mappings include:
 
+- Topology: `ABEC.SimType` (1 = infinite baffle, the ATH default when the key
+  is omitted; 2 = free standing; an enclosure implies 2; explicit 1 plus an
+  enclosure is rejected).
+- Geometry transforms: flat `Scale` (multiplies all linear geometry after
+  profile evaluation) and `Mesh.VerticalOffset` (+y translation after scale).
 - Profile: `Coverage.Angle`, `Throat.Angle`, `Throat.Diameter`,
-  `Length`, `Term.n`, `Term.s`, `Term.q`, `OS.k`, `Throat.Ext.Length`,
-  `Throat.Ext.Angle`, `Slot.Length`, `Rot`, and R-OSSE `R`, `m`, `b`, `r`,
-  `tmax`.
+  `Length`, `Term.n`, `Term.s`, `Term.q`, `Term.k`, `OS.k`,
+  `Throat.Ext.Length`, `Throat.Ext.Angle`, `Slot.Length`, `Rot`, and R-OSSE
+  `R`, `m`, `b`, `r`, `tmax`. `Length` is mandatory for OSSE imports.
 - Mesh: `Mesh.AngularSegments`, `Mesh.CornerSegments`,
-  `Mesh.LengthSegments`, `Mesh.WallThickness`, `Mesh.Quadrants`,
-  `Mesh.ThroatResolution`, `Mesh.MouthResolution`, `Mesh.RearResolution`,
-  `Mesh.SubdomainSlices`, `Mesh.InterfaceOffset`,
-  `Mesh.InterfaceResolution`, `Mesh.SamplingMode`, and `Mesh.ZMapPoints`.
+  `Mesh.LengthSegments`, `Mesh.WallThickness`, `Mesh.VerticalOffset`,
+  `Mesh.Quadrants`, `Mesh.ThroatResolution`, `Mesh.MouthResolution`,
+  `Mesh.RearResolution`, `Mesh.SubdomainSlices` (shifted by one onto grid
+  rings), `Mesh.InterfaceOffset`, `Mesh.InterfaceResolution`,
+  `Mesh.SamplingMode`, and `Mesh.ZMapPoints`.
 - Morph: `Morph.*`, `MORPH.*`, `[Morph]`, and `[MORPH]` for target shape,
-  width, height, corner radius, rate, fixed part, and shrinkage.
+  width, height, corner radius, rate, fixed part, and shrinkage
+  (`AllowShrinkage` accepts ATH boolean literals).
 - Guiding curve: `GCurve.*`, `GCURVE.*`, `[GCurve]`, and `[GCURVE]`.
 - Enclosure: `Mesh.Enclosure.Depth`, `EdgeRadius`, `EdgeType`,
   `FrontResolution`, `BackResolution`, and `Spacing` as four comma-separated
   margins.
-- Source: `Source.Shape`, `Source.Radius`, `Source.Curv`, and
-  `Source.VelocityProfile`.
+- Source: `Source.Shape` (translated from the ATH enum, where 1 = cap and
+  2 = flat disc, to the internal 1 = cap / 0 = flat disc convention),
+  `Source.Radius`, `Source.Curv`, and `Source.VelocityProfile`.
+
+Text imports inject ATH's own defaults for omitted keys instead of the native
+TOML/JSON defaults: `Throat.Angle` 0, `Term.s` 0.7, `Mesh.WallThickness` 5,
+`Mesh.ThroatResolution` 5, `Mesh.MouthResolution` 8, `Mesh.RearResolution`
+10, and `Morph.CornerRadius` 35 when a morph target is set. The default
+sampling mode is `ath-default-zmap` (for OSSE a cubic bezier with control
+points `(0.5, 0.1)` and `(0.5, 0.95)` fitted against ATH reference grids).
+
+Deliberate deviation: `Mesh.Quadrants` keeps the full-circle default (`1234`)
+instead of ATH's quarter default (`1`), because the canonical solvers consume
+full meshes rather than ABEC symmetry planes. Set `Mesh.Quadrants = 1`
+explicitly for quarter grids.
+
+Solver-only and output keys are intentionally ignored: `ABEC.MeshFrequency`,
+`ABEC.NumFrequencies`, `ABEC.f1`, `ABEC.f2`, `ABEC.Polars:*`, `ABEC.Abscissa`,
+`Report`, `GridExport:*`, and `Output.*` (the CLI owns output paths).
+
+Unsupported geometry keys fail explicitly instead of being approximated:
+`Throat.Profile` other than 1 (OS-SE), `Rollback.*`, `Mesh.RearShape` other
+than 1, and `Mesh.ThroatSegments`.
 
 The text parser is an import adapter only. It does not build geometry, infer
 unsupported ATH objects, or preserve unknown sections for later use. Unsupported

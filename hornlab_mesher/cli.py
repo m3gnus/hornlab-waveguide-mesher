@@ -54,9 +54,9 @@ __all__ = [
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hornlab-waveguide",
-        description="Build an OSSE or R-OSSE waveguide mesh from a TOML/JSON config.",
+        description="Build an OSSE or R-OSSE waveguide mesh from a TOML/JSON config or imported ATH-style .cfg/.txt.",
     )
-    parser.add_argument("config", help="Input .toml or .json config file")
+    parser.add_argument("config", help="Input .toml, .json, .cfg, or .txt config file")
     parser.add_argument("-o", "--output", help="Output .msh path; overrides output.path in config")
     parser.add_argument("--summary", help="Optional JSON summary output path")
     parser.add_argument("--print-summary", action="store_true", help="Print build summary as JSON")

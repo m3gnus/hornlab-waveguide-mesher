@@ -43,7 +43,10 @@ Implemented:
 
 - OSSE waveguide point-grid generation.
 - R-OSSE point-grid generation.
-- Freestanding wall-shell and enclosure-capable point-grid meshing.
+- Freestanding wall-shell, infinite-baffle (ABEC.SimType = 1), and
+  enclosure-capable point-grid meshing.
+- ATH text-config import with ATH defaults, global Scale/VerticalOffset,
+  and azimuth-dependent profile expressions.
 - Orientation validation and ABEC-compatible physical tags.
 - Non-OSSE geometry requests are rejected by the Python CLI/config parser.
 

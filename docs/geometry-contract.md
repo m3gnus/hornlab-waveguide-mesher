@@ -129,15 +129,31 @@ for z >= zf:
 
 Implementation rules:
 
-- `Morph.FixedPart` maps to `zf / L`.
+- `Morph.FixedPart` maps to `zf / L` and is snapped onto the axial grid. When
+  the profile has a throat extension or slot, the fixed region additionally
+  reserves `ceil(n * (ext + slot_max) / L)` axial slices (the longest fixed
+  prefix over all azimuths); the blend then starts at that grid slice.
+- The blend progress `(z - zf) / (L - zf)` uses the global normalized axial
+  position and is identical for every azimuth — the per-azimuth slot length
+  does not shift it (verified against the ATH m2-clone grid).
 - `Morph.Rate` maps to `gamma` and must be at least `1` for canonical use.
 - `Morph.TargetShape = 0` leaves the raw mouth outline unchanged.
 - `Morph.TargetShape = 1` targets a rounded rectangle.
 - `Morph.TargetShape = 2` targets a circle.
-- `TargetWidth = 0` or `TargetHeight = 0` preserves the raw dimension in that
-  direction where the target shape needs that dimension.
-- If shrinkage is disabled, the target outline must be enlarged enough that no
-  profile shrinks relative to the raw mouth.
+- `TargetWidth = 0` or `TargetHeight = 0` derives that half-dimension
+  implicitly by rounding the raw mouth extent up to whole millimetres
+  (ATH m2-clone: raw 228.414/203.515 -> targets 229/204).
+- If shrinkage is disabled, the target half-dimensions are floored at the raw
+  mouth extents; the mouth still becomes the exact (enlarged) target curve
+  rather than a per-azimuth max of target and raw.
+- For rounded-rectangle targets the azimuth list places four profiles per
+  quadrant on the corner arc (both wall tangency points plus two interior
+  points at 30/60 degrees of arc parameter) regardless of
+  `Mesh.CornerSegments`, which only grows the total angular point budget:
+  the grid carries `AngularSegments + CornerSegments` profiles rounded up to
+  a whole number per quadrant (m2-clone: 100 + 4 -> 104; solana: 36 + 1 ->
+  40). Wall spans split the remaining segments proportionally to their
+  angular extents.
 
 ## Geometry Grid vs Mesh Density
 
