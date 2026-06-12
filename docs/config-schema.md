@@ -265,9 +265,15 @@ sampling mode is `ath-default-zmap` (for OSSE a cubic bezier with control
 points `(0.5, 0.1)` and `(0.5, 0.95)` fitted against ATH reference grids).
 
 Deliberate deviation: `Mesh.Quadrants` keeps the full-circle default (`1234`)
-instead of ATH's quarter default (`1`), because the canonical solvers consume
-full meshes rather than ABEC symmetry planes. Set `Mesh.Quadrants = 1`
-explicitly for quarter grids.
+instead of ATH's quarter default (`1`). Quarter meshes are fully supported
+and `hornlab-metal-bem` solves them via its explicit
+`native_symmetry_plane="yz+xz"` solve flag, but the `.msh` format carries no
+symmetry marker and the solver loaders do not auto-detect reduced meshes — a
+quarter mesh solved without the flag produces silently wrong free-space
+results. Until the mesh format and solver loaders share an explicit symmetry
+contract, full meshes stay the safe import default. Set `Mesh.Quadrants = 1`
+explicitly for quarter grids and pass the matching symmetry flag to the
+solver.
 
 Solver-only and output keys are intentionally ignored: `ABEC.MeshFrequency`,
 `ABEC.NumFrequencies`, `ABEC.f1`, `ABEC.f2`, `ABEC.Polars:*`, `ABEC.Abscissa`,

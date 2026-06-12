@@ -62,6 +62,14 @@ throat plane. Freestanding mode builds an inner wall, outer wall, mouth rim,
 rear cap, and source cap. Enclosure mode builds the inner horn, source cap,
 optional interfaces, and enclosure surfaces around the mouth.
 
+Consumer caveat: the `I1-2` interface group targets ABEC-style subdomain
+workflows. The canonical solvers (`hornlab-metal-bem`, `hornlab-bempp-bem`)
+have no subdomain-interface formulation today and treat tag 4 as a rigid
+wall, which closes the mouth with a rigid lid — do not feed infinite-baffle
+meshes to them. Their infinite-baffle path is instead a mouth-flush-at-plane
+mesh solved with the metal solver's image-source symmetry machinery (see the
+solver docs).
+
 Supported point-grid source shapes are explicit: `source_shape = 0` builds a
 flat throat disc/sector, and `source_shape = 1` builds a rounded throat cap.
 Unsupported source shapes must raise instead of silently omitting physical tag
