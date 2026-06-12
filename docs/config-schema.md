@@ -130,8 +130,12 @@ Use `[cross_section]` or `[crossSection]`.
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
 | `preserve_grid` | `preserveGrid` | `false` | Used by the bare inner-surface builder. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
-| `max_frequency_hz` | `maxFrequencyHz`, `maxFrequency`, `f_max_hz` | none | Frequency-aware sizing: clamps every resolution to `c / (elements_per_wavelength * f)` so the band stays resolved. The mm knobs still apply where finer. |
-| `elements_per_wavelength` | `elementsPerWavelength` | `6.0` | Target used by frequency-aware sizing and the `mesh_report` validity figures. |
+| `max_frequency_hz` | `maxFrequencyHz`, `maxFrequency`, `f_max_hz` | none | Frequency-aware sizing: clamps each resolution to `c / (epw_role * f)` so the band stays resolved. The mm knobs still apply where finer. |
+| `elements_per_wavelength` | `elementsPerWavelength` | `6.0` | Generic target used for groups without a role override and for the `mesh_report` validity figures. |
+| `throat_epw` | `throatEpw` | `8.0` | Elements-per-wavelength at the throat (strongest, most detailed field). |
+| `mouth_epw` | `mouthEpw` | `6.0` | Elements-per-wavelength at the mouth; the inner wall grades from the throat value to this. |
+| `rear_epw` | `rearEpw` | `2.5` | Elements-per-wavelength on shadowed rear/outer surfaces, which contribute little to the radiated field. |
+| `interface_epw` | `interfaceEpw` | `6.0` | Elements-per-wavelength on subdomain interfaces. |
 | `speed_of_sound_m_s` | `speedOfSound` | `343.0` | Speed of sound for frequency-aware sizing. |
 | `curvature_segments` | `curvatureSegments` | `0` | Gmsh `MeshSizeFromCurvature` segments per full circle; `0` disables curvature-adaptive refinement. |
 
@@ -140,6 +144,9 @@ flag for reduced grids (`1` -> `yz+xz`, `12` -> `xz`, `14` -> `yz`), and a
 `mesh_report` with per-group edge statistics plus `valid_f_max_hz` -- the
 highest frequency each surface group resolves at the configured
 elements-per-wavelength. Downstream solves should clamp or warn from it.
+Note the report applies the generic target to every group: on freestanding
+horns the rigid-wall tag mixes the inner wall with the deliberately coarser
+rear/outer surfaces, so its strict figure is conservative.
 
 Sampling modes accepted by the profile layer:
 

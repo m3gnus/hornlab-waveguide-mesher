@@ -161,19 +161,21 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         if surfaces
     }
 
-    # Frequency-aware ceiling: clamp every resolution so the requested band
-    # stays resolved at the configured elements-per-wavelength target. The mm
-    # knobs still apply wherever they are finer.
-    freq_ceiling = density.frequency_ceiling_mm()
+    # Frequency-aware ceilings: clamp each resolution so the requested band
+    # stays resolved at that role's elements-per-wavelength target. The mm
+    # knobs still apply wherever they are finer. Roles grade the mesh from
+    # the throat (finest) toward the mouth and shadowed rear (coarsest).
+    freq_active = density.frequency_ceiling_mm() is not None
 
-    def _sz(value: float) -> float:
+    def _sz(value: float, role: str = "") -> float:
         out = float(value)
-        return min(out, freq_ceiling) if freq_ceiling else out
+        ceiling = density.role_ceiling_mm(role) if freq_active else None
+        return min(out, ceiling) if ceiling else out
 
-    throat_res = _sz(density.throat_res_mm)
-    mouth_res = _sz(density.mouth_res_mm)
-    rear_res = _sz(density.rear_res_mm)
-    interface_res = _sz(density.interface_res_mm or density.mouth_res_mm)
+    throat_res = _sz(density.throat_res_mm, "throat")
+    mouth_res = _sz(density.mouth_res_mm, "mouth")
+    rear_res = _sz(density.rear_res_mm, "rear")
+    interface_res = _sz(density.interface_res_mm or density.mouth_res_mm, "interface")
 
     coord = {"x": "x", "y": "y", "z": "z"}[geometry.source_axis]
     a0, a1 = geometry.axial_bounds_mm
@@ -312,10 +314,16 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         sizes = [10.0]
     min_size = float(density.min_size_mm) if density.min_size_mm else min(sizes) * 0.5
     max_size = float(density.max_size_mm) if density.max_size_mm else max(sizes) * 1.5
-    if freq_ceiling:
+    if freq_active:
         # The global cap must honor the band too: surfaces outside every
-        # Restrict field fall back to MeshSizeMax.
-        max_size = min(max_size, freq_ceiling)
+        # Restrict field fall back to MeshSizeMax. Use the coarsest role
+        # ceiling so the cap does not re-impose the strict target globally.
+        ceilings = [
+            density.role_ceiling_mm(role) for role in ("throat", "mouth", "rear", "interface")
+        ]
+        ceilings = [value for value in ceilings if value]
+        if ceilings:
+            max_size = min(max_size, max(ceilings))
     gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
     gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)

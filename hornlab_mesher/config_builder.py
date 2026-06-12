@@ -703,6 +703,10 @@ def build_from_config(
         elements_per_wavelength=_float(
             mesh, names=("elements_per_wavelength", "elementsPerWavelength"), default=6.0
         ),
+        throat_epw=_float(mesh, names=("throat_epw", "throatEpw"), default=8.0),
+        mouth_epw=_float(mesh, names=("mouth_epw", "mouthEpw"), default=6.0),
+        rear_epw=_float(mesh, names=("rear_epw", "rearEpw"), default=2.5),
+        interface_epw=_float(mesh, names=("interface_epw", "interfaceEpw"), default=6.0),
         speed_of_sound_m_s=_float(
             mesh, names=("speed_of_sound_m_s", "speedOfSound"), default=343.0
         ),

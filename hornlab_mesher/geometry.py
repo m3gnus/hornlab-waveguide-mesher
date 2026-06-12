@@ -200,20 +200,42 @@ class MeshDensity:
     interface_res_mm: float | None = None
     min_size_mm: float | None = None
     max_size_mm: float | None = None
-    # Frequency-aware sizing: when max_frequency_hz is set, every resolution
-    # is clamped to c / (elements_per_wavelength * f) so the mesh stays valid
-    # for the requested band; the mm knobs above still apply where finer.
+    # Frequency-aware sizing: when max_frequency_hz is set, each resolution
+    # is clamped to c / (epw_role * f) so the mesh stays valid for the
+    # requested band; the mm knobs above still apply where finer. The
+    # per-role targets grade the mesh by acoustic importance: the throat
+    # carries the strongest, most detailed field, the inner wall interpolates
+    # toward the mouth, and shadowed outer/rear surfaces contribute little to
+    # the radiated field so they tolerate fewer elements per wavelength.
     max_frequency_hz: float | None = None
     elements_per_wavelength: float = 6.0
+    throat_epw: float = 8.0
+    mouth_epw: float = 6.0
+    rear_epw: float = 2.5
+    interface_epw: float = 6.0
     speed_of_sound_m_s: float = 343.0
     # Gmsh Mesh.MeshSizeFromCurvature segments per 2*pi (0 disables).
     curvature_segments: int = 0
 
-    def frequency_ceiling_mm(self) -> float | None:
+    def _ceiling_mm(self, epw: float) -> float | None:
         if not self.max_frequency_hz or self.max_frequency_hz <= 0.0:
             return None
-        epw = max(float(self.elements_per_wavelength), 1.0)
+        epw = max(float(epw), 1.0)
         return (float(self.speed_of_sound_m_s) * 1000.0) / (epw * float(self.max_frequency_hz))
+
+    def frequency_ceiling_mm(self) -> float | None:
+        """Global ceiling at the generic elements-per-wavelength target."""
+
+        return self._ceiling_mm(self.elements_per_wavelength)
+
+    def role_ceiling_mm(self, role: str) -> float | None:
+        epw = {
+            "throat": self.throat_epw,
+            "mouth": self.mouth_epw,
+            "rear": self.rear_epw,
+            "interface": self.interface_epw,
+        }.get(role, self.elements_per_wavelength)
+        return self._ceiling_mm(epw)
 
 
 @dataclass

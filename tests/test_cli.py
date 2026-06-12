@@ -651,8 +651,11 @@ def test_build_result_mesh_report_carries_validity_frequencies(tmp_path):
 
 
 def test_frequency_aware_sizing_clamps_coarse_mm_resolutions(tmp_path):
+    # Bare mode keeps SD1G0 to the inner wall so the throat/mouth roles are
+    # observable without the deliberately coarser rear/outer grading.
     base = {
         "formula": "OSSE",
+        "mode": "bare",
         "profile": {"L_mm": 100.0, "r0_mm": 12.7, "a_deg": 45.0, "a0_deg": 0.0},
         "mesh": {
             "angular_segments": 32,
@@ -667,10 +670,33 @@ def test_frequency_aware_sizing_clamps_coarse_mm_resolutions(tmp_path):
     banded_cfg = {**base, "mesh": {**base["mesh"], "max_frequency_hz": 10000.0}}
     banded = build_from_config(banded_cfg, tmp_path / "banded.msh")
 
-    # Ceiling at 10 kHz / 6 e/w is 5.717 mm; the 30 mm walls must refine.
+    # Mouth-role ceiling at 10 kHz / 6 e/w is 5.717 mm; the 30 mm wall must
+    # refine. Throat role (8 e/w -> 4.29 mm) clamps the 5 mm throat too.
     assert banded.n_triangles > 2.0 * coarse.n_triangles
     wall = banded.mesh_report["SD1G0"]
     assert wall["median_edge_mm"] < 7.0
     assert wall["valid_f_max_hz"] > 0.5 * 10000.0
-    # mm knobs finer than the ceiling stay in charge.
-    assert banded.mesh_report["SD1D1001"]["median_edge_mm"] < 5.5
+    assert banded.mesh_report["SD1D1001"]["median_edge_mm"] < 4.5
+
+
+def test_frequency_aware_rear_grading_keeps_freestanding_meshes_small(tmp_path):
+    base = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 100.0, "r0_mm": 12.7, "a_deg": 45.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 32,
+            "length_segments": 8,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 30.0,
+            "rear_res_mm": 30.0,
+            "max_frequency_hz": 10000.0,
+        },
+    }
+
+    graded = build_from_config(base, tmp_path / "graded.msh")
+    flat_cfg = {**base, "mesh": {**base["mesh"], "rear_epw": 6.0}}
+    flat = build_from_config(flat_cfg, tmp_path / "flat.msh")
+
+    # The shadowed rear/outer surfaces at 2.5 e/w (22.9 mm ceiling) must cost
+    # markedly fewer elements than forcing the strict 6 e/w target there.
+    assert graded.n_triangles < 0.75 * flat.n_triangles
