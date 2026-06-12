@@ -414,3 +414,116 @@ def test_build_from_ath_enclosure_fixture(tmp_path):
     assert result.n_vertices > 0
     assert result.n_triangles > 0
     assert {1, 2}.issubset(result.physical_groups)
+
+
+ATH_FLAT_OSSE_CFG = """
+Throat.Diameter = 36
+Coverage.Angle = 50
+Length = 150
+Term.n = 4
+Term.q = 0.996
+OS.k = 0.9
+"""
+
+
+def test_ath_text_import_injects_ath_defaults(tmp_path):
+    cfg_path = tmp_path / "flat-osse.cfg"
+    cfg_path.write_text(ATH_FLAT_OSSE_CFG, encoding="utf-8")
+
+    params, formula, _mode = build_geometry_params(load_config(cfg_path))
+
+    assert formula == "OSSE"
+    assert params["a0"] == 0
+    assert params["s"] == 0.7
+    assert params["wallThickness"] == 5
+    assert params["throatResolution"] == 5
+    assert params["mouthResolution"] == 8
+    assert params["rearResolution"] == 10
+
+
+def test_toml_dict_configs_keep_package_defaults():
+    params, _formula, _mode = build_geometry_params(
+        {
+            "formula": "OSSE",
+            "profile": {"L_mm": 120.0, "r0_mm": 12.7},
+            "mesh": {"angular_segments": 16, "length_segments": 6},
+        }
+    )
+
+    assert params["a0"] == 15.5
+    assert params["s"] == 0.0
+    assert params["wallThickness"] == 6.0
+    assert params["throatResolution"] == 4.0
+    assert params["mouthResolution"] == 26.0
+
+
+def test_ath_text_import_maps_term_k_alias(tmp_path):
+    cfg_path = tmp_path / "term-k.cfg"
+    cfg_path.write_text(ATH_FLAT_OSSE_CFG.replace("OS.k = 0.9", "Term.k = 0.7"), encoding="utf-8")
+
+    params, _formula, _mode = build_geometry_params(load_config(cfg_path))
+
+    assert params["k"] == 0.7
+
+
+def test_ath_text_import_requires_length(tmp_path):
+    cfg_path = tmp_path / "no-length.cfg"
+    cfg_path.write_text(ATH_FLAT_OSSE_CFG.replace("Length = 150\n", ""), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Length"):
+        load_config(cfg_path)
+
+
+def test_ath_text_import_defaults_morph_corner_radius(tmp_path):
+    cfg_path = tmp_path / "morph-default-corner.cfg"
+    cfg_path.write_text(ATH_FLAT_OSSE_CFG + "Morph.TargetShape = 1\n", encoding="utf-8")
+
+    params, _formula, _mode = build_geometry_params(load_config(cfg_path))
+
+    assert params["morphTarget"] == 1
+    assert params["morphCorner"] == 35
+
+
+def test_ath_text_import_normalizes_boolean_shrinkage(tmp_path):
+    cfg_path = tmp_path / "morph-shrinkage.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "Morph.TargetShape = 1\nMorph.AllowShrinkage = yes\n",
+        encoding="utf-8",
+    )
+
+    params, _formula, _mode = build_geometry_params(load_config(cfg_path))
+
+    assert params["morphAllowShrinkage"] == 1
+
+
+def test_ath_text_import_translates_source_shape_enum(tmp_path):
+    cfg_path = tmp_path / "source-flat.cfg"
+    cfg_path.write_text(ATH_FLAT_OSSE_CFG + "Source.Shape = 2\n", encoding="utf-8")
+
+    params, _formula, _mode = build_geometry_params(load_config(cfg_path))
+
+    assert params["sourceShape"] == 0
+
+    bad_path = tmp_path / "source-bad.cfg"
+    bad_path.write_text(ATH_FLAT_OSSE_CFG + "Source.Shape = 3\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Source.Shape"):
+        load_config(bad_path)
+
+
+def test_ath_text_import_rejects_unsupported_geometry_keys(tmp_path):
+    for extra, match in (
+        ("Throat.Profile = 3\n", "Throat.Profile"),
+        ("Rollback = 1\n", "Rollback"),
+        ("Rollback.StartAt = 0.5\n", "Rollback"),
+        ("Mesh.RearShape = 2\n", "RearShape"),
+        ("Mesh.ThroatSegments = 8\n", "ThroatSegments"),
+    ):
+        cfg_path = tmp_path / "unsupported.cfg"
+        cfg_path.write_text(ATH_FLAT_OSSE_CFG + extra, encoding="utf-8")
+        with pytest.raises(ValueError, match=match):
+            load_config(cfg_path)
+
+    ok_path = tmp_path / "supported.cfg"
+    ok_path.write_text(ATH_FLAT_OSSE_CFG + "Throat.Profile = 1\nMesh.RearShape = 1\n", encoding="utf-8")
+    params, _formula, _mode = build_geometry_params(load_config(ok_path))
+    assert params["a0"] == 0

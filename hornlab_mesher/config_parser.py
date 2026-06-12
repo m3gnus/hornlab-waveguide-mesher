@@ -73,6 +73,39 @@ def _parse_ath_blocks(content: str) -> tuple[dict[str, dict[str, str]], dict[str
     return blocks, flat
 
 
+def _ath_bool(value: Any) -> Any:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return 1
+        if lowered in {"0", "false", "no", "off"}:
+            return 0
+    return value
+
+
+def _reject_unsupported_ath_keys(
+    flat: Mapping[str, str],
+    profile_items: Mapping[str, str],
+    mesh_items: Mapping[str, str],
+) -> None:
+    """Fail loudly on imported keys that change geometry we cannot build."""
+    throat_profile = _maybe_number(profile_items.get("Throat.Profile", flat.get("Throat.Profile")))
+    if throat_profile is not None and throat_profile != 1:
+        raise ConfigError(
+            f"Throat.Profile = {throat_profile} is not supported; only the OS-SE profile (1) is implemented"
+        )
+    rollback_keys = sorted(
+        key for key in (*flat, *profile_items) if key == "Rollback" or key.startswith("Rollback.")
+    )
+    if rollback_keys:
+        raise ConfigError(f"Rollback is not supported by this mesher (saw {', '.join(rollback_keys)})")
+    rear_shape = _maybe_number(mesh_items.get("RearShape"))
+    if rear_shape is not None and rear_shape != 1:
+        raise ConfigError(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) is implemented")
+    if "ThroatSegments" in mesh_items:
+        raise ConfigError("Mesh.ThroatSegments is not supported; remove it or use Mesh.ZMapPoints")
+
+
 def parse_text_config(content: str) -> dict[str, Any]:
     """Parse the text `.cfg` shape used by imported waveguide configs."""
     blocks, flat = _parse_ath_blocks(content)
@@ -118,6 +151,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("Throat.Angle", "a0"),
             ("k", "k"),
             ("OS.k", "k"),
+            ("Term.k", "k"),
             ("q", "q"),
             ("Term.q", "q"),
             ("Throat.Ext.Length", "throatExtLength"),
@@ -166,6 +200,14 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ),
         }
 
+    if formula == "OSSE":
+        if "L" not in profile:
+            raise ConfigError("ATH OSSE text configs must set Length")
+        # ATH defaults for keys the import may omit (Ath 4.8.2 User Guide 4.1.1).
+        # Native TOML/JSON configs keep the package defaults in config_builder.
+        profile.setdefault("a0", 0)
+        profile.setdefault("s", 0.7)
+
     mesh_items = {**prefixed("Mesh."), **blocks.get("Mesh", {})}
     mesh = mapped(
         mesh_items,
@@ -188,6 +230,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if zmap_points is not None:
         mesh["zMapPoints"] = zmap_points
     mesh.setdefault("samplingMode", "zmap" if zmap_points is not None else "ath-default-zmap")
+    # ATH defaults (Ath 4.8.2 User Guide 4.1.4) for keys the import may omit.
+    mesh.setdefault("wallThickness", 5)
+    mesh.setdefault("throatResolution", 5)
+    mesh.setdefault("mouthResolution", 8)
+    mesh.setdefault("rearResolution", 10)
     morph_items = {
         **prefixed("Morph."),
         **prefixed("MORPH."),
@@ -208,6 +255,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("AllowShrinkage", "morphAllowShrinkage"),
         ),
     )
+    if "morphTarget" in morph:
+        # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
+        morph.setdefault("morphCorner", 35)
+    if "morphAllowShrinkage" in morph:
+        morph["morphAllowShrinkage"] = _ath_bool(morph["morphAllowShrinkage"])
 
     gcurve_items = {
         **prefixed("GCurve."),
@@ -272,6 +324,15 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("VelocityProfile", "sourceVelocityProfile"),
         ),
     )
+    if "sourceShape" in source:
+        # ATH enum: 1 = spherical cap, 2 = flat disc. Internal enum: 1 = cap, 0 = flat disc.
+        ath_shape = source["sourceShape"]
+        if ath_shape == 2:
+            source["sourceShape"] = 0
+        elif ath_shape != 1:
+            raise ConfigError(f"Source.Shape = {ath_shape!r} is not supported; use 1 (cap) or 2 (flat disc)")
+
+    _reject_unsupported_ath_keys(flat, profile_items, mesh_items)
 
     config: dict[str, Any] = {"formula": formula, "profile": profile, "mesh": mesh}
     if morph:
