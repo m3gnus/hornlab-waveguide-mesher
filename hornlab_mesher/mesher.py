@@ -170,7 +170,7 @@ def _postprocess_mesh(
     points = np.asarray(mesh.points, dtype=np.float64)
     _snap_symmetry_planes(points, symmetry_snap_axes, symmetry_snap_tol_mm)
     triangles, phys = _remove_symmetry_plane_slivers(points, triangles, phys, symmetry_snap_axes)
-    triangles, phys, _ = remove_degenerate_triangles(points, triangles, phys)
+    triangles, phys, _ = remove_degenerate_triangles(points, triangles, phys, min_quality=1.0e-4)
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
     # Gmsh/OCC can emit an otherwise valid canonical surface with the whole

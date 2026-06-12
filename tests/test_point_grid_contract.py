@@ -1033,3 +1033,27 @@ def test_symmetry_plane_slivers_are_removed_and_real_defects_raise():
     # no symmetry axes: untouched
     same, _ = _remove_symmetry_plane_slivers(points, with_defect, np.asarray([1, 1], dtype=np.int32), ())
     assert len(same) == 2
+
+
+def test_remove_degenerate_triangles_drops_needle_slivers():
+    from hornlab_mesher.normals import remove_degenerate_triangles
+
+    points = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.0, 0.0001, 0.0],  # needle apex: 2 mm long, 0.1 um high
+            [0.0, 5.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    tris = np.asarray([[0, 1, 2], [0, 1, 3]], dtype=np.int64)
+    tags = np.asarray([1, 1], dtype=np.int32)
+
+    kept, kept_tags, removed = remove_degenerate_triangles(points, tris, tags, min_quality=1.0e-4)
+    assert removed == 1
+    assert kept.tolist() == [[0, 1, 3]]
+
+    # without the quality threshold the needle survives (area is nonzero)
+    kept_all, _t, removed_none = remove_degenerate_triangles(points, tris, tags)
+    assert removed_none == 0 and len(kept_all) == 2
