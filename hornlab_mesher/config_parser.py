@@ -216,6 +216,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("CornerSegments", "cornerSegments"),
             ("LengthSegments", "lengthSegments"),
             ("WallThickness", "wallThickness"),
+            ("VerticalOffset", "verticalOffset"),
             ("Quadrants", "quadrants"),
             ("ThroatResolution", "throatResolution"),
             ("MouthResolution", "mouthResolution"),
@@ -347,6 +348,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
         raise ConfigError("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
 
     config: dict[str, Any] = {"formula": formula, "profile": profile, "mesh": mesh, "simType": sim_type}
+    # Global Scale multiplies every linear geometry dimension after profile
+    # evaluation (resolutions and mesh sizes stay in raw millimetres).
+    scale = _maybe_number(flat.get("Scale"))
+    if scale is not None:
+        config["scale"] = scale
     if morph:
         config["morph"] = morph
     if gcurve:

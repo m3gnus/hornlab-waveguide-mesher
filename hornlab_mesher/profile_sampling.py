@@ -544,8 +544,20 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
                 float(z_values[i, j]),
             )
 
+    # ATH's global Scale multiplies every linear geometry dimension after the
+    # profile (and morph-target ceil) is evaluated; Mesh.VerticalOffset then
+    # translates the scaled geometry along +y in raw millimetres.
+    geom_scale = float(eval_param(params.get("scale"), 0.0, 1.0))
+    if not math.isfinite(geom_scale) or geom_scale <= 0.0:
+        raise ValueError(f"Scale must be > 0, got {geom_scale!r}")
+    if geom_scale != 1.0:
+        inner *= geom_scale
+    vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
+    if vertical_offset != 0.0:
+        inner[:, :, 1] += vertical_offset
+
     outer = None
-    wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
+    wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0)) * geom_scale
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
     if enc_depth <= 0.0 and wall > 0.0:
         outer = _outer_offset_shell(inner, wall, full_circle=full_circle)

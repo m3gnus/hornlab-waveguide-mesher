@@ -283,3 +283,27 @@ def test_ath_reference_configs_build_end_to_end(case: str, tmp_path: Path):
     if case.startswith("250728solana"):
         assert result.physical_groups[3] == "SD2G0"
         assert result.physical_groups[4] == "I1-2"
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+def test_tritonia_scale_and_vertical_offset_match_ath_reference():
+    config = load_config(ATH_REFERENCE_ROOT / "260308tritonia" / "260308tritonia.txt")
+    params, formula, _mode = build_geometry_params(config)
+    assert formula == "OSSE"
+
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+
+    # ATH bem_mesh.geo facts: Scale = 0.702 multiplies the geometry (throat
+    # radius 18.091 -> 12.700, length 135 -> 94.77) and Mesh.VerticalOffset
+    # recentres it at y = 80.
+    throat_ring = inner[:, 0, :]
+    throat_radii = np.hypot(throat_ring[:, 0], throat_ring[:, 1] - 80.0)
+    assert np.allclose(throat_radii, 12.6999, rtol=0.0, atol=2.0e-3)
+    assert abs(float(np.max(inner[:, :, 2])) - 94.77) < 1.0e-2
+    # Implicit morph extents are ceiled BEFORE scaling: 208 / 180 raw mm.
+    mouth = inner[:, -1, :]
+    assert abs(float(np.max(np.abs(mouth[:, 0]))) - 208.0 * 0.702) < 1.0e-6
+    assert abs(float(np.max(np.abs(mouth[:, 1] - 80.0))) - 180.0 * 0.702) < 1.0e-6

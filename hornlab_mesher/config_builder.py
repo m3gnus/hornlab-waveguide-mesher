@@ -507,6 +507,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "gcurveSfN2": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n2", "gcurveSfN2"), default=2),
         "gcurveSfN3": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n3", "gcurveSfN3"), default=2),
         "quadrants": str(_pick(mesh, config, names=("quadrants",), default="1234")),
+        "scale": _float(config, profile, names=("scale", "Scale"), default=1.0),
+        "verticalOffset": _float(
+            mesh, config, names=("vertical_offset_mm", "verticalOffset"), default=0.0
+        ),
         "throatResolution": _float(mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0),
         "mouthResolution": _float(mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0),
         "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=25.0),
@@ -612,7 +616,9 @@ def build_from_config(
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
-        wall_thickness_mm=float(params["wallThickness"] or 0.0),
+        # The grid builder scales the outer shell offset by the global Scale;
+        # the rear-cap depth must match it.
+        wall_thickness_mm=float(params["wallThickness"] or 0.0) * float(params.get("scale", 1.0) or 1.0),
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
         closed=bool(grid.get("full_circle", True)),
         source_shape=int(float(params.get("sourceShape", 1) or 1)),
