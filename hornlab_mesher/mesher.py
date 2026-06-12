@@ -168,6 +168,10 @@ def _postprocess_mesh(
         raise MesherError("gmsh produced no triangle elements")
 
     points = np.asarray(mesh.points, dtype=np.float64)
+    # Gmsh stitches adjacent OCC patch boundaries with near-duplicate nodes
+    # (micrometres apart on fine grids); welding them prevents overlapping
+    # elements whose near-identical rows make dense BEM solves singular.
+    triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
     _snap_symmetry_planes(points, symmetry_snap_axes, symmetry_snap_tol_mm)
     triangles, phys = _remove_symmetry_plane_slivers(points, triangles, phys, symmetry_snap_axes)
     triangles, phys, _ = remove_degenerate_triangles(points, triangles, phys, min_quality=1.0e-4)
@@ -197,6 +201,7 @@ def _postprocess_mesh(
         raise MeshOrientationError(
             f"watertight mesh has {report.inconsistent_edges} inconsistent shared edges"
         )
+    points, triangles = _compact_unused_vertices(points, triangles)
     edge_stats = _edge_stats_by_tag(points, triangles, phys)
     if scale_to_metres:
         points = points * 0.001
@@ -228,6 +233,71 @@ def _postprocess_mesh(
         units="m" if _looks_like_metres(points) else "mm",
         edge_stats_mm=edge_stats,
     )
+
+
+def _weld_near_duplicate_vertices(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    *,
+    tol_mm: float = 5.0e-3,
+) -> np.ndarray:
+    """Remap triangle indices so vertices closer than ``tol_mm`` coincide.
+
+    Uses a spatial hash with cells of the weld tolerance; clusters merge to
+    the lowest vertex index. Orphaned duplicate vertices become unused and
+    are dropped by the final compaction. Returns the remapped triangles.
+    """
+
+    if len(points) == 0 or len(triangles) == 0:
+        return triangles
+    cells = np.floor(points / tol_mm).astype(np.int64)
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    for index, key in enumerate(map(tuple, cells)):
+        buckets.setdefault(key, []).append(index)
+
+    parent = np.arange(len(points))
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = int(parent[a])
+        return a
+
+    tol_sq = tol_mm * tol_mm
+    neighbor_offsets = [
+        (dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+    ]
+    for key, indices in buckets.items():
+        candidates: list[int] = []
+        for dx, dy, dz in neighbor_offsets:
+            candidates.extend(buckets.get((key[0] + dx, key[1] + dy, key[2] + dz), ()))
+        for i in indices:
+            pi = points[i]
+            for j in candidates:
+                if j <= i:
+                    continue
+                delta = points[j] - pi
+                if float(delta @ delta) <= tol_sq:
+                    ri, rj = find(i), find(j)
+                    if ri != rj:
+                        parent[max(ri, rj)] = min(ri, rj)
+
+    roots = np.fromiter((find(i) for i in range(len(points))), dtype=np.int64, count=len(points))
+    if np.array_equal(roots, np.arange(len(points))):
+        return triangles
+    return roots[triangles]
+
+
+def _compact_unused_vertices(
+    points: np.ndarray,
+    triangles: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    used = np.unique(triangles)
+    if len(used) == len(points):
+        return points, triangles
+    remap = np.full(len(points), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used), dtype=np.int64)
+    return points[used], remap[triangles]
 
 
 _SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25

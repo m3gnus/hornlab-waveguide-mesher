@@ -1057,3 +1057,30 @@ def test_remove_degenerate_triangles_drops_needle_slivers():
     # without the quality threshold the needle survives (area is nonzero)
     kept_all, _t, removed_none = remove_degenerate_triangles(points, tris, tags)
     assert removed_none == 0 and len(kept_all) == 2
+
+
+def test_weld_near_duplicate_vertices_merges_micrometre_pairs():
+    from hornlab_mesher.mesher import _compact_unused_vertices, _weld_near_duplicate_vertices
+
+    points = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [10.0, 0.0023, 0.0],  # 2.3 um from vertex 1
+            [10.0, 10.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    triangles = np.asarray([[0, 1, 2], [3, 4, 2]], dtype=np.int64)
+
+    welded = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
+    assert welded.tolist() == [[0, 1, 2], [1, 4, 2]]
+
+    compact_points, compact_triangles = _compact_unused_vertices(points, welded)
+    assert len(compact_points) == 4
+    assert compact_triangles.max() == 3
+
+    # well-separated vertices stay untouched
+    same = _weld_near_duplicate_vertices(points[:3], np.asarray([[0, 1, 2]]), tol_mm=5.0e-3)
+    assert same.tolist() == [[0, 1, 2]]
