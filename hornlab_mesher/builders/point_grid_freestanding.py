@@ -172,6 +172,8 @@ def _build_wg_freestanding_point_grid(
         outer_topology[:, out_j, :] = outer_points[:, src_j, :]
 
     builder = _GeoSurfaceBuilder()
+    # These per-point sizes are inert: density.py sets MeshSizeFromPoints=0
+    # and element sizing comes from the Restrict fields.
     inner_mesh_sizes = np.full(inner_points.shape[:2], 8.0, dtype=np.float64)
     inner_mesh_sizes[:, 0] = 5.0
     builder.add_grid("inner", inner_points, mesh_size=inner_mesh_sizes)

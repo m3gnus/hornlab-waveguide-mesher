@@ -512,11 +512,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=25.0),
         "subdomainSlices": _scalar_or_expr(mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""),
         "interfaceOffset": _scalar_or_expr(mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=0.0),
-        "interfaceResolution": _float(
+        "interfaceResolution": _optional_float(
             mesh,
             config,
             names=("interface_res_mm", "interfaceResolution"),
-            default=12.0,
         ),
         "sourceShape": _scalar_or_expr(source, config, names=("source_shape", "sourceShape"), default=1),
         "sourceRadius": _scalar_or_expr(source, config, names=("source_radius_mm", "sourceRadius"), default=-1),
@@ -641,7 +640,9 @@ def build_from_config(
             names=("enc_back_res_mm", "enc_back_resolution", "encBackResolution"),
             default=None,
         ),
-        interface_res_mm=_float(mesh, names=("interface_res_mm", "interface_res", "interfaceResolution"), default=12.0),
+        # No default: density falls back to mouth_res_mm, matching ATH where
+        # Mesh.InterfaceResolution is obsolete and interfaces use the mouth size.
+        interface_res_mm=_optional_float(mesh, names=("interface_res_mm", "interface_res", "interfaceResolution")),
     )
     scale_to_metres = _bool(mesh, names=("scale_to_metres", "scaleToMetres"), default=True)
     mesh_path, info = build_mesh_with_info(

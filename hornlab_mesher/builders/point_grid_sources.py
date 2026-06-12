@@ -114,7 +114,9 @@ def _add_geo_source_cap_surfaces(
     center[0] = 0.0
     center[1] = 0.0
 
-    if shape == SOURCE_SHAPE_FLAT_DISC:
+    # A rounded cap with zero height (flat auto source) shares the flat-disc
+    # construction; the arc-based path below cannot represent it.
+    if shape == SOURCE_SHAPE_FLAT_DISC or cap_height <= 1.0e-12:
         center_tag = builder.add_point(center, mesh_size=mesh_size)
         radial_lines = {
             i: builder.line_tags(center_tag, builder.point("inner", i, 0))
@@ -234,13 +236,19 @@ def _source_cap_radius(
         angle = math.radians(float(geometry.source_auto_angle_deg))
         if abs(math.sin(angle)) > 1.0e-9:
             return abs(float(throat_radius) / math.sin(angle))
+        # ATH matches the auto cap to the throat opening angle; a zero
+        # angle means an infinite wavefront radius, i.e. a flat source.
+        return math.inf
     return 3.75 * float(throat_radius)
 
 
 def _source_cap_height(throat_radius: float, geometry: PointGridHornGeometry) -> float:
     if _source_shape(geometry) != SOURCE_SHAPE_ROUNDED_CAP or throat_radius <= 1.0e-9:
         return 0.0
-    radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
+    radius = _source_cap_radius(throat_radius, geometry)
+    if not math.isfinite(radius):
+        return 0.0
+    radius = max(radius, throat_radius * 1.001)
     return radius - math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
 
 

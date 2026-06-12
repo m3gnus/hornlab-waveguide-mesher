@@ -166,7 +166,13 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     span = max(abs(a1 - a0), 1e-9)
     slope = (float(density.mouth_res_mm) - float(density.throat_res_mm)) / span
     intercept = float(density.throat_res_mm) - slope * float(a0)
-    axial_formula = f"{intercept:.12g} + ({slope:.12g}) * {coord}"
+    # Clamp the throat-to-mouth interpolation so geometry beyond the nominal
+    # axial bounds (e.g. R-OSSE rollback) never extrapolates past either size.
+    res_lo = min(float(density.throat_res_mm), float(density.mouth_res_mm))
+    res_hi = max(float(density.throat_res_mm), float(density.mouth_res_mm))
+    axial_formula = (
+        f"min(max({intercept:.12g} + ({slope:.12g}) * {coord}, {res_lo:.12g}), {res_hi:.12g})"
+    )
 
     fields: list[int] = []
 

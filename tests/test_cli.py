@@ -583,3 +583,28 @@ def test_infinite_baffle_build_closes_mouth_with_interface(tmp_path):
 
     mesh = meshio.read(result.mesh_path)
     assert float(mesh.points[:, 2].min()) >= -1.0e-9
+
+
+def test_auto_source_cap_is_flat_at_zero_throat_angle(tmp_path):
+    # ATH matches the auto source cap to the throat opening angle; the m2
+    # config omits Throat.Angle (default 0), so the source must stay flat.
+    cfg_path = tmp_path / "flat-source.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "Mesh.AngularSegments = 12\nMesh.LengthSegments = 4\n",
+        encoding="utf-8",
+    )
+
+    result = build_from_config(load_config(cfg_path), tmp_path / "flat-source.msh")
+
+    import meshio
+    import numpy as np
+
+    mesh = meshio.read(result.mesh_path)
+    source_tag = next(tag for tag, name in result.physical_groups.items() if name == "SD1D1001")
+    source_vertex_ids = set()
+    for block, data in zip(mesh.cells, mesh.cell_data.get("gmsh:physical", [])):
+        if block.type != "triangle":
+            continue
+        source_vertex_ids.update(block.data[data == source_tag].ravel().tolist())
+    source_z = mesh.points[sorted(source_vertex_ids), 2]
+    assert float(np.max(np.abs(source_z))) < 1.0e-9
