@@ -109,6 +109,27 @@ def waveguide_payload_to_mesher_config(payload: Mapping[str, Any]) -> dict[str, 
             )
         )
 
+    raw_cross_section = payload.get("cross_section")
+    if isinstance(raw_cross_section, Mapping):
+        cross_section = {
+            "exponent": _number(
+                raw_cross_section.get(
+                    "exponent",
+                    raw_cross_section.get("cross_section_exponent", 2.0),
+                ),
+                2.0,
+            ),
+            "aspectRatio": _number(
+                raw_cross_section.get(
+                    "aspectRatio",
+                    raw_cross_section.get("aspect_ratio", 1.0),
+                ),
+                1.0,
+            ),
+        }
+    else:
+        cross_section = {"exponent": 2.0, "aspectRatio": 1.0}
+
     enc_depth = _number(payload.get("enc_depth"), 0.0)
     config: dict[str, Any] = {
         "formula": formula,
@@ -128,10 +149,7 @@ def waveguide_payload_to_mesher_config(payload: Mapping[str, Any]) -> dict[str, 
                 "encBackResolution": _first_number(payload.get("enc_back_resolution")),
             }
         ),
-        "cross_section": {
-            "exponent": 2.0,
-            "aspectRatio": 1.0,
-        },
+        "cross_section": cross_section,
         "morph": _clean_dict(
             {
                 "morphTarget": payload.get("morph_target"),
@@ -280,7 +298,7 @@ def _grid_from_payload(payload: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarr
         outer_points = None
         if payload.get("outer_points") is not None:
             outer_points = _reshape_grid(payload["outer_points"], n_phi, n_length, "outer_points")
-        return inner_points, outer_points, bool(payload.get("full_circle", True))
+        return inner_points, outer_points, bool(payload.get("full_circle", payload.get("grid_closed", True)))
 
     config = waveguide_payload_to_mesher_config(payload)
     viewport = build_viewport_geometry_from_config(config)
@@ -409,7 +427,11 @@ def build_mesh_via_hornlab(
             geometry,
             density,
             mesh_path,
-            scale_to_metres=bool(payload.get("scale_to_metres", True)),
+            # Legacy consumers (BIGMEH wg_bem, Optimizer solver pipeline) load
+            # .msh files with a 0.001 scale factor, so this bridge preserves
+            # the old WG bridge's millimetre output contract. Callers can opt
+            # into metres by passing scale_to_metres=true in the payload.
+            scale_to_metres=bool(payload.get("scale_to_metres", False)),
         )
         if cancellation_callback is not None:
             cancellation_callback()
