@@ -449,6 +449,16 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure)
+    quadrants = _normalised_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
+    if mode == "freestanding" and quadrants in {"12", "14"}:
+        # The freestanding wall/rear-cap builder closes the cut cross-section
+        # with a cap in the symmetry plane, which is invalid for a half-model
+        # symmetry solve. Quarter (1, mirrored about both planes) and full
+        # (1234) work; half-models must use bare or infinite-baffle mode.
+        raise ConfigError(
+            f"freestanding half-models (Mesh.Quadrants {quadrants}) are not supported; "
+            "use quadrants 1 or 1234, or bare/infinite-baffle mode"
+        )
     enc_depth = 0.0
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure)
     if enclosure_obj is not None:

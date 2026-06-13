@@ -700,3 +700,26 @@ def test_frequency_aware_rear_grading_keeps_freestanding_meshes_small(tmp_path):
     # The shadowed rear/outer surfaces at 2.5 e/w (22.9 mm ceiling) must cost
     # markedly fewer elements than forcing the strict 6 e/w target there.
     assert graded.n_triangles < 0.75 * flat.n_triangles
+
+
+def test_freestanding_half_models_are_rejected(tmp_path):
+    base = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {"angular_segments": 16, "length_segments": 4},
+    }
+    for q in ("12", "14"):
+        cfg = {**base, "mesh": {**base["mesh"], "quadrants": q}}
+        with pytest.raises(ValueError, match="freestanding half-models"):
+            build_from_config(cfg, tmp_path / f"fs-{q}.msh")
+
+    # quarter, full freestanding and half-model bare/IB all remain valid
+    for q in ("1", "1234"):
+        r = build_from_config({**base, "mesh": {**base["mesh"], "quadrants": q}}, tmp_path / f"fs-ok-{q}.msh")
+        assert r.n_triangles > 0
+    for q in ("12", "14"):
+        r = build_from_config(
+            {**base, "mode": "bare", "mesh": {**base["mesh"], "quadrants": q}},
+            tmp_path / f"bare-{q}.msh",
+        )
+        assert r.n_triangles > 0
