@@ -24,6 +24,7 @@ from .point_grid_sources import (
 )
 from .point_grid_surfaces import (
     _SharedSurfaceBuilder,
+    _add_grid_wall_surfaces,
     _add_occ_bspline_patch_wall_surfaces,
     _snap_open_symmetry_grid,
     _validated_grid,
@@ -39,12 +40,21 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
 
     if build_mode is PointGridBuildMode.ENCLOSURE:
         inner_points = _snap_open_symmetry_grid(inner_points, closed=geometry.closed)
-        wall = _add_occ_bspline_patch_wall_surfaces(
-            inner_points,
-            closed=geometry.closed,
-        )
         cap_builder = _SharedSurfaceBuilder()
         cap_builder.add_grid("inner", inner_points)
+        if geometry.preserve_grid or not geometry.closed:
+            wall = _add_grid_wall_surfaces(
+                cap_builder,
+                "inner",
+                n_phi=inner_points.shape[0],
+                n_len=inner_points.shape[1],
+                closed=geometry.closed,
+            )
+        else:
+            wall = _add_occ_bspline_patch_wall_surfaces(
+                inner_points,
+                closed=geometry.closed,
+            )
         throat = _add_occ_source_cap_surfaces(cap_builder, inner_points, geometry)
         require_gmsh().model.occ.synchronize()
         if not throat:

@@ -905,6 +905,69 @@ def test_open_quarter_enclosure_uses_symmetry_axis_mouth_endpoints(tmp_path):
     assert mesh.cells_dict["triangle"].size > 0
 
 
+def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_path):
+    cfg = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {
+            "L": "160",
+            "s": "0.8",
+            "n": 5,
+            "h": 0,
+            "a": "45 - 10*cos(1*p)^2 -32*sin(p*1)^12",
+            "r0": 12.7,
+            "a0": 15.5,
+            "k": 0.5,
+            "q": 0.993,
+            "throatProfile": 1,
+            "circArcTermAngle": 1,
+        },
+        "mesh": {
+            "angularSegments": 80,
+            "lengthSegments": 20,
+            "cornerSegments": 4,
+            "quadrants": 1,
+            "wallThickness": 6,
+            "throatResolution": 5,
+            "mouthResolution": 25,
+            "rearResolution": 40,
+            "scaleToMetres": True,
+        },
+        "morph": {
+            "morphTarget": 1,
+            "morphCorner": 18,
+            "morphRate": 3,
+            "morphFixed": 0,
+            "morphAllowShrinkage": 0,
+        },
+        "source": {
+            "sourceShape": 0,
+            "sourceRadius": -1,
+            "sourceCurv": 0,
+        },
+        "enclosure": {
+            "depth": 500,
+            "space_l": 1,
+            "space_t": 304,
+            "space_r": 1,
+            "space_b": 304,
+            "edge": 1,
+            "edgeType": 1,
+            "frontMeshSize": 40,
+            "backMeshSize": 40,
+        },
+    }
+
+    build_from_config(cfg, tmp_path / "superduper-small-5-open-enclosure.msh")
+    mesh = meshio.read(tmp_path / "superduper-small-5-open-enclosure.msh")
+    triangles, tags = _triangles_and_tags(mesh)
+
+    assert int(np.count_nonzero(tags == 1)) >= 900
+    assert int(np.count_nonzero(tags == 2)) > 0
+    assert int(np.count_nonzero(tags == 3)) > 0
+    assert len(_tag_components(triangles, tags, 1)) == 1
+
+
 def test_point_grid_enclosure_mesh_supports_multiple_interface_slices(tmp_path):
     msh_path = build_mesh(
         PointGridHornGeometry(
