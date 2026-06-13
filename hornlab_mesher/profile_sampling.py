@@ -415,6 +415,36 @@ def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) ->
     return outer
 
 
+def _lookup_curve(
+    params: Mapping[str, Any], t_unit_values: np.ndarray
+) -> list[tuple[float, float]]:
+    """Sample a LOOKUP profile's (z, radius) curve at the axial stations.
+
+    The optimizer owns the PCHIP fit and passes a densely-sampled
+    ``lookupProfile`` of [z, r] pairs (so the canonical mesher needs no scipy
+    dependency). The base radius is linearly interpolated onto the mesher's
+    axial sample positions; with a dense source profile the interpolation
+    error is negligible. ``z(t)`` is linear over the profile's z-range.
+    """
+    raw = params.get("lookupProfile", params.get("lookup_profile"))
+    if raw is None:
+        raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
+    profile = np.asarray(raw, dtype=np.float64)
+    if profile.ndim != 2 or profile.shape[1] != 2 or profile.shape[0] < 2:
+        raise ValueError("lookupProfile must be an array of at least two [z, r] pairs")
+    if not np.all(np.isfinite(profile)):
+        raise ValueError("lookupProfile must contain only finite values")
+    z_src = profile[:, 0]
+    r_src = profile[:, 1]
+    if np.any(np.diff(z_src) <= 0.0):
+        raise ValueError("lookupProfile z values must be strictly increasing")
+    z0 = float(z_src[0])
+    z1 = float(z_src[-1])
+    z_at_t = z0 + np.asarray(t_unit_values, dtype=np.float64) * (z1 - z0)
+    r_at_t = np.interp(z_at_t, z_src, r_src)
+    return [(float(z), float(r)) for z, r in zip(z_at_t, r_at_t)]
+
+
 def _raw_radial_grid(
     params: Mapping[str, Any],
     angles: np.ndarray,
@@ -429,9 +459,15 @@ def _raw_radial_grid(
     z_values = np.empty((len(angles), n_length + 1), dtype=np.float64)
     max_fixed_len = 0.0
     max_total_len = 0.0
+    lookup_curve = _lookup_curve(params, t_unit_values) if formula == "LOOKUP" else None
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
-        if formula == "OSSE":
+        if formula == "LOOKUP":
+            # LOOKUP defines a free-form axisymmetric base radius r(z); the
+            # cross-section (superellipse scale) and morph are layered on top
+            # exactly as for OSSE, so the base curve is phi-independent.
+            curve = lookup_curve
+        elif formula == "OSSE":
             _main_len, total, ext_len, slot_len = osse_length_config(params, float(phi))
             max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
             max_total_len = max(max_total_len, float(total))

@@ -181,8 +181,10 @@ def _normalise_formula(value: Any) -> str:
     raw = str(value or "OSSE").strip().upper().replace("_", "-")
     if raw == "ROSSE":
         raw = "R-OSSE"
-    if raw not in {"OSSE", "R-OSSE"}:
-        raise ConfigError(f"formula must be OSSE or R-OSSE/ROSSE, got {value!r}")
+    if raw not in {"OSSE", "R-OSSE", "LOOKUP"}:
+        raise ConfigError(
+            f"formula must be OSSE, R-OSSE/ROSSE, or LOOKUP, got {value!r}"
+        )
     return raw
 
 
@@ -203,6 +205,14 @@ def _validate_formula_specific_keys(
         names = ("R_mm", "R", "tmax", "m", "r", "b")
         if _has_any(profile, config, names=names):
             raise ConfigError("R-OSSE-only profile keys are not valid with formula OSSE")
+        return
+
+    if formula == "LOOKUP":
+        # LOOKUP carries only a precomputed profile; analytic coefficients of
+        # either formula family are out of place.
+        names = ("L_mm", "L", "n", "s", "rot_deg", "rot", "R_mm", "R", "tmax", "m", "r", "b")
+        if _has_any(profile, config, names=names):
+            raise ConfigError("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
         return
 
     names = ("L_mm", "L", "n", "s", "rot_deg", "rot")
@@ -283,7 +293,7 @@ def _validate_formula_features(
     config: Mapping[str, Any],
 ) -> None:
     _validate_static_gcurve_type(gcurve, config)
-    if formula == "R-OSSE" and _gcurve_could_be_active(gcurve, config):
+    if formula != "OSSE" and _gcurve_could_be_active(gcurve, config):
         raise ConfigError("guiding curves are only supported with formula OSSE")
 
 
@@ -460,6 +470,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
 
     common: dict[str, Any] = {
         "type": formula,
+        "lookupProfile": _pick(
+            profile, config, names=("lookupProfile", "lookup_profile"), default=None
+        ),
         "r0": _scalar_or_expr(profile, config, names=("r0_mm", "r0"), default=12.7),
         "a": _scalar_or_expr(profile, config, names=("a_deg", "a"), default=60.0),
         "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=15.5),
@@ -560,6 +573,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 "rot": _scalar_or_expr(profile, config, names=("rot_deg", "rot"), default=0.0),
             }
         )
+    elif formula == "LOOKUP":
+        # No analytic coefficients: the precomputed lookupProfile (threaded
+        # into common above) fully defines the radial profile.
+        pass
     else:
         common.update(
             {

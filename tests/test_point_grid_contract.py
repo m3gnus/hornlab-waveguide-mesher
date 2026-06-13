@@ -1084,3 +1084,52 @@ def test_weld_near_duplicate_vertices_merges_micrometre_pairs():
     # well-separated vertices stay untouched
     same = _weld_near_duplicate_vertices(points[:3], np.asarray([[0, 1, 2]]), tol_mm=5.0e-3)
     assert same.tolist() == [[0, 1, 2]]
+
+
+def test_lookup_point_grid_follows_pchip_profile():
+    """A LOOKUP profile builds a point grid whose throat/mouth radii and
+    monotonic radial growth follow the supplied dense [z, r] profile."""
+    # Dense, strictly increasing r(z) profile (what the optimizer emits).
+    z = np.linspace(0.0, 150.0, 121)
+    r = np.interp(z, [0.0, 30.0, 70.0, 110.0, 150.0], [12.7, 28.0, 60.0, 110.0, 170.0])
+    profile = [[float(zi), float(ri)] for zi, ri in zip(z, r)]
+
+    params = {
+        "type": "LOOKUP",
+        "lookupProfile": profile,
+        "angularSegments": 48,
+        "lengthSegments": 24,
+        "throatResolution": 6.0,
+        "mouthResolution": 14.0,
+        "rearResolution": 28.0,
+        "quadrants": "1234",
+        "wallThickness": 0.0,
+        "encDepth": 0.0,
+    }
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    pts = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+
+    radial = np.hypot(pts[..., 0], pts[..., 1])
+    # Throat ring ~= r0, mouth ring ~= mouth radius from the profile.
+    assert np.allclose(radial[:, 0], 12.7, atol=1e-6)
+    assert np.allclose(radial[:, -1], 170.0, atol=1e-6)
+    # Axisymmetric base profile: every azimuth shares the same radius per ring.
+    assert np.allclose(radial, radial[0:1, :], atol=1e-9)
+    # Radius grows monotonically throat -> mouth for this convex profile.
+    assert np.all(np.diff(radial[0]) > 0.0)
+    # z spans the profile range.
+    assert pts[..., 2].min() == pytest.approx(0.0, abs=1e-9)
+    assert pts[..., 2].max() == pytest.approx(150.0, abs=1e-6)
+
+
+def test_lookup_rejects_missing_profile():
+    params = {
+        "type": "LOOKUP",
+        "angularSegments": 16,
+        "lengthSegments": 8,
+        "quadrants": "1234",
+    }
+    with pytest.raises(ValueError, match="lookupProfile"):
+        build_point_grid(params)

@@ -47,7 +47,7 @@ def _normalize_formula(value: Any) -> str:
     raw = str(value or "R-OSSE").strip().upper().replace("_", "-")
     if raw == "ROSSE":
         return "R-OSSE"
-    if raw not in {"OSSE", "R-OSSE"}:
+    if raw not in {"OSSE", "R-OSSE", "LOOKUP"}:
         raise ValueError(
             f"formula_type '{value}' is not supported for formula-only cabinet builds. "
             "Provide inner_points/grid_n_phi/grid_n_length for precomputed payloads."
@@ -93,6 +93,17 @@ def waveguide_payload_to_mesher_config(payload: Mapping[str, Any]) -> dict[str, 
                     "throatProfile": payload.get("throat_profile"),
                     "circArcRadius": payload.get("circ_arc_radius"),
                     "circArcTermAngle": payload.get("circ_arc_term_angle"),
+                }
+            )
+        )
+    elif formula == "LOOKUP":
+        # LOOKUP carries a precomputed [z, r] profile (PCHIP-fit upstream)
+        # instead of analytic formula coefficients.
+        profile.update(
+            _clean_dict(
+                {
+                    "lookupProfile": payload.get("lookup_profile")
+                    or payload.get("lookupProfile"),
                 }
             )
         )
