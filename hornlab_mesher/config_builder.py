@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from . import cost
 from .config_parser import ConfigError
 from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGeometry
 from .mesher import build_mesh_with_info
@@ -36,6 +37,11 @@ class BuildResult:
     # Per physical-group mesh validity: edge stats in mm plus the highest
     # frequency the group resolves at the configured elements-per-wavelength.
     mesh_report: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Conservative fully-resolved frequency (lowest valid_f_max_hz across
+    # groups) and the dense-BEM solve cost (RAM, per-freq time, feasibility)
+    # for the built triangle count. See hornlab_mesher.cost.
+    valid_f_max_hz: float | None = None
+    solve_cost: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +55,8 @@ class BuildResult:
             "quadrants": self.quadrants,
             "native_symmetry_plane": self.native_symmetry_plane,
             "mesh_report": self.mesh_report,
+            "valid_f_max_hz": self.valid_f_max_hz,
+            "solve_cost": self.solve_cost,
         }
 
 
@@ -744,6 +752,7 @@ def build_from_config(
         geometry, density, output_path, scale_to_metres=scale_to_metres
     )
     quadrants = _normalised_quadrants(params.get("quadrants"))
+    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm, density)
     return BuildResult(
         mesh_path=mesh_path,
         formula=formula,
@@ -754,7 +763,9 @@ def build_from_config(
         physical_groups=info.physical_groups,
         quadrants=quadrants,
         native_symmetry_plane=_native_symmetry_plane_for_quadrants(quadrants),
-        mesh_report=_mesh_report(info.physical_groups, info.edge_stats_mm, density),
+        mesh_report=mesh_report,
+        valid_f_max_hz=cost.worst_valid_f_max_hz(mesh_report),
+        solve_cost=cost.estimate_solve_cost(info.n_triangles).to_dict(),
     )
 
 

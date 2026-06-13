@@ -23,6 +23,12 @@ from .geometry import (
     OsseHornGeometry,
     RosseHornGeometry,
 )
+from .cost import (
+    SolveCostEstimate,
+    estimate_solve_cost,
+    estimate_triangle_count,
+    worst_valid_f_max_hz,
+)
 from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
 from .tags import PhysicalGroup
 
@@ -55,6 +61,10 @@ __all__ = [
     "RosseHornGeometry",
     "PhysicalGroup",
     "MesherError",
+    "SolveCostEstimate",
+    "estimate_solve_cost",
+    "estimate_triangle_count",
+    "worst_valid_f_max_hz",
     "build_from_config",
     "build_geometry_params",
     "build_mesh",
