@@ -364,6 +364,37 @@ def test_build_from_config_osse_freestanding(tmp_path):
     assert result.n_vertices > 0
     assert result.n_triangles > 0
     assert {1, 2}.issubset(result.physical_groups)
+    # Closed mouth -> the metal solver keeps the strict cut-plane open-edge guard.
+    assert result.native_check_open_edges is True
+    assert result.as_dict()["native_check_open_edges"] is True
+
+
+def test_build_from_config_osse_bare_relaxes_open_edge_guard(tmp_path):
+    result = build_from_config(
+        {
+            "formula": "OSSE",
+            "mode": "bare",
+            "profile": {
+                "L_mm": 80.0,
+                "r0_mm": 10.0,
+                "a_deg": 45.0,
+                "a0_deg": 10.0,
+            },
+            "mesh": {
+                "angular_segments": 12,
+                "length_segments": 4,
+                "throat_res_mm": 8.0,
+                "mouth_res_mm": 30.0,
+            },
+        },
+        tmp_path / "osse_bare.msh",
+    )
+
+    assert result.mode == "bare"
+    # A bare horn radiates from an open mouth: its mirror-reduced rim is a real
+    # free edge off the symmetry planes, so the open-edge guard must be relaxed.
+    assert result.native_check_open_edges is False
+    assert result.as_dict()["native_check_open_edges"] is False
 
 
 def test_build_from_config_rosse_enclosure(tmp_path):
@@ -402,6 +433,7 @@ def test_build_from_config_rosse_enclosure(tmp_path):
     assert result.n_vertices > 0
     assert result.n_triangles > 0
     assert {1, 2}.issubset(result.physical_groups)
+    assert result.native_check_open_edges is True
 
 
 def test_build_from_ath_enclosure_fixture(tmp_path):

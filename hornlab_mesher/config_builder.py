@@ -34,6 +34,12 @@ class BuildResult:
     # reduced mesh requires (hornlab-metal-bem SolveConfig.native_symmetry_plane).
     quadrants: str = "1234"
     native_symmetry_plane: str | None = None
+    # Whether the metal solver's cut-plane open-edge guard applies. A bare horn
+    # is an open shell whose mirror-reduced rim (the open mouth) is a real free
+    # edge off the symmetry planes, so the guard must be relaxed
+    # (hornlab-metal-bem SolveConfig.native_check_open_edges=False). Closed modes
+    # cap the mouth and keep the strict check.
+    native_check_open_edges: bool = True
     # Per physical-group mesh validity: edge stats in mm plus the highest
     # frequency the group resolves at the configured elements-per-wavelength.
     mesh_report: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -54,6 +60,7 @@ class BuildResult:
             "physical_groups": {str(k): v for k, v in self.physical_groups.items()},
             "quadrants": self.quadrants,
             "native_symmetry_plane": self.native_symmetry_plane,
+            "native_check_open_edges": self.native_check_open_edges,
             "mesh_report": self.mesh_report,
             "valid_f_max_hz": self.valid_f_max_hz,
             "solve_cost": self.solve_cost,
@@ -629,6 +636,19 @@ def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
     }.get(_normalised_quadrants(quadrants))
 
 
+def _native_check_open_edges_for_mode(mode: str) -> bool:
+    """Whether the metal solver's cut-plane open-edge guard applies to ``mode``.
+
+    A ``bare`` horn is an open shell radiating from an open mouth, so its
+    mirror-reduced rim is a real free edge off the symmetry planes and the guard
+    must be disabled. Closed modes (freestanding / enclosure / infinite-baffle)
+    cap the mouth, so their reduced rim lies entirely on the cut planes and the
+    strict check stays on.
+    """
+
+    return mode != "bare"
+
+
 def _mesh_report(
     info_physical_groups: Mapping[int, str],
     edge_stats_mm: Mapping[int, Mapping[str, float]],
@@ -763,6 +783,7 @@ def build_from_config(
         physical_groups=info.physical_groups,
         quadrants=quadrants,
         native_symmetry_plane=_native_symmetry_plane_for_quadrants(quadrants),
+        native_check_open_edges=_native_check_open_edges_for_mode(mode),
         mesh_report=mesh_report,
         valid_f_max_hz=cost.worst_valid_f_max_hz(mesh_report),
         solve_cost=cost.estimate_solve_cost(info.n_triangles).to_dict(),
