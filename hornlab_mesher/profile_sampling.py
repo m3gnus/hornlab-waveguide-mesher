@@ -420,7 +420,7 @@ def _lookup_curve(
 ) -> list[tuple[float, float]]:
     """Sample a LOOKUP profile's (z, radius) curve at the axial stations.
 
-    The optimizer owns the PCHIP fit and passes a densely-sampled
+    The caller owns the PCHIP fit and passes a densely-sampled
     ``lookupProfile`` of [z, r] pairs (so the canonical mesher needs no scipy
     dependency). The base radius is linearly interpolated onto the mesher's
     axial sample positions; with a dense source profile the interpolation

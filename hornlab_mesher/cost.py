@@ -1,9 +1,8 @@
 """Pre-mesh size and BEM solve-cost prediction for canonical meshes.
 
 This is the canonical home for the triangle-count / dense-BEM-cost math so
-every consumer of ``build_from_config`` (Waveguide Generator, the optimizer,
-BIGMEH) gets the same forecast a ``BuildResult`` already carries the per-group
-``valid_f_max_hz`` from. It is the twin of the Fusion STEP pipeline's
+every consumer of ``build_from_config`` gets the same forecast a
+``BuildResult`` already carries the per-group ``valid_f_max_hz`` from. It is the twin of the Fusion STEP pipeline's
 ``HornLab/scripts/wg_mesh_sizing.py``; the constants and formulas are kept
 identical on purpose (the two mesh generators are separate codebases but must
 agree). Pure stdlib so any consumer can import it.

@@ -1,9 +1,9 @@
-"""Experimental BIGMEH/WG cabinet compatibility bridge.
+"""Experimental cabinet compatibility bridge.
 
-This module replaces the deleted Waveguide Generator
-``services.hornlab_mesher_bridge`` import path for private BIGMEH and
-Optimizer callers. It accepts the same WG-style payload dictionaries, but it
-uses the standalone mesher's native Python point-grid and Gmsh builders.
+This module provides a compatibility shim for the deleted in-tree mesher
+bridge import path used by downstream cabinet callers. It accepts the same
+Waveguide Generator-style payload dictionaries, but it uses the standalone
+mesher's native Python point-grid and Gmsh builders.
 """
 
 from __future__ import annotations
@@ -248,7 +248,7 @@ def _enclosure_from_payload(payload: Mapping[str, Any]) -> HornEnclosure | None:
         space_r_mm=_number(payload.get("enc_space_r"), 25.0),
         space_b_mm=_number(payload.get("enc_space_b"), 25.0),
         # The shared rounded-rectangle enclosure builder creates degenerate
-        # lines at exactly zero edge depth. BIGMEH uses zero to mean "sharp";
+        # lines at exactly zero edge depth. Callers use zero to mean "sharp";
         # a 0.1 mm edge preserves that geometry contract for BEM use while
         # staying above OCC's degenerate-curve tolerance.
         edge_mm=max(_number(payload.get("enc_edge"), 18.0), _SHARP_EDGE_EPS_MM),
@@ -439,9 +439,9 @@ def build_mesh_via_hornlab(
             geometry,
             density,
             mesh_path,
-            # Legacy consumers (BIGMEH wg_bem, Optimizer solver pipeline) load
+            # Legacy consumers (downstream BEM/solver pipelines) load
             # .msh files with a 0.001 scale factor, so this bridge preserves
-            # the old WG bridge's millimetre output contract. Callers can opt
+            # the old bridge's millimetre output contract. Callers can opt
             # into metres by passing scale_to_metres=true in the payload.
             scale_to_metres=bool(payload.get("scale_to_metres", False)),
         )
@@ -458,7 +458,7 @@ def build_mesh_via_hornlab(
         "units": info.units,
         "source": "hornlab_waveguide_mesher_experimental_cabinet",
         "generatedBy": "hornlab-waveguide-mesher",
-        # Mesh validity + dense-BEM solve cost, so the optimizer/BIGMEH get the
+        # Mesh validity + dense-BEM solve cost, so downstream callers get the
         # same size/cost/trustworthy-band forecast as the build_from_config path.
         "meshReport": mesh_report,
         "validFreqMaxHz": worst_valid_f_max_hz(mesh_report),
