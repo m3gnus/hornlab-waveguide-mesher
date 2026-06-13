@@ -7,6 +7,10 @@ name = "hornlab-waveguide-mesher"
 version = "0.1.0"
 description = "OSSE/R-OSSE waveguide geometry and Gmsh mesher"
 requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+]
 dependencies = [
     "gmsh",
     "meshio",
