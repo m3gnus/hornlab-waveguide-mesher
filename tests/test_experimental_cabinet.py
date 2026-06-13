@@ -127,6 +127,13 @@ def test_formula_only_osse_horn_in_box_builds(tmp_path):
     assert result["stats"]["units"] == "mm"
     assert _node_z_extent(result["msh_text"]) > 50.0
     assert {"1", "2"}.issubset(result["stats"]["tagCounts"])
+    # Size/cost/trustworthy-band forecast carried for the optimizer/BIGMEH.
+    solve_cost = result["stats"]["solveCost"]
+    assert solve_cost["n_triangles"] == result["stats"]["elementCount"]
+    assert solve_cost["ram_bytes"] > 0
+    assert solve_cost["feasibility"] in {"ok", "caution", "warn", "infeasible"}
+    assert result["stats"]["validFreqMaxHz"] is None or result["stats"]["validFreqMaxHz"] > 0
+    assert result["stats"]["meshReport"]
 
 
 def test_raw_point_grid_payload_builds(tmp_path):

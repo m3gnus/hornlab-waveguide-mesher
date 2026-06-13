@@ -17,7 +17,8 @@ from typing import Any, Mapping
 import meshio
 import numpy as np
 
-from hornlab_mesher.config_builder import _number_list
+from hornlab_mesher.config_builder import _mesh_report, _number_list
+from hornlab_mesher.cost import estimate_solve_cost, worst_valid_f_max_hz
 from hornlab_mesher.geometry import HornEnclosure, MeshDensity, PointGridHornGeometry
 from hornlab_mesher.mesher import build_mesh_with_info
 from hornlab_mesher.viewport import build_viewport_geometry_from_config
@@ -449,6 +450,7 @@ def build_mesh_via_hornlab(
         msh_text = out_path.read_text(encoding="utf-8", errors="replace")
         canonical = _canonical_mesh_from_msh(out_path)
 
+    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm, density)
     stats = {
         "nodeCount": int(info.n_vertices),
         "elementCount": int(info.n_triangles),
@@ -456,6 +458,11 @@ def build_mesh_via_hornlab(
         "units": info.units,
         "source": "hornlab_waveguide_mesher_experimental_cabinet",
         "generatedBy": "hornlab-waveguide-mesher",
+        # Mesh validity + dense-BEM solve cost, so the optimizer/BIGMEH get the
+        # same size/cost/trustworthy-band forecast as the build_from_config path.
+        "meshReport": mesh_report,
+        "validFreqMaxHz": worst_valid_f_max_hz(mesh_report),
+        "solveCost": estimate_solve_cost(info.n_triangles).to_dict(),
     }
     result: dict[str, Any] = {"msh_text": msh_text, "stats": stats}
     if include_canonical:
