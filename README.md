@@ -49,7 +49,9 @@ Implemented:
 - ATH text-config import with ATH defaults, global Scale/VerticalOffset,
   and azimuth-dependent profile expressions.
 - Orientation validation and ABEC-compatible physical tags.
-- Non-OSSE geometry requests are rejected by the Python CLI/config parser.
+- Config-driven OSSE and R-OSSE requests are supported. Experimental LOOKUP
+  profiles are accepted for compatibility paths, but are not a stable public
+  mesh-builder API.
 
 ## Install For Development
 

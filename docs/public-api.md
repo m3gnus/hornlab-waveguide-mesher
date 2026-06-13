@@ -26,8 +26,18 @@ Gmsh `.msh` file. It returns `BuildResult` from `hornlab_mesher.cli`, with:
 - `n_triangles`
 - `units`
 - `physical_groups`
+- `quadrants`
+- `native_symmetry_plane`
+- `native_check_open_edges`
+- `mesh_report`
+- `valid_f_max_hz`
+- `solve_cost`
 
 Use this path when accepting TOML, JSON, or imported ATH/WG-style text configs.
+`BuildResult.as_dict()` serializes the same fields with `mesh_path` and
+physical-group keys converted to strings.
+Experimental LOOKUP profiles are accepted as TOML/JSON compatibility input,
+not as stable public API.
 
 ### Direct Mesh Builds
 

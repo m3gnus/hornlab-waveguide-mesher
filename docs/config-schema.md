@@ -17,7 +17,7 @@ Unsupported extensions fail before any geometry is built.
 
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, and `ROSSE`. `ROSSE` normalizes to `R-OSSE`. |
+| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, `ROSSE`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. |
 | `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
 | `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
 | `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
@@ -128,7 +128,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `subdomain_slices` | `subdomainSlices` | empty | Comma/list of point-grid ring indices for interfaces. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
 | `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. |
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
-| `preserve_grid` | `preserveGrid` | `false` | Used by the bare inner-surface builder. |
+| `preserve_grid` | `preserveGrid` | `false` | Forces faceted point-grid wall surfaces instead of grouped OCC patches. Leave false for fast grouped-wall enclosure topology unless a config explicitly needs point-grid wall faces. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
 | `max_frequency_hz` | `maxFrequencyHz`, `maxFrequency`, `f_max_hz` | none | Frequency-aware sizing: clamps each resolution to `c / (epw_role * f)` so the band stays resolved. The mm knobs still apply where finer. |
 | `elements_per_wavelength` | `elementsPerWavelength` | `6.0` | Generic target used for groups without a role override and for the `mesh_report` validity figures. |
@@ -153,6 +153,12 @@ Sampling modes accepted by the profile layer:
 - `uniform`, `linear`, `canonical`, `default`
 - `ath`, `ath-parity`, `ath-zmap`, `ath-default`, `ath-default-zmap`,
   `default-zmap`
+
+## Experimental LOOKUP Profiles
+
+`formula = "LOOKUP"` accepts `lookupProfile` or `lookup_profile` in TOML/JSON
+as an ordered list of `[z_mm, r_mm]` samples. This is a compatibility input for
+archived/generated configs, not a stable public mesh-builder API.
 - `zmap`, `z-map`, `custom`, `custom-zmap`, `custom-z-map`
 
 ## Enclosure Keys

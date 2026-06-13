@@ -42,7 +42,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         inner_points = _snap_open_symmetry_grid(inner_points, closed=geometry.closed)
         cap_builder = _SharedSurfaceBuilder()
         cap_builder.add_grid("inner", inner_points)
-        if geometry.preserve_grid or not geometry.closed:
+        if geometry.preserve_grid:
             wall = _add_grid_wall_surfaces(
                 cap_builder,
                 "inner",

@@ -8,6 +8,7 @@ import pytest
 
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
 from hornlab_mesher.builders.enclosure import _add_curve_loop_from_curves
+from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
 from hornlab_mesher.builders.point_grid_surfaces import _rear_rim_points
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
@@ -905,6 +906,57 @@ def test_open_quarter_enclosure_uses_symmetry_axis_mouth_endpoints(tmp_path):
     assert mesh.cells_dict["triangle"].size > 0
 
 
+def test_open_quarter_enclosure_default_keeps_fast_inner_wall_grouping():
+    gmsh = pytest.importorskip("gmsh")
+    mouth = np.asarray(
+        [
+            [60.0, 0.0],
+            [92.0, 28.0],
+            [110.0, 75.0],
+            [74.0, 104.0],
+            [0.0, 115.0],
+        ],
+        dtype=np.float64,
+    )
+    inner = np.zeros((mouth.shape[0], 6, 3), dtype=np.float64)
+    for index, scale in enumerate(np.linspace(0.25, 1.0, inner.shape[1])):
+        inner[:, index, 0] = mouth[:, 0] * scale
+        inner[:, index, 1] = mouth[:, 1] * scale
+        inner[:, index, 2] = 120.0 * index / (inner.shape[1] - 1)
+
+    initialized_here = False
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+        initialized_here = True
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("open-quarter-fast-topology")
+        built = build_point_grid_geometry(
+            PointGridHornGeometry(
+                inner_points=inner,
+                closed=False,
+                preserve_grid=False,
+                enclosure=HornEnclosure(
+                    depth_mm=180.0,
+                    space_l_mm=20.0,
+                    space_t_mm=20.0,
+                    space_r_mm=20.0,
+                    space_b_mm=20.0,
+                    edge_mm=8.0,
+                    edge_type=1,
+                    plan_type=1,
+                    depth_margin_mm=5.0,
+                ),
+            )
+        )
+        assert len(built.mesh_surface_groups["inner"]) == 1
+    finally:
+        gmsh.clear()
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()
+
+
 def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_path):
     cfg = {
         "formula": "OSSE",
@@ -931,6 +983,7 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
             "throatResolution": 5,
             "mouthResolution": 25,
             "rearResolution": 40,
+            "preserveGrid": True,
             "scaleToMetres": True,
         },
         "morph": {
