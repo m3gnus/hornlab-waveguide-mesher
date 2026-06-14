@@ -643,16 +643,28 @@ def build_enclosure_box(
             float(enclosure.space_b_mm),
         ),
     )
+    # The flat front baffle is the ring of width (smallest spacing - edge)
+    # between the mouth rim and where the edge roundover begins. As edge nears
+    # that spacing the ring collapses to a sub-micron sliver that OCC/Gmsh cannot
+    # build, so the front face is dropped and the enclosure is left open at its
+    # front rim -- a hole the (mirrored) BEM solve leaks through. Hold the edge a
+    # small but meshable clearance below the smallest spacing so a real flat
+    # baffle always remains. The clearance must clear OCC's modeling tolerance
+    # (~1e-4 mm) with margin; 0.1 mm is empirically safe, with 2% headroom so
+    # larger enclosures keep a proportionate baffle.
+    flat_face_clearance = max(0.1, margin_edge_limit * 0.02)
+    edge_upper = max(0.0, margin_edge_limit - flat_face_clearance)
     clamped_edge = max(
         0.0,
-        min(float(enclosure.edge_mm), margin_edge_limit, half_w - 0.1, half_h - 0.1),
+        min(float(enclosure.edge_mm), edge_upper, half_w - 0.1, half_h - 0.1),
     )
-    if margin_edge_limit > 0.0 and clamped_edge >= margin_edge_limit:
-        # Exact tangency is valid user input, but it pinches the front baffle
-        # face enough for OCC/Gmsh to fail. Keep a tiny modeling clearance
-        # while still enforcing edge_mm <= smallest enclosure margin.
-        tangent_clearance = min(1e-3, margin_edge_limit * 1e-3)
-        clamped_edge = max(0.0, margin_edge_limit - tangent_clearance)
+    if margin_edge_limit > 0.0 and float(enclosure.edge_mm) > edge_upper:
+        logger.warning(
+            "[hornlab-mesher] enc edge (%.2f mm) too close to the smallest "
+            "enclosure spacing (%.2f mm) to leave a meshable front baffle; "
+            "clamping edge to %.2f mm so the enclosure front closes.",
+            float(enclosure.edge_mm), margin_edge_limit, clamped_edge,
+        )
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
     front_mesh_size = float(enclosure.front_mesh_size_mm or 0.0)
     back_mesh_size = float(enclosure.back_mesh_size_mm or 0.0)

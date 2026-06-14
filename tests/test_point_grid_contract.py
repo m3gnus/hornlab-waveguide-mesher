@@ -1128,6 +1128,57 @@ def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
+def test_reduced_enclosure_closes_when_edge_roundover_meets_spacing(tmp_path):
+    # Regression for WG run 260614_tritonia_6: an edge roundover equal to (or
+    # larger than) the smallest enclosure spacing pinched the flat front baffle to
+    # a sub-micron sliver that OCC dropped, leaving the box open at its front rim.
+    # On a quarter mesh that off-plane rim made the native BEM open-edge guard
+    # reject the solve. The builder now clamps the edge below the spacing so the
+    # baffle stays meshable: the only open edges are the symmetry cuts.
+    cfg = {
+        "formula": "ROSSE",
+        "mode": "enclosure",
+        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
+        "mesh": {
+            "angular_segments": 32,
+            "length_segments": 16,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 26.0,
+            "rear_res_mm": 25.0,
+            "quadrants": "1",
+        },
+        "enclosure": {
+            "depth_mm": 220.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 25.0,
+            "edge_mm": 25.0,  # edge == spacing: the tangent case that left the box open
+            "edge_type": 1,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+    result = build_from_config(cfg, tmp_path / "enclosure-edge-eq-space.msh")
+    assert result.native_symmetry_plane == "yz+xz"
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    # Box closed: every open boundary edge lies on a symmetry cut plane (x=0/y=0),
+    # i.e. no off-plane front rim survives.
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        on_cut_plane = any(
+            abs(points[a][axis]) < 1.0e-7 and abs(points[b][axis]) < 1.0e-7
+            for axis in (0, 1)
+        )
+        assert on_cut_plane, "enclosure front rim left open; edge roundover not clamped below spacing"
+
+
 def test_point_grid_enclosure_mesh_supports_multiple_interface_slices(tmp_path):
     msh_path = build_mesh(
         PointGridHornGeometry(
