@@ -170,6 +170,8 @@ def _add_occ_source_cap_surfaces(
     builder: _SharedSurfaceBuilder,
     inner_points: np.ndarray,
     geometry: PointGridHornGeometry,
+    *,
+    boundary_phi_groups: list[list[int]] | None = None,
 ) -> list[tuple[int, int]]:
     shape = _validate_source_shape(geometry)
     n_phi = inner_points.shape[0]
@@ -209,15 +211,27 @@ def _add_occ_source_cap_surfaces(
         radial_lines[i] = builder.bspline_tags(control_tags)
 
     cap: list[tuple[int, int]] = []
-    spans = _source_cap_phi_groups(n_phi, closed=geometry.closed)
     if geometry.closed:
-        for indices in spans:
+        for indices in _source_cap_phi_groups(n_phi, closed=True):
             start = indices[0]
             end = indices[-1]
             phi_curve = builder.bspline_tags([builder.point("inner", i, 0) for i in indices])
             cap.append(builder.surface([phi_curve, radial_lines[end], -radial_lines[start]]))
         return cap
 
+    # Open sector cap: the cap's throat boundary must reuse the same phi spans
+    # as the inner wall so the two surfaces produce an identical throat curve
+    # and weld into a watertight seam. When the enclosure builds a BSpline-patch
+    # wall it passes that wall's exact ``boundary_phi_groups`` here; the cap's
+    # own ``_source_cap_phi_groups`` split would diverge from the wall and leave
+    # an off-plane open-edge ring at the throat that the native reduced-domain
+    # solve rejects. Falling back to the cap's own spans keeps every other path
+    # (preserved faceted wall, non-enclosure caps) byte-for-byte unchanged.
+    spans = (
+        boundary_phi_groups
+        if boundary_phi_groups is not None
+        else _source_cap_phi_groups(n_phi, closed=False)
+    )
     boundary: list[int] = []
     for indices in spans:
         boundary.append(builder.bspline_tags([builder.point("inner", i, 0) for i in indices]))

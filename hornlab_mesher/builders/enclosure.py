@@ -663,18 +663,39 @@ def build_enclosure_box(
     if not closed:
         if int(enclosure.plan_type) != 1:
             raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
-        return _build_rounded_rectangle_enclosure_sector(
-            mouth_curves=mouth_curves,
-            bx0=bx0,
-            bx1=bx1,
-            by0=by0,
-            by1=by1,
-            z_front=z_front,
-            z_back=z_back,
-            edge_depth=edge_depth,
-            front_mesh_size=front_mesh_size,
-            back_mesh_size=back_mesh_size,
-        )
+        # A reduced grid covers one or two quadrants: quarter -> Q1; half about
+        # the xz plane (quadrants 12) -> Q1+Q2; half about the yz plane
+        # (quadrants 14) -> Q1+Q4. Build one rounded-rectangle sector per
+        # quadrant that carries mouth curves and merge them. Adjacent half-model
+        # sectors meet on the off-cut axis (x=0 for an xz half, y=0 for a yz
+        # half); their coincident seam geometry welds into a watertight internal
+        # edge, leaving free edges only on the real symmetry cut plane(s). A
+        # single quarter sector keeps both of its axis edges on the cut planes.
+        quadrant_keys = ((1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0))
+        grouped: dict[tuple[float, float], list[int]] = {key: [] for key in quadrant_keys}
+        for curve in mouth_curves:
+            grouped[_quadrant_for_curve(curve)].append(int(curve))
+        present = [key for key in quadrant_keys if grouped[key]]
+        if not present:
+            raise RuntimeError("could not group open-domain mouth curves into quadrants")
+        parts = [
+            _build_rounded_rectangle_enclosure_sector(
+                mouth_curves=grouped[key],
+                bx0=bx0,
+                bx1=bx1,
+                by0=by0,
+                by1=by1,
+                z_front=z_front,
+                z_back=z_back,
+                edge_depth=edge_depth,
+                front_mesh_size=front_mesh_size,
+                back_mesh_size=back_mesh_size,
+                sign_x=key[0],
+                sign_y=key[1],
+            )
+            for key in present
+        ]
+        return _merge_enclosure_parts(parts, bounds)
     if int(enclosure.plan_type) == 1 and int(enclosure.edge_type) == 1:
         grouped: dict[tuple[float, float], list[int]] = {
             (1.0, 1.0): [],

@@ -734,24 +734,31 @@ def test_frequency_aware_rear_grading_keeps_freestanding_meshes_small(tmp_path):
     assert graded.n_triangles < 0.75 * flat.n_triangles
 
 
-def test_freestanding_half_models_are_rejected(tmp_path):
+def test_freestanding_half_models_build_with_single_cut_plane(tmp_path):
     base = {
         "formula": "OSSE",
         "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
         "mesh": {"angular_segments": 16, "length_segments": 4},
     }
-    for q in ("12", "14"):
-        cfg = {**base, "mesh": {**base["mesh"], "quadrants": q}}
-        with pytest.raises(ValueError, match="freestanding half-models"):
-            build_from_config(cfg, tmp_path / f"fs-{q}.msh")
-
-    # quarter, full freestanding and half-model bare/IB all remain valid
-    for q in ("1", "1234"):
-        r = build_from_config({**base, "mesh": {**base["mesh"], "quadrants": q}}, tmp_path / f"fs-ok-{q}.msh")
-        assert r.n_triangles > 0
-    for q in ("12", "14"):
-        r = build_from_config(
-            {**base, "mode": "bare", "mesh": {**base["mesh"], "quadrants": q}},
-            tmp_path / f"bare-{q}.msh",
+    results = {
+        q: build_from_config(
+            {**base, "mesh": {**base["mesh"], "quadrants": q}}, tmp_path / f"fs-{q}.msh"
         )
+        for q in ("1", "12", "14", "1234")
+    }
+    for r in results.values():
         assert r.n_triangles > 0
+        # Closed (freestanding) modes keep the strict cut-plane open-edge guard.
+        assert r.native_check_open_edges is True
+
+    # Half-models map to a single mirror plane; the solver reflects the modeled
+    # half across it. Quadrants 12 mirror about xz, 14 about yz.
+    assert results["12"].native_symmetry_plane == "xz"
+    assert results["14"].native_symmetry_plane == "yz"
+    assert results["1"].native_symmetry_plane == "yz+xz"
+    assert results["1234"].native_symmetry_plane is None
+
+    # A half spans one mirror; its count sits between the quarter and the full
+    # model and the two halves match each other.
+    assert results["1"].n_triangles < results["12"].n_triangles < results["1234"].n_triangles
+    assert results["12"].n_triangles == results["14"].n_triangles

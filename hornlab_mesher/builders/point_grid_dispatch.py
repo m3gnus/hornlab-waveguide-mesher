@@ -26,9 +26,25 @@ from .point_grid_surfaces import (
     _SharedSurfaceBuilder,
     _add_grid_wall_surfaces,
     _add_occ_bspline_patch_wall_surfaces,
+    _bspline_patch_phi_groups,
     _snap_open_symmetry_grid,
     _validated_grid,
 )
+
+
+def _open_sector_count(geometry: PointGridHornGeometry) -> int:
+    """Quadrant sectors spanned by an open reduced grid.
+
+    A quarter model is bounded by two cut planes (``symmetry_planes`` has two
+    entries) and is a single quadrant; a half model is bounded by one cut plane
+    and spans two quadrants that meet on the off-cut axis. Closed grids are a
+    single full surface (the caller does not split them).
+    """
+
+    if geometry.closed:
+        return 1
+    return 1 if len(tuple(geometry.symmetry_planes)) >= 2 else 2
+
 
 def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")
@@ -39,9 +55,12 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         return _build_freestanding_point_grid(geometry)
 
     if build_mode is PointGridBuildMode.ENCLOSURE:
-        inner_points = _snap_open_symmetry_grid(inner_points, closed=geometry.closed)
+        inner_points = _snap_open_symmetry_grid(
+            inner_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes
+        )
         cap_builder = _SharedSurfaceBuilder()
         cap_builder.add_grid("inner", inner_points)
+        cap_boundary_groups: list[list[int]] | None = None
         if geometry.preserve_grid:
             wall = _add_grid_wall_surfaces(
                 cap_builder,
@@ -51,11 +70,27 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 closed=geometry.closed,
             )
         else:
+            # A reduced half-model grid must split into one wall patch per
+            # quadrant so its rear enclosure can attach a sector to each mouth
+            # curve; the throat cap reuses the same partition to stay watertight.
+            wall_groups = _bspline_patch_phi_groups(
+                inner_points.shape[0],
+                closed=geometry.closed,
+                n_sectors=_open_sector_count(geometry),
+            )
             wall = _add_occ_bspline_patch_wall_surfaces(
                 inner_points,
                 closed=geometry.closed,
+                phi_groups=wall_groups,
             )
-        throat = _add_occ_source_cap_surfaces(cap_builder, inner_points, geometry)
+            if not geometry.closed:
+                cap_boundary_groups = wall_groups
+        throat = _add_occ_source_cap_surfaces(
+            cap_builder,
+            inner_points,
+            geometry,
+            boundary_phi_groups=cap_boundary_groups,
+        )
         require_gmsh().model.occ.synchronize()
         if not throat:
             throat = make_planar_fill_from_ring(inner_points[:, 0, :])

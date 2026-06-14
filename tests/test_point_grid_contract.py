@@ -751,6 +751,37 @@ def test_open_quarter_freestanding_point_grid_is_closed_except_symmetry_planes(t
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
+@pytest.mark.parametrize(
+    ("quadrants", "cut_axis"),
+    [("12", 1), ("14", 0)],  # 12 mirrors about xz (y=0); 14 about yz (x=0)
+)
+def test_freestanding_half_model_boundary_lies_on_single_cut_plane(tmp_path, quadrants, cut_axis):
+    # A freestanding half-model is a wall-shell horn cut on one mirror plane.
+    # Unlike the quarter model (two cut planes), every open edge must lie on the
+    # single cut plane; the wall, mouth rim and rear cap close every other edge.
+    cfg = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": quadrants},
+    }
+    result = build_from_config(cfg, tmp_path / f"fs-half-{quadrants}.msh")
+    assert result.native_symmetry_plane == ("xz" if quadrants == "12" else "yz")
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        assert abs(points[a][cut_axis]) < 1.0e-7
+        assert abs(points[b][cut_axis]) < 1.0e-7
+    # The modeled half occupies one side of the cut plane.
+    assert points[:, cut_axis].min() >= -1.0e-7
+    # The rigid-wall shell is a single connected component.
+    assert len(_tag_components(triangles, tags, 1)) == 1
+
+
 def test_open_sector_fill_uses_single_gmsh_surface():
     import gmsh
 
@@ -1018,6 +1049,82 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
     assert int(np.count_nonzero(tags == 1)) >= 900
     assert int(np.count_nonzero(tags == 2)) > 0
     assert int(np.count_nonzero(tags == 3)) > 0
+    assert len(_tag_components(triangles, tags, 1)) == 1
+
+
+@pytest.mark.parametrize(
+    ("quadrants", "sym_plane", "cut_axes"),
+    [
+        ("1", "yz+xz", (0, 1)),  # quarter: rim on x=0 (yz) and/or y=0 (xz)
+        ("12", "xz", (1,)),  # half about xz: rim on y=0 only
+        ("14", "yz", (0,)),  # half about yz: rim on x=0 only
+    ],
+)
+def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_plane, cut_axes):
+    # Reduced-domain enclosures (quarter/half) must produce a mesh whose only
+    # open edges lie on the symmetry cut plane(s) so the mirrored BEM solve sees
+    # a clean reflection. Three distinct defects used to break this: the quarter
+    # throat left an off-plane open-edge ring (the source cap and BSpline-patch
+    # wall sampled the throat with mismatched phi spans), and both half models
+    # built only a single quarter enclosure sector that failed to seal the
+    # second quadrant (off-plane / nonmanifold edges, or no rigid-wall group).
+    cfg = {
+        "formula": "ROSSE",
+        "mode": "enclosure",
+        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
+        "mesh": {
+            "angular_segments": 32,
+            "length_segments": 16,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 26.0,
+            "rear_res_mm": 25.0,
+            "quadrants": quadrants,
+        },
+        "enclosure": {
+            "depth_mm": 220.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 25.0,
+            "edge_mm": 18.0,
+            "edge_type": 1,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+    result = build_from_config(cfg, tmp_path / f"reduced-enclosure-{quadrants}.msh")
+    assert result.native_symmetry_plane == sym_plane
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    # Canonical groups present: rigid wall (1), source (2), enclosure wall (3).
+    assert {1, 2, 3}.issubset({int(t) for t in tags})
+
+    # Every open boundary edge lies on a requested cut plane; an off-plane open
+    # edge is a hole the mirrored solve would leak through.
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        assert any(
+            abs(points[a][axis]) < 1.0e-7 and abs(points[b][axis]) < 1.0e-7
+            for axis in cut_axes
+        )
+
+    # No nonmanifold edges: every edge is shared by at most two triangles.
+    edge_owners: dict[tuple[int, int], int] = {}
+    for tri in triangles:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            key = tuple(sorted((int(a), int(b))))
+            edge_owners[key] = edge_owners.get(key, 0) + 1
+    assert max(edge_owners.values()) <= 2
+
+    # The modeled domain occupies the positive side of each cut plane, and the
+    # rigid-wall shell is one connected component.
+    for axis in cut_axes:
+        assert points[:, axis].min() >= -1.0e-7
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 

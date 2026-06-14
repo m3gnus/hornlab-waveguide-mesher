@@ -231,11 +231,40 @@ def _source_cap_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
     return spans
 
 
-def _snap_open_symmetry_grid(points: np.ndarray, *, closed: bool) -> np.ndarray:
+def _snap_open_symmetry_grid(
+    points: np.ndarray,
+    *,
+    closed: bool,
+    symmetry_planes: tuple[str, ...] = ("x", "y"),
+) -> np.ndarray:
+    """Snap the two open rim rays exactly onto the model's symmetry plane(s).
+
+    The boundary rays of an open (non-full-circle) grid must lie precisely on
+    the cut plane(s) so the BEM image solve sees a clean reflection edge:
+
+    * quarter model (planes ``("x", "y")``): the first ray runs along +x on the
+      xz / y=0 plane and the last along +y on the yz / x=0 plane, so each rim
+      snaps to a *different* plane;
+    * half model about xz (planes ``("y",)``, quadrants 12): both rim rays lie
+      on y=0;
+    * half model about yz (planes ``("x",)``, quadrants 14): both rim rays lie
+      on x=0.
+    """
     out = np.array(points, dtype=np.float64, copy=True)
-    if not closed and out.shape[0] >= 2:
+    if closed or out.shape[0] < 2:
+        return out
+    axis_index = {"x": 0, "y": 1, "z": 2}
+    if len(symmetry_planes) >= 2:
+        # Quarter: rim rays land on two different planes (first on xz / y=0,
+        # last on yz / x=0).
         out[0, :, 1] = 0.0
         out[-1, :, 0] = 0.0
+    elif len(symmetry_planes) == 1:
+        # Half: both rim rays share the single cut plane.
+        idx = axis_index.get(symmetry_planes[0])
+        if idx is not None:
+            out[0, :, idx] = 0.0
+            out[-1, :, idx] = 0.0
     return out
 
 
@@ -433,9 +462,22 @@ def _add_occ_spline_span_wall_surfaces(
     return surfaces
 
 
-def _bspline_patch_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
+def _bspline_patch_phi_groups(
+    n_phi: int, *, closed: bool, n_sectors: int = 1
+) -> list[list[int]]:
     if not closed:
-        return [list(range(n_phi))]
+        # A quarter grid is one quadrant -> a single patch. A half grid spans
+        # two quadrants that meet on an interior symmetry axis; split the rim
+        # into ``n_sectors`` patches there (the rim is sampled symmetrically, so
+        # the axis crossings land on evenly spaced indices). Consecutive spans
+        # share their boundary column so the patches weld into a watertight seam,
+        # and each patch contributes one mouth curve the enclosure can attach a
+        # sector to.
+        n_sectors = max(1, int(n_sectors))
+        if n_sectors <= 1 or n_phi < n_sectors + 1:
+            return [list(range(n_phi))]
+        edges = [round(s * (n_phi - 1) / n_sectors) for s in range(n_sectors + 1)]
+        return [list(range(edges[s], edges[s + 1] + 1)) for s in range(n_sectors)]
     if n_phi < 4:
         return [list(range(n_phi)) + [0]]
     span_count = 4 if n_phi % 4 == 0 else 1
@@ -457,15 +499,22 @@ def _add_occ_bspline_patch_wall_surfaces(
     points: np.ndarray,
     *,
     closed: bool,
+    phi_groups: list[list[int]] | None = None,
 ) -> list[tuple[int, int]]:
-    """Build enclosure-mode horn walls as large OCC BSpline patches."""
+    """Build enclosure-mode horn walls as large OCC BSpline patches.
+
+    ``phi_groups`` overrides the default angular patch partition (used to split
+    an open half-model wall into one patch per quadrant so the rear enclosure
+    can attach a sector to each).
+    """
 
     gmsh = require_gmsh()
     arr = _validated_grid(points, name="inner_points")
     n_phi, n_len, _ = arr.shape
     surfaces: list[tuple[int, int]] = []
     degree_v = min(3, max(1, n_len - 1))
-    for indices in _bspline_patch_phi_groups(n_phi, closed=closed):
+    groups = phi_groups if phi_groups is not None else _bspline_patch_phi_groups(n_phi, closed=closed)
+    for indices in groups:
         n_u = len(indices)
         degree_u = min(3, max(1, n_u - 1))
         point_tags: list[int] = []

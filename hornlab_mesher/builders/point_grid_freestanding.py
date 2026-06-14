@@ -148,7 +148,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
             "rear": rear_tags,
             "rear_cap": rear_tags,
         },
-        symmetry_snap_axes=() if geometry.closed else ("x", "y"),
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
     )
 
@@ -158,8 +158,12 @@ def _build_wg_freestanding_point_grid(
     inner_points: np.ndarray,
     outer_points: np.ndarray,
 ) -> BuiltGeometry:
-    inner_points = _snap_open_symmetry_grid(inner_points, closed=geometry.closed)
-    outer_points = _snap_open_symmetry_grid(outer_points, closed=geometry.closed)
+    inner_points = _snap_open_symmetry_grid(
+        inner_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes
+    )
+    outer_points = _snap_open_symmetry_grid(
+        outer_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes
+    )
 
     n_phi, inner_len, _ = inner_points.shape
     outer_indices = _outer_wall_axial_ring_indices(inner_points)
@@ -240,7 +244,7 @@ def _build_wg_freestanding_point_grid(
             "rear": rear_tags,
             "rear_cap": rear_tags,
         },
-        symmetry_snap_axes=() if geometry.closed else ("x", "y"),
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
         mesh_algorithm=2,
     )

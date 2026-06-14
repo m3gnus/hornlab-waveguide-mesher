@@ -165,6 +165,12 @@ class PointGridHornGeometry:
     wg_topology: bool = True
     enclosure: HornEnclosure | None = None
     infinite_baffle: bool = False
+    # Symmetry planes bounding an open (``closed=False``) grid, as snap axes:
+    # ``"x"`` is the x=0 (yz) plane, ``"y"`` is the y=0 (xz) plane. The default
+    # ``("x", "y")`` is the quarter model (mirrored about both planes). Half
+    # models set a single plane: ``("y",)`` for quadrants 12 (xz mirror),
+    # ``("x",)`` for quadrants 14 (yz mirror). Unused when ``closed`` is True.
+    symmetry_planes: tuple[str, ...] = ("x", "y")
 
     @property
     def build_mode(self) -> PointGridBuildMode:

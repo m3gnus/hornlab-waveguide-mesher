@@ -464,16 +464,6 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure)
-    quadrants = _normalised_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
-    if mode == "freestanding" and quadrants in {"12", "14"}:
-        # The freestanding wall/rear-cap builder closes the cut cross-section
-        # with a cap in the symmetry plane, which is invalid for a half-model
-        # symmetry solve. Quarter (1, mirrored about both planes) and full
-        # (1234) work; half-models must use bare or infinite-baffle mode.
-        raise ConfigError(
-            f"freestanding half-models (Mesh.Quadrants {quadrants}) are not supported; "
-            "use quadrants 1 or 1234, or bare/infinite-baffle mode"
-        )
     enc_depth = 0.0
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure)
     if enclosure_obj is not None:
@@ -636,6 +626,23 @@ def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
     }.get(_normalised_quadrants(quadrants))
 
 
+def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
+    """Map grid quadrant coverage to open-grid snap axes.
+
+    Mirrors :func:`_native_symmetry_plane_for_quadrants` but in the mesher's
+    ``"x"``/``"y"`` snap-axis convention (``"x"`` is the x=0 / yz plane, ``"y"``
+    is the y=0 / xz plane): quadrant 1 is bounded by both planes, "12" by the
+    xz plane (snap ``"y"``), "14" by the yz plane (snap ``"x"``). Full coverage
+    ("1234") returns no planes.
+    """
+
+    return {
+        "1": ("x", "y"),
+        "12": ("y",),
+        "14": ("x",),
+    }.get(_normalised_quadrants(quadrants), ())
+
+
 def _native_check_open_edges_for_mode(mode: str) -> bool:
     """Whether the metal solver's cut-plane open-edge guard applies to ``mode``.
 
@@ -714,6 +721,7 @@ def build_from_config(
         outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
 
     interface_offsets = _number_list(params.get("interfaceOffset"))
+    quadrants = _normalised_quadrants(params.get("quadrants"))
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -722,6 +730,7 @@ def build_from_config(
         wall_thickness_mm=float(params["wallThickness"] or 0.0) * float(params.get("scale", 1.0) or 1.0),
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
         closed=bool(grid.get("full_circle", True)),
+        symmetry_planes=_symmetry_planes_for_quadrants(quadrants),
         source_shape=int(float(params.get("sourceShape", 1) or 1)),
         source_radius_mm=float(params.get("sourceRadius", -1) or -1),
         source_curv=int(float(params.get("sourceCurv", 0) or 0)),
@@ -771,7 +780,6 @@ def build_from_config(
     mesh_path, info = build_mesh_with_info(
         geometry, density, output_path, scale_to_metres=scale_to_metres
     )
-    quadrants = _normalised_quadrants(params.get("quadrants"))
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm, density)
     return BuildResult(
         mesh_path=mesh_path,
