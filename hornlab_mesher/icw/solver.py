@@ -869,15 +869,20 @@ def n_shape_modes(targets: ICWTargets, n_coeff: int = 12, degree: int = DEFAULT_
     """
     _knots, lin = _flat_baffle_lin(targets, n_coeff, degree)
     D = lin.n_shape  # nullspace dimension dim ker(C)
-    # Probe the honest budget: the largest k whose all-zero-gene solve is feasible. Scan down from
-    # the algebraic ceiling D-1 (feasibility is monotone in k) and return the first feasible k --
-    # target-specific, because the high-frequency reserved modes' endpoint leverage (hence the
-    # conditioning of the size solve near the ceiling) depends on the throat/mouth/length targets.
-    for k in range(max(D - 1, 0), 0, -1):
+    # Probe the honest budget: the largest k for which the all-zero-gene (midpoint) solve is
+    # feasible at EVERY gene count 0..k -- a contiguous-from-zero feasible prefix. The size-solve
+    # conditioning near the algebraic ceiling D-1 is target-specific (the high-frequency reserved
+    # modes have weak endpoint leverage), and it is numerically NON-monotone in k -- a target can be
+    # infeasible at k yet feasible at k+1. Returning a contiguous prefix (rather than the first
+    # feasible scanning down) means a consumer that clamps to ``min(cap, k_max)`` can never land on
+    # a gene count whose midpoint is infeasible.
+    k_max = 0
+    for k in range(0, max(D - 1, 0) + 1):
         _curve, report = curve_from_shape_modes(np.zeros(k), targets, n_coeff=n_coeff, degree=degree)
-        if report.feasible:
-            return k
-    return 0
+        if not report.feasible:
+            break
+        k_max = k
+    return k_max
 
 
 def curve_from_shape_modes(

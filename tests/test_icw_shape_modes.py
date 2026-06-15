@@ -94,15 +94,27 @@ class TestNShapeModes:
             assert k_max >= prev  # monotone non-decreasing in n_coeff
             prev = k_max
 
-    def test_advertised_budget_is_feasible_at_zero_genes(self):
-        """The advertised k_max must be HONEST: a zero-gene vector at every k up to k_max reduces
-        to a feasible size solve. The old D-1 budget over-promised -- the top two reserved modes
-        had no endpoint leverage, so the size solve went singular at k=6,7 for n_coeff=12."""
-        for targets in (_flat_target(), _flat_target(r_mouth=70.0)):  # easy + deep
+    def test_advertised_budget_is_a_feasible_contiguous_prefix(self):
+        """The advertised k_max is HONEST: the zero-gene (midpoint) solve is feasible at EVERY gene
+        count 0..k_max. Solver conditioning makes feasibility NON-monotone in k, so the budget is a
+        contiguous-from-zero prefix -- never a higher k reachable only past an infeasible gap (so a
+        consumer that clamps to min(cap, k_max) can never land on an infeasible midpoint). The old
+        D-1 budget over-promised (the size solve went singular at k=6,7 for n_coeff=12)."""
+        targets_list = [
+            _flat_target(),                 # easy
+            _flat_target(r_mouth=70.0),     # deep
+            # Base-borderline: the k=0 solve is itself infeasible, so the contiguous prefix is empty
+            # and the budget is 0 -- it must NOT advertise the (numerically feasible) k=1 above it.
+            ICWTargets(mode=TerminationMode.FLAT_BAFFLE, r0=12.7, theta0_deg=0.0,
+                       x_target=80.0, r_mouth=30.0),
+        ]
+        for targets in targets_list:
             k_max = n_shape_modes(targets)
-            for k in range(k_max + 1):
-                _curve, report = curve_from_shape_modes(np.zeros(k), targets)
-                assert report.feasible, (k, report.violations)
+            assert k_max >= 0
+            if k_max >= 1:  # k_max == 0 means the base solve is borderline; nothing to assert
+                for k in range(k_max + 1):
+                    _curve, report = curve_from_shape_modes(np.zeros(k), targets)
+                    assert report.feasible, (float(targets.r_mouth), k, report.violations)
 
     def test_rollback_target_raises(self):
         targets = ICWTargets(

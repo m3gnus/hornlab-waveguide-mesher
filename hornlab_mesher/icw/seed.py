@@ -161,6 +161,12 @@ def fit_from_points(
     against the clamped-cubic B-spline design matrix; ``kappa`` is allowed to be negative.
     Interior knots are placed by curvature-bend density (see :func:`_density_knots`).
     """
+    n_coeff = int(n_coeff)
+    if n_coeff < degree + 1:
+        # Match clamped_uniform_knots: fewer than degree+1 coefficients cannot define the spline.
+        # Without this, _density_knots silently promotes to a degree+1 basis and returns a curve
+        # with MORE coefficients than requested.
+        raise ValueError(f"need at least degree+1={degree + 1} coefficients, got {n_coeff}")
     x_arr = np.asarray(x, dtype=float).ravel()
     r_arr = np.asarray(r, dtype=float).ravel()
     s, sigma, theta0, kappa = _arc_length_frame(x_arr, r_arr)

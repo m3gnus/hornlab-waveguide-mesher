@@ -380,10 +380,15 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     seed = params.get("icw_seed")
     if isinstance(seed, Mapping):
         seed_formula = _normalise_formula(seed.get("type", "OSSE"))
+        # Honor a caller-supplied n_coeff for the seed fit. It was silently dropped before, so a
+        # request for a finer basis (e.g. to refine a sharp/cusped OSSE seed) still returned the
+        # default 20-coefficient fit.
+        n_coeff_val = _icw_float(params, "n_coeff")
+        seed_kwargs = {} if n_coeff_val is None else {"n_coeff": int(n_coeff_val)}
         if seed_formula == "OSSE":
-            curve = seed_from_osse(dict(seed))
+            curve = seed_from_osse(dict(seed), **seed_kwargs)
         elif seed_formula == "R-OSSE":
-            curve = seed_from_rosse(dict(seed))
+            curve = seed_from_rosse(dict(seed), **seed_kwargs)
         else:
             raise ValueError(
                 f"icw_seed type must be OSSE or R-OSSE, got {seed.get('type')!r}"
@@ -422,7 +427,11 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
             r0=float(r0),
             theta0=math.radians(float(theta0_deg)),
         )
-        samp = curve.sample()
+        # Sample finely enough to catch a narrow negative-radius excursion even for a high-coeff
+        # curve: the default 1601 stations can step over a dip between many close knot spans, so
+        # scale the check resolution with the coefficient count (no effect for typical n_coeff).
+        n_check = max(1601, 16 * coeffs_arr.size)
+        samp = curve.sample(n_check)
         if not (
             np.all(np.isfinite(samp.x))
             and np.all(np.isfinite(samp.r))

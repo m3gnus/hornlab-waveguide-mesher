@@ -587,3 +587,23 @@ class TestReviewFixes:
         assert _normalise_mode({"depth": 100.0}, {}, {}, formula="OSSE") == "enclosure"
         # An explicit enclosure section still encloses an ICW build.
         assert _normalise_mode({"formula": "ICW"}, {}, {"depth": 300.0}, formula="ICW") == "enclosure"
+
+    def test_seed_mode_honors_n_coeff(self):
+        """ICW SEED mode must honor a caller-supplied n_coeff for the fit; it was silently dropped,
+        always returning the default 20-coefficient fit."""
+        from hornlab_mesher.profile_formulas import build_icw_curve
+
+        osse = {"type": "OSSE", "r0": 12.7, "a0": 15, "a": 50,
+                "r": 0.3, "m": 0.8, "b": 0.3, "tmax": 1.0, "L": 100}
+        assert len(build_icw_curve({"type": "ICW", "icw_seed": osse}).coeffs) == 20  # default
+        assert len(build_icw_curve({"type": "ICW", "icw_seed": osse, "n_coeff": 32}).coeffs) == 32
+
+    def test_fit_from_points_rejects_too_few_coeffs(self):
+        """fit_from_points must reject n_coeff < degree+1 (consistent with clamped_uniform_knots)
+        instead of silently promoting to a degree+1 basis with more coefficients than requested."""
+        from hornlab_mesher.icw.seed import fit_from_points
+
+        x, r = [0.0, 1.0, 2.0, 3.0], [1.0, 1.2, 1.8, 2.8]
+        with pytest.raises(ValueError, match="at least degree"):
+            fit_from_points(x, r, n_coeff=3)
+        assert len(fit_from_points(x, r, n_coeff=4).coeffs) == 4  # minimum valid count
