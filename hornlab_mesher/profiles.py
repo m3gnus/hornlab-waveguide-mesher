@@ -17,7 +17,15 @@ from .profile_common import (
     _parse_number_list,
     eval_param,
 )
-from .profile_formulas import calculate_osse, calculate_rosse, osse_total_length, profile_points, rosse_total_length
+from .profile_formulas import (
+    build_icw_curve,
+    calculate_osse,
+    calculate_rosse,
+    icw_meridian_points,
+    osse_total_length,
+    profile_points,
+    rosse_total_length,
+)
 from .profile_morph import (
     _apply_morphing,
     _circle_morph_target_radius,
@@ -56,10 +64,12 @@ from .profile_sampling import (
 )
 
 __all__ = [
+    "build_icw_curve",
     "build_point_grid",
     "calculate_osse",
     "calculate_rosse",
     "eval_param",
+    "icw_meridian_points",
     "osse_total_length",
     "profile_points",
     "rosse_total_length",

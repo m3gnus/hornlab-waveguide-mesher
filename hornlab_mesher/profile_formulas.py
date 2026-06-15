@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import math
-from typing import Any, Mapping
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
 from .profile_common import _DEFAULTS, _deg, _normalise_formula, _osse_radius, eval_param
 from .profile_morph import _coverage_angle_from_guiding_curve
+
+if TYPE_CHECKING:  # avoid importing the ICW kernel (and its scipy deps) at module import time
+    from .icw import ICWCurve
 
 
 def _circular_arc_radius(
@@ -228,10 +233,275 @@ def calculate_rosse(t: float, p: float, params: Mapping[str, Any]) -> tuple[floa
     return x + ext_len + slot_len, y
 
 
+# ============================================================================
+# Intrinsic-Curvature Waveguide (ICW) adapter
+# ----------------------------------------------------------------------------
+# Bridges a mesher parameter dict to the gmsh-free ICW kernel in ``.icw``. The
+# kernel is imported lazily inside ``build_icw_curve`` so importing this module
+# does not pull in scipy, and so ``icw.seed`` (which imports ``profile_points``
+# from here) cannot trigger a circular import at module load time. The kernel
+# remains gmsh-free; only this adapter knows about both worlds.
+# ============================================================================
+
+# Dense sampling count for ``icw_meridian_points`` (kernel docstring: n>=~1500
+# reproduces analytic seeds to sub-micron; 4001 leaves comfortable headroom).
+_ICW_SAMPLE_N = 4001
+
+# Module-level memo so a profile's ICWCurve is solved/fit ONCE per parameter
+# set rather than per axial point or per azimuth (solving per point would be far
+# too slow). Keyed on a hash of the ICW-relevant params; bounded in size.
+# LRU memo (OrderedDict): most-recently-used entries are moved to the end on hit,
+# and only the *oldest* entry is evicted on overflow (see ``_icw_cache_store``) --
+# so a >256 distinct-geometry sweep keeps recent curves warm instead of wiping the
+# whole cache and re-solving everything (the old clear-all behaviour thrashed).
+_ICW_CURVE_CACHE: "OrderedDict[str, ICWCurve]" = OrderedDict()
+_ICW_CACHE_MAX = 256
+
+# Param keys that affect the ICW curve. Used both for the cache key and as the
+# allow-list of top-level ICW keys the config validator accepts.
+_ICW_PARAM_KEYS = (
+    "type",
+    "r0",
+    "a0",
+    "a0_deg",
+    "theta0_deg",
+    "kappa0",
+    "n_coeff",
+    "termination",
+    "L",
+    "L_mm",
+    "R",
+    "R_mm",
+    "theta1",
+    "theta1_deg",
+    "r_aperture",
+    "x_aperture",
+    "depth",
+    "x_setback",
+    "icw_seed",
+    "icw_coeffs",
+    "icw_S",
+)
+
+
+def _icw_key_normalise(value: Any) -> Any:
+    """Recursively coerce a param value into a *lossless*, hashable-as-JSON form.
+
+    The previous ``json.dumps(..., default=str)`` stringified numpy arrays via
+    ``str()``, which summarises large arrays ("[a b ... y z]") and rounds to ~8
+    significant figures -- so two genuinely different ``icw_coeffs`` arrays could
+    collapse to the SAME key and the memo would return a stale/wrong curve (a
+    Phase-2 CMA optimiser passing numpy ``icw_coeffs`` is the live risk path).
+
+    Arrays / lists / tuples are encoded with their exact bytes (shape + dtype +
+    ``tobytes().hex()``) so every distinct float is reflected in the key; nested
+    mappings (e.g. ``icw_seed``) recurse; plain scalars pass through unchanged so
+    ``r0``/``a0``/``L``/``R``/``theta1`` etc. still key as before.
+    """
+    if isinstance(value, np.ndarray):
+        arr = np.ascontiguousarray(value)
+        return ["__ndarray__", list(arr.shape), str(arr.dtype), arr.tobytes().hex()]
+    if isinstance(value, (list, tuple)):
+        # Numeric sequences (incl. ones holding numpy scalars) are hashed losslessly
+        # through the same byte path as arrays so e.g. a list ``icw_coeffs`` differing
+        # by 1e-12 keys distinctly. Mixed/non-numeric sequences recurse element-wise.
+        try:
+            arr = np.asarray(value, dtype=np.float64)
+        except (ValueError, TypeError):
+            return ["__seq__", [_icw_key_normalise(v) for v in value]]
+        if arr.dtype == np.float64 and arr.ndim >= 1:
+            return ["__ndarray__", list(arr.shape), str(arr.dtype), arr.tobytes().hex()]
+        return ["__seq__", [_icw_key_normalise(v) for v in value]]
+    if isinstance(value, Mapping):
+        return {str(k): _icw_key_normalise(value[k]) for k in sorted(value, key=str)}
+    if isinstance(value, np.generic):  # numpy scalar -> exact python scalar
+        return value.item()
+    return value
+
+
+def _icw_cache_key(params: Mapping[str, Any]) -> str:
+    """Stable, *lossless* hash over the ICW-relevant params for the curve memo.
+
+    Array-like params (numpy arrays / numeric lists, possibly nested in
+    ``icw_seed``) are normalised with full precision by :func:`_icw_key_normalise`
+    before serialising, so differing coefficient arrays can never collide.
+    """
+    relevant = {k: _icw_key_normalise(params.get(k)) for k in _ICW_PARAM_KEYS if k in params}
+    try:
+        blob = json.dumps(relevant, sort_keys=True, default=repr)
+    except TypeError:
+        blob = repr(sorted(relevant.items(), key=lambda kv: kv[0]))
+    return blob
+
+
+def _icw_float(params: Mapping[str, Any], *names: str) -> float | None:
+    for name in names:
+        if name in params and params[name] is not None:
+            return float(eval_param(params[name], 0.0, 0.0))
+    return None
+
+
+def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
+    """Build (or fetch from the memo) the ICWCurve for a mesher param dict.
+
+    Three input modes, checked in this order:
+
+    1. **SEED** -- ``params["icw_seed"]`` is a nested OSSE/R-OSSE param dict
+       (carrying its own ``type``); fit it with ``seed_from_osse`` /
+       ``seed_from_rosse``. Enables migration and the meridian-parity test.
+    2. **DIRECT** -- ``params["icw_coeffs"]`` (list) plus optional ``icw_S``,
+       ``r0``, ``a0``/``theta0_deg`` -> construct ``ICWCurve`` directly.
+    3. **TARGETS** (default) -- assemble ``ICWTargets`` from the params and call
+       ``solve_icw``; raise ``ValueError`` (never a silent bad curve) if the
+       returned ``FeasibilityReport`` is infeasible.
+
+    The result is cached (module-level memo keyed on the ICW-relevant params) so
+    the curve is solved/fit only once per profile. ``phi`` is accepted for API
+    symmetry with the other formulas but is unused in Phase 1 (ICW is
+    phi-independent: no guiding curve / no per-phi expressions).
+    """
+    key = _icw_cache_key(params)
+    cached = _ICW_CURVE_CACHE.get(key)
+    if cached is not None:
+        _ICW_CURVE_CACHE.move_to_end(key)  # mark most-recently-used (LRU)
+        return cached
+
+    # Local import keeps the ICW/scipy dependency out of module import and
+    # avoids the icw.seed -> profile_formulas import cycle.
+    from .icw import (
+        ICWCurve,
+        ICWTargets,
+        seed_from_osse,
+        seed_from_rosse,
+        solve_icw,
+    )
+
+    # (1) SEED mode -----------------------------------------------------------
+    seed = params.get("icw_seed")
+    if isinstance(seed, Mapping):
+        seed_formula = _normalise_formula(seed.get("type", "OSSE"))
+        if seed_formula == "OSSE":
+            curve = seed_from_osse(dict(seed))
+        elif seed_formula == "R-OSSE":
+            curve = seed_from_rosse(dict(seed))
+        else:
+            raise ValueError(
+                f"icw_seed type must be OSSE or R-OSSE, got {seed.get('type')!r}"
+            )
+        _icw_cache_store(key, curve)
+        return curve
+
+    r0 = _icw_float(params, "r0")
+    if r0 is None:
+        r0 = 12.7
+    # Throat half-angle: a0 / a0_deg / theta0_deg are synonyms here (deg).
+    theta0_deg = _icw_float(params, "theta0_deg", "a0", "a0_deg")
+    if theta0_deg is None:
+        theta0_deg = 0.0
+
+    # (2) DIRECT mode ---------------------------------------------------------
+    if params.get("icw_coeffs") is not None:
+        coeffs = [float(eval_param(c, 0.0, 0.0)) for c in params["icw_coeffs"]]
+        S = _icw_float(params, "icw_S")
+        if S is None:
+            raise ValueError("ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)")
+        curve = ICWCurve(
+            coeffs=np.asarray(coeffs, dtype=np.float64),
+            S=float(S),
+            r0=float(r0),
+            theta0=math.radians(float(theta0_deg)),
+        )
+        _icw_cache_store(key, curve)
+        return curve
+
+    # (3) TARGETS mode (default) ---------------------------------------------
+    termination = str(params.get("termination", "flat_baffle")).strip().lower()
+    kappa0 = _icw_float(params, "kappa0")
+    n_coeff_val = _icw_float(params, "n_coeff")
+    n_coeff = int(n_coeff_val) if n_coeff_val is not None else 12
+
+    target_kwargs: dict[str, Any] = {
+        "mode": termination,
+        "r0": float(r0),
+        "theta0_deg": float(theta0_deg),
+    }
+    if kappa0 is not None:
+        target_kwargs["kappa0"] = float(kappa0)
+
+    if termination == "flat_baffle":
+        x_target = _icw_float(params, "L", "L_mm")
+        r_mouth = _icw_float(params, "R", "R_mm")
+        target_kwargs["x_target"] = x_target
+        target_kwargs["r_mouth"] = r_mouth
+    elif termination == "rollback":
+        theta1 = _icw_float(params, "theta1", "theta1_deg")
+        if theta1 is not None:
+            target_kwargs["theta1_deg"] = float(theta1)
+        r_aperture = _icw_float(params, "R", "r_aperture")
+        if r_aperture is not None:
+            target_kwargs["r_aperture"] = float(r_aperture)
+        x_aperture = _icw_float(params, "x_aperture")
+        depth = _icw_float(params, "depth")
+        if x_aperture is not None:
+            target_kwargs["x_aperture"] = float(x_aperture)
+        if depth is not None:
+            target_kwargs["depth"] = float(depth)
+        x_setback = _icw_float(params, "x_setback")
+        if x_setback is not None:
+            target_kwargs["x_setback"] = float(x_setback)
+    else:
+        raise ValueError(
+            f"ICW termination must be 'flat_baffle' or 'rollback', got {termination!r}"
+        )
+
+    targets = ICWTargets(**target_kwargs)
+    curve, report = solve_icw(targets, n_coeff=n_coeff)
+    if not report.feasible:
+        raise ValueError(
+            "ICW target set is infeasible: "
+            + "; ".join(report.violations)
+            + (f" (hint: {report.suggested_relaxation})" if report.suggested_relaxation else "")
+        )
+    _icw_cache_store(key, curve)
+    return curve
+
+
+def _icw_cache_store(key: str, curve: "ICWCurve") -> None:
+    """Insert ``curve`` under ``key`` with bounded LRU eviction.
+
+    On overflow only the *oldest* (least-recently-used) entry is dropped --
+    ``popitem(last=False)`` -- rather than clearing the whole cache, so recent
+    curves survive a long distinct-geometry sweep. Re-storing an existing key
+    refreshes its recency.
+    """
+    if key in _ICW_CURVE_CACHE:
+        _ICW_CURVE_CACHE.move_to_end(key)
+    _ICW_CURVE_CACHE[key] = curve
+    while len(_ICW_CURVE_CACHE) > _ICW_CACHE_MAX:
+        _ICW_CURVE_CACHE.popitem(last=False)
+
+
+def icw_meridian_points(curve: "ICWCurve", t_values: np.ndarray) -> np.ndarray:
+    """Sample an ICWCurve meridian at the requested ``t_values`` (sigma in [0,1]).
+
+    The curve is finely sampled once (``curve.sample(_ICW_SAMPLE_N)``); x and r
+    are then linearly interpolated at the requested ``t_values`` by normalised
+    arc length ``sigma``. Returns an ``(N, 2)`` array of ``(x, r)`` columns.
+    """
+    sample = curve.sample(_ICW_SAMPLE_N)
+    t = np.asarray(t_values, dtype=np.float64)
+    x = np.interp(t, sample.sigma, sample.x)
+    r = np.interp(t, sample.sigma, sample.r)
+    return np.column_stack([x, r])
+
+
 def profile_points(params: Mapping[str, Any], n_axial: int, phi: float = 0.0) -> np.ndarray:
     formula = _normalise_formula(params.get("type", "OSSE"))
     t_max = float(eval_param(params.get("tmax"), phi, 1.0)) if formula == "R-OSSE" else 1.0
     t_values = np.linspace(0.0, t_max, int(n_axial))
+    if formula == "ICW":
+        curve = build_icw_curve(params, phi)
+        return icw_meridian_points(curve, t_values)
     points = np.empty((len(t_values), 2), dtype=np.float64)
     if formula == "OSSE":
         total = osse_total_length(params, phi)

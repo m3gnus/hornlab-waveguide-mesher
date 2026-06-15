@@ -6,7 +6,13 @@ from typing import Any, Mapping
 import numpy as np
 
 from .profile_common import _is_true, _normalise_formula, eval_param
-from .profile_formulas import calculate_osse, calculate_rosse, osse_length_config
+from .profile_formulas import (
+    build_icw_curve,
+    calculate_osse,
+    calculate_rosse,
+    icw_meridian_points,
+    osse_length_config,
+)
 from .profile_morph import (
     _apply_morphing,
     _guiding_curve_type,
@@ -460,6 +466,14 @@ def _raw_radial_grid(
     max_fixed_len = 0.0
     max_total_len = 0.0
     lookup_curve = _lookup_curve(params, t_unit_values) if formula == "LOOKUP" else None
+    # ICW is phi-independent in Phase 1 (no guiding curve / no per-phi
+    # expressions), so the curvature curve is solved/fit ONCE here, before the
+    # per-phi loop, and its meridian is reused for every azimuth. The
+    # superellipse scale is layered on top exactly as for OSSE/R-OSSE.
+    icw_curve = build_icw_curve(params) if formula == "ICW" else None
+    icw_meridian = (
+        icw_meridian_points(icw_curve, t_values) if icw_curve is not None else None
+    )
     for i, phi in enumerate(angles):
         scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
         if formula == "LOOKUP":
@@ -467,6 +481,8 @@ def _raw_radial_grid(
             # cross-section (superellipse scale) and morph are layered on top
             # exactly as for OSSE, so the base curve is phi-independent.
             curve = lookup_curve
+        elif formula == "ICW":
+            curve = list(zip(icw_meridian[:, 0], icw_meridian[:, 1]))
         elif formula == "OSSE":
             _main_len, total, ext_len, slot_len = osse_length_config(params, float(phi))
             max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
@@ -498,7 +514,7 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     curve_type = _guiding_curve_type(params, 0.0)
     if curve_type not in {0, 1, 2}:
         raise ValueError(f"unsupported GCurve type {curve_type}")
-    if formula == "R-OSSE" and _guiding_curve_active(params, 0.0):
+    if formula in {"R-OSSE", "ICW"} and _guiding_curve_active(params, 0.0):
         raise ValueError("guiding curves are only supported with formula OSSE")
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
@@ -506,7 +522,14 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     angles, full_circle = _angle_list(params)
     exponent, aspect_ratio = _cross_section(params)
     t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
-    t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+    if formula == "ICW":
+        # ICW samples uniformly in sigma (normalised arc length): it has no
+        # ATH/R-OSSE reference axial table, and the kernel already concentrates
+        # detail by arc length, so a uniform sigma grid is the natural mapping.
+        t_unit_values = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
+        sampling_mode = "uniform"
+    else:
+        t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
     t_values = t_unit_values * t_max
     raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
         params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length

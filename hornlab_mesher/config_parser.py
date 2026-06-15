@@ -124,7 +124,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
         formula = "OSSE"
         profile_items = flat
     if formula is None:
-        raise ConfigError("text config must contain an OSSE or R-OSSE block")
+        raise ConfigError(
+            "text config must contain an OSSE or R-OSSE block "
+            "(ICW is not available via the ATH text format; configure it through the "
+            "dict/contract path, e.g. build_from_config({'profile': {'formula': 'ICW', ...}}))"
+        )
 
     def mapped(items: Mapping[str, str], pairs: tuple[tuple[str, str], ...]) -> dict[str, Any]:
         out: dict[str, Any] = {}

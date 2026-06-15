@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.builders._occ import make_planar_sector_fill_from_ring
-from hornlab_mesher.builders.enclosure import _add_curve_loop_from_curves
+from hornlab_mesher.builders.enclosure import (
+    _BAFFLE_CLEARANCE_FRACTION,
+    _MIN_BAFFLE_CLEARANCE_MM,
+    _add_curve_loop_from_curves,
+    _clamp_edge_roundover,
+)
 from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
 from hornlab_mesher.builders.point_grid_surfaces import _rear_rim_points
@@ -1052,6 +1057,35 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
+def test_clamp_edge_roundover_leaves_flat_baffle_clearance():
+    # Regression for the WG "Superduper small" quarter-symmetry enclosure solve:
+    # enc_edge == enc_space (margin) left a ~0 mm flat-baffle ring that OCC dropped,
+    # tearing the front-baffle-to-side-wall seam open off the symmetry plane and
+    # failing the Metal solver's open-edge guard. The clamp must hold the roundover
+    # a real clearance below the smallest margin, not just an exact-tangency epsilon.
+    big = 1000.0  # half_w/half_h large enough not to bind
+
+    # edge well below the margin is preserved unchanged.
+    assert _clamp_edge_roundover(0.5, 5.0, big, big) == pytest.approx(0.5)
+
+    # edge == margin (the failing case): a real flat-baffle clearance survives.
+    margin = 1.0
+    clamped = _clamp_edge_roundover(margin, margin, big, big)
+    assert 0.0 < clamped < margin
+    expected_clearance = max(_MIN_BAFFLE_CLEARANCE_MM, margin * _BAFFLE_CLEARANCE_FRACTION)
+    assert margin - clamped >= expected_clearance - 1e-9
+
+    # edge above the margin is clamped below it with the same clearance.
+    clamped_over = _clamp_edge_roundover(50.0, margin, big, big)
+    assert margin - clamped_over >= expected_clearance - 1e-9
+
+    # half-width / half-height still bind when smaller than the margin.
+    assert _clamp_edge_roundover(5.0, 5.0, 0.6, big) == pytest.approx(0.5)
+
+    # a margin smaller than the minimum clearance collapses to a sharp corner.
+    assert _clamp_edge_roundover(0.05, 0.05, big, big) == 0.0
+
+
 @pytest.mark.parametrize(
     ("quadrants", "sym_plane", "cut_axes"),
     [
@@ -1114,6 +1148,91 @@ def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_
         )
 
     # No nonmanifold edges: every edge is shared by at most two triangles.
+    edge_owners: dict[tuple[int, int], int] = {}
+    for tri in triangles:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            key = tuple(sorted((int(a), int(b))))
+            edge_owners[key] = edge_owners.get(key, 0) + 1
+    assert max(edge_owners.values()) <= 2
+
+    # The modeled domain occupies the positive side of each cut plane, and the
+    # rigid-wall shell is one connected component.
+    for axis in cut_axes:
+        assert points[:, axis].min() >= -1.0e-7
+    assert len(_tag_components(triangles, tags, 1)) == 1
+
+
+@pytest.mark.parametrize(
+    ("quadrants", "sym_plane", "cut_axes"),
+    [
+        ("1", "yz+xz", (0, 1)),  # quarter: rim on x=0 (yz) and/or y=0 (xz)
+        ("12", "xz", (1,)),  # half about xz: rim on y=0 only
+        ("14", "yz", (0,)),  # half about yz: rim on x=0 only
+    ],
+)
+def test_reduced_enclosure_sharp_edge_boundary_lies_on_cut_planes(
+    tmp_path, quadrants, sym_plane, cut_axes
+):
+    # Regression for a reduced-domain enclosure with a perfectly sharp box edge
+    # (enc_edge=0, no roundover). The rounded-rectangle sector builder insets the
+    # front/back rims by the roundover radius; at radius 0 those inset points
+    # collapse onto the outer points, so the roundover/corner "arcs" became
+    # zero-length lines OCC rejected with "Could not create line" -- the build
+    # raised MesherError. The sector now builds a true sharp box (four faces, no
+    # roundover surfaces) and must still seal the domain exactly like the rounded
+    # case. This is the opposite extreme from the enc_edge==enc_space sliver that
+    # _clamp_edge_roundover guards: there the roundover is too large, here it is
+    # absent. (The closed quadrants="1234" path shares the same sector builder
+    # and is covered by the canonical-tag enclosure tests.)
+    cfg = {
+        "formula": "ROSSE",
+        "mode": "enclosure",
+        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
+        "mesh": {
+            "angular_segments": 32,
+            "length_segments": 16,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 26.0,
+            "rear_res_mm": 25.0,
+            "quadrants": quadrants,
+        },
+        "enclosure": {
+            "depth_mm": 220.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 25.0,
+            "edge_mm": 0.0,  # sharp box edge: the regression trigger.
+            "edge_type": 1,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+    # The build itself must succeed -- it used to raise MesherError here.
+    result = build_from_config(cfg, tmp_path / f"reduced-enclosure-sharp-{quadrants}.msh")
+    assert result.native_symmetry_plane == sym_plane
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    # Canonical groups present: rigid wall (1), source (2), enclosure wall (3).
+    assert {1, 2, 3}.issubset({int(t) for t in tags})
+
+    # Every open boundary edge lies on a requested cut plane; an off-plane open
+    # edge is a hole the mirrored solve would leak through.
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        assert any(
+            abs(points[a][axis]) < 1.0e-7 and abs(points[b][axis]) < 1.0e-7
+            for axis in cut_axes
+        )
+
+    # No nonmanifold edges: every edge is shared by at most two triangles. The
+    # half models weld two sharp sectors along the off-cut axis; a mismatched
+    # seam would surface here as a tripled edge.
     edge_owners: dict[tuple[int, int], int] = {}
     for tri in triangles:
         for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):

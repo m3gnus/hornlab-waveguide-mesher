@@ -196,9 +196,9 @@ def _normalise_formula(value: Any) -> str:
     raw = str(value or "OSSE").strip().upper().replace("_", "-")
     if raw == "ROSSE":
         raw = "R-OSSE"
-    if raw not in {"OSSE", "R-OSSE", "LOOKUP"}:
+    if raw not in {"OSSE", "R-OSSE", "LOOKUP", "ICW"}:
         raise ConfigError(
-            f"formula must be OSSE, R-OSSE/ROSSE, or LOOKUP, got {value!r}"
+            f"formula must be OSSE, R-OSSE/ROSSE, LOOKUP, or ICW, got {value!r}"
         )
     return raw
 
@@ -228,6 +228,20 @@ def _validate_formula_specific_keys(
         names = ("L_mm", "L", "n", "s", "rot_deg", "rot", "R_mm", "R", "tmax", "m", "r", "b")
         if _has_any(profile, config, names=names):
             raise ConfigError("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
+        return
+
+    if formula == "ICW":
+        # ICW accepts its own intrinsic-curvature keys (throat r0/a0, targets
+        # L/R/theta1/x_aperture/depth/x_setback, kappa0, n_coeff, termination,
+        # and the seed/direct inputs). Both L and R are legitimate ICW size
+        # targets, so unlike OSSE/R-OSSE neither is rejected here. OSSE-only
+        # shape coefficients (n, s, rot) and R-OSSE-only shape coefficients
+        # (m, r, b, tmax) have no meaning on an ICW curve and are rejected at
+        # the TOP LEVEL -- they may still appear nested inside icw_seed (a
+        # separate OSSE/R-OSSE profile dict), which _has_any does not scan.
+        names = ("n", "s", "rot_deg", "rot", "m", "r", "b", "tmax")
+        if _has_any(profile, config, names=names):
+            raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
         return
 
     names = ("L_mm", "L", "n", "s", "rot_deg", "rot")
@@ -592,6 +606,36 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         # No analytic coefficients: the precomputed lookupProfile (threaded
         # into common above) fully defines the radial profile.
         pass
+    elif formula == "ICW":
+        # ICW reads its targets/seed straight off the params dict in
+        # build_icw_curve. r0/a0 are already in ``common``; thread the rest
+        # through. Only keys actually present are forwarded so the kernel keeps
+        # applying its own defaults for the optional targets.
+        common["termination"] = _pick(
+            profile, config, names=("termination",), default="flat_baffle"
+        )
+        common["L"] = _scalar_or_expr(profile, config, names=("L_mm", "L"), default=120.0)
+        common["R"] = _scalar_or_expr(profile, config, names=("R_mm", "R"), default=150.0)
+        for key, src_names in (
+            ("kappa0", ("kappa0",)),
+            ("n_coeff", ("n_coeff",)),
+            ("theta1", ("theta1_deg", "theta1")),
+            ("x_aperture", ("x_aperture",)),
+            ("depth", ("depth",)),
+            ("x_setback", ("x_setback",)),
+            ("icw_S", ("icw_S",)),
+        ):
+            value = _pick(profile, config, names=src_names, default=None)
+            if value is not None:
+                common[key] = _scalar_or_expr(profile, config, names=src_names, default=None)
+        # Seed / direct-coefficient inputs are passed through verbatim (nested
+        # dict / list), not coerced to scalars.
+        seed = _pick(profile, config, names=("icw_seed",), default=None)
+        if seed is not None:
+            common["icw_seed"] = seed
+        coeffs = _pick(profile, config, names=("icw_coeffs",), default=None)
+        if coeffs is not None:
+            common["icw_coeffs"] = coeffs
     else:
         common.update(
             {
