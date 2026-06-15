@@ -530,3 +530,46 @@ class TestAdversarial:
         ).lower()
         assert "r_mouth" in hint_text
         assert ("increase" in hint_text) or ("above" in hint_text) or ("wider" in hint_text)
+
+
+# =====================================================================================
+# Regression: review fixes (2026-06-15)
+# =====================================================================================
+class TestReviewFixes:
+    def test_theta90_plateau_to_end_counts_once(self):
+        """A theta=90deg plateau running to the final node is ONE crossing, not two.
+
+        The trailing-node check used to double-count a plateau the main scan had already
+        consumed (e.g. an all-90deg meridian, or a wall that grazes the mouth plane along a flat
+        run to the end). Over-counting wrongly trips the rollback multi-crossing/wobble guard.
+        """
+        from hornlab_mesher.icw.core import theta_half_pi_crossings
+
+        hp = np.pi / 2.0
+        assert len(theta_half_pi_crossings(np.array([hp, hp, hp]))) == 1
+        assert len(theta_half_pi_crossings(np.array([0.0, np.pi / 4, hp, hp]))) == 1
+        # A single exact last-node hit (no plateau) still counts once.
+        assert len(theta_half_pi_crossings(np.array([0.0, np.pi / 4, hp]))) == 1
+        # A genuine wobble (up through 90, back below, up again) still counts every crossing.
+        wob = np.array([0.0, 0.4 * hp, 1.2 * hp, 0.8 * hp, 1.2 * hp])
+        assert len(theta_half_pi_crossings(wob)) == 3
+
+    def test_direct_mode_rejects_nonphysical_inputs(self):
+        """DIRECT mode (icw_coeffs) bypasses solve_icw's feasibility gate, so it must validate
+        its own inputs rather than build a curve with a non-finite or non-positive radius."""
+        from hornlab_mesher.profile_formulas import build_icw_curve
+
+        good = {"type": "ICW", "r0": 12.7, "icw_coeffs": [0, 0, 0, 0, 0, 0], "icw_S": 100.0}
+        build_icw_curve(good)  # baseline: a straight (kappa==0) curve builds fine
+
+        bad_cases = [
+            {**good, "r0": -1.0},  # negative throat radius (input check)
+            {**good, "icw_S": 0.0},  # zero arc length (input check)
+            {**good, "icw_coeffs": [0, float("nan"), 0, 0, 0, 0]},  # non-finite coeff (input check)
+            # Valid inputs, but a downward throat angle drives the sampled radius negative
+            # (r = r0 + S*int sin(theta) with theta == -90deg) -> the sampled-radius guard fires:
+            {"type": "ICW", "r0": 12.7, "a0": -90.0, "icw_coeffs": [0, 0, 0, 0, 0, 0], "icw_S": 100.0},
+        ]
+        for bad in bad_cases:
+            with pytest.raises(ValueError):
+                build_icw_curve(bad)

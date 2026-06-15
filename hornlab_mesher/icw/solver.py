@@ -530,8 +530,11 @@ def _residual_and_aux(
         x_ap = r_ap = None
         if ap is not None:
             j, w = ap  # linear interp weight of x,r at theta=pi/2 (shared crossing convention)
-            x_ap = x[j] + w * (x[j + 1] - x[j])
-            r_ap = r[j] + w * (r[j + 1] - r[j])
+            # Guard the forward node: a trailing theta=pi/2 crossing reports j = n-1 (with w=0),
+            # so x[j+1]/r[j+1] would index out of bounds and crash the least_squares residual.
+            # Mirror the i+1 < size guard used in aperture_report / _aperture_crossing / _verify.
+            x_ap = x[j] + w * (x[j + 1] - x[j]) if j + 1 < x.size else float(x[j])
+            r_ap = r[j] + w * (r[j + 1] - r[j]) if j + 1 < r.size else float(r[j])
 
         if targets.r_aperture is not None:
             size.append((r_ap - targets.r_aperture) if r_ap is not None else (r[-1] - targets.r_aperture))

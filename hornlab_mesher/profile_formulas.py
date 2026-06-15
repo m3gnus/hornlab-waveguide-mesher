@@ -405,12 +405,33 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         S = _icw_float(params, "icw_S")
         if S is None:
             raise ValueError("ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)")
+        coeffs_arr = np.asarray(coeffs, dtype=np.float64)
+        # Direct mode bypasses solve_icw's feasibility gate, so validate the raw inputs and the
+        # sampled meridian here. Otherwise a degenerate input (r0<=0, S<=0, non-finite coeffs, or
+        # coeffs that drive the radius negative) builds a nonphysical curve that the caller would
+        # score as valid instead of routing it to the infeasible/penalty path.
+        if not np.all(np.isfinite(coeffs_arr)):
+            raise ValueError("ICW direct mode: icw_coeffs must all be finite")
+        if not (S > 0.0):
+            raise ValueError(f"ICW direct mode: icw_S must be > 0 mm, got {S}")
+        if not (r0 > 0.0):
+            raise ValueError(f"ICW direct mode: r0 must be > 0 mm, got {r0}")
         curve = ICWCurve(
-            coeffs=np.asarray(coeffs, dtype=np.float64),
+            coeffs=coeffs_arr,
             S=float(S),
             r0=float(r0),
             theta0=math.radians(float(theta0_deg)),
         )
+        samp = curve.sample()
+        if not (
+            np.all(np.isfinite(samp.x))
+            and np.all(np.isfinite(samp.r))
+            and np.all(samp.r > 0.0)
+        ):
+            raise ValueError(
+                "ICW direct mode: sampled meridian is non-finite or has non-positive radius "
+                "(degenerate icw_coeffs / icw_S)"
+            )
         _icw_cache_store(key, curve)
         return curve
 

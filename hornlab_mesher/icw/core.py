@@ -73,6 +73,7 @@ def theta_half_pi_crossings(theta: np.ndarray) -> list[tuple[int, float]]:
     out: list[tuple[int, float]] = []
     n = g.size
     i = 0
+    plateau_reached_end = False
     while i < n - 1:
         a, b = g[i], g[i + 1]
         if a == 0.0:
@@ -82,13 +83,18 @@ def theta_half_pi_crossings(theta: np.ndarray) -> list[tuple[int, float]]:
             j = i + 1
             while j < n and g[j] == 0.0:
                 j += 1
+            if j == n:
+                # The plateau just counted runs to the final node, so the trailing-node check
+                # below must not count that same plateau a second time.
+                plateau_reached_end = True
             i = j
             continue
         if (a < 0.0 < b) or (b < 0.0 < a):
             out.append((i, float(a / (a - b))))  # frac in (0, 1)
         i += 1
-    # Trailing exact hit at the very last node (not reachable by the loop above).
-    if n and g[-1] == 0.0 and not (out and out[-1][0] == n - 1):
+    # Trailing exact hit at the very last node (not reachable by the loop above), unless that
+    # node was already consumed as the tail of a plateau counted above.
+    if n and g[-1] == 0.0 and not plateau_reached_end and not (out and out[-1][0] == n - 1):
         out.append((n - 1, 0.0))
     return out
 
