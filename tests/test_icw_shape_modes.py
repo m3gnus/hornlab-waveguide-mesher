@@ -71,20 +71,38 @@ def _assert_flat_baffle_bcs(curve, atol: float = _BC_ATOL) -> None:
 # =====================================================================================
 class TestNShapeModes:
     def test_positive_and_consistent_with_nullspace_dim(self):
-        """k_max is a positive int and equals D - 1 (reserve one nullspace mode beyond S)."""
+        """k_max is the PROBED honest budget: the largest gene count whose all-zero solve is
+        feasible, between 1 and the algebraic ceiling D-1. The reserved high-frequency modes have
+        weak endpoint leverage, so the budget can fall short of the D-1 ceiling (target-dependent)."""
         targets = _flat_target()
         k_max = n_shape_modes(targets)  # default n_coeff=12
         assert isinstance(k_max, int)
-        assert k_max >= 1
-        # Default basis: C is 4x12 of rank 4 -> nullspace D = 8 -> k_max = D - 1 = 7.
-        assert k_max == 7
+        # Default basis: C is 4x12 of rank 4 -> nullspace D = 8 -> algebraic ceiling D-1 = 7.
+        assert 1 <= k_max <= 7
+        # This target loses the top two reserved modes' conditioning, so the honest budget is 5.
+        assert k_max == 5
 
-    def test_k_max_tracks_n_coeff(self):
-        """Adding basis coefficients adds nullspace modes one-for-one (rank fixed at 4)."""
+    def test_k_max_grows_with_n_coeff_and_stays_within_ceiling(self):
+        """More basis coefficients => more nullspace modes => a non-decreasing honest budget, always
+        within [1, the algebraic ceiling D-1 = n_coeff-5]."""
         targets = _flat_target()
-        # D = n_coeff - 4 (four flat-baffle BC rows), k_max = D - 1 = n_coeff - 5.
+        prev = 0
         for n_coeff in (8, 12, 16, 20):
-            assert n_shape_modes(targets, n_coeff=n_coeff) == n_coeff - 5
+            k_max = n_shape_modes(targets, n_coeff=n_coeff)
+            ceiling = (n_coeff - 4) - 1  # D-1, with D = n_coeff - 4 (four flat-baffle BC rows)
+            assert 1 <= k_max <= ceiling
+            assert k_max >= prev  # monotone non-decreasing in n_coeff
+            prev = k_max
+
+    def test_advertised_budget_is_feasible_at_zero_genes(self):
+        """The advertised k_max must be HONEST: a zero-gene vector at every k up to k_max reduces
+        to a feasible size solve. The old D-1 budget over-promised -- the top two reserved modes
+        had no endpoint leverage, so the size solve went singular at k=6,7 for n_coeff=12."""
+        for targets in (_flat_target(), _flat_target(r_mouth=70.0)):  # easy + deep
+            k_max = n_shape_modes(targets)
+            for k in range(k_max + 1):
+                _curve, report = curve_from_shape_modes(np.zeros(k), targets)
+                assert report.feasible, (k, report.violations)
 
     def test_rollback_target_raises(self):
         targets = ICWTargets(
@@ -275,10 +293,11 @@ class TestInfeasibleAndValidation:
             curve_from_shape_modes(np.array([0.1]), targets)
 
     def test_gene_vector_too_long_raises(self):
+        # Requesting more genes than the algebraic ceiling D-1 (here D=8 -> ceiling 7) raises; within
+        # [0, D-1] the kernel returns a truthful (in)feasible report rather than raising.
         targets = _flat_target()
-        k_max = n_shape_modes(targets)
-        with pytest.raises(ValueError, match="exceeds n_shape_modes"):
-            curve_from_shape_modes(np.zeros(k_max + 1), targets)
+        with pytest.raises(ValueError, match="exceeds the algebraic ceiling"):
+            curve_from_shape_modes(np.zeros(20), targets)
 
     def test_non_1d_gene_vector_raises(self):
         targets = _flat_target()

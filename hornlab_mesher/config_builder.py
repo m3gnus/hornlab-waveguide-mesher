@@ -326,9 +326,36 @@ def _validate_formula_features(
         raise ConfigError("guiding curves are only supported with formula OSSE")
 
 
-def _normalise_mode(config: Mapping[str, Any], mesh: Mapping[str, Any], enclosure: Mapping[str, Any]) -> str:
+def _enc_depth_mm(
+    config: Mapping[str, Any],
+    mesh: Mapping[str, Any],
+    enclosure: Mapping[str, Any],
+    formula: str,
+) -> float:
+    """Resolve the enclosure depth (mm); 0.0 means "no enclosure".
+
+    A bare ``depth`` is read straight from the ``enclosure`` / ``mesh`` sections, where it is
+    unambiguous. At the TOP LEVEL of the config a bare ``depth`` is NOT treated as enclosure depth
+    for an ICW profile -- there it is the rollback axial target (a profile param), and letting it
+    trip enclosure mode silently wrapped a free-standing rollback ICW in a box. ICW enclosures must
+    therefore name the depth explicitly (``encDepth`` / ``depth_mm``) or nest it under the
+    ``enclosure`` section; other formulas keep the historical top-level bare-``depth`` fallback.
+    """
+    sectioned = _optional_float(enclosure, mesh, names=("depth_mm", "depth", "encDepth"))
+    if sectioned is not None:
+        return sectioned
+    top_names = ("depth_mm", "encDepth") if formula == "ICW" else ("depth_mm", "depth", "encDepth")
+    return _float(config, names=top_names, default=0.0)
+
+
+def _normalise_mode(
+    config: Mapping[str, Any],
+    mesh: Mapping[str, Any],
+    enclosure: Mapping[str, Any],
+    formula: str = "OSSE",
+) -> str:
     raw = str(_pick(config, mesh, names=("mode",), default="")).strip().lower().replace("_", "-")
-    enc_depth = _float(enclosure, mesh, config, names=("depth_mm", "depth", "encDepth"), default=0.0)
+    enc_depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if raw in {"enclosure", "enclosed"} or enc_depth > 0:
         return "enclosure"
     if raw in {"bare", "inner", "open"}:
@@ -359,8 +386,9 @@ def _enclosure_from_config(
     config: Mapping[str, Any],
     mesh: Mapping[str, Any],
     enclosure: Mapping[str, Any],
+    formula: str = "OSSE",
 ) -> HornEnclosure | None:
-    depth = _float(enclosure, mesh, config, names=("depth_mm", "depth", "encDepth"), default=0.0)
+    depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if depth <= 0.0:
         return None
     return HornEnclosure(
@@ -477,9 +505,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     formula = _normalise_formula(_pick(config, profile, names=("formula", "type"), default="OSSE"))
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, gcurve, config)
-    mode = _normalise_mode(config, mesh, enclosure)
+    mode = _normalise_mode(config, mesh, enclosure, formula)
     enc_depth = 0.0
-    enclosure_obj = _enclosure_from_config(config, mesh, enclosure)
+    enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
     if enclosure_obj is not None:
         enc_depth = enclosure_obj.depth_mm
     elif mode == "enclosure":
@@ -753,7 +781,7 @@ def build_from_config(
     params, formula, mode = build_geometry_params(config)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
-    enclosure_obj = _enclosure_from_config(config, mesh, enclosure)
+    enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
 
     grid = build_point_grid(params)
 

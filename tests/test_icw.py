@@ -573,3 +573,17 @@ class TestReviewFixes:
         for bad in bad_cases:
             with pytest.raises(ValueError):
                 build_icw_curve(bad)
+
+    def test_top_level_depth_does_not_enclose_icw(self):
+        """A bare top-level ``depth`` is an ICW rollback target, not enclosure depth, so it must
+        not coerce a free-standing rollback ICW into enclosure mode. Non-ICW formulas keep the
+        historical top-level bare-``depth`` -> enclosure fallback, and an explicit enclosure
+        section still encloses an ICW build."""
+        from hornlab_mesher.config_builder import _normalise_mode
+
+        icw_rollback = {"formula": "ICW", "termination": "rollback", "r0": 12.7, "depth": 100.0}
+        assert _normalise_mode(icw_rollback, {}, {}, formula="ICW") == "freestanding"
+        # Back-compat: a non-ICW config with a bare top-level depth still encloses.
+        assert _normalise_mode({"depth": 100.0}, {}, {}, formula="OSSE") == "enclosure"
+        # An explicit enclosure section still encloses an ICW build.
+        assert _normalise_mode({"formula": "ICW"}, {}, {"depth": 300.0}, formula="ICW") == "enclosure"

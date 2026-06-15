@@ -797,21 +797,26 @@ def _continuation_solve(
 #
 # A flat baffle has two nonlinear size targets -- x(1)=x_target and r(1)=r_mouth. The kernel has
 # the arc length ``S`` as one free variable (it enters the terminal-angle RHS, hence the whole
-# subspace). Two targets with one free var is under-determined / ill-posed on its own, so we
-# reserve at least one nullspace coordinate *in addition* to S for the size solve. That gives a
-# 2-DOF (S + 1 reserved mode) solve for the 2 size targets -- well-posed -- and leaves the
-# remaining nullspace coordinates free to be genes:
+# subspace) plus the reserved nullspace coordinates ``b[k:D]``. Reserving at least one mode beyond
+# S gives, on paper, a 2-DOF (S + 1 reserved) solve for the 2 size targets, so the ALGEBRAIC
+# ceiling on genes is:
 #
-#     k_max = D - 1            (D = dim ker(C); reserve 1 nullspace mode beyond S)
-#     k_max = max(k_max, 0)    (never negative)
+#     k_alg = max(D - 1, 0)    (D = dim ker(C); reserve >= 1 nullspace mode beyond S)
+#
+# and :func:`curve_from_shape_modes` accepts any ``k <= k_alg``. But DOF count is not the same as
+# good conditioning: the reserved coordinates are the LAST ``D - k`` columns of ``Phi`` (the
+# highest-frequency SVD nullspace modes), which have weak leverage on the endpoint ``(x(1), r(1))``.
+# Near ``k_alg`` the (S + few-reserved) size system is near-singular and the solve reports spurious
+# INFEASIBLE for exactly the gene-rich curves an optimiser explores -- and HOW near is
+# target-dependent (some throat/mouth/length targets stay feasible to D-1, others lose the top
+# 1-2 modes). So :func:`n_shape_modes` does NOT return the algebraic ceiling; it PROBES the largest
+# ``k`` whose all-zero-gene solve is actually feasible (feasibility is monotone in ``k`` -- more
+# genes means fewer reserved DOF) and returns that honest, target-specific budget.
 #
 # With the default basis (n_coeff=12, cubic, flat baffle) C is 4x12 of rank 4, so D = 8 and
-# k_max = 7. The reserved coordinates the kernel optimises are the LAST ``D - k`` columns of
-# ``Phi`` (indices ``k .. D``); the genes are the FIRST ``k`` columns (indices ``0 .. k``). The
-# leading SVD nullspace modes are the smoothest GLOBAL curvature shapes, so handing those to the
-# outer optimiser as genes gives it the broad shape control it wants, while the kernel keeps a
-# higher-frequency reserved mode (plus S) to fine-tune the endpoint -- a clean separation of
-# "shape" (genes) from "size-fixing" (reserved).
+# k_alg = 7; the probed budget is typically 5-7. The genes are the FIRST ``k`` columns of ``Phi``
+# (the smoothest GLOBAL curvature shapes -- broad shape control for the optimiser); the kernel keeps
+# the higher-frequency reserved modes (plus S) to fine-tune the endpoint -- "shape" vs "size".
 
 
 def _flat_baffle_lin(
@@ -841,12 +846,16 @@ def n_shape_modes(targets: ICWTargets, n_coeff: int = 12, degree: int = DEFAULT_
     nullspace (dimension ``D``) of the linear-BC constraint matrix ``C``. An outer optimiser
     (e.g. CMA-ES) may SET the first ``k`` of these coordinates as genes; the kernel then solves
     the arc length ``S`` plus the remaining ``D - k`` "reserved" coordinates to hit the nonlinear
-    size targets. To keep that size solve well-posed we reserve at least one nullspace coordinate
-    beyond ``S`` (two free vars for the two flat-baffle size targets ``x_target``/``r_mouth``):
+    size targets. DOF count alone is not enough to keep that solve well-conditioned: the reserved
+    modes are the highest-frequency nullspace columns with weak endpoint leverage, so the algebraic
+    ceiling ``D - 1`` over-promises -- near it the size solve goes near-singular and reports spurious
+    INFEASIBLE. How near is TARGET-DEPENDENT, so this PROBES the largest ``k`` whose all-zero-gene
+    solve is actually feasible (monotone in ``k``) and returns that honest budget (typically D-3..D-1):
 
-        k_max = max(D - 1, 0)
+        k_max = max{ k <= D - 1 : zero-gene solve feasible }
 
-    so the returned value is the largest gene-vector length :func:`curve_from_shape_modes` accepts.
+    :func:`curve_from_shape_modes` itself accepts up to the algebraic ceiling ``D - 1`` (it returns a
+    truthful infeasible report past the conditioning limit rather than raising).
     See the module-level rationale above the entry points for the full reasoning.
 
     Parameters
@@ -860,7 +869,15 @@ def n_shape_modes(targets: ICWTargets, n_coeff: int = 12, degree: int = DEFAULT_
     """
     _knots, lin = _flat_baffle_lin(targets, n_coeff, degree)
     D = lin.n_shape  # nullspace dimension dim ker(C)
-    return max(D - 1, 0)
+    # Probe the honest budget: the largest k whose all-zero-gene solve is feasible. Scan down from
+    # the algebraic ceiling D-1 (feasibility is monotone in k) and return the first feasible k --
+    # target-specific, because the high-frequency reserved modes' endpoint leverage (hence the
+    # conditioning of the size solve near the ceiling) depends on the throat/mouth/length targets.
+    for k in range(max(D - 1, 0), 0, -1):
+        _curve, report = curve_from_shape_modes(np.zeros(k), targets, n_coeff=n_coeff, degree=degree)
+        if report.feasible:
+            return k
+    return 0
 
 
 def curve_from_shape_modes(
@@ -914,11 +931,12 @@ def curve_from_shape_modes(
     if b_gene.ndim != 1:
         raise ValueError(f"b_gene must be 1D, got shape {b_gene.shape}")
     k = int(b_gene.size)
-    k_max = max(D - 1, 0)
-    if k > k_max:
+    k_alg = max(D - 1, 0)  # algebraic ceiling: >= 1 reserved mode + S for the 2 size targets
+    if k > k_alg:
         raise ValueError(
-            f"len(b_gene)={k} exceeds n_shape_modes={k_max} (nullspace dim D={D}; one mode is "
-            "reserved with S for the size solve)"
+            f"len(b_gene)={k} exceeds the algebraic ceiling D-1={k_alg} (nullspace dim D={D}; one "
+            "mode must stay reserved with S for the size solve). n_shape_modes() returns the "
+            "conditioning-feasible budget, which may be smaller."
         )
 
     # ---- (1) early necessary feasibility (same gate as solve_icw) ------------------------
