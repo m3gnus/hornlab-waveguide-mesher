@@ -29,6 +29,53 @@ from ._occ import require_gmsh
 
 logger = logging.getLogger(__name__)
 
+# Minimum flat-baffle ring (mm) to keep between the outer enclosure wall and the
+# edge roundover. When ``enc_edge`` approaches the smallest enclosure margin the
+# ring collapses to a sub-millimetre sliver that OCC silently drops, tearing the
+# front-baffle-to-side-wall seam open — an off-symmetry-plane free edge that
+# fails the solver's open-edge guard. The roundover is clamped so at least this
+# much (or a small fraction of the margin, whichever is larger) survives.
+_MIN_BAFFLE_CLEARANCE_MM = 0.1
+_BAFFLE_CLEARANCE_FRACTION = 0.05
+
+# Below this roundover radius (mm) a rounded-rectangle sector is built as a true
+# sharp box instead. ``enc_edge=0`` collapses the front/back roundover inset
+# points onto the outer points, so the roundover/corner "arcs" degenerate to
+# zero-length lines OCC rejects ("Could not create line"). The threshold is a
+# nanometre — far below OCC's point-merge tolerance, so no real roundover is
+# ever misrouted, while every degenerate one takes the sharp path.
+_SHARP_SECTOR_EDGE_EPS = 1.0e-6
+
+
+def _clamp_edge_roundover(
+    edge_mm: float,
+    margin_edge_limit: float,
+    half_w: float,
+    half_h: float,
+) -> float:
+    """Clamp the enclosure edge roundover so the box stays meshable.
+
+    The roundover may not exceed the smallest enclosure margin, the half-width,
+    or the half-height. Crucially, when ``edge_mm`` approaches the smallest
+    margin (e.g. ``enc_edge == enc_space``) the flat-baffle ring between the
+    outer wall and the roundover collapses to a sub-millimetre sliver that OCC
+    silently drops — tearing the front-baffle-to-side-wall seam open off the
+    symmetry plane. Keep a real flat-baffle clearance below the margin, not just
+    an exact-tangency epsilon. Returns ``0.0`` (sharp corner) when no positive
+    roundover survives the clamp.
+    """
+    clamped = max(
+        0.0,
+        min(float(edge_mm), float(margin_edge_limit), float(half_w) - 0.1, float(half_h) - 0.1),
+    )
+    if margin_edge_limit > 0.0:
+        baffle_clearance = max(
+            _MIN_BAFFLE_CLEARANCE_MM,
+            margin_edge_limit * _BAFFLE_CLEARANCE_FRACTION,
+        )
+        clamped = min(clamped, max(0.0, margin_edge_limit - baffle_clearance))
+    return clamped
+
 
 # ---------------------------------------------------------------------------
 # Pure XY-plane geometry math (no gmsh) — vendored from WG.
@@ -427,6 +474,63 @@ def _build_rounded_rectangle_enclosure_sector(
                 pass
         return (2, int(gmsh.model.occ.addSurfaceFilling(loop)))
 
+    # Sharp box edge (enc_edge=0): the rounded construction below insets the
+    # front/back rims by ``r`` (fx=ox-sx*r, zfo=zf-r, ...). With r==0 those inset
+    # points coincide with the outer points, so the roundover and corner "arcs"
+    # become zero-length lines OCC rejects with "Could not create line". A sharp
+    # box is a legitimate request, so build its four real faces directly — front
+    # baffle, two side walls meeting at the shared sharp vertical corner edge,
+    # and back cap — and omit the degenerate roundover/corner surfaces. Face
+    # windings reproduce the rounded path's outward normals (+z front, +x/+y
+    # side walls, -z back); front and back reuse the rounded loops verbatim.
+    if r <= _SHARP_SECTOR_EDGE_EPS:
+        origin_back = pt(0.0, 0.0, zb, back_mesh_size)
+        sx_px_f = pt(ox, 0.0, zf, front_mesh_size)
+        sx_px_b = pt(ox, 0.0, zb, back_mesh_size)
+        sx_py_f = pt(0.0, oy, zf, front_mesh_size)
+        sx_py_b = pt(0.0, oy, zb, back_mesh_size)
+        sx_c_f = pt(ox, oy, zf, front_mesh_size)
+        sx_c_b = pt(ox, oy, zb, back_mesh_size)
+
+        l_mouth_x = line(mouth_x, sx_px_f)
+        l_mouth_y = line(mouth_y, sx_py_f)
+        l_front_x = line(sx_px_f, sx_c_f)
+        l_front_y = line(sx_py_f, sx_c_f)
+        l_back_x = line(sx_px_b, sx_c_b)
+        l_back_y = line(sx_py_b, sx_c_b)
+        l_back_x_axis = line(sx_px_b, origin_back)
+        l_back_y_axis = line(origin_back, sx_py_b)
+        v_x_axis = line(sx_px_f, sx_px_b)
+        v_y_axis = line(sx_py_f, sx_py_b)
+        v_corner = line(sx_c_f, sx_c_b)
+
+        front = surface(
+            [int(c) for c in mouth_curves] + [l_mouth_y, l_front_y, -l_front_x, -l_mouth_x],
+            plane=True,
+        )
+        x_side = surface([v_x_axis, l_back_x, -v_corner, -l_front_x], plane=True)
+        y_side = surface([l_front_y, v_corner, -l_back_y, -v_y_axis], plane=True)
+        back = surface([l_back_x_axis, l_back_y_axis, l_back_y, -l_back_x], plane=True)
+
+        return {
+            "dimtags": [front, x_side, y_side, back],
+            "front": [front[1]],
+            "back": [back[1]],
+            "sides": [x_side[1], y_side[1]],
+            "front_edges": [],
+            "back_edges": [],
+            "bounds": {
+                "bx0": float(bx0),
+                "bx1": float(bx1),
+                "by0": float(by0),
+                "by1": float(by1),
+                "z_front": z_front,
+                "z_back": z_back,
+                "cx": 0.5 * (float(bx0) + float(bx1)),
+                "cy": 0.5 * (float(by0) + float(by1)),
+            },
+        }
+
     origin_back = pt(0.0, 0.0, zb, back_mesh_size)
     px_f = pt(fx, 0.0, zf, front_mesh_size)
     px_o_f = pt(ox, 0.0, zfo, front_mesh_size)
@@ -643,28 +747,9 @@ def build_enclosure_box(
             float(enclosure.space_b_mm),
         ),
     )
-    # The flat front baffle is the ring of width (smallest spacing - edge)
-    # between the mouth rim and where the edge roundover begins. As edge nears
-    # that spacing the ring collapses to a sub-micron sliver that OCC/Gmsh cannot
-    # build, so the front face is dropped and the enclosure is left open at its
-    # front rim -- a hole the (mirrored) BEM solve leaks through. Hold the edge a
-    # small but meshable clearance below the smallest spacing so a real flat
-    # baffle always remains. The clearance must clear OCC's modeling tolerance
-    # (~1e-4 mm) with margin; 0.1 mm is empirically safe, with 2% headroom so
-    # larger enclosures keep a proportionate baffle.
-    flat_face_clearance = max(0.1, margin_edge_limit * 0.02)
-    edge_upper = max(0.0, margin_edge_limit - flat_face_clearance)
-    clamped_edge = max(
-        0.0,
-        min(float(enclosure.edge_mm), edge_upper, half_w - 0.1, half_h - 0.1),
+    clamped_edge = _clamp_edge_roundover(
+        float(enclosure.edge_mm), margin_edge_limit, half_w, half_h
     )
-    if margin_edge_limit > 0.0 and float(enclosure.edge_mm) > edge_upper:
-        logger.warning(
-            "[hornlab-mesher] enc edge (%.2f mm) too close to the smallest "
-            "enclosure spacing (%.2f mm) to leave a meshable front baffle; "
-            "clamping edge to %.2f mm so the enclosure front closes.",
-            float(enclosure.edge_mm), margin_edge_limit, clamped_edge,
-        )
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
     front_mesh_size = float(enclosure.front_mesh_size_mm or 0.0)
     back_mesh_size = float(enclosure.back_mesh_size_mm or 0.0)
