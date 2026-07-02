@@ -124,19 +124,26 @@ def _segments_intersect(
 def meridian_self_intersects(x: np.ndarray, r: np.ndarray) -> bool:
     """General planar self-intersection test of the meridian polyline ``(x[i], r[i])``.
 
-    A rollback (``theta`` past 90 deg) makes the meridian non-single-valued in ``x``, so a
-    monotone-in-``x`` shortcut is not safe; we test every non-adjacent segment pair. Adjacent
-    segments share an endpoint by construction and are skipped (they would otherwise always
-    "touch").
-
-    O(n^2) in the number of segments. Stations default to ~1601, which is fine for a precheck;
-    a coarse bounding-box reject keeps the constant small.
+    A polyline strictly monotone in either coordinate is a function graph in
+    that coordinate: non-adjacent segments occupy disjoint coordinate
+    intervals and cannot intersect, so those curves (every flat-baffle and
+    forward-marching meridian) exit in O(n). A rollback (``theta`` past 90
+    deg) is non-single-valued in ``x`` and usually non-monotone in ``r`` too;
+    it falls through to a vectorised bounding-box pair prefilter with the
+    exact segment test run only on the surviving pairs. Adjacent segments
+    share an endpoint by construction and are skipped (they would otherwise
+    always "touch").
     """
     x = np.asarray(x, dtype=float)
     r = np.asarray(r, dtype=float)
     pts = np.column_stack([x, r])
     n = len(pts) - 1  # number of segments
     if n < 2:
+        return False
+
+    dx = np.diff(x)
+    dr = np.diff(r)
+    if np.all(dx > 0.0) or np.all(dx < 0.0) or np.all(dr > 0.0) or np.all(dr < 0.0):
         return False
 
     seg_a = pts[:-1]
@@ -147,17 +154,20 @@ def meridian_self_intersects(x: np.ndarray, r: np.ndarray) -> bool:
     rmin = np.minimum(seg_a[:, 1], seg_b[:, 1])
     rmax = np.maximum(seg_a[:, 1], seg_b[:, 1])
 
-    for i in range(n):
-        # j starts at i+2 to skip the adjacent segment i+1 (shares endpoint pts[i+1]).
-        for j in range(i + 2, n):
-            # Skip the wrap-adjacency of the first and last segment only if they share a point;
-            # for an open polyline they do not, so no special case is needed.
-            if xmax[i] < xmin[j] or xmax[j] < xmin[i]:
-                continue
-            if rmax[i] < rmin[j] or rmax[j] < rmin[i]:
-                continue
-            if _segments_intersect(seg_a[i], seg_b[i], seg_a[j], seg_b[j]):
-                return True
+    # Vectorised bounding-box overlap over the strict upper triangle j >= i+2
+    # (j starts at i+2 to skip the adjacent segment i+1, which shares
+    # pts[i+1]; the first and last segment of an open polyline share no
+    # point, so no wrap special case is needed).
+    overlap = (
+        (xmin[:, None] <= xmax[None, :])
+        & (xmin[None, :] <= xmax[:, None])
+        & (rmin[:, None] <= rmax[None, :])
+        & (rmin[None, :] <= rmax[:, None])
+    )
+    ii, jj = np.nonzero(np.triu(overlap, k=2))
+    for i, j in zip(ii.tolist(), jj.tolist()):
+        if _segments_intersect(seg_a[i], seg_b[i], seg_a[j], seg_b[j]):
+            return True
     return False
 
 

@@ -578,6 +578,19 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         reserved_idx = min(n_length, int(math.ceil(n_length * max_fixed_len / max_total_len - 1.0e-9)))
         snapped_morph_start = max(snapped_morph_start, float(t_unit_values[reserved_idx]))
 
+    # _apply_morphing is a per-point no-op unless morphTarget resolves to a
+    # morph shape (1/2). When the param is absent or a plain non-morph
+    # constant it cannot activate at any azimuth — skip the n_phi * n_length
+    # no-op calls. Expression values may vary with phi, so they keep the
+    # per-point path.
+    morph_param = params.get("morphTarget")
+    if morph_param is None:
+        morph_possible = False
+    elif isinstance(morph_param, (int, float)):
+        morph_possible = int(round(float(morph_param))) in {1, 2}
+    else:
+        morph_possible = True
+
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
         mouth_radial = float(raw_radials[i, -1])
@@ -587,16 +600,17 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             # for OSSE), identical for every azimuth: ATH does not shift the
             # blend by the per-azimuth slot length.
             morph_t = float(t_values[j])
-            radial = _apply_morphing(
-                radial,
-                mouth_radial,
-                morph_t,
-                float(phi),
-                params,
-                morph_start=snapped_morph_start,
-                implicit_half_width=resolved_half_width,
-                implicit_half_height=resolved_half_height,
-            )
+            if morph_possible:
+                radial = _apply_morphing(
+                    radial,
+                    mouth_radial,
+                    morph_t,
+                    float(phi),
+                    params,
+                    morph_start=snapped_morph_start,
+                    implicit_half_width=resolved_half_width,
+                    implicit_half_height=resolved_half_height,
+                )
             inner[i, j] = (
                 radial * math.cos(float(phi)),
                 radial * math.sin(float(phi)),

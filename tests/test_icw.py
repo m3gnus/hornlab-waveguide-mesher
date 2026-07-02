@@ -11,6 +11,8 @@ which is now consistent between :func:`solve_icw` and :func:`aperture_report`.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -239,6 +241,37 @@ class TestChecks:
         x = np.array([0.0, 1.0, 1.0, 0.0])
         r = np.array([0.0, 1.0, 0.0, 1.0])
         assert meridian_self_intersects(x, r) is True
+
+    def test_meridian_self_intersects_non_monotone_paths(self):
+        # Flat-baffle-like: x stalls (non-monotone) while r keeps rising —
+        # the strictly-monotone-r fast path must still say False.
+        x = np.array([0.0, 10.0, 20.0, 20.0, 20.0])
+        r = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert meridian_self_intersects(x, r) is False
+
+        # Non-monotone in both coordinates but clean -> full pair-test path.
+        x = np.array([0.0, 1.0, 0.5, 1.5])
+        r = np.array([0.0, 1.0, 2.0, 1.5])
+        assert meridian_self_intersects(x, r) is False
+
+        # Folded rollback crossing (non-monotone in both) stays detected.
+        x = np.array([0.0, 2.0, 2.5, 1.0])
+        r = np.array([0.0, 2.0, 3.0, 0.5])
+        assert meridian_self_intersects(x, r) is True
+
+    def test_meridian_self_intersects_large_rollback_is_fast(self):
+        # 4000-segment non-crossing spiral: non-monotone in both coordinates,
+        # so it exercises the full pair test. The vectorised bbox prefilter
+        # keeps this in milliseconds; the old pure-Python O(n^2) double loop
+        # took seconds (regression tripwire for the optimizer per-candidate
+        # precheck cost).
+        t = np.linspace(0.0, 4.0 * np.pi, 4001)
+        radius = np.linspace(1.0, 2.0, t.size)
+        x = radius * np.cos(t)
+        r = 3.0 + radius * np.sin(t)
+        start = time.perf_counter()
+        assert meridian_self_intersects(x, r) is False
+        assert time.perf_counter() - start < 2.0
 
     def test_shell_offset_report(self):
         # Gentle cone + thin wall -> regular offset, ok.
