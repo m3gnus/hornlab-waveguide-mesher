@@ -148,6 +148,14 @@ def _normalise_quadrants(value: Any) -> str:
     return q
 
 
+def _symmetry_planes_for_quadrants(value: Any) -> tuple[str, ...]:
+    return {
+        "1": ("x", "y"),
+        "12": ("y",),
+        "14": ("x",),
+    }.get(_normalise_quadrants(value), ())
+
+
 def _is_true(value: Any) -> bool:
     if isinstance(value, bool):
         return value

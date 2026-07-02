@@ -1198,6 +1198,39 @@ def test_reduced_enclosure_uses_requested_cut_plane_not_offset_minima(tmp_path):
     assert points[:, 1].min() < -1.0e-4
 
 
+def test_viewport_reduced_enclosure_uses_requested_cut_plane_not_offset_minima():
+    cfg = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 16,
+            "length_segments": 4,
+            "quadrants": "14",
+            "vertical_offset_mm": 100.0,
+        },
+        "enclosure": {
+            "depth_mm": 120.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 40.0,
+            "edge_mm": 0.0,
+            "edge_type": 1,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+
+    geometry = build_viewport_geometry_from_config(cfg)
+    enclosure = geometry["enclosure"]
+    assert enclosure is not None
+    front = np.asarray(enclosure["front_outer_points"], dtype=np.float64).reshape(-1, 3)
+
+    assert np.isclose(front[:, 0].min(), 0.0)
+    assert front[:, 1].min() < 0.0
+
+
 @pytest.mark.parametrize(
     ("quadrants", "sym_plane", "cut_axes"),
     [
@@ -1541,6 +1574,41 @@ def test_permuted_quadrants_normalise_to_canonical():
     assert params["quadrants"] == "12"
 
 
+@pytest.mark.parametrize("quadrants", ["1", "12"])
+def test_vertical_offset_rejected_for_y_cut_reduced_domains(quadrants):
+    from hornlab_mesher.config_builder import build_geometry_params
+    from hornlab_mesher.config_parser import ConfigError
+
+    cfg = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 16,
+            "length_segments": 4,
+            "quadrants": quadrants,
+            "vertical_offset_mm": 10.0,
+        },
+    }
+
+    with pytest.raises(ConfigError, match="VerticalOffset"):
+        build_geometry_params(cfg)
+
+    with pytest.raises(ValueError, match="verticalOffset"):
+        build_point_grid(
+            {
+                "type": "OSSE",
+                "L": 80.0,
+                "r0": 10.0,
+                "a": 40.0,
+                "a0": 0.0,
+                "angularSegments": 16,
+                "lengthSegments": 4,
+                "quadrants": quadrants,
+                "verticalOffset": 10.0,
+            }
+        )
+
+
 def test_direct_profile_grid_quadrants_share_config_normalisation():
     params = {
         "type": "OSSE",
@@ -1557,6 +1625,8 @@ def test_direct_profile_grid_quadrants_share_config_normalisation():
 
     assert grid["full_circle"] is False
     assert grid["grid_n_phi"] == 9
+    assert grid["quadrants"] == "12"
+    assert grid["symmetry_planes"] == ["y"]
 
     for bad in ("13", "foo", "5", "1x"):
         with pytest.raises(ValueError, match="Quadrants"):
@@ -1580,3 +1650,28 @@ def test_front_baffle_guard_catches_in_plane_outside_mouth_contact():
 
     with pytest.raises(NotImplementedError, match="outside the mouth opening"):
         _reject_front_baffle_wall_intersections(inner_points, closed=True)
+
+
+def test_open_front_baffle_guard_catches_tangential_outside_reduced_mouth_contact():
+    mouth_xy = np.asarray(
+        [
+            [10.0, 0.0],
+            [7.0, 7.0],
+            [0.0, 10.0],
+        ],
+        dtype=np.float64,
+    )
+    inner_points = np.zeros((3, 3, 3), dtype=np.float64)
+    inner_points[:, 0, :2] = mouth_xy * 0.4
+    inner_points[:, 0, 2] = 0.0
+    inner_points[:, 1, :2] = mouth_xy * 0.5
+    inner_points[:, 1, 2] = 50.0
+    inner_points[:, 2, :2] = mouth_xy
+    inner_points[:, 2, 2] = 100.0
+    # This contact lies on the baffle plane inside the old meridian ray guard,
+    # but outside the actual quarter-domain mouth polygon.
+    inner_points[1, 1, :2] = [12.0, 0.0]
+    inner_points[1, 1, 2] = 100.0
+
+    with pytest.raises(NotImplementedError, match="outside the mouth opening"):
+        _reject_front_baffle_wall_intersections(inner_points, closed=False)

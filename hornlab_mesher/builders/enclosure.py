@@ -127,6 +127,29 @@ def _point_in_or_on_polygon_xy(
     return inside
 
 
+def _open_mouth_polygon_xy(
+    mouth_xy: NDArray[np.float64],
+    *,
+    tolerance: float = 1.0e-6,
+) -> NDArray[np.float64]:
+    mouth = np.asarray(mouth_xy, dtype=np.float64)
+    if mouth.shape[0] < 2:
+        return mouth
+
+    first = mouth[0]
+    last = mouth[-1]
+    first_on_x = abs(float(first[0])) <= tolerance
+    first_on_y = abs(float(first[1])) <= tolerance
+    last_on_x = abs(float(last[0])) <= tolerance
+    last_on_y = abs(float(last[1])) <= tolerance
+    endpoints_on_different_cut_planes = (first_on_x and last_on_y) or (
+        first_on_y and last_on_x
+    )
+    if endpoints_on_different_cut_planes:
+        return np.vstack([mouth, np.zeros((1, 2), dtype=np.float64)])
+    return mouth
+
+
 def _point_inside_mouth_opening(
     point_xy: NDArray[np.float64],
     mouth_xy: NDArray[np.float64],
@@ -138,14 +161,8 @@ def _point_inside_mouth_opening(
     if closed:
         return _point_in_or_on_polygon_xy(point_xy, mouth_xy, tolerance=tolerance)
 
-    center = np.mean(mouth_xy, axis=0)
-    mouth = mouth_xy[meridian_index]
-    ray = mouth - center
-    ray_len = float(np.linalg.norm(ray))
-    if ray_len <= tolerance:
-        return True
-    outward = ray / ray_len
-    return float(np.dot(point_xy - mouth, outward)) <= tolerance
+    polygon = _open_mouth_polygon_xy(mouth_xy, tolerance=tolerance)
+    return _point_in_or_on_polygon_xy(point_xy, polygon, tolerance=tolerance)
 
 
 def _front_baffle_contact_points(

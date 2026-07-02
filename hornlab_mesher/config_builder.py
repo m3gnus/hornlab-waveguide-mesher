@@ -18,7 +18,10 @@ from . import cost
 from .config_parser import ConfigError
 from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGeometry
 from .mesher import build_mesh_with_info
-from .profile_common import _normalise_quadrants as _normalise_quadrants_common
+from .profile_common import (
+    _normalise_quadrants as _normalise_quadrants_common,
+    _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
+)
 from .profiles import build_point_grid, eval_param
 
 
@@ -677,6 +680,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             if value is not None:
                 common[key] = _scalar_or_expr(profile, config, names=(key,), default=None)
 
+    vertical_offset = eval_param(common.get("verticalOffset"), 0.0, 0.0)
+    quadrants = _normalised_quadrants(common.get("quadrants"))
+    if vertical_offset != 0.0 and "y" in _symmetry_planes_for_quadrants(quadrants):
+        raise ConfigError(
+            "Mesh.VerticalOffset is not supported when Mesh.Quadrants includes "
+            "the y=0 symmetry plane (1 or 12). Use full coverage or quadrants 14."
+        )
+
     return common, formula, mode
 
 
@@ -718,11 +729,7 @@ def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
     ("1234") returns no planes.
     """
 
-    return {
-        "1": ("x", "y"),
-        "12": ("y",),
-        "14": ("x",),
-    }.get(_normalised_quadrants(quadrants), ())
+    return _symmetry_planes_for_quadrants_common(quadrants)
 
 
 def _native_check_open_edges_for_mode(mode: str) -> bool:

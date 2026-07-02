@@ -5,7 +5,13 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .profile_common import _is_true, _normalise_formula, _normalise_quadrants, eval_param
+from .profile_common import (
+    _is_true,
+    _normalise_formula,
+    _normalise_quadrants,
+    _symmetry_planes_for_quadrants,
+    eval_param,
+)
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse,
@@ -510,6 +516,8 @@ def _raw_radial_grid(
 
 def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     formula = _normalise_formula(params.get("type", "OSSE"))
+    quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
+    symmetry_planes = _symmetry_planes_for_quadrants(quadrants)
     curve_type = _guiding_curve_type(params, 0.0)
     if curve_type not in {0, 1, 2}:
         raise ValueError(f"unsupported GCurve type {curve_type}")
@@ -626,6 +634,12 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         inner *= geom_scale
     vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
     if vertical_offset != 0.0:
+        if "y" in symmetry_planes:
+            raise ValueError(
+                "verticalOffset is not supported when quadrants include the y=0 "
+                "symmetry plane (quadrants 1 or 12). Use full coverage or "
+                "quadrants 14."
+            )
         inner[:, :, 1] += vertical_offset
 
     outer = None
@@ -640,6 +654,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         "grid_n_phi": int(inner.shape[0]),
         "grid_n_length": int(n_length),
         "full_circle": bool(full_circle),
+        "quadrants": quadrants,
+        "symmetry_planes": list(symmetry_planes),
         "angle_list": angles.tolist(),
         "slice_map": t_values.tolist(),
         "sampling_mode": sampling_mode,

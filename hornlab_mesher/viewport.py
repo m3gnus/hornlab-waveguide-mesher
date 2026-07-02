@@ -28,6 +28,7 @@ def _enclosure_bounds(
     enclosure: HornEnclosure,
     *,
     closed: bool,
+    symmetry_planes: tuple[str, ...] = (),
 ) -> dict[str, float]:
     mouth_pts = inner_points[:, -1, :]
     x_min = float(mouth_pts[:, 0].min())
@@ -52,9 +53,17 @@ def _enclosure_bounds(
         enc_depth = min_enc_depth
     z_back = z_front - enc_depth
 
-    bx0 = 0.0 if not closed and x_min >= -1.0e-6 else x_min - float(enclosure.space_l_mm)
+    plane_set = set(symmetry_planes)
+    x_open = not closed and "x" in plane_set
+    y_open = not closed and "y" in plane_set
+    if x_open and x_min < -1.0e-6:
+        raise ValueError("x symmetry plane requested but mouth points cross x=0")
+    if y_open and y_min < -1.0e-6:
+        raise ValueError("y symmetry plane requested but mouth points cross y=0")
+
+    bx0 = 0.0 if x_open else x_min - float(enclosure.space_l_mm)
     bx1 = x_max + float(enclosure.space_r_mm)
-    by0 = 0.0 if not closed and y_min >= -1.0e-6 else y_min - float(enclosure.space_b_mm)
+    by0 = 0.0 if y_open else y_min - float(enclosure.space_b_mm)
     by1 = y_max + float(enclosure.space_t_mm)
 
     return {
@@ -74,6 +83,7 @@ def build_enclosure_viewport_grid(
     enclosure: HornEnclosure,
     *,
     closed: bool = True,
+    symmetry_planes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return lightweight enclosure rings for viewport tessellation.
 
@@ -82,7 +92,12 @@ def build_enclosure_viewport_grid(
     instead of Gmsh surfaces so callers can use a cheaper viewport tessellator.
     """
 
-    bounds = _enclosure_bounds(inner_points, enclosure, closed=closed)
+    bounds = _enclosure_bounds(
+        inner_points,
+        enclosure,
+        closed=closed,
+        symmetry_planes=tuple(symmetry_planes),
+    )
     half_w = 0.5 * (bounds["bx1"] - bounds["bx0"])
     half_h = 0.5 * (bounds["by1"] - bounds["by0"])
     margin_edge_limit = max(
@@ -225,6 +240,7 @@ def build_viewport_geometry_from_config(config: Mapping[str, Any]) -> dict[str, 
             inner_points,
             enclosure,
             closed=bool(grid.get("full_circle", True)),
+            symmetry_planes=tuple(grid.get("symmetry_planes") or ()),
         )
 
     return {
