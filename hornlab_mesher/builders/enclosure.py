@@ -707,6 +707,39 @@ def build_enclosure_box(
     y_max = float(mouth_pts[:, 1].max())
     z_front = float(mouth_pts[:, 2].max())
 
+    # The front baffle is an annular face in the z_front plane whose hole is
+    # bounded by the mouth ring. A rolled-back lip that stays radially inside
+    # the ring legitimately protrudes through that hole (R-OSSE, ICW
+    # rollback), but a wall segment crossing the baffle plane radially
+    # *outside* the ring (deep curl past 180 deg, bulbous lip folding back
+    # in) would be bisected by the front face: the box still welds
+    # watertight around it, so nothing downstream can catch the
+    # self-intersection — fail explicitly instead. The final segment of each
+    # meridian attaches to the ring itself and is excluded.
+    ring_r = np.hypot(mouth_pts[:, 0], mouth_pts[:, 1])
+    wall_r = np.hypot(inner_points[:, :, 0], inner_points[:, :, 1])
+    wall_z = inner_points[:, :, 2]
+    if wall_z.shape[1] >= 3:
+        za = wall_z[:, :-2]
+        zb = wall_z[:, 1:-1]
+        straddle = (za - z_front) * (zb - z_front) < 0.0
+        if bool(np.any(straddle)):
+            ra = wall_r[:, :-2]
+            rb = wall_r[:, 1:-1]
+            denom = np.where(np.abs(zb - za) > 1.0e-12, zb - za, 1.0)
+            t = np.clip((z_front - za) / denom, 0.0, 1.0)
+            r_cross = ra + (rb - ra) * t
+            bad = straddle & (r_cross > ring_r[:, None] + 1.0e-6)
+            if bool(np.any(bad)):
+                worst = float(np.max(np.where(bad, r_cross, -np.inf)))
+                raise NotImplementedError(
+                    "build_enclosure_box: the horn wall crosses the front-baffle "
+                    f"plane (z={z_front:.3f} mm) at radius {worst:.3f} mm, outside "
+                    "the mouth ring — the baffle would bisect the wall (deep "
+                    "rollback / curled-in lip). Build it free-standing "
+                    "(enc_depth=0) instead."
+                )
+
     z_throat = float(np.min(inner_points[:, 0, 2]))
     horn_length = z_front - z_throat
     min_enc_depth = horn_length + float(enclosure.depth_margin_mm)
@@ -720,9 +753,11 @@ def build_enclosure_box(
         enc_depth = min_enc_depth
     z_back = z_front - enc_depth
 
-    bx0 = 0.0 if not closed and x_min >= -1.0e-6 else x_min - float(enclosure.space_l_mm)
+    x_open = not closed and x_min >= -1.0e-6
+    y_open = not closed and y_min >= -1.0e-6
+    bx0 = 0.0 if x_open else x_min - float(enclosure.space_l_mm)
     bx1 = x_max + float(enclosure.space_r_mm)
-    by0 = 0.0 if not closed and y_min >= -1.0e-6 else y_min - float(enclosure.space_b_mm)
+    by0 = 0.0 if y_open else y_min - float(enclosure.space_b_mm)
     by1 = y_max + float(enclosure.space_t_mm)
 
     bounds = {
@@ -736,17 +771,21 @@ def build_enclosure_box(
         "cy": 0.5 * (by0 + by1),
     }
 
-    half_w = 0.5 * (bx1 - bx0)
-    half_h = 0.5 * (by1 - by0)
-    margin_edge_limit = max(
-        0.0,
-        min(
-            float(enclosure.space_l_mm),
-            float(enclosure.space_t_mm),
-            float(enclosure.space_r_mm),
-            float(enclosure.space_b_mm),
-        ),
-    )
+    # Roundover limits must describe the *physical* (mirror-completed) box:
+    # on reduced domains the cut plane at x=0 / y=0 is not a wall, so the
+    # mirrored half-extent is bx1 / by1 itself, and the spacings on the cut
+    # side are never applied and must not participate in the margin clamp
+    # (otherwise a quarter build of a design clamps the roundover harder than
+    # the identical full build — or forces a sharp box when the unused
+    # cut-side spacing is 0).
+    half_w = float(bx1) if x_open else 0.5 * (bx1 - bx0)
+    half_h = float(by1) if y_open else 0.5 * (by1 - by0)
+    applied_spacings = [float(enclosure.space_r_mm), float(enclosure.space_t_mm)]
+    if not x_open:
+        applied_spacings.append(float(enclosure.space_l_mm))
+    if not y_open:
+        applied_spacings.append(float(enclosure.space_b_mm))
+    margin_edge_limit = max(0.0, min(applied_spacings))
     clamped_edge = _clamp_edge_roundover(
         float(enclosure.edge_mm), margin_edge_limit, half_w, half_h
     )

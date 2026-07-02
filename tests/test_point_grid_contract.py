@@ -1475,3 +1475,30 @@ def test_lookup_rejects_missing_profile():
     }
     with pytest.raises(ValueError, match="lookupProfile"):
         build_point_grid(params)
+
+
+def test_junk_quadrants_rejected_at_config_time():
+    from hornlab_mesher.config_builder import build_geometry_params
+    from hornlab_mesher.config_parser import ConfigError
+
+    cfg = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": "13"},
+    }
+    # "13" used to fall through every quadrant span map into a degenerate
+    # open full-circle grid that only failed much later in the solver.
+    with pytest.raises(ConfigError, match="Quadrants"):
+        build_geometry_params(cfg)
+
+
+def test_permuted_quadrants_normalise_to_canonical():
+    from hornlab_mesher.config_builder import build_geometry_params
+
+    cfg = {
+        "formula": "OSSE",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": "21"},
+    }
+    params, _, _ = build_geometry_params(cfg)
+    assert params["quadrants"] == "12"

@@ -586,7 +586,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "gcurveSfN1": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n1", "gcurveSfN1"), default=2),
         "gcurveSfN2": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n2", "gcurveSfN2"), default=2),
         "gcurveSfN3": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n3", "gcurveSfN3"), default=2),
-        "quadrants": str(_pick(mesh, config, names=("quadrants",), default="1234")),
+        "quadrants": _normalised_quadrants(_pick(mesh, config, names=("quadrants",), default="1234")),
         "scale": _float(config, profile, names=("scale", "Scale"), default=1.0),
         "verticalOffset": _float(
             mesh, config, names=("vertical_offset_mm", "verticalOffset"), default=0.0
@@ -680,8 +680,21 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
 
 
 def _normalised_quadrants(value: Any) -> str:
+    """Normalise Mesh.Quadrants to one of the four supported coverages.
+
+    Digit order and repeats are tolerated ("21" == "12"); anything outside
+    {1, 12, 14, 1234} used to fall through every quadrant span map to a
+    degenerate open full-circle grid (duplicated 0/2pi seam ray, no rim
+    snap) that only failed much later in the solver — reject it here.
+    """
     q = "".join(ch for ch in str(value or "1234") if ch in "1234")
-    return q or "1234"
+    q = "".join(sorted(set(q))) or "1234"
+    if q not in {"1", "12", "14", "1234"}:
+        raise ConfigError(
+            f"Mesh.Quadrants={value!r} is not supported: use 1 (quarter), "
+            "12 or 14 (half), or 1234 (full)."
+        )
+    return q
 
 
 def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
