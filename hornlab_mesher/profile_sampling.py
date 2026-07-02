@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .profile_common import _is_true, _normalise_formula, eval_param
+from .profile_common import _is_true, _normalise_formula, _normalise_quadrants, eval_param
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse,
@@ -110,7 +110,6 @@ def _angle_list(
     morph_half_width: float | None = None,
     morph_half_height: float | None = None,
 ) -> tuple[np.ndarray, bool]:
-    quadrants = str(params.get("quadrants", "1234"))
     angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
     morphed_full = _morph_angle_list(
         params,
@@ -118,7 +117,7 @@ def _angle_list(
         half_width=morph_half_width,
         half_height=morph_half_height,
     )
-    q = "".join(ch for ch in str(quadrants or "1234") if ch in "1234")
+    q = _normalise_quadrants(params.get("quadrants", "1234"))
     if morphed_full is not None:
         if not q or q == "1234":
             return morphed_full, True

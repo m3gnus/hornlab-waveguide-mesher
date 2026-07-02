@@ -77,6 +77,137 @@ def _clamp_edge_roundover(
     return clamped
 
 
+def _point_on_segment_xy(
+    point: NDArray[np.float64],
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    *,
+    tolerance: float = 1.0e-6,
+) -> bool:
+    ab = b - a
+    ap = point - a
+    length = float(np.linalg.norm(ab))
+    if length <= tolerance:
+        return float(np.linalg.norm(ap)) <= tolerance
+    cross = abs(float(ab[0] * ap[1] - ab[1] * ap[0]))
+    if cross > tolerance * max(1.0, length):
+        return False
+    dot = float(np.dot(ap, ab))
+    return -tolerance <= dot <= float(np.dot(ab, ab)) + tolerance
+
+
+def _point_in_or_on_polygon_xy(
+    point: NDArray[np.float64],
+    polygon: NDArray[np.float64],
+    *,
+    tolerance: float = 1.0e-6,
+) -> bool:
+    poly = np.asarray(polygon, dtype=np.float64)
+    p = np.asarray(point, dtype=np.float64)
+    if poly.shape[0] < 3:
+        return False
+    for idx in range(poly.shape[0]):
+        if _point_on_segment_xy(p, poly[idx], poly[(idx + 1) % poly.shape[0]], tolerance=tolerance):
+            return True
+
+    inside = False
+    x = float(p[0])
+    y = float(p[1])
+    prev = poly[-1]
+    for current in poly:
+        yi = float(current[1])
+        yj = float(prev[1])
+        if (yi > y) != (yj > y):
+            denom = yj - yi
+            if abs(denom) > tolerance:
+                x_intersect = float(current[0]) + (y - yi) * (float(prev[0]) - float(current[0])) / denom
+                if x <= x_intersect + tolerance:
+                    inside = not inside
+        prev = current
+    return inside
+
+
+def _point_inside_mouth_opening(
+    point_xy: NDArray[np.float64],
+    mouth_xy: NDArray[np.float64],
+    *,
+    meridian_index: int,
+    closed: bool,
+    tolerance: float = 1.0e-6,
+) -> bool:
+    if closed:
+        return _point_in_or_on_polygon_xy(point_xy, mouth_xy, tolerance=tolerance)
+
+    center = np.mean(mouth_xy, axis=0)
+    mouth = mouth_xy[meridian_index]
+    ray = mouth - center
+    ray_len = float(np.linalg.norm(ray))
+    if ray_len <= tolerance:
+        return True
+    outward = ray / ray_len
+    return float(np.dot(point_xy - mouth, outward)) <= tolerance
+
+
+def _front_baffle_contact_points(
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    *,
+    z_front: float,
+    tolerance: float = 1.0e-6,
+) -> list[NDArray[np.float64]]:
+    da = float(a[2] - z_front)
+    db = float(b[2] - z_front)
+    if abs(da) <= tolerance and abs(db) <= tolerance:
+        return [a, b]
+    if abs(da) <= tolerance:
+        return [a]
+    if abs(db) <= tolerance:
+        return [b]
+    if da * db > 0.0:
+        return []
+    t = (z_front - float(a[2])) / (float(b[2]) - float(a[2]))
+    if -tolerance <= t <= 1.0 + tolerance:
+        return [a + (b - a) * float(np.clip(t, 0.0, 1.0))]
+    return []
+
+
+def _reject_front_baffle_wall_intersections(
+    inner_points: NDArray[np.float64],
+    *,
+    closed: bool,
+    tolerance: float = 1.0e-6,
+) -> None:
+    points = np.asarray(inner_points, dtype=np.float64)
+    if points.ndim != 3 or points.shape[2] != 3 or points.shape[1] < 3:
+        return
+
+    mouth_pts = points[:, -1, :]
+    mouth_xy = np.asarray(mouth_pts[:, :2], dtype=np.float64)
+    z_front = float(mouth_pts[:, 2].max())
+    for meridian_idx in range(points.shape[0]):
+        # Exclude the terminal segment to the mouth ring itself; that segment is
+        # meant to attach to the annular baffle opening.
+        for station_idx in range(points.shape[1] - 2):
+            a = points[meridian_idx, station_idx]
+            b = points[meridian_idx, station_idx + 1]
+            for contact in _front_baffle_contact_points(a, b, z_front=z_front, tolerance=tolerance):
+                if not _point_inside_mouth_opening(
+                    contact[:2],
+                    mouth_xy,
+                    meridian_index=meridian_idx,
+                    closed=closed,
+                    tolerance=tolerance,
+                ):
+                    x, y = (float(v) for v in contact[:2])
+                    raise NotImplementedError(
+                        "build_enclosure_box: the horn wall touches the front-baffle "
+                        f"plane (z={z_front:.3f} mm) outside the mouth opening at "
+                        f"xy=({x:.3f}, {y:.3f}) mm. The baffle would bisect the "
+                        "wall (deep rollback / curled-in lip). Build it "
+                        "free-standing (enc_depth=0) instead."
+                    )
+
+
 # ---------------------------------------------------------------------------
 # Pure XY-plane geometry math (no gmsh) — vendored from WG.
 # ---------------------------------------------------------------------------
@@ -430,6 +561,8 @@ def _build_rounded_rectangle_enclosure_sector(
     back_mesh_size: float,
     sign_x: float = 1.0,
     sign_y: float = 1.0,
+    axis_x: float = 0.0,
+    axis_y: float = 0.0,
 ) -> dict[str, Any]:
     """Build one rounded-rectangle enclosure sector bounded by symmetry axes."""
 
@@ -443,8 +576,10 @@ def _build_rounded_rectangle_enclosure_sector(
     coords = {tag: np.asarray(gmsh.model.getValue(0, tag, []), dtype=np.float64) for tag in point_tags}
     sx = 1.0 if sign_x >= 0.0 else -1.0
     sy = 1.0 if sign_y >= 0.0 else -1.0
-    mouth_x = min(point_tags, key=lambda tag: (abs(float(coords[tag][1])), -sx * float(coords[tag][0])))
-    mouth_y = min(point_tags, key=lambda tag: (abs(float(coords[tag][0])), -sy * float(coords[tag][1])))
+    ax = float(axis_x)
+    ay = float(axis_y)
+    mouth_x = min(point_tags, key=lambda tag: (abs(float(coords[tag][1]) - ay), -sx * float(coords[tag][0])))
+    mouth_y = min(point_tags, key=lambda tag: (abs(float(coords[tag][0]) - ax), -sy * float(coords[tag][1])))
 
     r = max(0.0, float(edge_depth))
     ox = float(bx1) if sx > 0.0 else float(bx0)
@@ -484,11 +619,11 @@ def _build_rounded_rectangle_enclosure_sector(
     # windings reproduce the rounded path's outward normals (+z front, +x/+y
     # side walls, -z back); front and back reuse the rounded loops verbatim.
     if r <= _SHARP_SECTOR_EDGE_EPS:
-        origin_back = pt(0.0, 0.0, zb, back_mesh_size)
-        sx_px_f = pt(ox, 0.0, zf, front_mesh_size)
-        sx_px_b = pt(ox, 0.0, zb, back_mesh_size)
-        sx_py_f = pt(0.0, oy, zf, front_mesh_size)
-        sx_py_b = pt(0.0, oy, zb, back_mesh_size)
+        origin_back = pt(ax, ay, zb, back_mesh_size)
+        sx_px_f = pt(ox, ay, zf, front_mesh_size)
+        sx_px_b = pt(ox, ay, zb, back_mesh_size)
+        sx_py_f = pt(ax, oy, zf, front_mesh_size)
+        sx_py_b = pt(ax, oy, zb, back_mesh_size)
         sx_c_f = pt(ox, oy, zf, front_mesh_size)
         sx_c_b = pt(ox, oy, zb, back_mesh_size)
 
@@ -531,15 +666,15 @@ def _build_rounded_rectangle_enclosure_sector(
             },
         }
 
-    origin_back = pt(0.0, 0.0, zb, back_mesh_size)
-    px_f = pt(fx, 0.0, zf, front_mesh_size)
-    px_o_f = pt(ox, 0.0, zfo, front_mesh_size)
-    px_o_b = pt(ox, 0.0, zbo, back_mesh_size)
-    px_b = pt(fx, 0.0, zb, back_mesh_size)
-    py_f = pt(0.0, fy, zf, front_mesh_size)
-    py_o_f = pt(0.0, oy, zfo, front_mesh_size)
-    py_o_b = pt(0.0, oy, zbo, back_mesh_size)
-    py_b = pt(0.0, fy, zb, back_mesh_size)
+    origin_back = pt(ax, ay, zb, back_mesh_size)
+    px_f = pt(fx, ay, zf, front_mesh_size)
+    px_o_f = pt(ox, ay, zfo, front_mesh_size)
+    px_o_b = pt(ox, ay, zbo, back_mesh_size)
+    px_b = pt(fx, ay, zb, back_mesh_size)
+    py_f = pt(ax, fy, zf, front_mesh_size)
+    py_o_f = pt(ax, oy, zfo, front_mesh_size)
+    py_o_b = pt(ax, oy, zbo, back_mesh_size)
+    py_b = pt(ax, fy, zb, back_mesh_size)
     c_f = pt(fx, fy, zf, front_mesh_size)
     c_x_f = pt(ox, fy, zfo, front_mesh_size)
     c_y_f = pt(fx, oy, zfo, front_mesh_size)
@@ -547,10 +682,10 @@ def _build_rounded_rectangle_enclosure_sector(
     c_y_b = pt(fx, oy, zbo, back_mesh_size)
     c_b = pt(fx, fy, zb, back_mesh_size)
 
-    cx_axis_f = pt(fx, 0.0, zfo, front_mesh_size)
-    cx_axis_b = pt(fx, 0.0, zbo, back_mesh_size)
-    cy_axis_f = pt(0.0, fy, zfo, front_mesh_size)
-    cy_axis_b = pt(0.0, fy, zbo, back_mesh_size)
+    cx_axis_f = pt(fx, ay, zfo, front_mesh_size)
+    cx_axis_b = pt(fx, ay, zbo, back_mesh_size)
+    cy_axis_f = pt(ax, fy, zfo, front_mesh_size)
+    cy_axis_b = pt(ax, fy, zbo, back_mesh_size)
     corner_front_center = pt(fx, fy, zfo, front_mesh_size)
     corner_back_center = pt(fx, fy, zbo, back_mesh_size)
 
@@ -631,11 +766,18 @@ def _build_rounded_rectangle_enclosure_sector(
     }
 
 
-def _quadrant_for_curve(curve_tag: int) -> tuple[float, float]:
+def _quadrant_for_curve(
+    curve_tag: int,
+    *,
+    axis_x: float = 0.0,
+    axis_y: float = 0.0,
+) -> tuple[float, float]:
     gmsh = require_gmsh()
     x0, y0, _z0, x1, y1, _z1 = gmsh.model.getBoundingBox(1, int(curve_tag))
-    sx = 1.0 if abs(float(x1)) >= abs(float(x0)) else -1.0
-    sy = 1.0 if abs(float(y1)) >= abs(float(y0)) else -1.0
+    cx = 0.5 * (float(x0) + float(x1))
+    cy = 0.5 * (float(y0) + float(y1))
+    sx = 1.0 if cx >= float(axis_x) else -1.0
+    sy = 1.0 if cy >= float(axis_y) else -1.0
     return sx, sy
 
 
@@ -661,6 +803,7 @@ def build_enclosure_box(
     inner_points: NDArray[np.float64],
     enclosure: HornEnclosure,
     closed: bool = True,
+    symmetry_planes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build a closed-domain rear enclosure around the horn mouth.
 
@@ -708,37 +851,11 @@ def build_enclosure_box(
     z_front = float(mouth_pts[:, 2].max())
 
     # The front baffle is an annular face in the z_front plane whose hole is
-    # bounded by the mouth ring. A rolled-back lip that stays radially inside
-    # the ring legitimately protrudes through that hole (R-OSSE, ICW
-    # rollback), but a wall segment crossing the baffle plane radially
-    # *outside* the ring (deep curl past 180 deg, bulbous lip folding back
-    # in) would be bisected by the front face: the box still welds
-    # watertight around it, so nothing downstream can catch the
-    # self-intersection — fail explicitly instead. The final segment of each
-    # meridian attaches to the ring itself and is excluded.
-    ring_r = np.hypot(mouth_pts[:, 0], mouth_pts[:, 1])
-    wall_r = np.hypot(inner_points[:, :, 0], inner_points[:, :, 1])
-    wall_z = inner_points[:, :, 2]
-    if wall_z.shape[1] >= 3:
-        za = wall_z[:, :-2]
-        zb = wall_z[:, 1:-1]
-        straddle = (za - z_front) * (zb - z_front) < 0.0
-        if bool(np.any(straddle)):
-            ra = wall_r[:, :-2]
-            rb = wall_r[:, 1:-1]
-            denom = np.where(np.abs(zb - za) > 1.0e-12, zb - za, 1.0)
-            t = np.clip((z_front - za) / denom, 0.0, 1.0)
-            r_cross = ra + (rb - ra) * t
-            bad = straddle & (r_cross > ring_r[:, None] + 1.0e-6)
-            if bool(np.any(bad)):
-                worst = float(np.max(np.where(bad, r_cross, -np.inf)))
-                raise NotImplementedError(
-                    "build_enclosure_box: the horn wall crosses the front-baffle "
-                    f"plane (z={z_front:.3f} mm) at radius {worst:.3f} mm, outside "
-                    "the mouth ring — the baffle would bisect the wall (deep "
-                    "rollback / curled-in lip). Build it free-standing "
-                    "(enc_depth=0) instead."
-                )
+    # bounded by the actual mouth loop. A rolled-back lip that stays inside the
+    # hole legitimately protrudes through it, but a wall contact outside the
+    # hole would be bisected by the front face and still weld watertight enough
+    # that downstream checks cannot see the self-intersection.
+    _reject_front_baffle_wall_intersections(inner_points, closed=closed)
 
     z_throat = float(np.min(inner_points[:, 0, 2]))
     horn_length = z_front - z_throat
@@ -753,8 +870,13 @@ def build_enclosure_box(
         enc_depth = min_enc_depth
     z_back = z_front - enc_depth
 
-    x_open = not closed and x_min >= -1.0e-6
-    y_open = not closed and y_min >= -1.0e-6
+    plane_set = set(symmetry_planes)
+    x_open = not closed and "x" in plane_set
+    y_open = not closed and "y" in plane_set
+    if x_open and x_min < -1.0e-6:
+        raise ValueError("x symmetry plane requested but mouth points cross x=0")
+    if y_open and y_min < -1.0e-6:
+        raise ValueError("y symmetry plane requested but mouth points cross y=0")
     bx0 = 0.0 if x_open else x_min - float(enclosure.space_l_mm)
     bx1 = x_max + float(enclosure.space_r_mm)
     by0 = 0.0 if y_open else y_min - float(enclosure.space_b_mm)
@@ -799,6 +921,8 @@ def build_enclosure_box(
     if not closed:
         if int(enclosure.plan_type) != 1:
             raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
+        sector_axis_x = 0.0 if x_open else 0.5 * (x_min + x_max)
+        sector_axis_y = 0.0 if y_open else 0.5 * (y_min + y_max)
         # A reduced grid covers one or two quadrants: quarter -> Q1; half about
         # the xz plane (quadrants 12) -> Q1+Q2; half about the yz plane
         # (quadrants 14) -> Q1+Q4. Build one rounded-rectangle sector per
@@ -810,7 +934,9 @@ def build_enclosure_box(
         quadrant_keys = ((1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0))
         grouped: dict[tuple[float, float], list[int]] = {key: [] for key in quadrant_keys}
         for curve in mouth_curves:
-            grouped[_quadrant_for_curve(curve)].append(int(curve))
+            grouped[
+                _quadrant_for_curve(curve, axis_x=sector_axis_x, axis_y=sector_axis_y)
+            ].append(int(curve))
         present = [key for key in quadrant_keys if grouped[key]]
         if not present:
             raise RuntimeError("could not group open-domain mouth curves into quadrants")
@@ -828,6 +954,8 @@ def build_enclosure_box(
                 back_mesh_size=back_mesh_size,
                 sign_x=key[0],
                 sign_y=key[1],
+                axis_x=sector_axis_x,
+                axis_y=sector_axis_y,
             )
             for key in present
         ]

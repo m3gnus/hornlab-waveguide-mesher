@@ -111,6 +111,43 @@ def _normalise_formula(value: Any) -> str:
     return raw
 
 
+def _normalise_quadrants(value: Any) -> str:
+    """Normalise quadrant coverage to the supported canonical forms."""
+    if value is None:
+        return "1234"
+    raw = str(value).strip()
+    if not raw:
+        return "1234"
+
+    digits: list[str] = []
+    invalid: list[str] = []
+    for ch in raw:
+        if ch in "1234":
+            digits.append(ch)
+        elif ch.isdigit() or (not ch.isspace() and ch not in {",", ";", "+", "|", "/", "-", "_"}):
+            invalid.append(ch)
+
+    if invalid:
+        bad = "".join(invalid)
+        raise ValueError(
+            f"Mesh.Quadrants={value!r} contains unsupported quadrant characters {bad!r}; "
+            "use 1 (quarter), 12 or 14 (half), or 1234 (full)."
+        )
+    if not digits:
+        raise ValueError(
+            f"Mesh.Quadrants={value!r} does not name any supported quadrant; "
+            "use 1 (quarter), 12 or 14 (half), or 1234 (full)."
+        )
+
+    q = "".join(sorted(set(digits)))
+    if q not in {"1", "12", "14", "1234"}:
+        raise ValueError(
+            f"Mesh.Quadrants={value!r} is not supported: use 1 (quarter), "
+            "12 or 14 (half), or 1234 (full)."
+        )
+    return q
+
+
 def _is_true(value: Any) -> bool:
     if isinstance(value, bool):
         return value

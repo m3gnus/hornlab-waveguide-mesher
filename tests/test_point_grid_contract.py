@@ -12,6 +12,7 @@ from hornlab_mesher.builders.enclosure import (
     _MIN_BAFFLE_CLEARANCE_MM,
     _add_curve_loop_from_curves,
     _clamp_edge_roundover,
+    _reject_front_baffle_wall_intersections,
 )
 from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
@@ -1162,6 +1163,41 @@ def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
+def test_reduced_enclosure_uses_requested_cut_plane_not_offset_minima(tmp_path):
+    cfg = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 16,
+            "length_segments": 4,
+            "quadrants": "14",
+            "vertical_offset_mm": 100.0,
+        },
+        "enclosure": {
+            "depth_mm": 120.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 40.0,
+            "edge_mm": 0.0,
+            "edge_type": 1,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+
+    result = build_from_config(cfg, tmp_path / "shifted-half-yz-enclosure.msh")
+    assert result.native_symmetry_plane == "yz"
+
+    mesh = meshio.read(result.mesh_path)
+    points = np.asarray(mesh.points, dtype=np.float64)
+    # `quadrants="14"` is cut only on x=0. A positive y offset must still apply
+    # bottom spacing instead of inventing a physical wall at y=0.
+    assert points[:, 0].min() >= -1.0e-7
+    assert points[:, 1].min() < -1.0e-4
+
+
 @pytest.mark.parametrize(
     ("quadrants", "sym_plane", "cut_axes"),
     [
@@ -1477,14 +1513,15 @@ def test_lookup_rejects_missing_profile():
         build_point_grid(params)
 
 
-def test_junk_quadrants_rejected_at_config_time():
+@pytest.mark.parametrize("quadrants", ["13", "foo", "5", "1x"])
+def test_junk_quadrants_rejected_at_config_time(quadrants):
     from hornlab_mesher.config_builder import build_geometry_params
     from hornlab_mesher.config_parser import ConfigError
 
     cfg = {
         "formula": "OSSE",
         "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
-        "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": "13"},
+        "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": quadrants},
     }
     # "13" used to fall through every quadrant span map into a degenerate
     # open full-circle grid that only failed much later in the solver.
@@ -1502,3 +1539,44 @@ def test_permuted_quadrants_normalise_to_canonical():
     }
     params, _, _ = build_geometry_params(cfg)
     assert params["quadrants"] == "12"
+
+
+def test_direct_profile_grid_quadrants_share_config_normalisation():
+    params = {
+        "type": "OSSE",
+        "L": 80.0,
+        "r0": 10.0,
+        "a": 40.0,
+        "a0": 0.0,
+        "angularSegments": 16,
+        "lengthSegments": 4,
+        "quadrants": "21",
+    }
+
+    grid = build_point_grid(params)
+
+    assert grid["full_circle"] is False
+    assert grid["grid_n_phi"] == 9
+
+    for bad in ("13", "foo", "5", "1x"):
+        with pytest.raises(ValueError, match="Quadrants"):
+            build_point_grid({**params, "quadrants": bad})
+
+
+def test_front_baffle_guard_catches_in_plane_outside_mouth_contact():
+    angles = np.asarray([0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0])
+    center = np.asarray([100.0, 0.0])
+    unit = np.column_stack((np.cos(angles), np.sin(angles)))
+    inner_points = np.zeros((angles.size, 3, 3), dtype=np.float64)
+    inner_points[:, 0, :2] = center + 5.0 * unit
+    inner_points[:, 0, 2] = 0.0
+    # This station lies exactly in the baffle plane but outside the mouth loop.
+    # On the pi meridian its origin radius is smaller than the shifted mouth
+    # point, so the old origin-radius check missed it.
+    inner_points[:, 1, :2] = center + 20.0 * unit
+    inner_points[:, 1, 2] = 100.0
+    inner_points[:, 2, :2] = center + 10.0 * unit
+    inner_points[:, 2, 2] = 100.0
+
+    with pytest.raises(NotImplementedError, match="outside the mouth opening"):
+        _reject_front_baffle_wall_intersections(inner_points, closed=True)

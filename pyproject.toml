@@ -15,6 +15,7 @@ dependencies = [
     "gmsh",
     "meshio",
     "numpy",
+    "scipy",
     "tomli; python_version < '3.11'",
 ]
 

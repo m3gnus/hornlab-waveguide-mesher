@@ -184,6 +184,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             inner_points=inner_points,
             enclosure=geometry.enclosure,
             closed=geometry.closed,
+            symmetry_planes=geometry.symmetry_planes,
         )
         enclosure_tags = [tag for _, tag in enc_data["dimtags"]]
         # All enclosure surfaces join the "enclosure" group so density.py's

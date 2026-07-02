@@ -18,6 +18,7 @@ from . import cost
 from .config_parser import ConfigError
 from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGeometry
 from .mesher import build_mesh_with_info
+from .profile_common import _normalise_quadrants as _normalise_quadrants_common
 from .profiles import build_point_grid, eval_param
 
 
@@ -687,14 +688,10 @@ def _normalised_quadrants(value: Any) -> str:
     degenerate open full-circle grid (duplicated 0/2pi seam ray, no rim
     snap) that only failed much later in the solver — reject it here.
     """
-    q = "".join(ch for ch in str(value or "1234") if ch in "1234")
-    q = "".join(sorted(set(q))) or "1234"
-    if q not in {"1", "12", "14", "1234"}:
-        raise ConfigError(
-            f"Mesh.Quadrants={value!r} is not supported: use 1 (quarter), "
-            "12 or 14 (half), or 1234 (full)."
-        )
-    return q
+    try:
+        return _normalise_quadrants_common(value)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
