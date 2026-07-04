@@ -696,29 +696,20 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             if value is not None:
                 common[key] = _scalar_or_expr(profile, config, names=(key,), default=None)
 
-    vertical_offset = eval_param(common.get("verticalOffset"), 0.0, 0.0)
-    quadrants = _normalised_quadrants(common.get("quadrants"))
-    if vertical_offset != 0.0 and "y" in _symmetry_planes_for_quadrants(quadrants):
-        raise ConfigError(
-            "Mesh.VerticalOffset is not supported when Mesh.Quadrants includes "
-            "the y=0 symmetry plane (1 or 12). Use full coverage or quadrants 14."
-        )
-
     return common, formula, mode
 
 
 def _normalised_quadrants(value: Any) -> str:
-    """Normalise Mesh.Quadrants to one of the four supported coverages.
+    """Normalise Mesh.Quadrants to Ath's canonical coverage ({1, 12, 14, 1234}).
 
-    Digit order and repeats are tolerated ("21" == "12"); anything outside
-    {1, 12, 14, 1234} used to fall through every quadrant span map to a
-    degenerate open full-circle grid (duplicated 0/2pi seam ray, no rim
-    snap) that only failed much later in the solver — reject it here.
+    Delegates to the shared parser, which follows Ath's atoi rule: it reads a leading
+    integer and maps 1234/12/14 to full/half-y/half-x and every other value —
+    including junk, empties and permutations like "21" — to a quarter model. It never
+    raises, matching Ath, which silently treats unrecognised values as the quarter
+    default (a well-defined Q1 grid) rather than erroring or building the degenerate
+    open full-circle grid this mesher's earlier set-based logic produced.
     """
-    try:
-        return _normalise_quadrants_common(value)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
+    return _normalise_quadrants_common(value)
 
 
 def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
@@ -836,6 +827,7 @@ def build_from_config(
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
         closed=bool(grid.get("full_circle", True)),
         symmetry_planes=_symmetry_planes_for_quadrants(quadrants),
+        vertical_offset_mm=float(grid.get("vertical_offset_mm", 0.0) or 0.0),
         source_shape=int(float(params.get("sourceShape", 1) or 1)),
         source_radius_mm=float(params.get("sourceRadius", -1) or -1),
         source_curv=int(float(params.get("sourceCurv", 0) or 0)),

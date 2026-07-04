@@ -625,22 +625,23 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             )
 
     # ATH's global Scale multiplies every linear geometry dimension after the
-    # profile (and morph-target ceil) is evaluated; Mesh.VerticalOffset then
-    # translates the scaled geometry along +y in raw millimetres.
+    # profile (and morph-target ceil) is evaluated.
     geom_scale = float(eval_param(params.get("scale"), 0.0, 1.0))
     if not math.isfinite(geom_scale) or geom_scale <= 0.0:
         raise ValueError(f"Scale must be > 0, got {geom_scale!r}")
     if geom_scale != 1.0:
         inner *= geom_scale
+    # Mesh.VerticalOffset is a rigid +y placement translation. It is deliberately
+    # NOT baked into the grid here: the reduced-domain snap and enclosure builders
+    # assume the symmetry cut planes lie on the coordinate axes (x=0 / y=0), so the
+    # intrinsic geometry stays at the origin and the offset is returned as metadata.
+    # Each terminal re-applies it as a single rigid translation once all cut-plane
+    # logic has run at y=0 -- the mesh in mesher._postprocess_mesh, previews in
+    # viewport.build_viewport_geometry_from_config. This mirrors ATH, which builds
+    # the reduced model on the axes and then translates it while still declaring the
+    # symmetry plane at y=0; a y-cut (quadrants 1/12) therefore reconstructs about
+    # y=0 rather than the shifted plane (an ATH quirk we reproduce for parity).
     vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
-    if vertical_offset != 0.0:
-        if "y" in symmetry_planes:
-            raise ValueError(
-                "verticalOffset is not supported when quadrants include the y=0 "
-                "symmetry plane (quadrants 1 or 12). Use full coverage or "
-                "quadrants 14."
-            )
-        inner[:, :, 1] += vertical_offset
 
     outer = None
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0)) * geom_scale
@@ -656,6 +657,7 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         "full_circle": bool(full_circle),
         "quadrants": quadrants,
         "symmetry_planes": list(symmetry_planes),
+        "vertical_offset_mm": vertical_offset,
         "angle_list": angles.tolist(),
         "slice_map": t_values.tolist(),
         "sampling_mode": sampling_mode,

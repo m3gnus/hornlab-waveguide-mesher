@@ -299,16 +299,19 @@ def test_tritonia_scale_and_vertical_offset_match_ath_reference():
     inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
 
     # ATH bem_mesh.geo facts: Scale = 0.702 multiplies the geometry (throat
-    # radius 18.091 -> 12.700, length 135 -> 94.77) and Mesh.VerticalOffset
-    # recentres it at y = 80.
+    # radius 18.091 -> 12.700, length 135 -> 94.77). Mesh.VerticalOffset (y = 80)
+    # is NOT baked into the grid: it is reported as metadata and applied as a rigid
+    # +y translation at the mesh/preview terminals, so the grid stays centred on
+    # the axis here.
+    assert grid["vertical_offset_mm"] == pytest.approx(80.0)
     throat_ring = inner[:, 0, :]
-    throat_radii = np.hypot(throat_ring[:, 0], throat_ring[:, 1] - 80.0)
+    throat_radii = np.hypot(throat_ring[:, 0], throat_ring[:, 1])
     assert np.allclose(throat_radii, 12.6999, rtol=0.0, atol=2.0e-3)
     assert abs(float(np.max(inner[:, :, 2])) - 94.77) < 1.0e-2
     # Implicit morph extents are ceiled BEFORE scaling: 208 / 180 raw mm.
     mouth = inner[:, -1, :]
     assert abs(float(np.max(np.abs(mouth[:, 0]))) - 208.0 * 0.702) < 1.0e-6
-    assert abs(float(np.max(np.abs(mouth[:, 1] - 80.0))) - 180.0 * 0.702) < 1.0e-6
+    assert abs(float(np.max(np.abs(mouth[:, 1]))) - 180.0 * 0.702) < 1.0e-6
 
 
 def _read_geo_point_grid(path: Path, n_rings: int, n_phi: int) -> np.ndarray:

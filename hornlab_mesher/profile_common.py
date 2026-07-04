@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from functools import lru_cache
 from typing import Any, Mapping
 
@@ -111,41 +112,50 @@ def _normalise_formula(value: Any) -> str:
     return raw
 
 
+_QUADRANTS_LEADING_INT_RE = re.compile(r"[+-]?\d+")
+
+
+def _quadrants_leading_int(value: Any) -> int:
+    """Read Mesh.Quadrants the way Ath does: as a leading integer.
+
+    Ath parses the value with C ``atoi`` / Pascal ``Val`` semantics -- skip leading
+    whitespace, take an optional sign and the run of digits that follows, and stop at
+    the first non-digit (``0`` when there is no leading digit). Trailing junk is
+    ignored, so ``"1234x" -> 1234`` and ``"1,2" -> 1``, while ``"x1234"``, ``""`` and
+    ``None`` all read as ``0``. Crucially Ath does NOT reorder digits, so ``"21" ->
+    21`` (a quarter model), never the set ``{1, 2}``. Verified against ath.exe under
+    Wine over the full 1..1234 value sweep.
+    """
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    match = _QUADRANTS_LEADING_INT_RE.match(str(value).strip())
+    return int(match.group(0)) if match else 0
+
+
 def _normalise_quadrants(value: Any) -> str:
-    """Normalise quadrant coverage to the supported canonical forms."""
-    if value is None:
+    """Normalise Mesh.Quadrants to Ath's canonical coverage.
+
+    Ath recognises exactly three integer values -- ``1234`` (full model, no
+    symmetry), ``12`` (top half, xz mirror) and ``14`` (right half, yz mirror); every
+    other value, including the missing/empty/garbage default of ``0``, is a
+    quadrant-1 quarter model (both mirrors). We reproduce that mapping verbatim,
+    including Ath's atoi parsing quirks (see :func:`_quadrants_leading_int`), so a
+    mesher build and a real Ath run agree for every Mesh.Quadrants string. Unlike the
+    earlier set-based logic this never raises and never reorders digits -- Ath itself
+    silently treats unrecognised values as the quarter default.
+    """
+    n = _quadrants_leading_int(value)
+    if n == 1234:
         return "1234"
-    raw = str(value).strip()
-    if not raw:
-        return "1234"
-
-    digits: list[str] = []
-    invalid: list[str] = []
-    for ch in raw:
-        if ch in "1234":
-            digits.append(ch)
-        elif ch.isdigit() or (not ch.isspace() and ch not in {",", ";", "+", "|", "/", "-", "_"}):
-            invalid.append(ch)
-
-    if invalid:
-        bad = "".join(invalid)
-        raise ValueError(
-            f"Mesh.Quadrants={value!r} contains unsupported quadrant characters {bad!r}; "
-            "use 1 (quarter), 12 or 14 (half), or 1234 (full)."
-        )
-    if not digits:
-        raise ValueError(
-            f"Mesh.Quadrants={value!r} does not name any supported quadrant; "
-            "use 1 (quarter), 12 or 14 (half), or 1234 (full)."
-        )
-
-    q = "".join(sorted(set(digits)))
-    if q not in {"1", "12", "14", "1234"}:
-        raise ValueError(
-            f"Mesh.Quadrants={value!r} is not supported: use 1 (quarter), "
-            "12 or 14 (half), or 1234 (full)."
-        )
-    return q
+    if n == 12:
+        return "12"
+    if n == 14:
+        return "14"
+    return "1"
 
 
 def _symmetry_planes_for_quadrants(value: Any) -> tuple[str, ...]:

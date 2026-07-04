@@ -61,9 +61,14 @@ def _enclosure_bounds(
     if y_open and y_min < -1.0e-6:
         raise ValueError("y symmetry plane requested but mouth points cross y=0")
 
+    # On a reduced domain the cut plane is not a wall, so the box extends exactly
+    # to it (no spacing on the cut side). The x cut is always the yz plane at x=0.
+    # The y cut sits at the mouth minimum -- 0 for an un-shifted model, or
+    # Mesh.VerticalOffset once the preview has been placed -- so read it from the
+    # geometry rather than assuming 0 (the phi=0 ray gives it exactly).
     bx0 = 0.0 if x_open else x_min - float(enclosure.space_l_mm)
     bx1 = x_max + float(enclosure.space_r_mm)
-    by0 = 0.0 if y_open else y_min - float(enclosure.space_b_mm)
+    by0 = y_min if y_open else y_min - float(enclosure.space_b_mm)
     by1 = y_max + float(enclosure.space_t_mm)
 
     return {
@@ -234,6 +239,18 @@ def build_viewport_geometry_from_config(config: Mapping[str, Any]) -> dict[str, 
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
     inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    # build_point_grid emits the grid at the origin and reports Mesh.VerticalOffset
+    # as metadata; re-apply it here as a rigid +y placement so the preview (grid and
+    # enclosure alike) matches the finished mesh. The enclosure is then built from the
+    # placed points, and its cut plane is read from the geometry (see _enclosure_bounds).
+    vertical_offset_mm = float(grid.get("vertical_offset_mm", 0.0) or 0.0)
+    if vertical_offset_mm:
+        inner_points[:, :, 1] += vertical_offset_mm
+        grid = {**grid, "inner_points": inner_points.reshape(-1).tolist()}
+        if grid.get("outer_points") is not None:
+            outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
+            outer_points[:, :, 1] += vertical_offset_mm
+            grid["outer_points"] = outer_points.reshape(-1).tolist()
     enclosure_grid = None
     if enclosure is not None:
         enclosure_grid = build_enclosure_viewport_grid(

@@ -171,6 +171,12 @@ class PointGridHornGeometry:
     # models set a single plane: ``("y",)`` for quadrants 12 (xz mirror),
     # ``("x",)`` for quadrants 14 (yz mirror). Unused when ``closed`` is True.
     symmetry_planes: tuple[str, ...] = ("x", "y")
+    # Mesh.VerticalOffset, in millimetres. The point grid is built at the origin
+    # (cut planes on the coordinate axes); this offset is applied as a single
+    # rigid +y translation of the finished mesh, after all reduced-domain
+    # cut-plane logic has run at y=0. The declared symmetry plane stays at y=0,
+    # so a y-cut (quadrants 1/12) reconstructs about y=0 -- matching ATH.
+    vertical_offset_mm: float = 0.0
 
     @property
     def build_mode(self) -> PointGridBuildMode:

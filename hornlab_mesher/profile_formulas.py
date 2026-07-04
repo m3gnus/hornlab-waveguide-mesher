@@ -7,10 +7,18 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
-from .profile_common import _DEFAULTS, _deg, _normalise_formula, _osse_radius, eval_param
+from .profile_common import (
+    _DEFAULTS,
+    _deg,
+    _normalise_formula,
+    _osse_radius,
+    eval_param,
+)
 from .profile_morph import _coverage_angle_from_guiding_curve
 
-if TYPE_CHECKING:  # avoid importing the ICW kernel (and its scipy deps) at module import time
+if (
+    TYPE_CHECKING
+):  # avoid importing the ICW kernel (and its scipy deps) at module import time
     from .icw import ICWCurve
 
 
@@ -86,12 +94,17 @@ def calculate_osse(
     L, _, ext_len, slot_len = osse_length_config(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
-    r0_main = r0_base + ext_len * math.tan(ext_angle)
+    # ATH anchors Throat.Diameter (r0) at the MAIN horn throat and tapers the throat
+    # extension BACK from r0 to the driver end (r0 - ext*tan(angle)); it does not
+    # enlarge the main throat. For a straight extension (angle 0) this is a plain r0
+    # tube, identical to before.
+    r0_main = r0_base
+    r0_throat = max(0.0, r0_base - ext_len * math.tan(ext_angle))
     a_deg = eval_param(params.get("a"), p, 60.0)
     a0_deg = eval_param(params.get("a0"), p, 15.5)
 
     if z <= ext_len:
-        radius = r0_base + z * math.tan(ext_angle)
+        radius = r0_throat + z * math.tan(ext_angle)
     elif z <= ext_len + slot_len:
         radius = r0_main
     else:
@@ -109,7 +122,9 @@ def calculate_osse(
         if active_a_deg is None:
             active_a_deg = a_deg
         throat_profile = int(
-            eval_param(params.get("throatProfile", params.get("throat_profile")), p, 1.0)
+            eval_param(
+                params.get("throatProfile", params.get("throat_profile")), p, 1.0
+            )
             or 1
         )
         if throat_profile == 3:
@@ -123,7 +138,9 @@ def calculate_osse(
                 length=L,
             )
         else:
-            radius = _osse_radius(main_z, p, main_params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg)
+            radius = _osse_radius(
+                main_z, p, main_params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg
+            )
 
     x = float(z)
     y = float(radius)
@@ -137,13 +154,22 @@ def calculate_osse(
     return x, y
 
 
-def osse_length_config(params: Mapping[str, Any], p: float = 0.0) -> tuple[float, float, float, float]:
+def osse_length_config(
+    params: Mapping[str, Any], p: float = 0.0
+) -> tuple[float, float, float, float]:
     raw_L = max(0.0, eval_param(params.get("L"), p, 120.0))
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
-    length_mode = params.get("_athLengthMode", params.get("athLengthMode", params.get("lengthMode")))
+    length_mode = params.get(
+        "_athLengthMode", params.get("athLengthMode", params.get("lengthMode"))
+    )
     if length_mode == "total":
-        return max(0.0, raw_L - ext_len - slot_len), raw_L, ext_len, slot_len
+        # ATH adds Throat.Ext.Length on TOP of Length (the main horn and its mouth
+        # radius are unchanged) but carves Slot.Length OUT of Length. So the main
+        # section loses only the slot, and the total axial grows by the extension.
+        # The invariant total == ext_len + slot_len + main_L still holds, so the
+        # z-sweep in profile_sampling lands exactly at the mouth.
+        return max(0.0, raw_L - slot_len), raw_L + ext_len, ext_len, slot_len
     return raw_L, raw_L + ext_len + slot_len, ext_len, slot_len
 
 
@@ -181,7 +207,9 @@ def rosse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
     return ext_len + slot_len + _rosse_length(main_params, p)
 
 
-def _calculate_rosse_main(t: float, p: float, params: Mapping[str, Any]) -> tuple[float, float]:
+def _calculate_rosse_main(
+    t: float, p: float, params: Mapping[str, Any]
+) -> tuple[float, float]:
     R = eval_param(params.get("R"), p, 150.0)
     r0 = eval_param(params.get("r0"), p, 12.7)
     k = eval_param(params.get("k"), p, _DEFAULTS["k"])
@@ -204,7 +232,9 @@ def _calculate_rosse_main(t: float, p: float, params: Mapping[str, Any]) -> tupl
     return x, y
 
 
-def calculate_rosse(t: float, p: float, params: Mapping[str, Any]) -> tuple[float, float]:
+def calculate_rosse(
+    t: float, p: float, params: Mapping[str, Any]
+) -> tuple[float, float]:
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
@@ -334,7 +364,9 @@ def _icw_cache_key(params: Mapping[str, Any]) -> str:
     ``icw_seed``) are normalised with full precision by :func:`_icw_key_normalise`
     before serialising, so differing coefficient arrays can never collide.
     """
-    relevant = {k: _icw_key_normalise(params.get(k)) for k in _ICW_PARAM_KEYS if k in params}
+    relevant = {
+        k: _icw_key_normalise(params.get(k)) for k in _ICW_PARAM_KEYS if k in params
+    }
     try:
         blob = json.dumps(relevant, sort_keys=True, default=repr)
     except TypeError:
@@ -436,7 +468,9 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         coeffs = [float(eval_param(c, 0.0, 0.0)) for c in params["icw_coeffs"]]
         S = _icw_float(params, "icw_S")
         if S is None:
-            raise ValueError("ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)")
+            raise ValueError(
+                "ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)"
+            )
         coeffs_arr = np.asarray(coeffs, dtype=np.float64)
         # Direct mode bypasses solve_icw's feasibility gate, so validate the raw inputs and the
         # sampled meridian here. Otherwise a degenerate input (r0<=0, S<=0, non-finite coeffs, or
@@ -548,7 +582,11 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         raise ValueError(
             "ICW target set is infeasible: "
             + "; ".join(report.violations)
-            + (f" (hint: {report.suggested_relaxation})" if report.suggested_relaxation else "")
+            + (
+                f" (hint: {report.suggested_relaxation})"
+                if report.suggested_relaxation
+                else ""
+            )
         )
     _icw_cache_store(key, curve)
     return curve
@@ -583,9 +621,13 @@ def icw_meridian_points(curve: "ICWCurve", t_values: np.ndarray) -> np.ndarray:
     return np.column_stack([x, r])
 
 
-def profile_points(params: Mapping[str, Any], n_axial: int, phi: float = 0.0) -> np.ndarray:
+def profile_points(
+    params: Mapping[str, Any], n_axial: int, phi: float = 0.0
+) -> np.ndarray:
     formula = _normalise_formula(params.get("type", "OSSE"))
-    t_max = float(eval_param(params.get("tmax"), phi, 1.0)) if formula == "R-OSSE" else 1.0
+    t_max = (
+        float(eval_param(params.get("tmax"), phi, 1.0)) if formula == "R-OSSE" else 1.0
+    )
     t_values = np.linspace(0.0, t_max, int(n_axial))
     if formula == "ICW":
         curve = build_icw_curve(params, phi)

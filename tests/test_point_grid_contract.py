@@ -1546,38 +1546,77 @@ def test_lookup_rejects_missing_profile():
         build_point_grid(params)
 
 
-@pytest.mark.parametrize("quadrants", ["13", "foo", "5", "1x"])
-def test_junk_quadrants_rejected_at_config_time(quadrants):
+@pytest.mark.parametrize(
+    ("value", "canonical", "planes"),
+    [
+        # Ath ground truth (ath.exe under Wine, asro2 R-OSSE sweep): Mesh.Quadrants
+        # is read as a leading integer; only 1234/12/14 are special, everything else
+        # (incl. permutations, trailing junk, empties) is a quarter model.
+        ("1", "1", ("x", "y")), ("2", "1", ("x", "y")), ("3", "1", ("x", "y")),
+        ("4", "1", ("x", "y")), ("0", "1", ("x", "y")),
+        ("12", "12", ("y",)), ("14", "14", ("x",)), ("1234", "1234", ()),
+        ("13", "1", ("x", "y")), ("23", "1", ("x", "y")), ("24", "1", ("x", "y")),
+        ("34", "1", ("x", "y")), ("123", "1", ("x", "y")), ("234", "1", ("x", "y")),
+        ("21", "1", ("x", "y")), ("41", "1", ("x", "y")),  # not reordered to 12/14
+        ("1234x", "1234", ()), (" 12 ", "12", ("y",)),     # trailing/leading trim
+        ("x1234", "1", ("x", "y")), ("1,2", "1", ("x", "y")),  # no leading digit / stops at comma
+        ("99", "1", ("x", "y")), ("foo", "1", ("x", "y")), ("", "1", ("x", "y")),
+        (None, "1", ("x", "y")), (12, "12", ("y",)), (1234, "1234", ()),
+    ],
+)
+def test_normalise_quadrants_matches_ath_atoi_rule(value, canonical, planes):
+    from hornlab_mesher.profile_common import (
+        _normalise_quadrants,
+        _symmetry_planes_for_quadrants,
+    )
+
+    assert _normalise_quadrants(value) == canonical
+    assert _symmetry_planes_for_quadrants(value) == planes
+
+
+@pytest.mark.parametrize("quadrants", ["13", "foo", "5", "1x", "0", "23", "234", "1,2", ""])
+def test_unrecognised_quadrants_default_to_quarter_like_ath(quadrants):
     from hornlab_mesher.config_builder import build_geometry_params
-    from hornlab_mesher.config_parser import ConfigError
 
     cfg = {
         "formula": "OSSE",
         "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
         "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": quadrants},
     }
-    # "13" used to fall through every quadrant span map into a degenerate
-    # open full-circle grid that only failed much later in the solver.
-    with pytest.raises(ConfigError, match="Quadrants"):
-        build_geometry_params(cfg)
+    # ATH reads Mesh.Quadrants as a leading integer and silently treats every value it
+    # does not recognise (here 13/foo/5/1x/0/23/234/"1,2"/empty) as the quarter default
+    # rather than erroring. We reproduce that -- routing it to a well-defined Q1 grid,
+    # not the degenerate open full-circle grid the old set-based logic used to build.
+    params, _formula, _mode = build_geometry_params(cfg)
+    assert params["quadrants"] == "1"
 
 
-def test_permuted_quadrants_normalise_to_canonical():
+def test_quadrants_are_not_reordered_like_ath():
     from hornlab_mesher.config_builder import build_geometry_params
 
-    cfg = {
-        "formula": "OSSE",
-        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
-        "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": "21"},
-    }
-    params, _, _ = build_geometry_params(cfg)
-    assert params["quadrants"] == "12"
+    # ATH reads the value as a leading integer, so "21" is the number 21 -- an
+    # unrecognised value that meshes as a quarter -- NOT the digit set {1, 2} == "12".
+    # Verified against ath.exe: Quadrants=21 emits a Sym=xy quarter mesh (1209 pts),
+    # not the Sym=y half (2396 pts) that "12" produces. Only 12/14/1234 are special.
+    for value, expected in (("21", "1"), ("41", "1"), ("12", "12"), ("14", "14"), ("1234", "1234")):
+        cfg = {
+            "formula": "OSSE",
+            "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+            "mesh": {"angular_segments": 16, "length_segments": 4, "quadrants": value},
+        }
+        params, _, _ = build_geometry_params(cfg)
+        assert params["quadrants"] == expected, value
 
 
 @pytest.mark.parametrize("quadrants", ["1", "12"])
-def test_vertical_offset_rejected_for_y_cut_reduced_domains(quadrants):
+def test_vertical_offset_accepted_for_y_cut_reduced_domains(quadrants):
+    # ATH parity: a y-cut reduced domain (quadrants 1/12) combined with
+    # Mesh.VerticalOffset is accepted, not rejected. The grid is emitted at the
+    # origin (its cut edge stays on y=0) and the offset rides along as metadata;
+    # it is applied later as a rigid +y translation while the y=0 (xz) symmetry
+    # plane stays declared. ATH builds and mirrors exactly this way -- the shifted
+    # mesh reconstructs about y=0, not the shifted plane -- so we reproduce it.
     from hornlab_mesher.config_builder import build_geometry_params
-    from hornlab_mesher.config_parser import ConfigError
 
     cfg = {
         "formula": "OSSE",
@@ -1590,23 +1629,82 @@ def test_vertical_offset_rejected_for_y_cut_reduced_domains(quadrants):
         },
     }
 
-    with pytest.raises(ConfigError, match="VerticalOffset"):
-        build_geometry_params(cfg)
+    params, _formula, _mode = build_geometry_params(cfg)
+    assert float(params["verticalOffset"]) == pytest.approx(10.0)
 
-    with pytest.raises(ValueError, match="verticalOffset"):
-        build_point_grid(
-            {
-                "type": "OSSE",
-                "L": 80.0,
-                "r0": 10.0,
-                "a": 40.0,
-                "a0": 0.0,
-                "angularSegments": 16,
-                "lengthSegments": 4,
-                "quadrants": quadrants,
-                "verticalOffset": 10.0,
-            }
-        )
+    grid = build_point_grid(
+        {
+            "type": "OSSE",
+            "L": 80.0,
+            "r0": 10.0,
+            "a": 40.0,
+            "a0": 0.0,
+            "angularSegments": 16,
+            "lengthSegments": 4,
+            "quadrants": quadrants,
+            "verticalOffset": 10.0,
+        }
+    )
+    # Offset lives in metadata; the y-cut edge is still on y=0 so every downstream
+    # cut-plane snap/enclosure step keeps running on the coordinate axes.
+    assert grid["vertical_offset_mm"] == pytest.approx(10.0)
+    assert "y" in grid["symmetry_planes"]
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    assert abs(float(inner[:, :, 1].min())) < 1.0e-9
+
+
+@pytest.mark.parametrize(
+    ("quadrants", "sym_plane"),
+    [("1", "yz+xz"), ("12", "xz")],
+)
+def test_vertical_offset_y_cut_reproduces_ath_shifted_reduced_mesh(tmp_path, quadrants, sym_plane):
+    # ATH parity for a y-cut reduced enclosure with Mesh.VerticalOffset. ATH builds
+    # the reduced model on the axes, translates it by the offset, and still declares
+    # the y=0 (xz) mirror -- so the reconstruction mirrors about y=0, leaving the
+    # shifted mesh entirely on one side (the "split shell" the analysis flagged). We
+    # reproduce it exactly: the finished mesh is placed at y >= offset, the x=0 cut
+    # plane (when present) is untouched, and the declared symmetry still names y=0.
+    offset_mm = 80.0
+    cfg = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 16,
+            "length_segments": 4,
+            "quadrants": quadrants,
+            "vertical_offset_mm": offset_mm,
+        },
+        "enclosure": {
+            "depth_mm": 120.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 25.0,
+            "edge_mm": 0.0,
+            "edge_type": 1,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+
+    result = build_from_config(cfg, tmp_path / f"shifted-{quadrants}-ycut-enclosure.msh")
+    # The y=0 (xz) mirror stays declared even though the mesh is shifted off it.
+    assert result.native_symmetry_plane == sym_plane
+
+    mesh = meshio.read(result.mesh_path)
+    points = np.asarray(mesh.points, dtype=np.float64)
+    # Mesh is written in metres. The whole reduced model sits at y >= offset and
+    # never reaches the declared y=0 plane, so mirroring it leaves a gap (the ATH
+    # reconstruction defect we are reproducing on purpose).
+    assert points[:, 1].min() == pytest.approx(offset_mm * 1.0e-3, abs=2.0e-4)
+    assert points[:, 1].min() > 1.0e-4
+    # The offset is applied only in y: an x=0 (yz) cut plane, when present
+    # (quadrants "1"), stays exactly on x=0.
+    if "yz" in sym_plane:
+        assert abs(float(points[:, 0].min())) < 2.0e-4
 
 
 def test_direct_profile_grid_quadrants_share_config_normalisation():
@@ -1621,16 +1719,22 @@ def test_direct_profile_grid_quadrants_share_config_normalisation():
         "quadrants": "21",
     }
 
+    # "21" is the integer 21 (see test_quadrants_are_not_reordered_like_ath), an
+    # unrecognised value that ATH -- and now build_point_grid -- meshes as a quarter
+    # (Q1) model with both cut planes, not the "12" top half.
     grid = build_point_grid(params)
 
     assert grid["full_circle"] is False
-    assert grid["grid_n_phi"] == 9
-    assert grid["quadrants"] == "12"
-    assert grid["symmetry_planes"] == ["y"]
+    assert grid["grid_n_phi"] == 5
+    assert grid["quadrants"] == "1"
+    assert grid["symmetry_planes"] == ["x", "y"]
 
-    for bad in ("13", "foo", "5", "1x"):
-        with pytest.raises(ValueError, match="Quadrants"):
-            build_point_grid({**params, "quadrants": bad})
+    # Every other unrecognised value is the same quarter default -- ATH never rejects
+    # Mesh.Quadrants, and neither does the mesher.
+    for bad in ("13", "foo", "5", "1x", "0", "234"):
+        bad_grid = build_point_grid({**params, "quadrants": bad})
+        assert bad_grid["quadrants"] == "1"
+        assert bad_grid["symmetry_planes"] == ["x", "y"]
 
 
 def test_front_baffle_guard_catches_in_plane_outside_mouth_contact():

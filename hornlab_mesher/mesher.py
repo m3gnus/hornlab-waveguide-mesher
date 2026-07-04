@@ -123,6 +123,7 @@ def build_mesh_with_info(
                 scale_to_metres,
                 symmetry_snap_axes=built.symmetry_snap_axes,
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
+                vertical_offset_mm=float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0),
             )
             raw_path.unlink(missing_ok=True)
             _validate_physical_tags(set(info.physical_groups))
@@ -161,6 +162,7 @@ def _postprocess_mesh(
     *,
     symmetry_snap_axes: tuple[str, ...] = (),
     symmetry_snap_tol_mm: float = 1.0e-6,
+    vertical_offset_mm: float = 0.0,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -202,6 +204,12 @@ def _postprocess_mesh(
             f"watertight mesh has {report.inconsistent_edges} inconsistent shared edges"
         )
     points, triangles = _compact_unused_vertices(points, triangles)
+    if vertical_offset_mm:
+        # Mesh.VerticalOffset: rigid +y placement of the finished reduced/full
+        # model, applied here (still in millimetres) after every cut-plane snap
+        # and the enclosure build have run at the origin. The declared symmetry
+        # plane stays at y=0, so a y-cut mesh reconstructs about y=0 as ATH does.
+        points[:, 1] += float(vertical_offset_mm)
     edge_stats = _edge_stats_by_tag(points, triangles, phys)
     if scale_to_metres:
         points = points * 0.001
