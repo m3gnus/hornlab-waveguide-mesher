@@ -278,6 +278,14 @@ _ICW_PARAM_KEYS = (
     "x_aperture",
     "depth",
     "x_setback",
+    "coverage_angle",
+    "coverage_angle_deg",
+    "hold_start",
+    "hold_end",
+    "kappa_abs_max",
+    "dkappa_ds_abs_max",
+    "theta_max_deg",
+    "pin_mouth_radius",
     "icw_seed",
     "icw_coeffs",
     "icw_S",
@@ -341,6 +349,24 @@ def _icw_float(params: Mapping[str, Any], *names: str) -> float | None:
     return None
 
 
+def _icw_bool(params: Mapping[str, Any], name: str) -> bool:
+    if name not in params or params[name] is None:
+        return False
+    value = params[name]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off", ""}:
+            return False
+    try:
+        return bool(eval_param(value, 0.0, 0.0))
+    except (TypeError, ValueError):
+        return bool(value)
+
+
 def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     """Build (or fetch from the memo) the ICWCurve for a mesher param dict.
 
@@ -369,6 +395,7 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     # Local import keeps the ICW/scipy dependency out of module import and
     # avoids the icw.seed -> profile_formulas import cycle.
     from .icw import (
+        DEFAULT_DEGREE,
         ICWCurve,
         ICWTargets,
         seed_from_osse,
@@ -448,7 +475,8 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     termination = str(params.get("termination", "flat_baffle")).strip().lower()
     kappa0 = _icw_float(params, "kappa0")
     n_coeff_val = _icw_float(params, "n_coeff")
-    n_coeff = int(n_coeff_val) if n_coeff_val is not None else 12
+    coverage = _icw_float(params, "coverage_angle", "coverage_angle_deg")
+    coverage_on = coverage is not None and coverage > 0.0
 
     target_kwargs: dict[str, Any] = {
         "mode": termination,
@@ -457,13 +485,30 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     }
     if kappa0 is not None:
         target_kwargs["kappa0"] = float(kappa0)
+    for key in ("kappa_abs_max", "dkappa_ds_abs_max", "theta_max_deg"):
+        value = _icw_float(params, key)
+        if value is not None:
+            target_kwargs[key] = float(value)
 
     if termination == "flat_baffle":
         x_target = _icw_float(params, "L", "L_mm")
         r_mouth = _icw_float(params, "R", "R_mm")
         target_kwargs["x_target"] = x_target
-        target_kwargs["r_mouth"] = r_mouth
+        if coverage_on:
+            target_kwargs["coverage_angle_deg"] = float(coverage)
+            hold_start = _icw_float(params, "hold_start")
+            hold_end = _icw_float(params, "hold_end")
+            if hold_start is not None:
+                target_kwargs["hold_start"] = float(hold_start)
+            if hold_end is not None:
+                target_kwargs["hold_end"] = float(hold_end)
+            if _icw_bool(params, "pin_mouth_radius") and r_mouth is not None:
+                target_kwargs["r_mouth"] = r_mouth
+        else:
+            target_kwargs["r_mouth"] = r_mouth
     elif termination == "rollback":
+        if coverage_on:
+            target_kwargs["coverage_angle_deg"] = float(coverage)
         theta1 = _icw_float(params, "theta1", "theta1_deg")
         if theta1 is not None:
             target_kwargs["theta1_deg"] = float(theta1)
@@ -485,7 +530,20 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         )
 
     targets = ICWTargets(**target_kwargs)
-    curve, report = solve_icw(targets, n_coeff=n_coeff)
+    solve_kwargs: dict[str, Any] = {}
+    if n_coeff_val is not None:
+        n_coeff_int = int(n_coeff_val)
+        # Coverage mode needs a basis large enough to carry the plateau span plus the
+        # endpoint/angle rows: ``coverage_knots`` requires ``n_coeff >= degree + 5``.
+        # A caller's smaller non-coverage default (the WG UI ships ``n_coeff=6`` for
+        # plain ICW, materialised into every payload) would otherwise make EVERY
+        # coverage build infeasible. So under coverage we drop a sub-floor value and
+        # let ``solve_icw`` apply its coverage-aware default instead of forwarding a
+        # basis that literally cannot represent the requested plateau. Non-coverage
+        # solves, and explicit coverage bases at/above the floor, are honoured verbatim.
+        if not (coverage_on and n_coeff_int < DEFAULT_DEGREE + 5):
+            solve_kwargs["n_coeff"] = n_coeff_int
+    curve, report = solve_icw(targets, **solve_kwargs)
     if not report.feasible:
         raise ValueError(
             "ICW target set is infeasible: "

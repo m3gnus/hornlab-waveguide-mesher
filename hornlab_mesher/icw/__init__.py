@@ -17,6 +17,7 @@ from .core import (
     ICWCurve,
     ICWSample,
     clamped_uniform_knots,
+    coverage_knots,
     kappa_spline,
 )
 from .solver import (
@@ -24,6 +25,7 @@ from .solver import (
     ICWTargets,
     TerminationMode,
     curve_from_shape_modes,
+    gene_basis_diagnostics,
     n_shape_modes,
     solve_icw,
 )
@@ -52,6 +54,7 @@ __all__ = [
     "ICWSample",
     "kappa_spline",
     "clamped_uniform_knots",
+    "coverage_knots",
     "DEFAULT_DEGREE",
     "DEFAULT_SAMPLES",
     # solver
@@ -61,6 +64,7 @@ __all__ = [
     "solve_icw",
     "n_shape_modes",
     "curve_from_shape_modes",
+    "gene_basis_diagnostics",
     # seed
     "fit_from_points",
     "fit_error",

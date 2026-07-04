@@ -114,6 +114,50 @@ def clamped_uniform_knots(n_coeff: int, degree: int = DEFAULT_DEGREE) -> np.ndar
     return np.concatenate([np.zeros(degree + 1), interior, np.ones(degree + 1)])
 
 
+def coverage_knots(
+    n_coeff: int,
+    hold_start: float,
+    hold_end: float,
+    degree: int = DEFAULT_DEGREE,
+) -> np.ndarray:
+    """Clamped knot vector with ``[hold_start, hold_end]`` as one B-spline span.
+
+    Coverage mode hard-pins a constant-angle plateau by zeroing the ``degree + 1`` basis
+    coefficients active on that single span, so the hold endpoints must be knots and no interior
+    knot may lie strictly between them. The coverage default uses ``n_coeff=16`` because the
+    plateau consumes four cubic coefficients and the endpoint/angle rows consume several more,
+    leaving enough nullspace for the size solve and shape modes.
+    """
+    if n_coeff < degree + 5:
+        raise ValueError(
+            f"coverage knots need at least degree+5={degree + 5} coefficients, got {n_coeff}"
+        )
+    if not (0.0 < hold_start < hold_end < 1.0):
+        raise ValueError("coverage hold window must satisfy 0 < hold_start < hold_end < 1")
+
+    n_interior = n_coeff - degree - 1
+    n_free = n_interior - 2  # after reserving hold_start and hold_end
+    if n_free < 0:
+        raise ValueError("coverage knots need at least two interior knots for the hold endpoints")
+
+    denom = hold_start + (1.0 - hold_end)
+    n_left = int(round(n_free * hold_start / denom)) if n_free else 0
+    n_left = min(max(n_left, 0), n_free)
+    n_right = n_free - n_left
+
+    left = np.linspace(0.0, hold_start, n_left + 2)[1:-1] if n_left else np.empty(0)
+    right = np.linspace(hold_end, 1.0, n_right + 2)[1:-1] if n_right else np.empty(0)
+    return np.concatenate(
+        [
+            np.zeros(degree + 1),
+            left,
+            [hold_start, hold_end],
+            right,
+            np.ones(degree + 1),
+        ]
+    )
+
+
 def kappa_spline(
     coeffs: np.ndarray,
     knots: np.ndarray | None = None,
@@ -229,15 +273,17 @@ class ICWCurve:
     def sample(self, n: int = DEFAULT_SAMPLES) -> ICWSample:
         """Sample the meridian on ``n`` uniform-sigma stations.
 
-        theta, x and r are obtained by cumulative trapezoidal integration over sigma. The
-        trapezoid error is O(h^2) in a smooth kappa, so n>=~1500 reproduces analytic seed
-        profiles to well under a micron; pass a larger n for tighter fits.
+        theta is obtained from the exact B-spline antiderivative of kappa. x and r are then
+        obtained by cumulative trapezoidal integration over cos(theta) / sin(theta); pass a
+        larger n for tighter endpoint fits.
         """
         if n < 2:
             raise ValueError("n must be >= 2")
         sigma = np.linspace(0.0, 1.0, n)
         kappa = self.kappa(sigma)
-        theta = self.theta0 + self.S * cumulative_trapezoid(kappa, sigma, initial=0.0)
+        spl = self.kappa_spline()
+        anti = spl.antiderivative()
+        theta = self.theta0 + self.S * (anti(sigma) - anti(0.0))
         x = self.x0 + self.S * cumulative_trapezoid(np.cos(theta), sigma, initial=0.0)
         r = self.r0 + self.S * cumulative_trapezoid(np.sin(theta), sigma, initial=0.0)
         return ICWSample(sigma=sigma, s=self.S * sigma, x=x, r=r, theta=theta, kappa=kappa)

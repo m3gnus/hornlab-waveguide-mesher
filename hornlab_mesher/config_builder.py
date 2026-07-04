@@ -243,6 +243,9 @@ def _validate_formula_specific_keys(
         # (m, r, b, tmax) have no meaning on an ICW curve and are rejected at
         # the TOP LEVEL -- they may still appear nested inside icw_seed (a
         # separate OSSE/R-OSSE profile dict), which _has_any does not scan.
+        # Coverage/manufacturability keys (coverage_angle, hold_*, kappa_abs_max,
+        # dkappa_ds_abs_max, theta_max_deg, pin_mouth_radius) are valid ICW
+        # top-level keys and are intentionally not part of this reject set.
         names = ("n", "s", "rot_deg", "rot", "m", "r", "b", "tmax")
         if _has_any(profile, config, names=names):
             raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
@@ -655,11 +658,24 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             ("x_aperture", ("x_aperture",)),
             ("depth", ("depth",)),
             ("x_setback", ("x_setback",)),
+            ("coverage_angle", ("coverage_angle", "coverage_angle_deg")),
+            ("hold_start", ("hold_start",)),
+            ("hold_end", ("hold_end",)),
+            ("kappa_abs_max", ("kappa_abs_max",)),
+            ("dkappa_ds_abs_max", ("dkappa_ds_abs_max",)),
+            ("theta_max_deg", ("theta_max_deg",)),
             ("icw_S", ("icw_S",)),
         ):
             value = _pick(profile, config, names=src_names, default=None)
             if value is not None:
                 common[key] = _scalar_or_expr(profile, config, names=src_names, default=None)
+        pin_mouth_radius = _pick(
+            profile, config, names=("pin_mouth_radius", "pinMouthRadius"), default=None
+        )
+        if pin_mouth_radius is not None:
+            common["pin_mouth_radius"] = _bool(
+                profile, config, names=("pin_mouth_radius", "pinMouthRadius"), default=False
+            )
         # Seed / direct-coefficient inputs are passed through verbatim (nested
         # dict / list), not coerced to scalars.
         seed = _pick(profile, config, names=("icw_seed",), default=None)
