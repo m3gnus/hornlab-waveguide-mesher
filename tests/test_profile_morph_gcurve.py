@@ -73,6 +73,41 @@ def test_circle_morph_zero_dimension_preserves_available_raw_dimension():
     )
 
 
+def test_guiding_curve_superformula_accepts_expression_params():
+    phi = 0.41
+    params = {
+        "gcurveType": 2,
+        "gcurveWidth": "75 + 5*cos(p)",
+        "gcurveAspectRatio": "1 + 0.2*sin(p)",
+        "gcurveSfA": "1 + 0.1*sin(p)",
+        "gcurveSfB": "1.2 - 0.1*cos(p)",
+        "gcurveSfM1": "6 + 2*cos(p)",
+        "gcurveSfM2": "5 + sin(p)",
+        "gcurveSfN1": "1.5 + 0.2*cos(p)",
+        "gcurveSfN2": "2 + 0.1*sin(p)",
+        "gcurveSfN3": "2.5 + 0.1*cos(p)",
+    }
+
+    width = 75 + 5 * math.cos(phi)
+    aspect = 1 + 0.2 * math.sin(phi)
+    sf_a = 1 + 0.1 * math.sin(phi)
+    sf_b = 1.2 - 0.1 * math.cos(phi)
+    sf_m1 = 6 + 2 * math.cos(phi)
+    sf_m2 = 5 + math.sin(phi)
+    sf_n1 = 1.5 + 0.2 * math.cos(phi)
+    sf_n2 = 2 + 0.1 * math.sin(phi)
+    sf_n3 = 2.5 + 0.1 * math.cos(phi)
+    t1 = abs(math.cos((sf_m1 * phi) / 4.0) / sf_a) ** sf_n2
+    t2 = abs(math.sin((sf_m2 * phi) / 4.0) / sf_b) ** sf_n3
+    r_norm = (t1 + t2) ** (-1.0 / sf_n1)
+    expected = math.hypot(
+        r_norm * math.cos(phi) * width / 2.0,
+        r_norm * math.sin(phi) * width * aspect / 2.0,
+    )
+
+    assert _guiding_curve_target_radius(phi, params) == expected
+
+
 def test_morph_fixed_part_is_unchanged_before_transition():
     raw, _ = _inner_grid(_base_osse_params())
     morphed, t_values = _inner_grid(

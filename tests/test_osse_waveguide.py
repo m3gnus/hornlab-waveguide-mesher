@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
+import pytest
 
 from hornlab_mesher import (
     CrossSection,
@@ -10,7 +13,7 @@ from hornlab_mesher import (
     compute_osse_profile_points,
     load_mesh,
 )
-from hornlab_mesher.profiles import profile_points
+from hornlab_mesher.profiles import eval_param, profile_points
 from hornlab_mesher.builders._occ import superellipse_ring
 
 
@@ -45,6 +48,36 @@ def test_osse_profile_points_ignore_rosse_tmax_key():
 
     assert points[-1, 0] == 120.0
     assert np.isclose(points[-1, 1], 210.25359737777225)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "().__class__",
+        "1.0 if ().__class__.__mro__[1].__subclasses__() else 0.0",
+        "(1).real",
+        "math.sin(p)",
+        "sin.__call__(p)",
+        "[1][0]",
+        "(lambda x: x)(1)",
+    ],
+)
+def test_eval_param_rejects_unsafe_ast_expressions(expr):
+    with pytest.raises(ValueError, match="invalid parameter expression"):
+        eval_param(expr, 0.25)
+
+
+def test_eval_param_preserves_ath_formula_semantics():
+    p = 0.37
+    coverage_expr = "45 - 7*cos(2*p)^5 - 16*sin(p)^12"
+    expected_coverage = 45 - 7 * math.cos(2 * p) ** 5 - 16 * math.sin(p) ** 12
+
+    r_expr = "160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)"
+    expected_r = 160 * (abs(math.cos(p) / 1.8) ** 3 + abs(math.sin(p) / 1) ** 4) ** (-1 / 7)
+
+    assert eval_param(coverage_expr, p) == expected_coverage
+    assert eval_param(r_expr, p) == expected_r
+    assert eval_param("1.0 if p > 0 and max(p, 1.0) >= 1.0 else 0.0", p) == 1.0
 
 
 def test_osse_ath_total_length_keeps_slot_inside_length():

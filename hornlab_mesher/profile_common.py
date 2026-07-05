@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import math
+import operator
 import re
 from functools import lru_cache
-from typing import Any, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 
 _DEFAULTS = {
@@ -33,6 +35,152 @@ _EVAL_GLOBALS = {
     "e": math.e,
 }
 
+_EVAL_NAMES = {
+    name: value for name, value in _EVAL_GLOBALS.items() if name != "__builtins__"
+}
+_EVAL_FUNCTIONS = {
+    name: value for name, value in _EVAL_NAMES.items() if callable(value)
+}
+_EVAL_CONSTANTS = {
+    name: value for name, value in _EVAL_NAMES.items() if not callable(value)
+}
+_BINARY_OPS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_UNARY_OPS: dict[type[ast.unaryop], Callable[[Any], Any]] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+_COMPARE_OPS: dict[type[ast.cmpop], Callable[[Any, Any], bool]] = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+}
+
+
+class _ParamExpressionValidator(ast.NodeVisitor):
+    def visit_Expression(self, node: ast.Expression) -> None:
+        self.visit(node.body)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            raise ValueError("only numeric literals are allowed")
+
+    def visit_BinOp(self, node: ast.BinOp) -> None:
+        if type(node.op) not in _BINARY_OPS:
+            raise ValueError(f"unsupported operator {type(node.op).__name__}")
+        self.visit(node.left)
+        self.visit(node.right)
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> None:
+        if type(node.op) not in _UNARY_OPS:
+            raise ValueError(f"unsupported unary operator {type(node.op).__name__}")
+        self.visit(node.operand)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        if not isinstance(node.op, (ast.And, ast.Or)):
+            raise ValueError(f"unsupported boolean operator {type(node.op).__name__}")
+        for value in node.values:
+            self.visit(value)
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        self.visit(node.test)
+        self.visit(node.body)
+        self.visit(node.orelse)
+
+    def visit_Compare(self, node: ast.Compare) -> None:
+        self.visit(node.left)
+        for op, comparator in zip(node.ops, node.comparators):
+            if type(op) not in _COMPARE_OPS:
+                raise ValueError(f"unsupported comparison {type(op).__name__}")
+            self.visit(comparator)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if node.keywords:
+            raise ValueError("keyword arguments are not allowed")
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("only direct whitelisted function calls are allowed")
+        name = node.func.id
+        if "__" in name or name not in _EVAL_FUNCTIONS:
+            raise ValueError(f"unknown function {name!r}")
+        for arg in node.args:
+            self.visit(arg)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        name = node.id
+        if "__" in name:
+            raise ValueError("dunder names are not allowed")
+        if name == "p" or name in _EVAL_NAMES:
+            return
+        raise ValueError(f"unknown name {name!r}")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        raise ValueError("attribute access is not allowed")
+
+    def generic_visit(self, node: ast.AST) -> None:
+        raise ValueError(f"unsupported expression node {type(node).__name__}")
+
+
+_PARAM_EXPRESSION_VALIDATOR = _ParamExpressionValidator()
+
+
+def _eval_ast(node: ast.AST, p: float) -> Any:
+    if isinstance(node, ast.Expression):
+        return _eval_ast(node.body, p)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id == "p":
+            return p
+        if node.id in _EVAL_CONSTANTS:
+            return _EVAL_CONSTANTS[node.id]
+        raise ValueError(f"name {node.id!r} is not a numeric value")
+    if isinstance(node, ast.BinOp):
+        return _BINARY_OPS[type(node.op)](_eval_ast(node.left, p), _eval_ast(node.right, p))
+    if isinstance(node, ast.UnaryOp):
+        return _UNARY_OPS[type(node.op)](_eval_ast(node.operand, p))
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            result = _eval_ast(node.values[0], p)
+            for value in node.values[1:]:
+                if not result:
+                    return result
+                result = _eval_ast(value, p)
+            return result
+        result = _eval_ast(node.values[0], p)
+        for value in node.values[1:]:
+            if result:
+                return result
+            result = _eval_ast(value, p)
+        return result
+    if isinstance(node, ast.IfExp):
+        branch = node.body if _eval_ast(node.test, p) else node.orelse
+        return _eval_ast(branch, p)
+    if isinstance(node, ast.Compare):
+        left = _eval_ast(node.left, p)
+        for op, comparator in zip(node.ops, node.comparators):
+            right = _eval_ast(comparator, p)
+            if not _COMPARE_OPS[type(op)](left, right):
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("only direct whitelisted function calls are allowed")
+        function = _EVAL_FUNCTIONS[node.func.id]
+        return function(*(_eval_ast(arg, p) for arg in node.args))
+    raise ValueError(f"unsupported expression node {type(node).__name__}")
+
+
 @lru_cache(maxsize=16384)
 def _eval_text_param(text: str, p: float) -> float:
     try:
@@ -41,7 +189,11 @@ def _eval_text_param(text: str, p: float) -> float:
         pass
     expr = text.replace("^", "**")
     try:
-        return float(eval(expr, _EVAL_GLOBALS, {"p": p}))
+        if "__" in expr:
+            raise ValueError("dunder names are not allowed")
+        tree = ast.parse(expr, mode="eval")
+        _PARAM_EXPRESSION_VALIDATOR.visit(tree)
+        return float(_eval_ast(tree, p))
     except Exception as exc:
         raise ValueError(f"invalid parameter expression {text!r}") from exc
 
