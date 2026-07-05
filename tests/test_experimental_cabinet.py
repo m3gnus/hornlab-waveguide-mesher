@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.experimental.cabinet import (
+    _enclosure_from_payload,
     _grid_from_payload,
     build_horn_in_box_mesh,
     build_mesh_via_hornlab,
@@ -267,6 +268,16 @@ def test_enclosure_rejects_wall_crossing_baffle_outside_mouth(tmp_path):
     payload = _box_payload(points, full_circle=True, spaces=(20.0, 20.0, 20.0, 20.0), enc_edge=0.0)
     with pytest.raises(Exception, match="front-baffle"):
         build_horn_in_box_mesh(payload, tmp_path / "curl-in.msh", verbose=False)
+
+
+def test_cabinet_payload_zero_edge_remains_sharp():
+    points = _cone_grid(np.array([math.tau * i / 16 for i in range(16)]))
+    payload = _box_payload(points, full_circle=True, spaces=(20.0, 20.0, 20.0, 20.0), enc_edge=0.0)
+
+    enclosure = _enclosure_from_payload(payload)
+
+    assert enclosure is not None
+    assert enclosure.edge_mm == 0.0
 
 
 def test_quarter_roundover_matches_full_build(tmp_path):

@@ -19,6 +19,7 @@ class _SharedSurfaceBuilder:
 
     def __init__(self) -> None:
         self.gmsh = require_gmsh()
+        self.grids: dict[str, np.ndarray] = {}
         self.points: dict[tuple[str, int, int], int] = {}
         self.line_cache: dict[tuple[int, int], int] = {}
         self.spline_cache: dict[tuple[int, ...], int] = {}
@@ -28,12 +29,17 @@ class _SharedSurfaceBuilder:
         return int(self.gmsh.model.occ.addPoint(float(x), float(y), float(z)))
 
     def add_grid(self, name: str, points: np.ndarray) -> None:
-        for i in range(points.shape[0]):
-            for j in range(points.shape[1]):
-                self.points[(name, i, j)] = self.add_point(points[i, j])
+        self.grids[name] = np.asarray(points, dtype=np.float64).copy()
 
     def point(self, name: str, i: int, j: int) -> int:
-        return self.points[(name, int(i), int(j))]
+        key = (name, int(i), int(j))
+        tag = self.points.get(key)
+        if tag is not None:
+            return tag
+        grid = self.grids[name]
+        tag = self.add_point(grid[int(i), int(j)])
+        self.points[key] = tag
+        return tag
 
     def line_tags(self, a: int, b: int) -> int:
         if a == b:
@@ -348,59 +354,6 @@ def _add_rear_cap(
     if not closed and cap_boundary:
         cap.append(builder.surface([*cap_boundary, radial_lines[n_phi - 1], -radial_lines[0]]))
     return cap
-
-
-def _add_rear_return_and_cap(
-    builder: _SharedSurfaceBuilder,
-    rear_points: np.ndarray,
-    *,
-    n_phi: int,
-    closed: bool,
-) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    builder.add_grid("rear", rear_points[:, np.newaxis, :])
-    transition: list[tuple[int, int]] = []
-    cap: list[tuple[int, int]] = []
-    center_xy = (
-        (float(np.mean(rear_points[:, 0])), float(np.mean(rear_points[:, 1])))
-        if closed
-        else (0.0, 0.0)
-    )
-    center_tag = builder.add_point(
-        (
-            center_xy[0],
-            center_xy[1],
-            float(np.mean(rear_points[:, 2])),
-        )
-    )
-    radial_lines: dict[int, int] = {}
-    for i in range(n_phi):
-        radial_lines[i] = builder.line_tags(builder.point("rear", i, 0), center_tag)
-
-    cap_boundary: list[int] = []
-    for i in _phi_segments(n_phi, closed=closed):
-        ni = (i + 1) % n_phi
-        transition.append(
-            builder.quad(
-                ("outer", i, 0),
-                ("outer", ni, 0),
-                ("rear", ni, 0),
-                ("rear", i, 0),
-            )
-        )
-        cap_boundary.append(builder.line(("rear", i, 0), ("rear", ni, 0)))
-        if closed:
-            cap.append(
-                builder.surface(
-                    [
-                        cap_boundary[-1],
-                        radial_lines[ni],
-                        -radial_lines[i],
-                    ]
-                )
-            )
-    if not closed and cap_boundary:
-        cap.append(builder.surface([*cap_boundary, radial_lines[n_phi - 1], -radial_lines[0]]))
-    return transition, cap
 
 
 def _add_geo_spline_span_wall_surfaces(

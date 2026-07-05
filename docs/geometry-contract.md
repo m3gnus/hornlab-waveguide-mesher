@@ -1,9 +1,9 @@
 # Geometry Contract
 
 This document defines the geometry rules that `hornlab-waveguide-mesher`
-implements for OS-SE/OSSE and R-OSSE waveguides. It also separates canonical
-mathematical behavior from ATH compatibility behavior so code changes do not
-hide reference-tool quirks inside generic helper names.
+implements for OS-SE/OSSE, R-OSSE, and ICW waveguides. It also separates
+canonical mathematical behavior from ATH compatibility behavior so code
+changes do not hide reference-tool quirks inside generic helper names.
 
 ## Sources
 
@@ -52,7 +52,9 @@ Implementation rules:
 - `s`, `q`, and `n` control the smooth termination term.
 - `q z / L > 1` clamps the termination term to `s L / q`.
 - Throat extension and slot length are explicit axial sections before the main
-  OS-SE profile.
+  OS-SE profile. `r0` anchors the main waveguide throat; a throat extension
+  tapers backward to the driver-end radius and does not enlarge the main curve
+  or mouth.
 - A final `Rot` transforms the computed 2D profile around `(0, r0)`.
 
 ## R-OSSE Profile
@@ -85,8 +87,28 @@ Implementation rules:
   transition.
 - `L` is derived from the requested mouth radius and profile parameters.
 - Throat extension and slot length are explicit axial sections before the main
-  R-OSSE curve, using the post-extension radius as the main R-OSSE throat
-  radius.
+  R-OSSE curve. As with OS-SE, `r0` anchors the main waveguide throat; the
+  extension tapers backward to the driver-end radius. The main R-OSSE curve,
+  derived length, and mouth radius are unchanged by the extension.
+
+## ICW Profile
+
+ICW (Intrinsic-Curvature Waveguide) is a native mesher profile rather than an
+ATH text-format feature. It defines the meridian as an intrinsic curvature
+curve and samples by normalized arc length.
+
+Implementation rules:
+
+- ICW can be configured through TOML/JSON/dict config with `formula = "ICW"`.
+- `r0` and `a0` set the throat radius and opening angle.
+- `termination = "flat_baffle"` uses axial/mouth targets (`L`, `R`).
+- `termination = "rollback"` uses aperture/setback/depth targets.
+- `icw_seed` fits an ICW curve to an OSSE/R-OSSE seed profile; direct mode uses
+  `icw_coeffs` plus `icw_S`.
+- ICW does not use ATH z-map sampling. It rejects `samplingMode = "zmap"` and
+  `zMapPoints` because the natural grid coordinate is normalized arc length.
+- OSSE/R-OSSE shape keys (`m`, `r`, `b`, `tmax`, OSSE `n/s/rot`) are rejected at
+  top level for ICW unless nested inside an `icw_seed`.
 
 ## Guiding Curve
 
@@ -200,7 +222,6 @@ They are configured by:
 
 - `Mesh.SubdomainSlices`: grid slice indices where interfaces are placed.
 - `Mesh.InterfaceOffset`: forward protrusion per interface.
-- `Mesh.InterfaceDraw`: forward draw depth per interface.
 
 Canonical rule:
 
@@ -208,6 +229,10 @@ Canonical rule:
 - Multiple interfaces are representable.
 - If an imported ATH config omits `Mesh.SubdomainSlices`, the compatibility
   default is the last slice before the mouth.
+- If an imported ATH config sets `Mesh.SubdomainSlices` but omits
+  `Mesh.InterfaceOffset`, the compatibility default is ATH's 5 mm protrusion.
+- `Mesh.InterfaceDraw` is not implemented by the mesher today; the generated
+  interface is the offset surface, not a drawn-depth ATH interface body.
 - Interface surfaces get their own physical group and mesh-density rule.
 
 ## Enclosures

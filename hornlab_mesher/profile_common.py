@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 from functools import lru_cache
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 
 _DEFAULTS = {
@@ -82,11 +82,29 @@ def _osse_radius(z: float, p: float, params: Mapping[str, Any], *, r0: float, a_
     return base + term
 
 
-def _parse_number_list(value: Any) -> list[float]:
+def _parse_number_list(
+    value: Any,
+    *,
+    separators: str = ",",
+    flatten: bool = False,
+    allow_scalar: bool = False,
+    finite_only: bool = False,
+    invalid: Literal["raise", "skip", "empty"] = "raise",
+    evaluate: bool = True,
+) -> list[float]:
     if value is None:
         return []
+    if isinstance(value, (int, float)):
+        if not allow_scalar:
+            return []
+        number = float(value)
+        return [number] if not finite_only or math.isfinite(number) else []
     if isinstance(value, str):
-        parts = [part.strip() for part in value.split(",")]
+        text = value
+        primary = separators[0] if separators else ","
+        for separator in separators[1:]:
+            text = text.replace(separator, primary)
+        parts = [part.strip() for part in text.split(primary)]
     else:
         try:
             parts = list(value)
@@ -94,9 +112,32 @@ def _parse_number_list(value: Any) -> list[float]:
             return []
     out: list[float] = []
     for part in parts:
+        if flatten and isinstance(part, (list, tuple)):
+            out.extend(
+                _parse_number_list(
+                    part,
+                    separators=separators,
+                    flatten=True,
+                    allow_scalar=True,
+                    finite_only=finite_only,
+                    invalid=invalid,
+                    evaluate=evaluate,
+                )
+            )
+            continue
         if part == "":
             continue
-        out.append(float(eval_param(part, 0.0, 0.0)))
+        try:
+            number = float(eval_param(part, 0.0, 0.0) if evaluate else float(part))
+        except (TypeError, ValueError):
+            if invalid == "empty":
+                return []
+            if invalid == "skip":
+                continue
+            raise
+        if finite_only and not math.isfinite(number):
+            continue
+        out.append(number)
     return out
 
 

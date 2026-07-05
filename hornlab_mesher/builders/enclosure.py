@@ -161,9 +161,19 @@ def enclosure_box_bounds(
     if not y_open:
         applied_spacings.append(float(enclosure.space_b_mm))
     margin_edge_limit = max(0.0, min(applied_spacings))
-    clamped_edge = _clamp_edge_roundover(
-        float(enclosure.edge_mm), margin_edge_limit, half_w, half_h
-    )
+    requested_edge = float(enclosure.edge_mm)
+    clamped_edge = _clamp_edge_roundover(requested_edge, margin_edge_limit, half_w, half_h)
+    if requested_edge > clamped_edge + 1.0e-9:
+        logger.warning(
+            "[hornlab-mesher] %senc_edge (%.2f mm) exceeds enclosure limits; "
+            "clamping to %.2f mm (spacing limit %.2f mm, half extents %.2f x %.2f mm).",
+            warn_prefix,
+            requested_edge,
+            clamped_edge,
+            margin_edge_limit,
+            half_w,
+            half_h,
+        )
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
 
     return {

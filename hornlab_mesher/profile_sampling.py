@@ -9,6 +9,7 @@ from .profile_common import (
     _is_true,
     _normalise_formula,
     _normalise_quadrants,
+    _parse_number_list,
     _symmetry_planes_for_quadrants,
     eval_param,
 )
@@ -221,25 +222,7 @@ def _normalise_sampling_mode(value: Any, *, ath_parity_sampling: Any = None, z_m
 
 
 def _zmap_number_list(value: Any) -> list[float]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        parts: list[Any] = [part.strip() for part in value.replace(";", ",").split(",")]
-    else:
-        try:
-            parts = list(value)
-        except TypeError:
-            return []
-
-    out: list[float] = []
-    for part in parts:
-        if isinstance(part, (list, tuple)):
-            out.extend(_zmap_number_list(part))
-            continue
-        if part == "":
-            continue
-        out.append(float(eval_param(part, 0.0, 0.0)))
-    return out
+    return _parse_number_list(value, separators=",;", flatten=True)
 
 
 def _custom_zmap(n_length: int, z_map_points: Any) -> np.ndarray:

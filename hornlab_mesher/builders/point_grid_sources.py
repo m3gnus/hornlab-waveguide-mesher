@@ -189,7 +189,8 @@ def _add_occ_source_cap_surfaces(
     pole_tag = builder.add_point(pole)
 
     radial_lines: dict[int, int] = {}
-    for i in range(n_phi):
+    radial_indices = range(n_phi) if geometry.closed else (0, n_phi - 1)
+    for i in radial_indices:
         if cap_height <= 1.0e-12:
             radial_lines[i] = builder.line_tags(builder.point("inner", i, 0), pole_tag)
             continue
@@ -309,7 +310,8 @@ def _add_source_surfaces(
     pole_tag = builder.add_point(pole)
 
     radial_lines: dict[int, int] = {}
-    for i in range(n_phi):
+    radial_indices = range(n_phi) if geometry.closed else (0, n_phi - 1)
+    for i in radial_indices:
         if cap_height <= 1.0e-12:
             radial_lines[i] = builder.line_tags(builder.point("inner", i, 0), pole_tag)
             continue

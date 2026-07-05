@@ -17,7 +17,7 @@ Unsupported extensions fail before any geometry is built.
 
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, `ROSSE`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. |
+| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, `ROSSE`, `ICW`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. |
 | `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
 | `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
 | `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
@@ -47,7 +47,7 @@ duplicate aliases with conflicting values.
 
 ## Profile Keys
 
-Common keys for OSSE and R-OSSE:
+Shared OSSE/R-OSSE keys:
 
 | Canonical TOML/JSON key | Aliases | Default |
 | --- | --- | --- |
@@ -64,10 +64,11 @@ Common keys for OSSE and R-OSSE:
 | `waveguide_throat_diameter_mm` | `waveguideThroatDiameter`, `waveguideThroatDiameterMm` | none |
 | `waveguide_throat_diameter_in` | `waveguideThroatDiameterIn` | none |
 
-Driver adapter keys are convenience inputs. When both driver and waveguide
-throat diameters are provided, `r0` becomes the driver throat radius and the
-throat extension is derived from either `throatExtAngle` or `throatExtLength`.
-If both extension length and angle are provided, they must reach the requested
+Driver adapter keys are convenience inputs for OSSE/R-OSSE. When both driver
+and waveguide throat diameters are provided, `r0` anchors the main waveguide
+throat radius and the extension tapers backward to the driver throat. The
+extension is derived from either `throatExtAngle` or `throatExtLength`. If both
+extension length and angle are provided, they must reach the requested
 waveguide throat diameter.
 
 OSSE-only keys:
@@ -93,9 +94,42 @@ For R-OSSE with throat extension enabled, `tmax` samples the normalized total
 profile including the extension, slot, and main R-OSSE curve. Values below
 `1.0` therefore truncate before the final mouth point.
 
+ICW keys:
+
+| Canonical TOML/JSON key | Aliases | Default |
+| --- | --- | --- |
+| `r0_mm` | `r0` | `12.7` |
+| `a0_deg` | `a0` | `15.5` |
+| `termination` | none | `flat_baffle` |
+| `L_mm` | `L` | `120.0` for `flat_baffle`; omitted for rollback unless configured |
+| `R_mm` | `R` | `150.0` for `flat_baffle`; omitted for rollback unless configured |
+| `r_aperture` | none | none |
+| `x_aperture` | none | none |
+| `depth` | none | none |
+| `x_setback` | none | none |
+| `coverage_angle` | `coverage_angle_deg` | none |
+| `hold_start` | none | none |
+| `hold_end` | none | none |
+| `kappa0` | none | none |
+| `n_coeff` | none | ICW kernel default |
+| `theta1` | `theta1_deg` | none |
+| `kappa_abs_max` | none | none |
+| `dkappa_ds_abs_max` | none | none |
+| `theta_max_deg` | none | none |
+| `pin_mouth_radius` | none | false |
+| `icw_seed` | none | none |
+| `icw_coeffs` | none | none |
+| `icw_S` | none | none |
+
+ICW is not available through ATH text import. Configure it through TOML, JSON,
+or direct dict input. ICW always samples uniformly in normalized arc length and
+rejects `sampling_mode = "zmap"` / `z_map_points`.
+
 Formula-specific keys are rejected when used with the other formula. For
 example, `R_mm`, `m`, `r`, `b`, and `tmax` are invalid with `OSSE`, while
-`L_mm`, `n`, `s`, and `rot_deg` are invalid with `R-OSSE`.
+OSSE-only `n`, `s`, and `rot_deg` are invalid with `R-OSSE`. ICW rejects the
+OSSE/R-OSSE shape keys at top level; put a seed formula inside `icw_seed` when
+you want ICW to fit an existing OSSE/R-OSSE meridian.
 
 Numeric profile keys may be numbers or expression strings. Expression strings
 are evaluated later by the profile layer where supported.
@@ -124,9 +158,9 @@ Use `[cross_section]` or `[crossSection]`.
 | `quadrants` | none | `1234` | `1`, `12`, `14`, and `1234` are supported by the sampler. |
 | `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |
 | `mouth_res_mm` | `mouth_res`, `mouthResolution` | `26.0` (`8.0` for text imports) | Mesh density, not grid shape. |
-| `rear_res_mm` | `rear_res`, `rearResolution` | `25.0` (`10.0` for text imports) | Mesh density, not grid shape. |
+| `rear_res_mm` | `rear_res`, `rearResolution` | `25.0` (`15.0` for text imports) | Mesh density, not grid shape. |
 | `subdomain_slices` | `subdomainSlices` | empty | Comma/list of point-grid ring indices for interfaces. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
-| `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. |
+| `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
 | `preserve_grid` | `preserveGrid` | `false` | Forces faceted point-grid wall surfaces instead of grouped OCC patches. Leave false for fast grouped-wall enclosure topology unless a config explicitly needs point-grid wall faces. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
@@ -242,7 +276,8 @@ by the mesh builder.
 
 ## ATH Text Import Boundary
 
-Text import supports OSSE and R-OSSE blocks plus selected flat ATH keys. The
+Text import supports OSSE and R-OSSE blocks plus selected flat ATH keys. ICW is
+not part of the ATH text format and is rejected there. The
 parser strips semicolon comments and accepts block syntax such as:
 
 ```text
@@ -282,8 +317,8 @@ Imported text mappings include:
 
 Text imports inject ATH's own defaults for omitted keys instead of the native
 TOML/JSON defaults: `Throat.Angle` 0, `Term.s` 0.7, `Mesh.WallThickness` 5,
-`Mesh.ThroatResolution` 5, `Mesh.MouthResolution` 8, `Mesh.RearResolution`
-10, and `Morph.CornerRadius` 35 when a morph target is set. The default
+`Mesh.ThroatResolution` 4, `Mesh.MouthResolution` 8, `Mesh.RearResolution`
+15, and `Morph.CornerRadius` 35 when a morph target is set. The default
 sampling mode is `ath-default-zmap` (for OSSE a cubic bezier with control
 points `(0.5, 0.1)` and `(0.5, 0.95)` fitted against ATH reference grids).
 

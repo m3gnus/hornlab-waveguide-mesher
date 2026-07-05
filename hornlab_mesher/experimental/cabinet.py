@@ -24,7 +24,6 @@ from hornlab_mesher.mesher import build_mesh_with_info
 from hornlab_mesher.viewport import build_viewport_geometry_from_config
 
 HORNLAB_MESHER_AVAILABLE = True
-_SHARP_EDGE_EPS_MM = 0.1
 
 
 def _clean_dict(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -247,11 +246,7 @@ def _enclosure_from_payload(payload: Mapping[str, Any]) -> HornEnclosure | None:
         space_t_mm=_number(payload.get("enc_space_t"), 25.0),
         space_r_mm=_number(payload.get("enc_space_r"), 25.0),
         space_b_mm=_number(payload.get("enc_space_b"), 25.0),
-        # The shared rounded-rectangle enclosure builder creates degenerate
-        # lines at exactly zero edge depth. Callers use zero to mean "sharp";
-        # a 0.1 mm edge preserves that geometry contract for BEM use while
-        # staying above OCC's degenerate-curve tolerance.
-        edge_mm=max(_number(payload.get("enc_edge"), 18.0), _SHARP_EDGE_EPS_MM),
+        edge_mm=_number(payload.get("enc_edge"), 18.0),
         edge_type=int(_number(payload.get("enc_edge_type"), 1.0)),
         plan_type=int(_number(payload.get("enc_plan_type"), 1.0)),
         plan_n=_number(payload.get("enc_plan_n"), 2.0),

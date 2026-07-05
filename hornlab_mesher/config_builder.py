@@ -21,6 +21,7 @@ from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGe
 from .mesher import build_mesh_with_info
 from .profile_common import (
     _normalise_quadrants as _normalise_quadrants_common,
+    _parse_number_list,
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
 from .profiles import build_point_grid, eval_param
@@ -75,36 +76,13 @@ class BuildResult:
 
 
 def _number_list(value: Any) -> list[float]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        out: list[float] = []
-        for item in value:
-            try:
-                number = float(item)
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(number):
-                out.append(number)
-        return out
-    if isinstance(value, (int, float)):
-        number = float(value)
-        return [number] if np.isfinite(number) else []
-    text = str(value).strip()
-    if not text:
-        return []
-    parts = [part.strip() for part in text.split(",")]
-    out = []
-    for part in parts:
-        if not part:
-            continue
-        try:
-            number = float(part)
-        except ValueError:
-            continue
-        if np.isfinite(number):
-            out.append(number)
-    return out
+    return _parse_number_list(
+        value,
+        allow_scalar=True,
+        finite_only=True,
+        invalid="skip",
+        evaluate=False,
+    )
 
 
 def _first_number(*sources: Mapping[str, Any], names: tuple[str, ...], default: float) -> float:

@@ -4,16 +4,8 @@ import math
 from typing import Any
 
 from .geometry import BuiltGeometry, MeshDensity
+from .profile_common import _parse_number_list
 from .tags import PhysicalGroup, SOURCE_TAGS
-
-
-def _parse_number_list(text: Any) -> list[float]:
-    if text is None or not str(text).strip():
-        return []
-    try:
-        return [float(part.strip()) for part in str(text).split(",") if part.strip()]
-    except ValueError:
-        return []
 
 
 def _parse_quadrant_resolutions(value: float | str | None, fallback: float) -> list[float]:
@@ -34,7 +26,7 @@ def _parse_quadrant_resolutions(value: float | str | None, fallback: float) -> l
     if math.isfinite(scalar) and scalar > 0.0:
         return [scalar, scalar, scalar, scalar]
 
-    parts = _parse_number_list(text)
+    parts = _parse_number_list(text, invalid="empty", evaluate=False)
     if not parts:
         return [fallback, fallback, fallback, fallback]
 

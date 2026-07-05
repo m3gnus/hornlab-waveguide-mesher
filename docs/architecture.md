@@ -1,6 +1,6 @@
 # Architecture
 
-This repository is intentionally small: it owns OSSE/R-OSSE waveguide profile
+This repository is intentionally small: it owns OSSE/R-OSSE/ICW waveguide profile
 evaluation, point-grid topology, Gmsh mesh generation, and ABEC-compatible mesh
 tags. It does not own solver setup, optimization, cabinet generation, or a
 JavaScript runtime.

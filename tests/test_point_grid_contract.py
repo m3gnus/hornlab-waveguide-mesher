@@ -12,15 +12,21 @@ from hornlab_mesher.builders.enclosure import (
     _MIN_BAFFLE_CLEARANCE_MM,
     _add_curve_loop_from_curves,
     _clamp_edge_roundover,
+    enclosure_box_bounds,
     _reject_front_baffle_wall_intersections,
 )
+from hornlab_mesher.builders import point_grid_surfaces as point_grid_surfaces_mod
 from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
-from hornlab_mesher.builders.point_grid_surfaces import _rear_rim_points
+from hornlab_mesher.builders.point_grid_sources import _add_occ_source_cap_surfaces
+from hornlab_mesher.builders.point_grid_surfaces import _SharedSurfaceBuilder, _rear_rim_points
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
 from hornlab_mesher.cli import build_from_config, parse_ath_config
+from hornlab_mesher.config_builder import _number_list
+from hornlab_mesher.density import _parse_quadrant_resolutions
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
-from hornlab_mesher.profiles import build_point_grid
+from hornlab_mesher.profile_sampling import _zmap_number_list
+from hornlab_mesher.profiles import build_point_grid, profile_points
 from hornlab_mesher.viewport import build_viewport_geometry_from_config
 
 
@@ -1890,3 +1896,173 @@ def test_preserve_grid_quarter_enclosure_has_no_off_plane_open_edges(tmp_path):
         if not (on_x or on_y):
             off_plane.append((pa.round(3).tolist(), pb.round(3).tolist()))
     assert not off_plane, f"{len(off_plane)} off-plane open edges, e.g. {off_plane[:4]}"
+
+
+class _FakeOcc:
+    def __init__(self) -> None:
+        self.next_tag = 1
+        self.point_count = 0
+        self.bsplines: list[list[int]] = []
+
+    def _tag(self) -> int:
+        tag = self.next_tag
+        self.next_tag += 1
+        return tag
+
+    def addPoint(self, *_args) -> int:
+        self.point_count += 1
+        return self._tag()
+
+    def addLine(self, *_args) -> int:
+        return self._tag()
+
+    def addBSpline(self, point_tags) -> int:
+        self.bsplines.append([int(tag) for tag in point_tags])
+        return self._tag()
+
+    def addCurveLoop(self, *_args) -> int:
+        return self._tag()
+
+    def addPlaneSurface(self, *_args) -> int:
+        return self._tag()
+
+    def addSurfaceFilling(self, *_args) -> int:
+        return self._tag()
+
+
+class _FakeGmsh:
+    def __init__(self) -> None:
+        self.model = type("FakeModel", (), {"occ": _FakeOcc()})()
+
+
+def test_shared_surface_builder_add_grid_is_lazy(monkeypatch):
+    fake = _FakeGmsh()
+    monkeypatch.setattr(point_grid_surfaces_mod, "require_gmsh", lambda: fake)
+
+    builder = _SharedSurfaceBuilder()
+    points = np.zeros((8, 12, 3), dtype=np.float64)
+    builder.add_grid("inner", points)
+
+    assert fake.model.occ.point_count == 0
+    assert builder.point("inner", 3, 4) == builder.point("inner", 3, 4)
+    assert fake.model.occ.point_count == 1
+    builder.point("inner", 3, 5)
+    assert fake.model.occ.point_count == 2
+
+
+def test_open_occ_source_cap_builds_only_endpoint_radials(monkeypatch):
+    fake = _FakeGmsh()
+    monkeypatch.setattr(point_grid_surfaces_mod, "require_gmsh", lambda: fake)
+
+    n_phi = 9
+    angles = np.linspace(0.0, math.pi / 2.0, n_phi)
+    inner = np.empty((n_phi, 2, 3), dtype=np.float64)
+    for i, phi in enumerate(angles):
+        inner[i, 0] = (10.0 * math.cos(phi), 10.0 * math.sin(phi), 0.0)
+        inner[i, 1] = (30.0 * math.cos(phi), 30.0 * math.sin(phi), 80.0)
+
+    builder = _SharedSurfaceBuilder()
+    builder.add_grid("inner", inner)
+    geometry = PointGridHornGeometry(
+        inner_points=inner,
+        closed=False,
+        source_shape=1,
+        source_radius_mm=30.0,
+    )
+
+    cap = _add_occ_source_cap_surfaces(builder, inner, geometry)
+
+    assert len(cap) == 1
+    radial_splines = [points for points in fake.model.occ.bsplines if len(points) == 4]
+    assert len(radial_splines) == 2
+
+
+def test_number_list_parsers_share_helper_without_contract_drift():
+    assert _parse_quadrant_resolutions("1,bad,3", 9.0) == [9.0, 9.0, 9.0, 9.0]
+    assert _number_list(["1", "bad", 2, "nan"]) == [1.0, 2.0]
+    assert _zmap_number_list([0.5, ["0.1", "0.75"], "0.7"]) == [0.5, 0.1, 0.75, 0.7]
+    assert _zmap_number_list("0.5;0.1,0.75;0.7") == [0.5, 0.1, 0.75, 0.7]
+
+
+@pytest.mark.parametrize(
+    ("formula", "profile"),
+    [
+        (
+            "OSSE",
+            {
+                "r0": 18.0,
+                "a": 42.0,
+                "a0": 8.0,
+                "L": 120.0,
+                "k": 1.2,
+                "n": 4.0,
+                "q": 0.95,
+                "s": 0.25,
+                "throatExtLength": 10.0,
+                "throatExtAngle": 5.0,
+            },
+        ),
+        (
+            "R-OSSE",
+            {
+                "r0": 18.0,
+                "a": 42.0,
+                "a0": 8.0,
+                "R": 135.0,
+                "k": 1.1,
+                "q": 1.3,
+                "m": 0.85,
+                "r": 0.4,
+                "b": 0.2,
+                "throatExtLength": 10.0,
+                "throatExtAngle": 5.0,
+            },
+        ),
+    ],
+)
+def test_config_to_point_grid_preserves_profile_radius_at_uniform_slices(formula, profile):
+    config = {
+        "formula": formula,
+        "mode": "bare",
+        "profile": profile,
+        "mesh": {
+            "angularSegments": 16,
+            "lengthSegments": 10,
+            "samplingMode": "uniform",
+            "quadrants": 1234,
+        },
+    }
+
+    viewport = build_viewport_geometry_from_config(config)
+    params = viewport["params"]
+    grid = viewport["grid"]
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    direct = profile_points(params, n_length + 1, phi=0.0)
+
+    assert inner[0, :, 2] == pytest.approx(direct[:, 0], abs=1.0e-9)
+    assert np.linalg.norm(inner[0, :, :2], axis=1) == pytest.approx(direct[:, 1], abs=1.0e-9)
+
+
+def test_enclosure_bounds_logs_edge_roundover_clamp(caplog):
+    angles = np.linspace(0.0, math.tau, 16, endpoint=False)
+    inner = np.empty((len(angles), 2, 3), dtype=np.float64)
+    for i, phi in enumerate(angles):
+        inner[i, 0] = (10.0 * math.cos(phi), 10.0 * math.sin(phi), 0.0)
+        inner[i, 1] = (35.0 * math.cos(phi), 35.0 * math.sin(phi), 100.0)
+
+    enclosure = HornEnclosure(
+        depth_mm=140.0,
+        space_l_mm=5.0,
+        space_t_mm=5.0,
+        space_r_mm=5.0,
+        space_b_mm=5.0,
+        edge_mm=20.0,
+    )
+    with caplog.at_level("WARNING", logger="hornlab_mesher.builders.enclosure"):
+        bounds = enclosure_box_bounds(inner, enclosure, closed=True)
+
+    assert bounds["clamped_edge"] < 20.0
+    assert "enc_edge" in caplog.text
+    assert "clamping" in caplog.text
