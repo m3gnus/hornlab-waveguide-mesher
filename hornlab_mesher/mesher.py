@@ -172,11 +172,15 @@ def _postprocess_mesh(
         raise MesherError("gmsh produced no triangle elements")
 
     points = np.asarray(mesh.points, dtype=np.float64)
+    # Snap BEFORE welding: snapping near-plane vertices onto the symmetry
+    # planes can create coincident nodes, and only a subsequent weld folds
+    # them back into single vertices (welding first would leave the
+    # near-identical rows that make dense BEM solves singular).
+    _snap_symmetry_planes(points, symmetry_snap_axes, symmetry_snap_tol_mm)
     # Gmsh stitches adjacent OCC patch boundaries with near-duplicate nodes
     # (micrometres apart on fine grids); welding them prevents overlapping
     # elements whose near-identical rows make dense BEM solves singular.
     triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
-    _snap_symmetry_planes(points, symmetry_snap_axes, symmetry_snap_tol_mm)
     triangles, phys = _remove_symmetry_plane_slivers(points, triangles, phys, symmetry_snap_axes)
     triangles, phys, _ = remove_degenerate_triangles(points, triangles, phys, min_quality=1.0e-4)
     if len(triangles) == 0:

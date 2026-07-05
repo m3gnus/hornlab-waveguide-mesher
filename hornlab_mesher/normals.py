@@ -239,7 +239,23 @@ def repair_orientation(
         p2 = points[repaired[mask, 2]]
         projection = float(np.sum(np.cross(p1 - p0, p2 - p0)[:, axis_idx]))
         if projection < 0.0:
-            idx = np.where(mask)[0]
+            # Flip the source's whole connected component(s), not just the
+            # tagged triangles: flipping only the source of an edge-connected
+            # mesh manufactures the inconsistent shared edges the validator
+            # then rejects. A detached source cap (its own component) reduces
+            # to the old behavior; a source welded to walls flips with them,
+            # and if that contradicts the global volume the validator reports
+            # a genuinely defective geometry instead of a self-inflicted one.
+            component = np.zeros(len(repaired), dtype=bool)
+            stack = list(np.where(mask)[0])
+            component[stack] = True
+            while stack:
+                tri_idx = stack.pop()
+                for other, _must_differ in neighbours[tri_idx]:
+                    if not component[other]:
+                        component[other] = True
+                        stack.append(other)
+            idx = np.where(component)[0]
             repaired[idx] = repaired[idx][:, [0, 2, 1]]
             stats["flipped_primary_source"] = int(len(idx))
 
