@@ -68,6 +68,9 @@ class _SharedSurfaceBuilder:
         self.spline_cache[key] = tag
         return tag
 
+    def circle_arc(self, start: int, center: int, end: int) -> int:
+        return int(self.gmsh.model.occ.addCircleArc(int(start), int(center), int(end), center=True))
+
     def surface(self, curves: list[int]) -> tuple[int, int]:
         return _safe_surface_from_curves(curves)
 

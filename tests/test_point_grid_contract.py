@@ -181,6 +181,15 @@ def _make_quarter_point_grid(
     return points
 
 
+def _make_outer_point_grid(inner_points: np.ndarray, *, wall_thickness: float = 6.0) -> np.ndarray:
+    outer = np.array(inner_points, dtype=np.float64, copy=True)
+    radial = np.linalg.norm(outer[:, :, :2], axis=2)
+    scale = (radial + float(wall_thickness)) / np.maximum(radial, 1.0e-12)
+    outer[:, :, 0] *= scale
+    outer[:, :, 1] *= scale
+    return outer
+
+
 def _triangle_tags(mesh) -> list[int]:
     tags: list[int] = []
     for index, cell_block in enumerate(mesh.cells):
@@ -720,6 +729,49 @@ def test_point_grid_rounded_source_shape_builds_cap(tmp_path):
     source_z = np.asarray(mesh.points, dtype=np.float64)[source_points, 2]
     assert float(np.max(source_z)) > 1.0
     assert np.isclose(float(np.min(source_z)), 0.0, atol=1.0e-9)
+
+
+@pytest.mark.parametrize("topology", ["bare-occ", "freestanding-geo"])
+@pytest.mark.parametrize("source_curv", [0, -1])
+def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, topology, source_curv):
+    throat_radius = 12.7
+    source_radius = 60.0
+    inner = _make_point_grid(n_phi=32, n_length=6, r0=throat_radius, r1=50.0)
+    outer = _make_outer_point_grid(inner) if topology == "freestanding-geo" else None
+
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=inner,
+            outer_points=outer,
+            closed=True,
+            wall_thickness_mm=6.0 if outer is not None else 0.0,
+            source_shape=1,
+            source_radius_mm=source_radius,
+            source_curv=source_curv,
+        ),
+        MeshDensity(throat_res_mm=3.0, mouth_res_mm=20.0, rear_res_mm=24.0),
+        tmp_path / f"rounded-source-{topology}-{source_curv}.msh",
+        scale_to_metres=False,
+    )
+
+    mesh = meshio.read(msh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    source_nodes = np.unique(triangles[tags == 2])
+    assert source_nodes.size > 0
+
+    cap_height = source_radius - math.sqrt(source_radius * source_radius - throat_radius * throat_radius)
+    sign = -1.0 if source_curv == -1 else 1.0
+    sphere_center = np.array([0.0, 0.0, sign * (cap_height - source_radius)], dtype=np.float64)
+    source_points = np.asarray(mesh.points, dtype=np.float64)[source_nodes]
+    residuals = np.abs(np.linalg.norm(source_points - sphere_center, axis=1) - source_radius)
+
+    assert float(np.max(residuals)) < 1.0e-6 * source_radius
+    if source_curv == -1:
+        assert float(np.min(source_points[:, 2])) < -1.0
+        assert float(np.max(source_points[:, 2])) <= 1.0e-9
+    else:
+        assert float(np.min(source_points[:, 2])) >= -1.0e-9
+        assert float(np.max(source_points[:, 2])) > 1.0
 
 
 def test_point_grid_unsupported_source_shape_fails_explicitly(tmp_path):

@@ -35,13 +35,10 @@ def _validate_source_shape(geometry: PointGridHornGeometry) -> int:
 def _geo_radial_source_curves(
     builder: _GeoSurfaceBuilder,
     inner_points: np.ndarray,
-    geometry: PointGridHornGeometry,
     *,
     pole_tag: int,
-    center: np.ndarray,
-    throat_radius: float,
+    sphere_center_tag: int,
     cap_height: float,
-    mesh_size: float,
 ) -> dict[int, int]:
     n_phi = inner_points.shape[0]
     if cap_height <= 1.0e-12:
@@ -50,27 +47,117 @@ def _geo_radial_source_curves(
             for i in range(n_phi)
         }
 
-    sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    return {
+        i: builder.circle_arc(builder.point("inner", i, 0), sphere_center_tag, pole_tag)
+        for i in range(n_phi)
+    }
+
+
+def _angle_from_center(point: np.ndarray, center: np.ndarray) -> float:
+    return math.atan2(float(point[1] - center[1]), float(point[0] - center[0]))
+
+
+def _positive_angle_delta(start: float, end: float) -> float:
+    delta = math.fmod(end - start, math.tau)
+    if delta <= 1.0e-12:
+        delta += math.tau
+    return delta
+
+
+def _geo_source_cap_phi_curve(
+    builder: _GeoSurfaceBuilder,
+    indices: list[int],
+    *,
+    center_tag: int,
+) -> int:
+    start_tag = builder.point("inner", indices[0], 0)
+    end_tag = builder.point("inner", indices[-1], 0)
+    if start_tag == end_tag:
+        return builder.spline([("inner", i, 0) for i in indices])
+    return builder.circle_arc(start_tag, center_tag, end_tag)
+
+
+def _spherical_occ_cap_surfaces(
+    builder: _SharedSurfaceBuilder,
+    inner_points: np.ndarray,
+    geometry: PointGridHornGeometry,
+    *,
+    center: np.ndarray,
+    throat_radius: float,
+    cap_height: float,
+) -> list[tuple[int, int]]:
+    if throat_radius <= 1.0e-9 or cap_height <= 1.0e-12:
+        return []
+
+    gmsh = builder.gmsh
     radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
-    sqrt_base = math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
+    sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    sphere_center = np.array(center, dtype=np.float64)
+    sphere_center[2] += sign * (cap_height - radius)
+    base = math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
+    ring_angle = math.asin(max(-1.0, min(1.0, base / radius)))
+    if sign > 0.0:
+        angle1, angle2 = ring_angle, math.pi / 2.0
+    else:
+        angle1, angle2 = -math.pi / 2.0, -ring_angle
+
     ring = inner_points[:, 0, :]
-    radial = ring - center
-    radial[:, 2] = 0.0
-    radii = np.linalg.norm(radial[:, :2], axis=1)
-    curves: dict[int, int] = {}
-    for i in range(n_phi):
-        control_tags = [builder.point("inner", i, 0)]
-        unit = radial[i] / max(radii[i], 1.0e-12)
-        for frac in (2.0 / 3.0, 1.0 / 3.0):
-            rj = throat_radius * frac
-            hj = math.sqrt(max(0.0, radius * radius - rj * rj)) - sqrt_base
-            p = np.array(center, dtype=np.float64)
-            p[:2] += unit[:2] * rj
-            p[2] += sign * hj
-            control_tags.append(builder.add_point(p, mesh_size=mesh_size))
-        control_tags.append(pole_tag)
-        curves[i] = int(builder.geo.addSpline(control_tags))
-    return curves
+    volume_tags: list[int] = []
+    for indices in _source_cap_phi_groups(inner_points.shape[0], closed=True):
+        start_angle = _angle_from_center(ring[indices[0]], center)
+        end_angle = _angle_from_center(ring[indices[-1]], center)
+        angle3 = _positive_angle_delta(start_angle, end_angle)
+        volume_tag = int(
+            gmsh.model.occ.addSphere(
+                float(sphere_center[0]),
+                float(sphere_center[1]),
+                float(sphere_center[2]),
+                float(radius),
+                angle1=float(angle1),
+                angle2=float(angle2),
+                angle3=float(angle3),
+            )
+        )
+        if abs(start_angle) > 1.0e-12:
+            gmsh.model.occ.rotate(
+                [(3, volume_tag)],
+                float(sphere_center[0]),
+                float(sphere_center[1]),
+                float(sphere_center[2]),
+                0.0,
+                0.0,
+                1.0,
+                float(start_angle),
+            )
+        volume_tags.append(volume_tag)
+
+    gmsh.model.occ.synchronize()
+
+    surfaces: list[tuple[int, int]] = []
+    remove_surfaces: list[tuple[int, int]] = []
+    z_span_min = max(abs(cap_height) * 0.25, 1.0e-9)
+    for volume_tag in volume_tags:
+        boundary = gmsh.model.getBoundary([(3, volume_tag)], oriented=False, combined=False)
+        candidates: list[tuple[float, int]] = []
+        surface_tags = [int(tag) for dim, tag in boundary if int(dim) == 2]
+        for surface_tag in surface_tags:
+            box = gmsh.model.getBoundingBox(2, surface_tag)
+            z_span = abs(float(box[5]) - float(box[2]))
+            if z_span > z_span_min:
+                candidates.append((float(gmsh.model.occ.getMass(2, surface_tag)), surface_tag))
+        if not candidates:
+            candidates = [
+                (float(gmsh.model.occ.getMass(2, surface_tag)), surface_tag)
+                for surface_tag in surface_tags
+            ]
+        sphere_surface = max(candidates)[1]
+        surfaces.append((2, sphere_surface))
+        remove_surfaces.extend((2, tag) for tag in surface_tags if tag != sphere_surface)
+
+    gmsh.model.occ.remove([(3, tag) for tag in volume_tags], recursive=False)
+    if remove_surfaces:
+        gmsh.model.occ.remove(remove_surfaces, recursive=False)
+    return surfaces
 
 
 def _add_geo_source_cap_surfaces(
@@ -93,22 +180,35 @@ def _add_geo_source_cap_surfaces(
         sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
         pole[2] += sign * cap_height
         pole_tag = builder.add_point(pole, mesh_size=mesh_size)
+        center_tag = builder.add_point(center, mesh_size=mesh_size)
+        sphere_center_tag = -1
+        if cap_height > 1.0e-12:
+            radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
+            sphere_center = np.array(center, dtype=np.float64)
+            sphere_center[2] += sign * (cap_height - radius)
+            sphere_center_tag = builder.add_point(sphere_center, mesh_size=mesh_size)
         radial_curves = _geo_radial_source_curves(
             builder,
             inner_points,
-            geometry,
             pole_tag=pole_tag,
-            center=center,
-            throat_radius=throat_radius,
+            sphere_center_tag=sphere_center_tag,
             cap_height=cap_height,
-            mesh_size=mesh_size,
         )
         cap: list[tuple[int, int]] = []
         for indices in _source_cap_phi_groups(n_phi, closed=True):
             start = indices[0]
             end = indices[-1]
-            phi_curve = builder.spline([("inner", i, 0) for i in indices])
-            cap.append(builder.surface([phi_curve, radial_curves[end], -radial_curves[start]]))
+            if cap_height > 1.0e-12:
+                phi_curve = _geo_source_cap_phi_curve(builder, indices, center_tag=center_tag)
+                cap.append(
+                    builder.surface(
+                        [phi_curve, radial_curves[end], -radial_curves[start]],
+                        sphere_center_tag=sphere_center_tag,
+                    )
+                )
+            else:
+                phi_curve = builder.spline([("inner", i, 0) for i in indices])
+                cap.append(builder.surface([phi_curve, radial_curves[end], -radial_curves[start]]))
         return cap
 
     center[0] = 0.0
@@ -184,6 +284,16 @@ def _add_occ_source_cap_surfaces(
     throat_radius = _throat_radius(inner_points, closed=geometry.closed)
     cap_height = _source_cap_height(throat_radius, geometry) if shape == SOURCE_SHAPE_ROUNDED_CAP else 0.0
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    if geometry.closed and shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
+        return _spherical_occ_cap_surfaces(
+            builder,
+            inner_points,
+            geometry,
+            center=center,
+            throat_radius=throat_radius,
+            cap_height=cap_height,
+        )
+
     pole = np.array(center, dtype=np.float64)
     pole[2] += sign * cap_height
     pole_tag = builder.add_point(pole)
@@ -304,6 +414,15 @@ def _add_source_surfaces(
     if shape == SOURCE_SHAPE_ROUNDED_CAP:
         cap_height = _source_cap_height(throat_radius, geometry)
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    if closed and shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
+        return _spherical_occ_cap_surfaces(
+            builder,
+            inner_points,
+            geometry,
+            center=center,
+            throat_radius=throat_radius,
+            cap_height=cap_height,
+        )
 
     pole = np.array(center, dtype=np.float64)
     pole[2] += sign * cap_height
