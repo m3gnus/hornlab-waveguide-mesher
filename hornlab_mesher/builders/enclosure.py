@@ -697,6 +697,7 @@ def _build_rounded_rectangle_enclosure_sector(
     edge_depth: float,
     front_mesh_size: float,
     back_mesh_size: float,
+    edge_type: int = 1,
     sign_x: float = 1.0,
     sign_y: float = 1.0,
     axis_x: float = 0.0,
@@ -737,6 +738,11 @@ def _build_rounded_rectangle_enclosure_sector(
 
     def arc(a: int, c: int, b: int) -> int:
         return int(gmsh.model.occ.addCircleArc(int(a), int(c), int(b)))
+
+    sector_edge_type = int(edge_type)
+
+    def roundover_edge(a: int, c: int, b: int) -> int:
+        return line(a, b) if (sector_edge_type == 2 or r <= 0.0) else arc(a, c, b)
 
     def surface(curves: list[int], *, plane: bool = False) -> tuple[int, int]:
         loop = _add_curve_loop_from_curves(curves)
@@ -846,16 +852,16 @@ def _build_rounded_rectangle_enclosure_sector(
     l_y_outer_corner = line(c_y_f, c_y_b)
     l_y_back_outer = line(py_o_b, c_y_b)
 
-    a_x_front_axis = arc(px_f, cx_axis_f, px_o_f) if r > 0.0 else line(px_f, px_o_f)
-    a_x_front_corner = arc(c_f, corner_front_center, c_x_f) if r > 0.0 else line(c_f, c_x_f)
-    a_x_back_axis = arc(px_o_b, cx_axis_b, px_b) if r > 0.0 else line(px_o_b, px_b)
-    a_x_back_corner = arc(c_x_b, corner_back_center, c_b) if r > 0.0 else line(c_x_b, c_b)
-    a_y_front_axis = arc(py_f, cy_axis_f, py_o_f) if r > 0.0 else line(py_f, py_o_f)
-    a_y_front_corner = arc(c_f, corner_front_center, c_y_f) if r > 0.0 else line(c_f, c_y_f)
-    a_y_back_axis = arc(py_o_b, cy_axis_b, py_b) if r > 0.0 else line(py_o_b, py_b)
-    a_y_back_corner = arc(c_y_b, corner_back_center, c_b) if r > 0.0 else line(c_y_b, c_b)
-    a_corner_front = arc(c_x_f, corner_front_center, c_y_f) if r > 0.0 else line(c_x_f, c_y_f)
-    a_corner_back = arc(c_x_b, corner_back_center, c_y_b) if r > 0.0 else line(c_x_b, c_y_b)
+    a_x_front_axis = roundover_edge(px_f, cx_axis_f, px_o_f)
+    a_x_front_corner = roundover_edge(c_f, corner_front_center, c_x_f)
+    a_x_back_axis = roundover_edge(px_o_b, cx_axis_b, px_b)
+    a_x_back_corner = roundover_edge(c_x_b, corner_back_center, c_b)
+    a_y_front_axis = roundover_edge(py_f, cy_axis_f, py_o_f)
+    a_y_front_corner = roundover_edge(c_f, corner_front_center, c_y_f)
+    a_y_back_axis = roundover_edge(py_o_b, cy_axis_b, py_b)
+    a_y_back_corner = roundover_edge(c_y_b, corner_back_center, c_b)
+    a_corner_front = roundover_edge(c_x_f, corner_front_center, c_y_f)
+    a_corner_back = roundover_edge(c_x_b, corner_back_center, c_y_b)
 
     x_front_edge = surface([a_x_front_axis, l_x_front_outer, -a_x_front_corner, -l_front_x])
     x_side = surface([l_x_outer, l_x_back_outer, -l_x_outer_corner, -l_x_front_outer], plane=True)
@@ -1013,13 +1019,6 @@ def build_enclosure_box(
     if not closed:
         if int(enclosure.plan_type) != 1:
             raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
-        if int(enclosure.edge_type) != 1 and edge_depth > 0.0:
-            # The sector builder only emits fillet arcs; silently building a
-            # fillet for a requested chamfer violates the geometry contract.
-            raise NotImplementedError(
-                "Open-domain (reduced-quadrant) enclosures support only the rounded fillet "
-                "(edge_type=1); chamfer sectors are not implemented. Use edge=0 for a sharp box."
-            )
         sector_axis_x = 0.0 if x_open else 0.5 * (x_min + x_max)
         sector_axis_y = 0.0 if y_open else 0.5 * (bounds["y_min"] + bounds["y_max"])
         # A reduced grid covers one or two quadrants: quarter -> Q1; half about
@@ -1051,6 +1050,7 @@ def build_enclosure_box(
                 edge_depth=edge_depth,
                 front_mesh_size=front_mesh_size,
                 back_mesh_size=back_mesh_size,
+                edge_type=int(enclosure.edge_type),
                 sign_x=key[0],
                 sign_y=key[1],
                 axis_x=sector_axis_x,
@@ -1081,6 +1081,7 @@ def build_enclosure_box(
                     edge_depth=edge_depth,
                     front_mesh_size=front_mesh_size,
                     back_mesh_size=back_mesh_size,
+                    edge_type=int(enclosure.edge_type),
                     sign_x=key[0],
                     sign_y=key[1],
                 )

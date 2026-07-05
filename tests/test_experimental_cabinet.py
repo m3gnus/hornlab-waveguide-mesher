@@ -221,7 +221,15 @@ def _cone_grid(angles: np.ndarray, *, n_length: int = 5, mouth_z: float = 120.0)
     return points
 
 
-def _box_payload(points: np.ndarray, *, full_circle: bool, spaces: tuple[float, float, float, float], enc_edge: float, enc_depth: float = 200.0) -> dict:
+def _box_payload(
+    points: np.ndarray,
+    *,
+    full_circle: bool,
+    spaces: tuple[float, float, float, float],
+    enc_edge: float,
+    enc_depth: float = 200.0,
+    edge_type: int = 1,
+) -> dict:
     space_l, space_r, space_t, space_b = spaces
     return {
         "inner_points": points.reshape(-1).tolist(),
@@ -238,6 +246,7 @@ def _box_payload(points: np.ndarray, *, full_circle: bool, spaces: tuple[float, 
         "enc_space_t": space_t,
         "enc_space_b": space_b,
         "enc_edge": enc_edge,
+        "enc_edge_type": edge_type,
         "enc_front_resolution": "18,18,18,18",
         "enc_back_resolution": "24,24,24,24",
     }
@@ -250,6 +259,26 @@ def _side_wall_roundover(msh_path, *, z_front: float = 120.0) -> float:
     bx1 = float(pts[:, 0].max())
     at_wall = pts[np.abs(pts[:, 0] - bx1) < 1.0e-6]
     return z_front - float(at_wall[:, 2].max())
+
+
+def _front_x_chamfer_plane_error(msh_path, *, edge_depth: float, z_front: float = 120.0) -> float:
+    mesh = meshio.read(msh_path)
+    pts = np.asarray(mesh.points, dtype=float)
+    bx1 = float(pts[:, 0].max())
+    by1 = float(pts[:, 1].max())
+    inset_x = bx1 - float(edge_depth)
+    inset_y = by1 - float(edge_depth)
+    on_front_x_bevel = pts[
+        (pts[:, 0] >= inset_x - 1.0e-6)
+        & (pts[:, 0] <= bx1 + 1.0e-6)
+        & (pts[:, 1] >= -1.0e-6)
+        & (pts[:, 1] <= inset_y + 1.0e-6)
+        & (pts[:, 2] >= z_front - float(edge_depth) - 1.0e-6)
+        & (pts[:, 2] <= z_front + 1.0e-6)
+    ]
+    if on_front_x_bevel.size == 0:
+        return math.inf
+    return float(np.max(np.abs(on_front_x_bevel[:, 0] + on_front_x_bevel[:, 2] - (bx1 + z_front - edge_depth))))
 
 
 def test_enclosure_rejects_wall_crossing_baffle_outside_mouth(tmp_path):
@@ -299,6 +328,36 @@ def test_quarter_roundover_matches_full_build(tmp_path):
 
     assert abs(r_full - 80.0) < 1.0e-3
     assert abs(r_quarter - r_full) < 1.0e-6
+
+
+def test_quarter_chamfer_matches_full_build(tmp_path):
+    full_angles = np.array([math.tau * i / 16 for i in range(16)])
+    quarter_angles = np.array([(math.pi / 2.0) * i / 16 for i in range(17)])
+    spaces = (100.0, 100.0, 100.0, 100.0)
+
+    full_payload = _box_payload(
+        _cone_grid(full_angles),
+        full_circle=True,
+        spaces=spaces,
+        enc_edge=80.0,
+        edge_type=2,
+    )
+    build_horn_in_box_mesh(full_payload, tmp_path / "full-chamfer.msh", verbose=False)
+    r_full = _side_wall_roundover(tmp_path / "full-chamfer.msh")
+
+    quarter_payload = _box_payload(
+        _cone_grid(quarter_angles),
+        full_circle=False,
+        spaces=spaces,
+        enc_edge=80.0,
+        edge_type=2,
+    )
+    build_horn_in_box_mesh(quarter_payload, tmp_path / "quarter-chamfer.msh", verbose=False)
+    r_quarter = _side_wall_roundover(tmp_path / "quarter-chamfer.msh")
+
+    assert abs(r_full - 80.0) < 1.0e-3
+    assert abs(r_quarter - r_full) < 1.0e-6
+    assert _front_x_chamfer_plane_error(tmp_path / "quarter-chamfer.msh", edge_depth=r_full) < 1.0e-6
 
 
 def test_quarter_unused_cut_side_spacing_keeps_roundover(tmp_path):

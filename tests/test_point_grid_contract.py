@@ -1236,6 +1236,60 @@ def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
+def test_reduced_chamfer_enclosure_boundary_lies_on_cut_planes(tmp_path):
+    cfg = {
+        "formula": "ROSSE",
+        "mode": "enclosure",
+        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
+        "mesh": {
+            "angular_segments": 32,
+            "length_segments": 16,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 26.0,
+            "rear_res_mm": 25.0,
+            "quadrants": "1",
+        },
+        "enclosure": {
+            "depth_mm": 220.0,
+            "space_l_mm": 25.0,
+            "space_t_mm": 25.0,
+            "space_r_mm": 25.0,
+            "space_b_mm": 25.0,
+            "edge_mm": 18.0,
+            "edge_type": 2,
+            "plan_type": 1,
+            "plan_n": 2.0,
+        },
+    }
+    result = build_from_config(cfg, tmp_path / "reduced-enclosure-chamfer.msh")
+    assert result.native_symmetry_plane == "yz+xz"
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    assert {1, 2, 3}.issubset({int(t) for t in tags})
+
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        on_x = abs(points[a][0]) < 1.0e-7 and abs(points[b][0]) < 1.0e-7
+        on_y = abs(points[a][1]) < 1.0e-7 and abs(points[b][1]) < 1.0e-7
+        assert on_x or on_y
+
+    edge_owners: dict[tuple[int, int], int] = {}
+    for tri in triangles:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            key = tuple(sorted((int(a), int(b))))
+            edge_owners[key] = edge_owners.get(key, 0) + 1
+    assert max(edge_owners.values()) <= 2
+
+    assert points[:, 0].min() >= -1.0e-7
+    assert points[:, 1].min() >= -1.0e-7
+    assert len(_tag_components(triangles, tags, 1)) == 1
+
+
 def test_reduced_enclosure_uses_requested_cut_plane_not_offset_minima(tmp_path):
     cfg = {
         "formula": "OSSE",
