@@ -99,12 +99,7 @@ def calculate_osse(
     # enlarge the main throat. For a straight extension (angle 0) this is a plain r0
     # tube, identical to before.
     r0_main = r0_base
-    r0_throat = r0_base - ext_len * math.tan(ext_angle)
-    if r0_throat < 0.0:
-        raise ValueError(
-            f"Throat.Ext.Length {ext_len:g} at Throat.Ext.Angle tapers below zero radius "
-            f"(implied driver-end radius {r0_throat:.3f} mm); shorten the extension or reduce the angle"
-        )
+    r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
     a_deg = eval_param(params.get("a"), p, 60.0)
     a0_deg = eval_param(params.get("a0"), p, 15.5)
 
@@ -202,14 +197,29 @@ def _rosse_length(params: Mapping[str, Any], p: float) -> float:
     return (math.sqrt(discriminant) - c2) / (2 * c3)
 
 
+def _throat_extension_start_radius(r0_base: float, ext_len: float, ext_angle: float) -> float:
+    """Driver-end radius of a throat extension that tapers back from ``r0_base``.
+
+    ATH anchors Throat.Diameter at the MAIN throat for both OSSE and R-OSSE
+    and tapers the extension back to the driver end (verified against ath.exe
+    GridExport for both formulas); the main curve and the mouth are unchanged
+    by the extension.
+    """
+    r0_throat = r0_base - ext_len * math.tan(ext_angle)
+    if r0_throat < 0.0:
+        raise ValueError(
+            f"Throat.Ext.Length {ext_len:g} at Throat.Ext.Angle tapers below zero radius "
+            f"(implied driver-end radius {r0_throat:.3f} mm); shorten the extension or reduce the angle"
+        )
+    return r0_throat
+
+
 def rosse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
-    r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
-    ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
-    r0_main = r0_base + ext_len * math.tan(ext_angle)
-    main_params = {**params, "r0": r0_main}
-    return ext_len + slot_len + _rosse_length(main_params, p)
+    # Like ATH, the extension adds to the total length; the main R-OSSE curve
+    # keeps r0 (Throat.Diameter) as its throat radius, unchanged by ext.
+    return ext_len + slot_len + _rosse_length(params, p)
 
 
 def _calculate_rosse_main(
@@ -244,12 +254,15 @@ def calculate_rosse(
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
-    r0_main = r0_base + ext_len * math.tan(ext_angle)
-    main_params = {**params, "r0": r0_main}
-    main_length = _rosse_length(main_params, p)
+    # ATH convention (same as OSSE since the c198956 re-anchoring): r0 is the
+    # MAIN throat radius; the extension tapers back from r0 to the driver end
+    # and the main curve/mouth are unchanged by it. The old code enlarged the
+    # main throat instead (r0 + ext*tan), changing L and the mouth.
+    r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
+    main_length = _rosse_length(params, p)
 
     if ext_len <= 0.0 and slot_len <= 0.0:
-        return _calculate_rosse_main(t, p, main_params)
+        return _calculate_rosse_main(t, p, params)
 
     full_length = ext_len + slot_len + main_length
     if full_length <= 1.0e-12:
@@ -257,14 +270,14 @@ def calculate_rosse(
 
     axial_pos = max(0.0, float(t)) * full_length
     if axial_pos <= ext_len:
-        return axial_pos, r0_base + axial_pos * math.tan(ext_angle)
+        return axial_pos, r0_throat + axial_pos * math.tan(ext_angle)
     if axial_pos <= ext_len + slot_len:
-        return axial_pos, r0_main
+        return axial_pos, r0_base
 
     if main_length <= 1.0e-12:
-        return ext_len + slot_len, r0_main
+        return ext_len + slot_len, r0_base
     main_t = (axial_pos - ext_len - slot_len) / main_length
-    x, y = _calculate_rosse_main(main_t, p, main_params)
+    x, y = _calculate_rosse_main(main_t, p, params)
     return x + ext_len + slot_len, y
 
 

@@ -122,10 +122,15 @@ def test_load_config_accepts_ath_cfg_fixture(tmp_path):
     assert params["_athLengthMode"] == "total"
 
 
-def test_rosse_config_preserves_throat_extension_keys(tmp_path):
+def test_rosse_config_routes_top_level_throat_extension_keys(tmp_path):
+    # ATH reads Throat.Ext.* / Slot.Length only at TOP level, even for
+    # block-style configs (an in-block copy is ignored by real ath.exe).
     cfg_path = tmp_path / "rosse-extension.cfg"
     cfg_path.write_text(
         """
+Throat.Ext.Length = 12
+Throat.Ext.Angle = 20
+Slot.Length = 5
 R-OSSE = {
   R = 150
   r0 = 10
@@ -133,9 +138,6 @@ R-OSSE = {
   a0 = 12
   k = 1
   q = 1
-  Throat.Ext.Length = 12
-  Throat.Ext.Angle = 20
-  Slot.Length = 5
 }
 Mesh = {
   AngularSegments = 16
@@ -152,6 +154,23 @@ Mesh = {
     assert params["throatExtLength"] == 12
     assert params["throatExtAngle"] == 20
     assert params["slotLength"] == 5
+
+
+def test_rosse_config_rejects_in_block_throat_extension_keys(tmp_path):
+    cfg_path = tmp_path / "rosse-extension-inblock.cfg"
+    cfg_path.write_text(
+        """
+R-OSSE = {
+  R = 150
+  r0 = 10
+  a = 45
+  Throat.Ext.Length = 12
+}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="top-level"):
+        load_config(cfg_path)
 
 
 def test_driver_adapter_derives_extension_length_from_inch_diameters():

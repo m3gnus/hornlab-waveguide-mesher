@@ -148,6 +148,25 @@ def parse_text_config(content: str) -> dict[str, Any]:
             "dict/contract path, e.g. build_from_config({'profile': {'formula': 'ICW', ...}}))"
         )
 
+    # ATH reads Throat.Ext.* and Slot.Length ONLY at top level, even for
+    # block-style configs (verified against ath.exe: an R-OSSE block copy is
+    # ignored while the top-level key grows the horn). Honouring in-block
+    # copies would silently build geometry real ATH ignores, so reject them
+    # and merge the top-level values into the profile mapping instead.
+    if profile_items is not flat:
+        extension_keys = ("Throat.Ext.Length", "Throat.Ext.Angle", "Slot.Length")
+        in_block = [key for key in extension_keys if key in profile_items]
+        if in_block:
+            raise ConfigError(
+                f"{', '.join(in_block)} must be top-level keys — ATH ignores them inside "
+                f"the {formula} block; move them out of the block"
+            )
+        merged_profile = dict(profile_items)
+        for key in extension_keys:
+            if key in flat:
+                merged_profile[key] = flat[key]
+        profile_items = merged_profile
+
     def mapped(items: Mapping[str, str], pairs: tuple[tuple[str, str], ...]) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for src, dst in pairs:

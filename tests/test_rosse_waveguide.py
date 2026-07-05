@@ -46,15 +46,24 @@ def test_calculate_rosse_applies_throat_extension_and_slot():
         "slotLength": 5.0,
     }
     total = rosse_total_length(params)
-    main_r0 = 10.0 + 12.0 * np.tan(np.deg2rad(20.0))
+    # ATH convention (verified via GridExport): r0 anchors the MAIN throat and
+    # the extension tapers BACK to the driver end; the main curve and mouth are
+    # unchanged by the extension, which adds to the total length.
+    no_ext = {k: v for k, v in params.items() if k not in ("throatExtLength", "throatExtAngle", "slotLength")}
+    assert np.isclose(total, rosse_total_length(no_ext) + 12.0 + 5.0)
+    driver_r = 10.0 - 12.0 * np.tan(np.deg2rad(20.0))
+
+    z, radius = calculate_rosse(0.0, 0.0, params)
+    assert np.isclose(z, 0.0)
+    assert np.isclose(radius, driver_r)
 
     z, radius = calculate_rosse((6.0 / total), 0.0, params)
     assert np.isclose(z, 6.0)
-    assert np.isclose(radius, 10.0 + 6.0 * np.tan(np.deg2rad(20.0)))
+    assert np.isclose(radius, driver_r + 6.0 * np.tan(np.deg2rad(20.0)))
 
     z, radius = calculate_rosse(((12.0 + 2.5) / total), 0.0, params)
     assert np.isclose(z, 14.5)
-    assert np.isclose(radius, main_r0)
+    assert np.isclose(radius, 10.0)
 
     z, radius = calculate_rosse(1.0, 0.0, params)
     assert z > 17.0
@@ -76,7 +85,9 @@ def test_compute_rosse_profile_points_accepts_throat_extension_dataclass_fields(
     )
 
     points = compute_rosse_profile_points(geom)
-    assert np.isclose(points[0, 1], 10.0)
+    # Taper-back convention: the profile starts at the DRIVER radius
+    # (r0 - ext*tan(angle)) and reaches r0 at the main throat.
+    assert np.isclose(points[0, 1], 10.0 - 12.0 * np.tan(np.deg2rad(20.0)))
     assert np.isclose(points[-1, 1], 150.0)
     assert points[-1, 0] > 17.0
 
