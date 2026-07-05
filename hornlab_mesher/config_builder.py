@@ -865,9 +865,9 @@ def build_from_config(
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
-        # The grid builder scales the outer shell offset by the global Scale;
-        # the rear-cap depth must match it.
-        wall_thickness_mm=float(params["wallThickness"] or 0.0) * float(params.get("scale", 1.0) or 1.0),
+        # ATH does not scale Mesh.WallThickness by global Scale; the rear-cap
+        # depth follows the unscaled wall offset.
+        wall_thickness_mm=float(params["wallThickness"] or 0.0),
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
         closed=bool(grid.get("full_circle", True)),
         symmetry_planes=_symmetry_planes_for_quadrants(quadrants),

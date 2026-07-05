@@ -640,7 +640,7 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
 
     outer = None
-    wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0)) * geom_scale
+    wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
     if enc_depth <= 0.0 and wall > 0.0:
         outer = _outer_offset_shell(inner, wall, full_circle=full_circle)

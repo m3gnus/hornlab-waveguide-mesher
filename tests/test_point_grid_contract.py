@@ -21,7 +21,7 @@ from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_s
 from hornlab_mesher.builders.point_grid_sources import _add_occ_source_cap_surfaces
 from hornlab_mesher.builders.point_grid_surfaces import _SharedSurfaceBuilder, _rear_rim_points
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
-from hornlab_mesher.cli import build_from_config, parse_ath_config
+from hornlab_mesher.cli import build_from_config, build_geometry_params, parse_ath_config
 from hornlab_mesher.config_builder import _number_list
 from hornlab_mesher.density import _parse_quadrant_resolutions
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
@@ -827,6 +827,38 @@ def test_freestanding_half_model_boundary_lies_on_single_cut_plane(tmp_path, qua
     assert points[:, cut_axis].min() >= -1.0e-7
     # The rigid-wall shell is a single connected component.
     assert len(_tag_components(triangles, tags, 1)) == 1
+
+
+def test_scale_does_not_scale_freestanding_wall_thickness(tmp_path):
+    config = {
+        "formula": "OSSE",
+        "Scale": 1.5,
+        "profile": {"L_mm": 100.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
+        "mesh": {
+            "angular_segments": 16,
+            "length_segments": 4,
+            "wallThickness": 6.0,
+            "scaleToMetres": False,
+        },
+        "source": {"sourceShape": 0},
+    }
+
+    params, formula, mode = build_geometry_params(config)
+    assert formula == "OSSE"
+    assert mode == "freestanding"
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    throat_radii = np.hypot(inner[:, 0, 0], inner[:, 0, 1])
+
+    assert np.allclose(throat_radii, 15.0, rtol=0.0, atol=1.0e-9)
+    assert float(inner[:, :, 2].max()) == pytest.approx(150.0, abs=1.0e-9)
+
+    result = build_from_config(config, tmp_path / "scaled-wall.msh")
+    points = np.asarray(meshio.read(result.mesh_path).points, dtype=np.float64)
+
+    assert float(points[:, 2].min()) == pytest.approx(-6.0, abs=1.0e-6)
 
 
 def test_open_sector_fill_uses_single_gmsh_surface():
