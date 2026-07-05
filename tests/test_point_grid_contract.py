@@ -2089,6 +2089,61 @@ def test_source_shape_zero_builds_flat_disc(tmp_path):
     assert spreads[1] > 0.1, "curved cap control should have axial depth"
 
 
+def test_closed_infinite_baffle_mouth_interface_welds_to_wall_rim(tmp_path):
+    """The infinite-baffle interface must share the horn wall's mouth rim."""
+    config = {
+        "formula": "R-OSSE",
+        "mode": "infinite-baffle",
+        "profile": {
+            "R": 140,
+            "a": 25,
+            "a0": 15.5,
+            "r0": 12.7,
+            "k": 2,
+            "m": 0.85,
+            "b": 0.2,
+            "r": 0.4,
+            "q": 3.4,
+            "tmax": 1,
+        },
+        "mesh": {
+            "angularSegments": 120,
+            "lengthSegments": 40,
+            "quadrants": 1234,
+            "wallThickness": 5,
+            "throatResolution": 6,
+            "mouthResolution": 15,
+            "rearResolution": 40,
+            "scaleToMetres": False,
+        },
+        "source": {"sourceShape": 0},
+    }
+
+    params, _formula, _mode = build_geometry_params(config)
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    mouth_z = float(np.mean(inner[:, -1, 2]))
+
+    out = tmp_path / "closed-infinite-baffle-weld.msh"
+    build_from_config(config, out)
+    mesh = meshio.read(out)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    assert 4 in set(int(tag) for tag in tags)
+    assert mouth_z < float(np.max(points[:, 2])) - 1.0
+    mouth_free_edges = [
+        edge
+        for edge in _boundary_edges(triangles)
+        if abs(float(points[edge[0], 2]) - mouth_z) < 1.0e-6
+        and abs(float(points[edge[1], 2]) - mouth_z) < 1.0e-6
+    ]
+
+    assert not mouth_free_edges
+
+
 def test_preserve_grid_quarter_enclosure_has_no_off_plane_open_edges(tmp_path):
     """Regression: preserve_grid enclosure builds paired a faceted wall with a
     B-spline-boundary source cap; the two only met at grid nodes, leaving an

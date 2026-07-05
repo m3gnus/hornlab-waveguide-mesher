@@ -286,19 +286,49 @@ def extreme_boundary_loop_curves(
     ]
 
 
-def make_planar_fill_from_boundary(
+def boundary_loop_curves_at_axis_value(
     dimtags: list[tuple[int, int]],
     *,
     source_axis: str = "z",
-    use_min: bool = True,
-    closed: bool = True,
-) -> list[tuple[int, int]]:
-    """Fill an extreme boundary loop using the existing OCC boundary curves."""
+    axis_value: float,
+    tolerance: float = 1.0e-6,
+) -> list[int]:
+    """Boundary curves of ``dimtags`` lying entirely on an axis-aligned plane."""
 
     gmsh = require_gmsh()
-    loop_curves = extreme_boundary_loop_curves(
-        dimtags, source_axis=source_axis, use_min=use_min
-    )
+    boundary = gmsh.model.getBoundary(dimtags, oriented=False, combined=False)
+    curve_tags: list[int] = []
+    seen: set[int] = set()
+    for dim, tag in boundary:
+        if int(dim) != 1:
+            continue
+        curve_tag = int(tag)
+        if curve_tag in seen:
+            continue
+        seen.add(curve_tag)
+        curve_tags.append(curve_tag)
+    if not curve_tags:
+        return []
+
+    axis_idx = {"x": 0, "y": 1, "z": 2}.get(source_axis, 2)
+    target = float(axis_value)
+    eps = max(float(tolerance), abs(target) * 1.0e-9)
+    loop_curves: list[int] = []
+    for curve_tag in curve_tags:
+        box = gmsh.model.getBoundingBox(1, curve_tag)
+        lo = float(min(box[axis_idx], box[axis_idx + 3]))
+        hi = float(max(box[axis_idx], box[axis_idx + 3]))
+        if abs(lo - target) <= eps and abs(hi - target) <= eps:
+            loop_curves.append(curve_tag)
+    return loop_curves
+
+
+def _make_planar_fill_from_loop_curves(
+    loop_curves: list[int],
+    *,
+    closed: bool = True,
+) -> list[tuple[int, int]]:
+    gmsh = require_gmsh()
     if not loop_curves:
         return []
 
@@ -325,6 +355,40 @@ def make_planar_fill_from_boundary(
     except Exception:
         surf = gmsh.model.occ.addSurfaceFilling(loop)
     return [(2, int(surf))]
+
+
+def make_planar_fill_from_boundary(
+    dimtags: list[tuple[int, int]],
+    *,
+    source_axis: str = "z",
+    use_min: bool = True,
+    closed: bool = True,
+) -> list[tuple[int, int]]:
+    """Fill an extreme boundary loop using the existing OCC boundary curves."""
+
+    loop_curves = extreme_boundary_loop_curves(
+        dimtags, source_axis=source_axis, use_min=use_min
+    )
+    return _make_planar_fill_from_loop_curves(loop_curves, closed=closed)
+
+
+def make_planar_fill_from_boundary_at_axis_value(
+    dimtags: list[tuple[int, int]],
+    *,
+    source_axis: str = "z",
+    axis_value: float,
+    closed: bool = True,
+    tolerance: float = 1.0e-6,
+) -> list[tuple[int, int]]:
+    """Fill a boundary loop using existing curves on a specific axis plane."""
+
+    loop_curves = boundary_loop_curves_at_axis_value(
+        dimtags,
+        source_axis=source_axis,
+        axis_value=axis_value,
+        tolerance=tolerance,
+    )
+    return _make_planar_fill_from_loop_curves(loop_curves, closed=closed)
 
 
 def add_physical_groups(surface_groups: dict[int, list[int]]) -> None:

@@ -9,6 +9,7 @@ from ..tags import PhysicalGroup
 from ._occ import (
     build_surface_from_points,
     make_planar_fill_from_boundary,
+    make_planar_fill_from_boundary_at_axis_value,
     make_planar_fill_from_ring,
     make_planar_sector_fill_from_ring,
     require_gmsh,
@@ -167,7 +168,20 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         # ABEC infinite-baffle topology: the mouth aperture is closed by a
         # planar subdomain interface (I1-2) lying in the baffle plane.
         if geometry.closed:
-            mouth_fill = make_planar_fill_from_ring(inner_points[:, -1, :])
+            # Reuse the wall's actual mouth boundary curve. A fresh B-spline
+            # wire from the same control ring is geometrically coincident, but
+            # Gmsh may discretize it differently and leave an unwelded mouth
+            # seam between the wall and interface. Select by the final ring's
+            # z plane, not the z-maximum, because rollback lips can put the
+            # acoustic mouth behind an earlier axial maximum.
+            mouth_fill = make_planar_fill_from_boundary_at_axis_value(
+                wall,
+                source_axis="z",
+                axis_value=float(np.mean(inner_points[:, -1, 2])),
+                closed=True,
+            )
+            if not mouth_fill:
+                mouth_fill = make_planar_fill_from_ring(inner_points[:, -1, :])
         else:
             mouth_fill = make_planar_sector_fill_from_ring(
                 inner_points[:, -1, :],

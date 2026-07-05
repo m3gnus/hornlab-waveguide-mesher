@@ -126,6 +126,16 @@ def build_mesh_with_info(
                 symmetry_snap_axes=built.symmetry_snap_axes,
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
                 vertical_offset_mm=float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0),
+                # A closed infinite-baffle mesh is the boundary of the acoustic
+                # air column itself: source normals point +z into that volume
+                # (the acoustic convention repair_orientation enforces), so a
+                # correctly oriented watertight IB mesh has negative signed
+                # volume. Every other topology bounds wall-material or box
+                # volume, where source-into-domain and outward winding agree,
+                # so those keep the inside-out (positive volume) guard.
+                require_positive_volume=not bool(
+                    getattr(geometry, "infinite_baffle", False)
+                ),
             )
             raw_path.unlink(missing_ok=True)
             _validate_physical_tags(set(info.physical_groups))
@@ -165,6 +175,7 @@ def _postprocess_mesh(
     symmetry_snap_axes: tuple[str, ...] = (),
     symmetry_snap_tol_mm: float = 1.0e-6,
     vertical_offset_mm: float = 0.0,
+    require_positive_volume: bool = True,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -202,7 +213,7 @@ def _postprocess_mesh(
         source_axis=source_axis,
         require_watertight=False,
         require_edge_consistency=False,
-        require_positive_volume=True,
+        require_positive_volume=require_positive_volume,
         require_source_normal=True,
     )
     if report.watertight and not report.edge_consistent:
