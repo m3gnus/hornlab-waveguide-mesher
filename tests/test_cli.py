@@ -800,3 +800,29 @@ def test_freestanding_half_models_build_with_single_cut_plane(tmp_path):
     # model and the two halves match each other.
     assert results["1"].n_triangles < results["12"].n_triangles < results["1234"].n_triangles
     assert results["12"].n_triangles == results["14"].n_triangles
+
+
+def test_freestanding_subdomain_interfaces_raise(tmp_path):
+    """ATH builds free-standing two-subdomain models; this mesher does not and
+    must fail loudly instead of silently dropping the requested interfaces."""
+    config = {
+        "formula": "OSSE",
+        "mode": "freestanding",
+        "profile": {"r0": 12.7, "a": 45.0, "L": 90.0},
+        "mesh": {"subdomainSlices": "10", "wallThickness": 5.0},
+    }
+    with pytest.raises(ConfigError, match="subdomain interfaces"):
+        build_from_config(config, tmp_path / "iface.msh")
+
+
+def test_subdomain_slices_get_ath_default_interface_offset():
+    from hornlab_mesher.config_builder import _interfaces_from_params
+
+    # Omitted Mesh.InterfaceOffset defaults to ATH's 5 mm instead of silently
+    # dropping the interfaces; a single offset broadcasts over all slices.
+    interfaces = _interfaces_from_params({"subdomainSlices": "5, 10"}, 20)
+    assert [i.slice_index for i in interfaces] == [5, 10]
+    assert [i.offset_mm for i in interfaces] == [5.0, 5.0]
+
+    with pytest.raises(ConfigError, match="offsets"):
+        _interfaces_from_params({"subdomainSlices": "5, 10, 15", "interfaceOffset": "3, 4"}, 20)

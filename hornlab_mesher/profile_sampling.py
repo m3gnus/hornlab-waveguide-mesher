@@ -529,6 +529,14 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         # ICW samples uniformly in sigma (normalised arc length): it has no
         # ATH/R-OSSE reference axial table, and the kernel already concentrates
         # detail by arc length, so a uniform sigma grid is the natural mapping.
+        # An explicit custom z-map cannot be honoured and must not be silently
+        # ignored (generic defaulted modes pass through as uniform).
+        requested_mode = str(params.get("samplingMode") or "").strip().lower()
+        if requested_mode == "zmap" or params.get("zMapPoints") is not None:
+            raise ValueError(
+                "ICW does not support samplingMode='zmap'/zMapPoints; "
+                "it always samples uniformly in normalised arc length"
+            )
         t_unit_values = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
         sampling_mode = "uniform"
     else:

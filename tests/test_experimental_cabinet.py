@@ -191,12 +191,12 @@ def test_raw_point_grid_grid_closed_legacy_key_controls_closure():
     payload.pop("full_circle")
     payload["grid_closed"] = False
 
-    _inner_points, _outer_points, closed = _grid_from_payload(payload)
+    _inner_points, _outer_points, closed, _planes, _voffset = _grid_from_payload(payload)
 
     assert closed is False
 
     payload.pop("grid_closed")
-    _inner_points, _outer_points, closed = _grid_from_payload(payload)
+    _inner_points, _outer_points, closed, _planes, _voffset = _grid_from_payload(payload)
 
     assert closed is True
 

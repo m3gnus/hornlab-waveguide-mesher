@@ -1003,6 +1003,13 @@ def build_enclosure_box(
     if not closed:
         if int(enclosure.plan_type) != 1:
             raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
+        if int(enclosure.edge_type) != 1 and edge_depth > 0.0:
+            # The sector builder only emits fillet arcs; silently building a
+            # fillet for a requested chamfer violates the geometry contract.
+            raise NotImplementedError(
+                "Open-domain (reduced-quadrant) enclosures support only the rounded fillet "
+                "(edge_type=1); chamfer sectors are not implemented. Use edge=0 for a sharp box."
+            )
         sector_axis_x = 0.0 if x_open else 0.5 * (x_min + x_max)
         sector_axis_y = 0.0 if y_open else 0.5 * (bounds["y_min"] + bounds["y_max"])
         # A reduced grid covers one or two quadrants: quarter -> Q1; half about

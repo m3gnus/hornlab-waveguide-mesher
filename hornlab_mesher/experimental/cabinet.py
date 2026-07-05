@@ -302,7 +302,15 @@ def _apply_mouth_scaling(
     return scale(inner_points), scale(outer_points) if outer_points is not None else None
 
 
-def _grid_from_payload(payload: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray | None, bool]:
+def _grid_from_payload(
+    payload: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray | None, bool, tuple[str, ...], float]:
+    """Return (inner, outer, closed, symmetry_planes, vertical_offset_mm).
+
+    Symmetry planes and the vertical offset used to be dropped here, so an
+    open half grid got the default ("x", "y") planes (crushing the 180-degree
+    ray onto the axis) and Mesh.VerticalOffset never reached the build.
+    """
     if _payload_has_point_grid(payload):
         n_phi = int(payload["grid_n_phi"])
         n_length = int(payload["grid_n_length"])
@@ -310,7 +318,16 @@ def _grid_from_payload(payload: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarr
         outer_points = None
         if payload.get("outer_points") is not None:
             outer_points = _reshape_grid(payload["outer_points"], n_phi, n_length, "outer_points")
-        return inner_points, outer_points, bool(payload.get("full_circle", payload.get("grid_closed", True)))
+        closed = bool(payload.get("full_circle", payload.get("grid_closed", True)))
+        raw_planes = payload.get("symmetry_planes")
+        if raw_planes is not None:
+            planes = tuple(str(p) for p in raw_planes)
+        elif payload.get("quadrants") is not None:
+            planes = _symmetry_planes_for_quadrants(payload.get("quadrants"))
+        else:
+            planes = ("x", "y") if not closed else ()
+        offset = _number(payload.get("vertical_offset"), 0.0)
+        return inner_points, outer_points, closed, planes, offset
 
     config = waveguide_payload_to_mesher_config(payload)
     viewport = build_viewport_geometry_from_config(config)
@@ -321,11 +338,13 @@ def _grid_from_payload(payload: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarr
     outer_points = None
     if grid.get("outer_points") is not None:
         outer_points = _reshape_grid(grid.get("outer_points"), n_phi, n_length, "outer_points")
-    return inner_points, outer_points, bool(grid.get("full_circle", True))
+    planes = tuple(str(p) for p in (grid.get("symmetry_planes") or ()))
+    offset = _number(grid.get("vertical_offset_mm"), 0.0)
+    return inner_points, outer_points, bool(grid.get("full_circle", True)), planes, offset
 
 
 def _geometry_from_payload(payload: Mapping[str, Any]) -> PointGridHornGeometry:
-    inner_points, outer_points, closed = _grid_from_payload(payload)
+    inner_points, outer_points, closed, symmetry_planes, vertical_offset_mm = _grid_from_payload(payload)
     inner_points, outer_points = _apply_mouth_scaling(
         inner_points,
         outer_points,
@@ -345,6 +364,8 @@ def _geometry_from_payload(payload: Mapping[str, Any]) -> PointGridHornGeometry:
         source_auto_angle_deg=_finite_float_or_none(payload.get("a0")),
         preserve_grid=bool(payload.get("grid_preserve_rings", False)),
         closed=closed,
+        symmetry_planes=symmetry_planes,
+        vertical_offset_mm=vertical_offset_mm,
         enclosure=enclosure,
     )
 
@@ -409,7 +430,7 @@ def measure_horn_mouth(params: Mapping[str, Any] | str | Path) -> tuple[float, f
     """Return post-scaling mouth width and height in millimetres."""
 
     payload = _load_payload(params)
-    inner_points, outer_points, _closed = _grid_from_payload(payload)
+    inner_points, outer_points, _closed, _planes, _voffset = _grid_from_payload(payload)
     inner_points, _outer_points = _apply_mouth_scaling(
         inner_points,
         outer_points,

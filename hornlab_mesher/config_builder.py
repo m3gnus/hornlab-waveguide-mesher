@@ -8,6 +8,7 @@ final `BuildResult`. The CLI imports these helpers but does not own this
 translation layer.
 """
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -23,6 +24,8 @@ from .profile_common import (
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
 from .profiles import build_point_grid, eval_param
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -610,7 +613,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "mouthResolution": _float(mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0),
         "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=15.0),
         "subdomainSlices": _scalar_or_expr(mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""),
-        "interfaceOffset": _scalar_or_expr(mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=0.0),
+        # None (not 0.0) when omitted: an omitted offset with SubdomainSlices
+        # set takes ATH's 5 mm default, while an explicit 0 disables interfaces.
+        "interfaceOffset": _scalar_or_expr(mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=None),
         "interfaceResolution": _optional_float(
             mesh,
             config,
@@ -799,13 +804,22 @@ def _num_or_default(value: Any, default: float) -> float:
 
 
 def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[HornInterface, ...]:
-    offsets = _number_list(params.get("interfaceOffset"))
-    if not offsets:
-        return ()
-
     slices = [int(round(value)) for value in _number_list(params.get("subdomainSlices"))]
     if not slices:
         return ()
+
+    offsets = _number_list(params.get("interfaceOffset"))
+    if not offsets:
+        # ATH defaults Mesh.InterfaceOffset to 5 mm when SubdomainSlices are
+        # set; an omitted offset used to silently drop the interfaces entirely.
+        offsets = [5.0]
+    if len(offsets) == 1 and len(slices) > 1:
+        offsets = offsets * len(slices)
+    if len(offsets) != len(slices):
+        raise ConfigError(
+            f"Mesh.SubdomainSlices lists {len(slices)} slices but Mesh.InterfaceOffset "
+            f"lists {len(offsets)} offsets; give one offset or one per slice"
+        )
 
     interfaces: list[HornInterface] = []
     last_ring = int(n_length)
@@ -816,6 +830,11 @@ def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[H
         # out-of-range declarations rather than guessing a different topology.
         if 0 <= int(slice_index) <= last_ring:
             interfaces.append(HornInterface(slice_index=int(slice_index), offset_mm=float(offset)))
+        else:
+            logger.warning(
+                "[hornlab-mesher] ignoring out-of-range Mesh.SubdomainSlices index %d "
+                "(grid has rings 0..%d)", int(slice_index), last_ring,
+            )
     return tuple(interfaces)
 
 
@@ -846,6 +865,19 @@ def build_from_config(
         outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
 
     interface_offsets = _number_list(params.get("interfaceOffset"))
+    interfaces = _interfaces_from_params(params, n_length)
+    # ATH builds free-standing subdomain models (mouth interface I1-2 plus an
+    # SD2 exterior); this mesher only builds interfaces for enclosure and
+    # infinite-baffle models, so an explicit request on other modes must fail
+    # loudly instead of silently dropping the subdomain topology.
+    if mode in {"freestanding", "bare"} and (
+        interfaces or any(offset > 0.0 for offset in interface_offsets)
+    ):
+        raise ConfigError(
+            "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, "
+            "which are only supported for enclosure or infinite-baffle builds "
+            "(ATH's free-standing two-subdomain construction is not implemented)"
+        )
     quadrants = _normalised_quadrants(params.get("quadrants"))
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
@@ -862,7 +894,7 @@ def build_from_config(
         source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
         source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
         interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
-        interfaces=_interfaces_from_params(params, n_length),
+        interfaces=interfaces,
         enclosure=enclosure_obj,
         infinite_baffle=(mode == "infinite-baffle"),
     )
