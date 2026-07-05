@@ -410,7 +410,13 @@ def test_viewport_enclosure_edge_clamps_to_smallest_margin():
         }
     )
 
-    assert geometry["enclosure"]["edge_mm"] == 8.0
+    # The preview now uses the same clamp as the mesh build (margin minus the
+    # flat-baffle clearance), instead of its old drifted min(edge, margin)=8.0
+    # that showed a roundover the mesh would refuse to build.
+    assert geometry["enclosure"]["edge_mm"] == pytest.approx(
+        _clamp_edge_roundover(12.0, 8.0, 1.0e9, 1.0e9)
+    )
+    assert geometry["enclosure"]["edge_mm"] == pytest.approx(7.6)
 
 
 def test_python_osse_point_grid_ignores_rosse_tmax_key():

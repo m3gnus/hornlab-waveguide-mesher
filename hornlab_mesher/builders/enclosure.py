@@ -77,6 +77,117 @@ def _clamp_edge_roundover(
     return clamped
 
 
+def _round_extent_outward_mm(value: float) -> float:
+    """Round a mouth extent outward to a whole millimetre, ATH-style.
+
+    ATH sizes the enclosure box from the mouth extents rounded outward to whole
+    millimetres BEFORE adding the spacing, in the origin frame (verified against
+    ath.exe: mouth 139.26 + spacing 30.5 -> half-extent 170.5 = 140 + 30.5, and
+    a fractional Mesh.VerticalOffset translates the already-rounded box). The
+    1e-9 guard keeps float noise like 140.0000001 from rounding to 141.
+    """
+    if value >= 0.0:
+        return float(math.ceil(value - 1.0e-9))
+    return float(math.floor(value + 1.0e-9))
+
+
+def enclosure_box_bounds(
+    inner_points: NDArray[np.float64],
+    enclosure: HornEnclosure,
+    *,
+    closed: bool,
+    symmetry_planes: tuple[str, ...] = (),
+    y_origin_offset_mm: float = 0.0,
+    warn_prefix: str = "",
+) -> dict[str, float]:
+    """Shared enclosure box bounds, roundover clamp, and edge depth.
+
+    Single source of truth for both the mesh build and the viewport preview
+    (the viewport used to re-implement this and drifted on the cut-side
+    spacing exclusion, the mirrored half-extent, and the baffle clearance).
+    ``y_origin_offset_mm`` is the rigid +y placement already applied to
+    ``inner_points`` (the viewport places points before building); extents are
+    rounded in the origin frame so a placed preview matches the mesh terminal,
+    which builds at the origin and translates afterwards.
+    """
+
+    mouth_pts = inner_points[:, -1, :]
+    off = float(y_origin_offset_mm)
+    x_min = float(mouth_pts[:, 0].min())
+    x_max = float(mouth_pts[:, 0].max())
+    y_min = float(mouth_pts[:, 1].min())
+    y_max = float(mouth_pts[:, 1].max())
+    z_front = float(mouth_pts[:, 2].max())
+
+    z_throat = float(np.min(inner_points[:, 0, 2]))
+    horn_length = z_front - z_throat
+    min_enc_depth = horn_length + float(enclosure.depth_margin_mm)
+    enc_depth = float(enclosure.depth_mm)
+    if enc_depth < min_enc_depth:
+        logger.warning(
+            "[hornlab-mesher] %senc_depth (%.2f mm) < horn length (%.2f mm) + margin (%.2f mm); "
+            "clamping to %.2f mm.",
+            warn_prefix, enc_depth, horn_length, enclosure.depth_margin_mm, min_enc_depth,
+        )
+        enc_depth = min_enc_depth
+    z_back = z_front - enc_depth
+
+    plane_set = set(symmetry_planes)
+    x_open = not closed and "x" in plane_set
+    y_open = not closed and "y" in plane_set
+    if x_open and x_min < -1.0e-6:
+        raise ValueError("x symmetry plane requested but mouth points cross x=0")
+    if y_open and (y_min - off) < -1.0e-6:
+        raise ValueError("y symmetry plane requested but mouth points cross y=0")
+    # Open cut planes are exact (no spacing, no rounding); wall sides take the
+    # outward-rounded extent plus the spacing.
+    bx0 = 0.0 if x_open else _round_extent_outward_mm(x_min) - float(enclosure.space_l_mm)
+    bx1 = _round_extent_outward_mm(x_max) + float(enclosure.space_r_mm)
+    by0 = y_min if y_open else _round_extent_outward_mm(y_min - off) + off - float(enclosure.space_b_mm)
+    by1 = _round_extent_outward_mm(y_max - off) + off + float(enclosure.space_t_mm)
+
+    # Roundover limits must describe the *physical* (mirror-completed) box:
+    # on reduced domains the cut plane at x=0 / y=0 is not a wall, so the
+    # mirrored half-extent is bx1 / by1 itself, and the spacings on the cut
+    # side are never applied and must not participate in the margin clamp
+    # (otherwise a quarter build of a design clamps the roundover harder than
+    # the identical full build — or forces a sharp box when the unused
+    # cut-side spacing is 0).
+    half_w = float(bx1) if x_open else 0.5 * (bx1 - bx0)
+    half_h = float(by1 - off) if y_open else 0.5 * (by1 - by0)
+    applied_spacings = [float(enclosure.space_r_mm), float(enclosure.space_t_mm)]
+    if not x_open:
+        applied_spacings.append(float(enclosure.space_l_mm))
+    if not y_open:
+        applied_spacings.append(float(enclosure.space_b_mm))
+    margin_edge_limit = max(0.0, min(applied_spacings))
+    clamped_edge = _clamp_edge_roundover(
+        float(enclosure.edge_mm), margin_edge_limit, half_w, half_h
+    )
+    edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
+
+    return {
+        "bx0": bx0,
+        "bx1": bx1,
+        "by0": by0,
+        "by1": by1,
+        "z_front": z_front,
+        "z_back": z_back,
+        "cx": 0.5 * (bx0 + bx1),
+        "cy": 0.5 * (by0 + by1),
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+        "enc_depth": enc_depth,
+        "half_w": half_w,
+        "half_h": half_h,
+        "margin_edge_limit": margin_edge_limit,
+        "clamped_edge": clamped_edge,
+        "edge_depth": edge_depth,
+    }
+
+
 def _point_on_segment_xy(
     point: NDArray[np.float64],
     a: NDArray[np.float64],
@@ -860,13 +971,6 @@ def build_enclosure_box(
 
     gmsh = require_gmsh()
 
-    mouth_pts = inner_points[:, -1, :]
-    x_min = float(mouth_pts[:, 0].min())
-    x_max = float(mouth_pts[:, 0].max())
-    y_min = float(mouth_pts[:, 1].min())
-    y_max = float(mouth_pts[:, 1].max())
-    z_front = float(mouth_pts[:, 2].max())
-
     # The front baffle is an annular face in the z_front plane whose hole is
     # bounded by the actual mouth loop. A rolled-back lip that stays inside the
     # hole legitimately protrudes through it, but a wall contact outside the
@@ -874,61 +978,22 @@ def build_enclosure_box(
     # that downstream checks cannot see the self-intersection.
     _reject_front_baffle_wall_intersections(inner_points, closed=closed)
 
-    z_throat = float(np.min(inner_points[:, 0, 2]))
-    horn_length = z_front - z_throat
-    min_enc_depth = horn_length + float(enclosure.depth_margin_mm)
-    enc_depth = float(enclosure.depth_mm)
-    if enc_depth < min_enc_depth:
-        logger.warning(
-            "[hornlab-mesher] enc_depth (%.2f mm) < horn length (%.2f mm) + margin (%.2f mm); "
-            "clamping to %.2f mm.",
-            enc_depth, horn_length, enclosure.depth_margin_mm, min_enc_depth,
-        )
-        enc_depth = min_enc_depth
-    z_back = z_front - enc_depth
+    bounds = enclosure_box_bounds(
+        inner_points,
+        enclosure,
+        closed=closed,
+        symmetry_planes=tuple(symmetry_planes),
+    )
+    x_min = bounds["x_min"]
+    x_max = bounds["x_max"]
+    bx0, bx1, by0, by1 = bounds["bx0"], bounds["bx1"], bounds["by0"], bounds["by1"]
+    z_front, z_back = bounds["z_front"], bounds["z_back"]
+    clamped_edge = bounds["clamped_edge"]
+    edge_depth = bounds["edge_depth"]
 
     plane_set = set(symmetry_planes)
     x_open = not closed and "x" in plane_set
     y_open = not closed and "y" in plane_set
-    if x_open and x_min < -1.0e-6:
-        raise ValueError("x symmetry plane requested but mouth points cross x=0")
-    if y_open and y_min < -1.0e-6:
-        raise ValueError("y symmetry plane requested but mouth points cross y=0")
-    bx0 = 0.0 if x_open else x_min - float(enclosure.space_l_mm)
-    bx1 = x_max + float(enclosure.space_r_mm)
-    by0 = 0.0 if y_open else y_min - float(enclosure.space_b_mm)
-    by1 = y_max + float(enclosure.space_t_mm)
-
-    bounds = {
-        "bx0": bx0,
-        "bx1": bx1,
-        "by0": by0,
-        "by1": by1,
-        "z_front": z_front,
-        "z_back": z_back,
-        "cx": 0.5 * (bx0 + bx1),
-        "cy": 0.5 * (by0 + by1),
-    }
-
-    # Roundover limits must describe the *physical* (mirror-completed) box:
-    # on reduced domains the cut plane at x=0 / y=0 is not a wall, so the
-    # mirrored half-extent is bx1 / by1 itself, and the spacings on the cut
-    # side are never applied and must not participate in the margin clamp
-    # (otherwise a quarter build of a design clamps the roundover harder than
-    # the identical full build — or forces a sharp box when the unused
-    # cut-side spacing is 0).
-    half_w = float(bx1) if x_open else 0.5 * (bx1 - bx0)
-    half_h = float(by1) if y_open else 0.5 * (by1 - by0)
-    applied_spacings = [float(enclosure.space_r_mm), float(enclosure.space_t_mm)]
-    if not x_open:
-        applied_spacings.append(float(enclosure.space_l_mm))
-    if not y_open:
-        applied_spacings.append(float(enclosure.space_b_mm))
-    margin_edge_limit = max(0.0, min(applied_spacings))
-    clamped_edge = _clamp_edge_roundover(
-        float(enclosure.edge_mm), margin_edge_limit, half_w, half_h
-    )
-    edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
     front_mesh_size = float(enclosure.front_mesh_size_mm or 0.0)
     back_mesh_size = float(enclosure.back_mesh_size_mm or 0.0)
 
@@ -939,7 +1004,7 @@ def build_enclosure_box(
         if int(enclosure.plan_type) != 1:
             raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
         sector_axis_x = 0.0 if x_open else 0.5 * (x_min + x_max)
-        sector_axis_y = 0.0 if y_open else 0.5 * (y_min + y_max)
+        sector_axis_y = 0.0 if y_open else 0.5 * (bounds["y_min"] + bounds["y_max"])
         # A reduced grid covers one or two quadrants: quarter -> Q1; half about
         # the xz plane (quadrants 12) -> Q1+Q2; half about the yz plane
         # (quadrants 14) -> Q1+Q4. Build one rounded-rectangle sector per

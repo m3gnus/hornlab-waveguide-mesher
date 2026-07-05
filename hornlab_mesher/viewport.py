@@ -7,7 +7,7 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from .builders.enclosure import sample_enclosure_plan
+from .builders.enclosure import enclosure_box_bounds, sample_enclosure_plan
 from .config_builder import _enclosure_from_config, _section, build_geometry_params
 from .geometry import HornEnclosure
 from .profiles import build_point_grid
@@ -23,103 +23,35 @@ def _reshape_grid(raw: Any, n_phi: int, n_length: int, name: str) -> NDArray[np.
     return arr.reshape(n_phi, n_length + 1, 3)
 
 
-def _enclosure_bounds(
-    inner_points: NDArray[np.float64],
-    enclosure: HornEnclosure,
-    *,
-    closed: bool,
-    symmetry_planes: tuple[str, ...] = (),
-) -> dict[str, float]:
-    mouth_pts = inner_points[:, -1, :]
-    x_min = float(mouth_pts[:, 0].min())
-    x_max = float(mouth_pts[:, 0].max())
-    y_min = float(mouth_pts[:, 1].min())
-    y_max = float(mouth_pts[:, 1].max())
-    z_front = float(mouth_pts[:, 2].max())
-
-    z_throat = float(np.min(inner_points[:, 0, 2]))
-    horn_length = z_front - z_throat
-    min_enc_depth = horn_length + float(enclosure.depth_margin_mm)
-    enc_depth = float(enclosure.depth_mm)
-    if enc_depth < min_enc_depth:
-        logger.warning(
-            "[hornlab-mesher] viewport enc_depth (%.2f mm) < horn length (%.2f mm) + margin (%.2f mm); "
-            "clamping to %.2f mm.",
-            enc_depth,
-            horn_length,
-            enclosure.depth_margin_mm,
-            min_enc_depth,
-        )
-        enc_depth = min_enc_depth
-    z_back = z_front - enc_depth
-
-    plane_set = set(symmetry_planes)
-    x_open = not closed and "x" in plane_set
-    y_open = not closed and "y" in plane_set
-    if x_open and x_min < -1.0e-6:
-        raise ValueError("x symmetry plane requested but mouth points cross x=0")
-    if y_open and y_min < -1.0e-6:
-        raise ValueError("y symmetry plane requested but mouth points cross y=0")
-
-    # On a reduced domain the cut plane is not a wall, so the box extends exactly
-    # to it (no spacing on the cut side). The x cut is always the yz plane at x=0.
-    # The y cut sits at the mouth minimum -- 0 for an un-shifted model, or
-    # Mesh.VerticalOffset once the preview has been placed -- so read it from the
-    # geometry rather than assuming 0 (the phi=0 ray gives it exactly).
-    bx0 = 0.0 if x_open else x_min - float(enclosure.space_l_mm)
-    bx1 = x_max + float(enclosure.space_r_mm)
-    by0 = y_min if y_open else y_min - float(enclosure.space_b_mm)
-    by1 = y_max + float(enclosure.space_t_mm)
-
-    return {
-        "bx0": bx0,
-        "bx1": bx1,
-        "by0": by0,
-        "by1": by1,
-        "z_front": z_front,
-        "z_back": z_back,
-        "cx": 0.5 * (bx0 + bx1),
-        "cy": 0.5 * (by0 + by1),
-    }
-
-
 def build_enclosure_viewport_grid(
     inner_points: NDArray[np.float64],
     enclosure: HornEnclosure,
     *,
     closed: bool = True,
     symmetry_planes: tuple[str, ...] = (),
+    y_origin_offset_mm: float = 0.0,
 ) -> dict[str, Any]:
     """Return lightweight enclosure rings for viewport tessellation.
 
     The output stays in mesher point-grid coordinates: x/y are transverse
     millimetres and z is axial millimetres. It intentionally returns rings
     instead of Gmsh surfaces so callers can use a cheaper viewport tessellator.
+    Bounds, roundover clamp, and edge depth come from the same helper the mesh
+    build uses (``enclosure_box_bounds``) so the preview cannot drift from the
+    mesh; ``y_origin_offset_mm`` is the Mesh.VerticalOffset already applied to
+    the placed preview points.
     """
 
-    bounds = _enclosure_bounds(
+    bounds = enclosure_box_bounds(
         inner_points,
         enclosure,
         closed=closed,
         symmetry_planes=tuple(symmetry_planes),
+        y_origin_offset_mm=float(y_origin_offset_mm),
+        warn_prefix="viewport ",
     )
-    half_w = 0.5 * (bounds["bx1"] - bounds["bx0"])
-    half_h = 0.5 * (bounds["by1"] - bounds["by0"])
-    margin_edge_limit = max(
-        0.0,
-        min(
-            float(enclosure.space_l_mm),
-            float(enclosure.space_t_mm),
-            float(enclosure.space_r_mm),
-            float(enclosure.space_b_mm),
-        ),
-    )
-    clamped_edge = max(
-        0.0,
-        min(float(enclosure.edge_mm), margin_edge_limit, half_w - 0.1, half_h - 0.1),
-    )
-    enc_depth = bounds["z_front"] - bounds["z_back"]
-    edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
+    clamped_edge = bounds["clamped_edge"]
+    edge_depth = bounds["edge_depth"]
     min_bspline_r = 0.1
 
     def flatten(points: NDArray[np.float64]) -> list[float]:
@@ -241,8 +173,9 @@ def build_viewport_geometry_from_config(config: Mapping[str, Any]) -> dict[str, 
     inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
     # build_point_grid emits the grid at the origin and reports Mesh.VerticalOffset
     # as metadata; re-apply it here as a rigid +y placement so the preview (grid and
-    # enclosure alike) matches the finished mesh. The enclosure is then built from the
-    # placed points, and its cut plane is read from the geometry (see _enclosure_bounds).
+    # enclosure alike) matches the finished mesh. The enclosure is then built from
+    # the placed points; enclosure_box_bounds receives the offset so its ATH
+    # whole-mm extent rounding happens in the origin frame like the mesh build.
     vertical_offset_mm = float(grid.get("vertical_offset_mm", 0.0) or 0.0)
     if vertical_offset_mm:
         inner_points[:, :, 1] += vertical_offset_mm
@@ -258,6 +191,7 @@ def build_viewport_geometry_from_config(config: Mapping[str, Any]) -> dict[str, 
             enclosure,
             closed=bool(grid.get("full_circle", True)),
             symmetry_planes=tuple(grid.get("symmetry_planes") or ()),
+            y_origin_offset_mm=vertical_offset_mm,
         )
 
     return {
