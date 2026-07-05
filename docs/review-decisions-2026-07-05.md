@@ -52,6 +52,7 @@ the same tradeoffs.
   roundover geometry paths and any `n_phi`-dependent topology differences.
 - D11 R-OSSE free-standing rear shell: an audit noted a rear-shell z delta
   against ATH that was not resolved in this batch.
-- D13 vectorization backlog: M10/M20/M28 were handled, but full weld bucketing,
-  per-phi OSSE vectorization, broader `np.interp` z-map use, and morph-target
-  hoists remain optional performance work.
+- D13 vectorization backlog: M10 gcurve hoist and M28 OCC-entity cleanup landed
+  earlier; M20 handled in the ICW solver batch. Full weld bucketing, per-phi
+  OSSE vectorization, broader `np.interp` z-map use, and morph-target hoists
+  remain optional performance work.

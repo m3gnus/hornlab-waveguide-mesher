@@ -91,6 +91,13 @@ Implementation rules:
   extension tapers backward to the driver-end radius. The main R-OSSE curve,
   derived length, and mouth radius are unchanged by the extension.
 
+Compatibility note for OS-SE and R-OSSE throat extensions: the taper-back
+implementation reproduces ATH's profile radius and total length exactly, but it
+deliberately does not reproduce ATH's recessed driven cap behind the straight
+extension duct. That recess is a transmission-line detail expected to matter
+acoustically only for horns with a long throat extension; revisit it only if a
+real device shows a response discrepancy.
+
 ## ICW Profile
 
 ICW (Intrinsic-Curvature Waveguide) is a native mesher profile rather than an
