@@ -298,21 +298,18 @@ def _rear_rim_points(
     *,
     rear_z: float,
 ) -> np.ndarray:
-    n_phi = outer_points.shape[0]
-    out = np.empty((n_phi, 3), dtype=np.float64)
-    for i in range(n_phi):
-        p0 = outer_points[i, 0]
-        if outer_points.shape[1] < 2:
-            out[i] = (p0[0], p0[1], rear_z)
-            continue
-        p1 = outer_points[i, 1]
-        dz = float(p1[2] - p0[2])
-        if abs(dz) <= 1.0e-9:
-            out[i] = (p0[0], p0[1], rear_z)
-            continue
-        t = (float(rear_z) - float(p0[2])) / dz
-        out[i] = p0 + (p1 - p0) * t
-        out[i, 2] = rear_z
+    """Rear rim ring: the outer throat ring projected straight back to ``rear_z``.
+
+    Straight axial projection (constant x/y) keeps the rear cover inside the
+    reduced-domain quadrant — cut-plane rays stay exactly on their plane and the
+    seam boundary is a straight axial line gmsh cannot chord into the symmetry
+    plane. It also matches ATH's rear cover, which stays at the outer throat
+    radius (an earlier version extrapolated backwards along the flaring wall
+    rays, which both flared ~10 mm past ATH's rear cover and dipped below the
+    y=0 cut plane near the seam).
+    """
+    out = outer_points[:, 0, :].copy()
+    out[:, 2] = rear_z
     return out
 
 

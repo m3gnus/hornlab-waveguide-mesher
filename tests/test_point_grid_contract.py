@@ -242,7 +242,11 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
     return sorted(sizes, reverse=True)
 
 
-def test_rear_rim_points_extend_local_outer_profile_to_rear_plane():
+def test_rear_rim_points_project_outer_throat_ring_straight_back():
+    # Straight axial projection (constant x/y): cut-plane rays stay on their
+    # plane and the rear cover stays at the outer throat radius like ATH's.
+    # The earlier along-ray extrapolation flared past ATH's rear cover and
+    # dipped below the y=0 cut plane near the seam of reduced domains.
     n_phi = 32
     outer = np.empty((n_phi, 2, 3), dtype=np.float64)
     for i in range(n_phi):
@@ -254,11 +258,36 @@ def test_rear_rim_points_extend_local_outer_profile_to_rear_plane():
 
     rear = _rear_rim_points(outer, rear_z=-5.0)
 
-    t = -0.5
-    expected = outer[:, 0, :] + (outer[:, 1, :] - outer[:, 0, :]) * t
+    expected = outer[:, 0, :].copy()
     expected[:, 2] = -5.0
     assert np.allclose(rear, expected, rtol=0.0, atol=1.0e-9)
-    assert np.allclose(rear[:, 2], -5.0)
+    # A seam ray on the y=0 plane must stay exactly on it.
+    assert rear[0, 1] == 0.0
+
+
+def test_freestanding_quarter_rear_stays_inside_quadrant(tmp_path):
+    """Regression: a coarse rear rim used to chord a triangle into the y=0
+    plane (hard build failure) and protrude a node past the cut plane."""
+    config = {
+        "formula": "OSSE",
+        "mode": "freestanding",
+        "profile": {"r0": 12.7, "a": 45.0, "a0": 8.0, "L": 90.0},
+        "mesh": {
+            "angularSegments": 48,
+            "lengthSegments": 20,
+            "quadrants": 1,
+            "throatResolution": 5,
+            "mouthResolution": 12,
+            "rearResolution": 10.0,
+            "scaleToMetres": False,
+        },
+    }
+    out = tmp_path / "quarter-rear.msh"
+    build_from_config(config, out)
+    mesh = meshio.read(out)
+    points = np.asarray(mesh.points)
+    assert float(points[:, 0].min()) >= -1.0e-6
+    assert float(points[:, 1].min()) >= -1.0e-6
 
 
 def test_python_osse_point_grid_full_circle():
