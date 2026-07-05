@@ -20,6 +20,7 @@ from .point_grid_sources import (
     SOURCE_SHAPE_FLAT_DISC,
     SOURCE_SHAPE_ROUNDED_CAP,
     _add_occ_source_cap_surfaces,
+    _add_source_surfaces,
     _validate_source_shape,
 )
 from .point_grid_surfaces import (
@@ -69,6 +70,11 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 n_len=inner_points.shape[1],
                 closed=geometry.closed,
             )
+            # Faceted walls need a cap whose boundary reuses the same straight
+            # chords through the shared point cache; B-spline cap spans through
+            # the same points coincide with the chords only at the grid nodes
+            # and leave an off-plane open seam ring at the throat.
+            throat = _add_source_surfaces(cap_builder, inner_points, geometry)
         else:
             # A reduced half-model grid must split into one wall patch per
             # quadrant so its rear enclosure can attach a sector to each mouth
@@ -85,12 +91,12 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             )
             if not geometry.closed:
                 cap_boundary_groups = wall_groups
-        throat = _add_occ_source_cap_surfaces(
-            cap_builder,
-            inner_points,
-            geometry,
-            boundary_phi_groups=cap_boundary_groups,
-        )
+            throat = _add_occ_source_cap_surfaces(
+                cap_builder,
+                inner_points,
+                geometry,
+                boundary_phi_groups=cap_boundary_groups,
+            )
         require_gmsh().model.occ.synchronize()
         if not throat:
             throat = make_planar_fill_from_ring(inner_points[:, 0, :])

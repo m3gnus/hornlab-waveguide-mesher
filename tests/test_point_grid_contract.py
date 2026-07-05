@@ -1842,3 +1842,45 @@ def test_source_shape_zero_builds_flat_disc(tmp_path):
 
     assert spreads[0] < 1e-6, "flat disc source must lie in the throat plane"
     assert spreads[1] > 0.1, "curved cap control should have axial depth"
+
+
+def test_preserve_grid_quarter_enclosure_has_no_off_plane_open_edges(tmp_path):
+    """Regression: preserve_grid enclosure builds paired a faceted wall with a
+    B-spline-boundary source cap; the two only met at grid nodes, leaving an
+    off-plane open seam ring at the throat."""
+    config = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {"r0": 12.7, "a": 45.0, "a0": 8.0, "L": 90.0},
+        "mesh": {
+            "angularSegments": 32,
+            "lengthSegments": 12,
+            "quadrants": 1,
+            "throatResolution": 5,
+            "mouthResolution": 12,
+            "preserveGrid": True,
+            "scaleToMetres": False,
+        },
+        "enclosure": {
+            "depth": 150.0,
+            "space_l": 30.0,
+            "space_t": 30.0,
+            "space_r": 30.0,
+            "space_b": 30.0,
+            "edge": 15.0,
+            "edgeType": 1,
+        },
+    }
+    out = tmp_path / "preserve-grid-quarter-enclosure.msh"
+    build_from_config(config, out)
+    mesh = meshio.read(out)
+    triangles, _tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+    off_plane = []
+    for a, b in _boundary_edges(triangles):
+        pa, pb = points[a], points[b]
+        on_x = abs(pa[0]) < 1.0e-9 and abs(pb[0]) < 1.0e-9
+        on_y = abs(pa[1]) < 1.0e-9 and abs(pb[1]) < 1.0e-9
+        if not (on_x or on_y):
+            off_plane.append((pa.round(3).tolist(), pb.round(3).tolist()))
+    assert not off_plane, f"{len(off_plane)} off-plane open edges, e.g. {off_plane[:4]}"
