@@ -57,6 +57,7 @@ def test_coverage_plateau_is_flat_at_target(theta_c: float) -> None:
     plateau_deg = np.degrees(s.theta[hs_i : he_i + 1])
     assert np.allclose(plateau_deg, theta_c, atol=1e-3)
     # Reported achieved angle matches.
+    assert report.residuals["coverage_angle_deg"] == pytest.approx(theta_c)
     assert abs(report.residuals["coverage_angle_deg_achieved"] - theta_c) < 1e-3
     assert abs(np.degrees(s.theta[mid_i]) - theta_c) < 1e-3
 
@@ -132,6 +133,26 @@ def test_coverage_hold_window_validation() -> None:
         _coverage_targets(50.0, hs=0.0, he=0.7)  # degenerate start
 
 
+@pytest.mark.parametrize(
+    ("n_coeff", "should_feasible"),
+    [
+        (8, False),
+        (9, True),
+    ],
+)
+def test_coverage_n_coeff_floor_names_cause(n_coeff: int, should_feasible: bool) -> None:
+    targets = _coverage_targets(45.0)
+
+    curve, report = solve_icw(targets, n_coeff=n_coeff)
+
+    if should_feasible:
+        assert report.feasible, report.violations
+        assert curve.coeffs.size == n_coeff
+    else:
+        assert not report.feasible
+        assert any("n_coeff" in v for v in report.violations)
+
+
 def test_coverage_gene_path_feasible() -> None:
     """curve_from_shape_modes / n_shape_modes work under the coverage constraint set."""
     targets = _coverage_targets(45.0)
@@ -144,6 +165,15 @@ def test_coverage_gene_path_feasible() -> None:
     hs_i = int(round(targets.hold_start * 2000))
     he_i = int(round(targets.hold_end * 2000))
     assert np.max(np.abs(s.kappa[hs_i : he_i + 1])) < 1e-6
+
+
+def test_shape_mode_coverage_subfloor_returns_infeasible_report() -> None:
+    targets = _coverage_targets(45.0)
+
+    _curve, report = curve_from_shape_modes(np.zeros(1), targets, n_coeff=6)
+
+    assert not report.feasible
+    assert any("n_coeff" in v for v in report.violations)
 
 
 def test_noncoverage_solve_is_byte_identical_to_baseline() -> None:

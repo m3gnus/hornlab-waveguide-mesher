@@ -128,9 +128,9 @@ def coverage_knots(
     plateau consumes four cubic coefficients and the endpoint/angle rows consume several more,
     leaving enough nullspace for the size solve and shape modes.
     """
-    if n_coeff < degree + 5:
+    if n_coeff < degree + 6:
         raise ValueError(
-            f"coverage knots need at least degree+5={degree + 5} coefficients, got {n_coeff}"
+            f"coverage knots need at least degree+6={degree + 6} coefficients, got {n_coeff}"
         )
     if not (0.0 < hold_start < hold_end < 1.0):
         raise ValueError("coverage hold window must satisfy 0 < hold_start < hold_end < 1")

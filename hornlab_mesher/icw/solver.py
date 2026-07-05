@@ -284,6 +284,19 @@ def _basis_integrals(
     return out
 
 
+def _antiderivative_design_matrix(
+    knots: np.ndarray, degree: int, n_coeff: int, sigma: np.ndarray
+) -> np.ndarray:
+    """Rows of ``int_0^sigma B_i(u) du`` for the curvature basis."""
+    M = np.zeros((sigma.size, n_coeff))
+    for i in range(n_coeff):
+        c = np.zeros(n_coeff)
+        c[i] = 1.0
+        anti = BSpline(knots, c, degree, extrapolate=True).antiderivative()
+        M[:, i] = anti(sigma) - anti(0.0)
+    return M
+
+
 def _coverage_span_indices(knots: np.ndarray, hold_start: float, degree: int) -> list[int]:
     """Coefficient indices active on the single coverage span starting at ``hold_start``."""
     matches = np.flatnonzero(np.isclose(knots, hold_start, rtol=0.0, atol=1e-12))
@@ -581,6 +594,10 @@ class _LinSys:
     hold_end: float | None = None
     coverage_angle: float | None = None
     design_matrix: np.ndarray | None = None
+    coverage_pinv_A: np.ndarray | None = None
+    anti_design_matrix: np.ndarray | None = None
+    kappa_design_matrix: np.ndarray | None = None
+    dkappa_design_matrix: np.ndarray | None = None
 
     @property
     def n_shape(self) -> int:
@@ -606,7 +623,12 @@ class _LinSys:
         self, a_ln: np.ndarray, theta0: float, theta1: float, S: float
     ) -> np.ndarray:
         """Project the raised-cosine coverage design into ``a_ln + ker(C)``."""
-        if self.design_matrix is None or self.hold_start is None or self.hold_end is None:
+        if (
+            self.design_matrix is None
+            or self.coverage_pinv_A is None
+            or self.hold_start is None
+            or self.hold_end is None
+        ):
             return a_ln
         if self.Phi.shape[1] == 0:
             return a_ln
@@ -627,9 +649,8 @@ class _LinSys:
         )
         kappa_target = k_turn / S
 
-        A = self.design_matrix @ self.Phi
         y = kappa_target - self.design_matrix @ a_ln
-        b_fit, *_ = np.linalg.lstsq(A, y, rcond=None)
+        b_fit = self.coverage_pinv_A @ y
         return a_ln + self.Phi @ b_fit
 
 
@@ -663,8 +684,20 @@ def _build_linsys(
         rhs_const[row] = 0.0  # refilled per-S in _LinSys.a0
     sigma = np.linspace(0.0, 1.0, n_quad)
     design_matrix = None
+    coverage_pinv_A = None
     if targets.coverage_angle_deg is not None:
         design_matrix = BSpline.design_matrix(sigma, knots, degree, extrapolate=True).toarray()
+        if Phi.shape[1]:
+            coverage_pinv_A = np.linalg.pinv(design_matrix @ Phi)
+    anti_design_matrix = _antiderivative_design_matrix(knots, degree, n_coeff, sigma)
+    kappa_design_matrix = design_matrix
+    if kappa_design_matrix is None and targets.kappa_abs_max is not None:
+        kappa_design_matrix = BSpline.design_matrix(sigma, knots, degree, extrapolate=True).toarray()
+    dkappa_design_matrix = (
+        _basis_matrix(knots, degree, n_coeff, sigma, nu=1)
+        if targets.dkappa_ds_abs_max is not None
+        else None
+    )
     return _LinSys(
         C=C,
         pinv_C=pinv_C,
@@ -678,6 +711,10 @@ def _build_linsys(
         hold_end=targets.hold_end if targets.coverage_angle_deg is not None else None,
         coverage_angle=targets.coverage_angle,
         design_matrix=design_matrix,
+        coverage_pinv_A=coverage_pinv_A,
+        anti_design_matrix=anti_design_matrix,
+        kappa_design_matrix=kappa_design_matrix,
+        dkappa_design_matrix=dkappa_design_matrix,
     )
 
 
@@ -693,6 +730,7 @@ def _integrate_meridian(
     theta0: float,
     n: int = _QUAD_N,
     sigma: np.ndarray | None = None,
+    anti_design_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Cheap (sigma, theta, x, r) integration matching ICWCurve.sample for the residual loop.
 
@@ -701,9 +739,12 @@ def _integrate_meridian(
     """
     if sigma is None:
         sigma = np.linspace(0.0, 1.0, n)
-    spl = BSpline(knots, coeffs, degree, extrapolate=True)
-    anti = spl.antiderivative()
-    theta = theta0 + S * (anti(sigma) - anti(0.0))
+    if anti_design_matrix is None:
+        spl = BSpline(knots, coeffs, degree, extrapolate=True)
+        anti = spl.antiderivative()
+        theta = theta0 + S * (anti(sigma) - anti(0.0))
+    else:
+        theta = theta0 + S * (anti_design_matrix @ coeffs)
     x = S * cumulative_trapezoid(np.cos(theta), sigma, initial=0.0)
     r = r0 + S * cumulative_trapezoid(np.sin(theta), sigma, initial=0.0)
     return sigma, theta, x, r
@@ -716,6 +757,8 @@ def _manufacturability_barriers(
     coeffs: np.ndarray,
     knots: np.ndarray,
     degree: int,
+    kappa_design_matrix: np.ndarray | None = None,
+    dkappa_design_matrix: np.ndarray | None = None,
 ) -> list[float]:
     """Optional solve-time barriers for fabrication/acoustic bounds.
 
@@ -730,15 +773,24 @@ def _manufacturability_barriers(
         return []
 
     barrier: list[float] = []
-    spl = BSpline(knots, coeffs, degree, extrapolate=True)
+    spl: BSpline | None = None
 
     if targets.kappa_abs_max is not None:
-        kappa = spl(sigma)
+        if kappa_design_matrix is None:
+            spl = BSpline(knots, coeffs, degree, extrapolate=True)
+            kappa = spl(sigma)
+        else:
+            kappa = kappa_design_matrix @ coeffs
         excess = np.clip(np.abs(kappa) - targets.kappa_abs_max, 0.0, None)
         barrier.append(_MFG_WEIGHT * float(np.sqrt(np.mean(excess**2))))
 
     if targets.dkappa_ds_abs_max is not None:
-        dkappa = np.abs(spl(sigma, nu=1))
+        if dkappa_design_matrix is None:
+            if spl is None:
+                spl = BSpline(knots, coeffs, degree, extrapolate=True)
+            dkappa = np.abs(spl(sigma, nu=1))
+        else:
+            dkappa = np.abs(dkappa_design_matrix @ coeffs)
         excess = np.clip(dkappa - targets.dkappa_ds_abs_max, 0.0, None)
         barrier.append(_MFG_WEIGHT * float(np.sqrt(np.mean(excess**2))))
 
@@ -816,7 +868,6 @@ def _knots_for_targets(targets: ICWTargets, n_coeff: int, degree: int) -> np.nda
 
 def _seed_state(
     targets: ICWTargets,
-    Phi: np.ndarray,
     seed: ICWCurve | None,
     n_shape: int,
 ) -> tuple[float, np.ndarray]:
@@ -828,6 +879,25 @@ def _seed_state(
         # Start a little above the chord; a turning wall is always longer than the chord.
         S_seed = max(chord * 1.08, chord + 1.0, 1.0)
     return S_seed, np.zeros(n_shape)
+
+
+def _seed_shape_projection(
+    seed: ICWCurve | None,
+    knots: np.ndarray,
+    n_coeff: int,
+    Phi: np.ndarray,
+    a0: np.ndarray,
+    n_shape: int,
+    b_seed: np.ndarray,
+) -> np.ndarray:
+    """Project seed coefficients only when the seed and solver share the same basis."""
+    if (
+        seed is not None
+        and seed.coeffs.shape == (n_coeff,)
+        and np.array_equal(seed.knots, knots)
+    ):
+        return (Phi[:, :n_shape].T @ (seed.coeffs - a0)) if n_shape else b_seed
+    return b_seed
 
 
 def _early_feasibility(
@@ -842,15 +912,15 @@ def _early_feasibility(
 
     coverage = targets.coverage_angle_deg is not None
     if coverage:
-        if targets.mode != TerminationMode.FLAT_BAFFLE:
-            v.append("coverage_angle_deg requires mode='flat_baffle'")
         if not (0.0 < targets.hold_start < targets.hold_end < 1.0):
             v.append("coverage hold window must satisfy 0 < hold_start < hold_end < 1")
         if not (targets.theta0_deg < targets.coverage_angle_deg < 90.0):
             v.append("coverage_angle_deg must lie between theta0_deg and 90 deg")
-        if n_coeff is not None and n_coeff < degree + 5:
+        if n_coeff is not None and n_coeff < degree + 6:
             v.append(
-                f"coverage mode needs n_coeff >= {degree + 5}; default coverage n_coeff is "
+                f"coverage mode n_coeff={n_coeff} is too small; needs n_coeff >= {degree + 6} "
+                f"for the coverage plateau plus flat-baffle endpoint rows. Default coverage "
+                f"n_coeff is "
                 f"{_COVERAGE_DEFAULT_N_COEFF} to preserve nullspace after plateau rows"
             )
 
@@ -919,7 +989,14 @@ def _residual_and_aux(
     coeffs = a0 + Phi[:, :n_shape] @ b if n_shape else a0
 
     sigma, theta, x, r = _integrate_meridian(
-        coeffs, knots, degree, S, targets.r0, targets.theta0, sigma=lin.sigma
+        coeffs,
+        knots,
+        degree,
+        S,
+        targets.r0,
+        targets.theta0,
+        sigma=lin.sigma,
+        anti_design_matrix=lin.anti_design_matrix,
     )
 
     size: list[float] = []  # hard size-target residuals (judged for feasibility)
@@ -972,7 +1049,18 @@ def _residual_and_aux(
         dip = np.clip(-np.diff(theta), 0.0, None)
         barrier.append(_MONO_WEIGHT * float(np.sqrt(np.mean(dip**2))))
 
-    barrier.extend(_manufacturability_barriers(targets, sigma, theta, coeffs, knots, degree))
+    barrier.extend(
+        _manufacturability_barriers(
+            targets,
+            sigma,
+            theta,
+            coeffs,
+            knots,
+            degree,
+            kappa_design_matrix=lin.kappa_design_matrix,
+            dkappa_design_matrix=lin.dkappa_design_matrix,
+        )
+    )
 
     # Tikhonov / curvature-smoothness regulariser on the shape controls. We solve over the FULL
     # nullspace (see ``_REG_LAMBDA``); this penalty keeps that under-determined system well posed
@@ -1065,10 +1153,8 @@ def solve_icw(
 
     # ---- chord check ---------------------------------------------------------------------
     chord = _chord(targets)
-    S_seed, b_seed = _seed_state(targets, Phi, seed, n_shape)
-    if seed is not None and seed.coeffs.shape == (n_coeff,):
-        # Project the seed's curvature onto the shape subspace for a warm start.
-        b_seed = (Phi[:, :n_shape].T @ (seed.coeffs - _a0)) if n_shape else b_seed
+    S_seed, b_seed = _seed_state(targets, seed, n_shape)
+    b_seed = _seed_shape_projection(seed, knots, n_coeff, Phi, _a0, n_shape, b_seed)
 
     # ---- bounds: S strictly above the chord; shape controls bounded to keep curvature sane.
     S_lo = max(chord * (1.0 + 1e-6), 1e-6)
@@ -1118,7 +1204,7 @@ def solve_icw(
     # (3a) Continuation rescue (homotopy on the terminal angle) for hard / rollback targets.
     if not report_best.feasible:
         p_cont = _continuation_solve(
-            targets, knots, n_coeff, degree, lin, n_shape, _run, p0, max_nfev
+            targets, _run, p0, max_nfev
         )
         if p_cont is not None:
             curve_c, report_c = _assemble(targets, knots, n_coeff, degree, lin, n_shape, p_cont)
@@ -1174,11 +1260,6 @@ def _assemble(
 
 def _continuation_solve(
     targets: ICWTargets,
-    knots: np.ndarray,
-    n_coeff: int,
-    degree: int,
-    lin: "_LinSys",
-    n_shape: int,
     run_fn,
     p0: np.ndarray,
     max_nfev: int,
@@ -1188,9 +1269,12 @@ def _continuation_solve(
 
     Returns the final parameter vector, or ``None`` if the sweep cannot be initialised. Each
     intermediate solve uses a fraction of ``max_nfev``; the last step gets the remainder so the
-    final tolerance is tight. ``lin``/``n_shape`` are accepted for call-site symmetry; the actual
-    residual algebra is reached via ``run_fn`` (which closes over the precomputed ``_LinSys``).
+    final tolerance is tight.
     """
+    if targets.mode == TerminationMode.FLAT_BAFFLE:
+        # Flat-baffle targets are defined with theta1=90deg; ICWTargets coerces any replacement
+        # back to 90deg, so a terminal-angle homotopy would only re-solve identical targets.
+        return None
     if targets.theta1_deg is None:
         return None
     start = 90.0 if targets.mode == TerminationMode.ROLLBACK else targets.theta0_deg
@@ -1314,7 +1398,20 @@ def n_shape_modes(
     ``k_max`` (int): how many leading ``Phi`` columns are exposed as genes. ``>= 0``.
     """
     gene_basis = _validate_gene_basis(gene_basis)
-    _knots, lin = _flat_baffle_lin(targets, n_coeff, degree, gene_basis=gene_basis)
+    if targets.mode != TerminationMode.FLAT_BAFFLE:
+        raise ValueError(
+            "shape-mode entry points support only mode='flat_baffle' (rollback is out of scope "
+            f"here); got mode={targets.mode!r}"
+        )
+    n_coeff = _resolve_n_coeff(targets, n_coeff)
+    violations = _early_feasibility(targets, n_coeff=n_coeff, degree=degree)
+    try:
+        knots = _knots_for_targets(targets, n_coeff, degree)
+    except ValueError as exc:
+        violations.append(str(exc))
+    if violations:
+        return 0
+    lin = _build_linsys(targets, knots, n_coeff, degree, gene_basis=gene_basis)
     D = lin.n_shape  # nullspace dimension dim ker(C)
     # Probe the honest budget: the largest k for which the all-zero-gene (midpoint) solve is
     # feasible at EVERY gene count 0..k -- a contiguous-from-zero feasible prefix. The size-solve
@@ -1411,25 +1508,25 @@ def curve_from_shape_modes(
     which are fixed, nor to the size residual feasibility is judged on).
     """
     gene_basis = _validate_gene_basis(gene_basis)
+    if targets.mode != TerminationMode.FLAT_BAFFLE:
+        raise ValueError(
+            "shape-mode entry points support only mode='flat_baffle' (rollback is out of scope "
+            f"here); got mode={targets.mode!r}"
+        )
     n_coeff = _resolve_n_coeff(targets, n_coeff)
-    knots, lin = _flat_baffle_lin(targets, n_coeff, degree, gene_basis=gene_basis)
-    Phi = lin.Phi
-    D = lin.n_shape  # nullspace dimension
 
     b_gene = np.atleast_1d(np.asarray(b_gene, dtype=float))
     if b_gene.ndim != 1:
         raise ValueError(f"b_gene must be 1D, got shape {b_gene.shape}")
-    k = int(b_gene.size)
-    k_alg = max(D - 1, 0)  # algebraic ceiling: >= 1 reserved mode + S for the 2 size targets
-    if k > k_alg:
-        raise ValueError(
-            f"len(b_gene)={k} exceeds the algebraic ceiling D-1={k_alg} (nullspace dim D={D}; one "
-            "mode must stay reserved with S for the size solve). n_shape_modes() returns the "
-            "conditioning-feasible budget, which may be smaller."
-        )
 
     # ---- (1) early necessary feasibility (same gate as solve_icw) ------------------------
     violations = _early_feasibility(targets, n_coeff=n_coeff, degree=degree)
+    try:
+        knots = _knots_for_targets(targets, n_coeff, degree)
+    except ValueError as exc:
+        violations.append(str(exc))
+        n_coeff = max(n_coeff, degree + 1)
+        knots = clamped_uniform_knots(n_coeff, degree)
     if violations:
         return _infeasible_curve(targets, knots, n_coeff, degree), FeasibilityReport(
             feasible=False,
@@ -1437,6 +1534,19 @@ def curve_from_shape_modes(
             residuals={},
             suggested_relaxation=_relaxation_hint(targets, violations),
             message="Target set is malformed or violates necessary conditions before solving.",
+        )
+
+    lin = _build_linsys(targets, knots, n_coeff, degree, gene_basis=gene_basis)
+    Phi = lin.Phi
+    D = lin.n_shape  # nullspace dimension
+
+    k = int(b_gene.size)
+    k_alg = max(D - 1, 0)  # algebraic ceiling: >= 1 reserved mode + S for the 2 size targets
+    if k > k_alg:
+        raise ValueError(
+            f"len(b_gene)={k} exceeds the algebraic ceiling D-1={k_alg} (nullspace dim D={D}; one "
+            "mode must stay reserved with S for the size solve). n_shape_modes() returns the "
+            "conditioning-feasible budget, which may be smaller."
         )
 
     n_reserved = D - k  # nullspace coords the kernel optimises (>= 1 since k <= D - 1)
@@ -1457,7 +1567,14 @@ def curve_from_shape_modes(
         coeffs = a0 + gene_coeffs + (Phi_res @ b_res if n_reserved else 0.0)
 
         sigma, theta, x, r = _integrate_meridian(
-            coeffs, knots, degree, S, targets.r0, targets.theta0, sigma=lin.sigma
+            coeffs,
+            knots,
+            degree,
+            S,
+            targets.r0,
+            targets.theta0,
+            sigma=lin.sigma,
+            anti_design_matrix=lin.anti_design_matrix,
         )
         # Hard size targets (judged for feasibility). Coverage mode pins length only unless an
         # advanced caller explicitly supplied r_mouth as an additional target.
@@ -1468,7 +1585,18 @@ def curve_from_shape_modes(
         # Soft monotone-r barrier (guides only), same form/weight as the flat-baffle solver.
         neg = np.clip(-theta, 0.0, None)
         barrier = [_MONO_WEIGHT * float(np.sqrt(np.mean(neg**2)))]
-        barrier.extend(_manufacturability_barriers(targets, sigma, theta, coeffs, knots, degree))
+        barrier.extend(
+            _manufacturability_barriers(
+                targets,
+                sigma,
+                theta,
+                coeffs,
+                knots,
+                degree,
+                kappa_design_matrix=lin.kappa_design_matrix,
+                dkappa_design_matrix=lin.dkappa_design_matrix,
+            )
+        )
         # Tikhonov regulariser on the RESERVED coords only (genes are fixed). Same style/weight as
         # the all-DOF solver so easy cases stay exact and the size solve stays well posed; it is in
         # the optimiser residual ONLY -- never in ``size`` -- and a0+Phi@b satisfies the BCs exactly.
@@ -1628,7 +1756,7 @@ def _verify(
         hold_sigma = np.linspace(targets.hold_start, targets.hold_end, 501)
         hold_kappa_max = float(np.max(np.abs(curve.kappa(hold_sigma))))
 
-        residuals["coverage_angle_deg"] = float(np.degrees(theta_c_achieved))
+        residuals["coverage_angle_deg"] = float(targets.coverage_angle_deg)
         residuals["coverage_angle_deg_achieved"] = float(np.degrees(theta_c_achieved))
         residuals["coverage_angle_res_rad"] = float(coverage_res)
         residuals["coverage_kappa_hold_max"] = hold_kappa_max

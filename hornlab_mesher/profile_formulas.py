@@ -550,6 +550,8 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     kappa0 = _icw_float(params, "kappa0")
     n_coeff_val = _icw_float(params, "n_coeff")
     coverage = _icw_float(params, "coverage_angle", "coverage_angle_deg")
+    if coverage is not None and coverage < 0.0:
+        raise ValueError("coverage_angle must be non-negative; use 0 to disable coverage")
     coverage_on = coverage is not None and coverage > 0.0
 
     target_kwargs: dict[str, Any] = {
@@ -610,14 +612,14 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     if n_coeff_val is not None:
         n_coeff_int = int(n_coeff_val)
         # Coverage mode needs a basis large enough to carry the plateau span plus the
-        # endpoint/angle rows: ``coverage_knots`` requires ``n_coeff >= degree + 5``.
+        # endpoint/angle rows: ``coverage_knots`` requires ``n_coeff >= degree + 6``.
         # A caller's smaller non-coverage default (the WG UI ships ``n_coeff=6`` for
         # plain ICW, materialised into every payload) would otherwise make EVERY
         # coverage build infeasible. So under coverage we drop a sub-floor value and
         # let ``solve_icw`` apply its coverage-aware default instead of forwarding a
         # basis that literally cannot represent the requested plateau. Non-coverage
         # solves, and explicit coverage bases at/above the floor, are honoured verbatim.
-        if not (coverage_on and n_coeff_int < DEFAULT_DEGREE + 5):
+        if not (coverage_on and n_coeff_int < DEFAULT_DEGREE + 6):
             solve_kwargs["n_coeff"] = n_coeff_int
     curve, report = solve_icw(targets, **solve_kwargs)
     if not report.feasible:

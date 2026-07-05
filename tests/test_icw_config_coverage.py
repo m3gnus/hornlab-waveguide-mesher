@@ -70,16 +70,22 @@ def test_coverage_honors_explicit_finer_basis_request() -> None:
     _assert_coverage_plateau(curve, 50.0)
 
 
-def test_coverage_ignores_sub_floor_n_coeff_and_uses_coverage_default() -> None:
+@pytest.mark.parametrize("n_coeff", [6, 8])
+def test_coverage_ignores_sub_floor_n_coeff_and_uses_coverage_default(n_coeff: int) -> None:
     # The WG UI ships n_coeff=6 as the plain-ICW default and materialises it into
-    # every payload. Coverage needs n_coeff >= degree+5 = 8, so forwarding 6 verbatim
+    # every payload. Coverage needs n_coeff >= degree+6 = 9, so forwarding a sub-floor value
     # used to make the coverage-on happy path raise ("coverage knots need ... got 6")
     # and 422 in the viewport. A sub-floor n_coeff under coverage must instead defer
     # to the kernel's coverage-aware default (16) and build a real plateau.
-    curve = build_icw_curve({**BASE_COVERAGE_PARAMS, "n_coeff": 6})
+    curve = build_icw_curve({**BASE_COVERAGE_PARAMS, "n_coeff": n_coeff})
 
     assert curve.coeffs.size == 16
     _assert_coverage_plateau(curve, 50.0)
+
+
+def test_negative_coverage_angle_raises() -> None:
+    with pytest.raises(ValueError, match="coverage_angle must be non-negative"):
+        build_icw_curve({**BASE_COVERAGE_PARAMS, "coverage_angle": -1.0})
 
 
 def test_non_coverage_still_honors_small_n_coeff() -> None:

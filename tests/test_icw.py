@@ -216,6 +216,31 @@ class TestSolver:
         _curve, report = solve_icw(targets, seed=seed)
         assert report.feasible, report.violations
 
+    def test_density_knot_seed_does_not_project_coefficients(self):
+        """Seed coefficients are comparable only when the solver basis knots match the seed."""
+        import hornlab_mesher.icw.solver as solver_mod
+        from hornlab_mesher.icw.core import DEFAULT_DEGREE, clamped_uniform_knots
+
+        seed = seed_from_osse(OSSE_PARAMS)
+        targets = ICWTargets(
+            mode=TerminationMode.FLAT_BAFFLE,
+            r0=12.7, theta0_deg=18, x_target=120, r_mouth=116,
+        )
+        n_coeff = seed.coeffs.size
+        degree = DEFAULT_DEGREE
+        knots = clamped_uniform_knots(n_coeff, degree)
+        assert not np.array_equal(seed.knots, knots)
+
+        lin = solver_mod._build_linsys(targets, knots, n_coeff, degree)
+        a0 = lin.a0(targets.theta0, targets.theta1, 1.0)
+        S_seed, b_seed = solver_mod._seed_state(targets, seed, lin.n_shape)
+        projected = solver_mod._seed_shape_projection(
+            seed, knots, n_coeff, lin.Phi, a0, lin.n_shape, b_seed
+        )
+
+        assert S_seed == pytest.approx(seed.S)
+        assert np.array_equal(projected, np.zeros(lin.n_shape))
+
 
 # =====================================================================================
 # CHECKS
@@ -516,7 +541,7 @@ class TestAdversarial:
         Phi = lin.Phi
         n_shape = lin.n_shape
         chord = solver_mod._chord(targets)
-        S_seed, b_seed = solver_mod._seed_state(targets, Phi, None, n_shape)
+        S_seed, b_seed = solver_mod._seed_state(targets, None, n_shape)
         S_lo = max(chord * (1.0 + 1e-6), 1e-6)
         S_hi = max(chord * 50.0, S_seed * 10.0, 10.0)
         ks = 5.0 / max(targets.r0, 1.0)
@@ -543,6 +568,25 @@ class TestAdversarial:
         s = curve.sample(4000)
         assert aperture_report(s).n_pi2_crossings == 1
         assert is_monotone_radius(s)
+
+    def test_flat_baffle_continuation_skips_identical_targets(self):
+        """Flat-baffle theta1 is coerced to 90deg, so continuation must not re-solve no-ops."""
+        import hornlab_mesher.icw.solver as solver_mod
+
+        targets = ICWTargets(
+            mode=TerminationMode.FLAT_BAFFLE,
+            r0=12.7, theta0_deg=18, x_target=120, r_mouth=116,
+        )
+        calls = []
+
+        def run_fn(target_set, p_init, nfev):
+            calls.append((target_set, p_init.copy(), nfev))
+            return p_init
+
+        out = solver_mod._continuation_solve(targets, run_fn, np.array([1.0]), max_nfev=60)
+
+        assert out is None
+        assert calls == []
 
     def test_infeasible_target_message_points_right_direction(self):
         """P1-4: a genuinely impossible target (r_mouth < r0) reports feasible=False AND the
