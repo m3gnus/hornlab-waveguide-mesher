@@ -77,7 +77,10 @@ def test_no_bound_regression_matches_pre_m4_coefficients() -> None:
     curve, report = solve_icw(targets)
     assert report.feasible, report.violations
     assert curve.coeffs.shape == _BASE_COEFFS_PRE_M4.shape
-    assert np.max(np.abs(curve.coeffs - _BASE_COEFFS_PRE_M4)) < 1e-12
+    # Solver-endpoint snapshot: allow scipy/BLAS version drift (observed
+    # 2.9e-10 between scipy 1.17.1 and 1.18.0) while still catching any real
+    # M4-bound perturbation, which moves coefficients by orders more.
+    assert np.max(np.abs(curve.coeffs - _BASE_COEFFS_PRE_M4)) < 5e-8
 
 
 def test_generous_curvature_and_slope_caps_are_inert() -> None:

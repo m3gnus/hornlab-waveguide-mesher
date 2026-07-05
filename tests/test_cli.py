@@ -5,6 +5,7 @@ import math
 import pytest
 
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
+from hornlab_mesher.config_parser import ConfigError
 
 
 ROSSE_CFG = """
@@ -462,6 +463,41 @@ OS.k = 0.9
 """
 
 
+def test_multi_source_ath_configs_are_rejected(tmp_path):
+    # Contour/secondary-source models would silently mesh a default cap source
+    # instead of the configured crossover model (Boundary Lab 2-way example).
+    for snippet in (
+        "Source.Contours = {\n1 0 0\n2 10 0\n}\n",
+        "LFSource.B = {\nSID = 4\n}\n",
+        "Source.Velocity = 2\n",
+    ):
+        cfg_path = tmp_path / "multi-source.cfg"
+        cfg_path.write_text(ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n" + snippet, encoding="utf-8")
+        with pytest.raises(ConfigError, match="multi-source"):
+            load_config(cfg_path)
+
+
+def test_explicit_mode_contradicting_enclosure_depth_raises():
+    config = {
+        "formula": "OSSE",
+        "mode": "infinite-baffle",
+        "profile": {"r0": 12.7, "a": 45.0, "L": 90.0},
+        "enclosure": {"depth_mm": 200.0},
+    }
+    with pytest.raises(ConfigError, match="contradicts"):
+        build_geometry_params(config)
+
+
+def test_enclosure_depth_without_mode_still_implies_enclosure():
+    config = {
+        "formula": "OSSE",
+        "profile": {"r0": 12.7, "a": 45.0, "L": 90.0},
+        "enclosure": {"depth_mm": 200.0},
+    }
+    _params, _formula, mode = build_geometry_params(config)
+    assert mode == "enclosure"
+
+
 def test_ath_text_import_injects_ath_defaults(tmp_path):
     cfg_path = tmp_path / "flat-osse.cfg"
     # SimType 2 keeps freestanding mode so the wall-thickness default is
@@ -473,10 +509,12 @@ def test_ath_text_import_injects_ath_defaults(tmp_path):
     assert formula == "OSSE"
     assert params["a0"] == 0
     assert params["s"] == 0.7
+    # ATH defaults verified against ath.exe V2025-12 (byte-identical mesh for
+    # absent vs explicit value): wall 5, throat 4, mouth 8, rear 15.
     assert params["wallThickness"] == 5
-    assert params["throatResolution"] == 5
+    assert params["throatResolution"] == 4
     assert params["mouthResolution"] == 8
-    assert params["rearResolution"] == 10
+    assert params["rearResolution"] == 15
 
 
 def test_toml_dict_configs_keep_package_defaults():

@@ -186,25 +186,21 @@ def _bezier_zmap(n_length: int, controls: tuple[tuple[float, float], tuple[float
 
 def _ath_default_zmap(n_length: int, formula: str = "OSSE") -> np.ndarray:
     steps = max(1, int(n_length))
-    if steps == len(_ATH_T_9) - 1:
-        # Exact ATH 9-segment export (solana reference case).
-        return _ATH_T_9.copy()
     if formula != "R-OSSE":
+        if steps == len(_ATH_T_9) - 1:
+            # Exact ATH 9-segment export (solana reference case, an OSSE grid).
+            return _ATH_T_9.copy()
         return _bezier_zmap(steps, _ATH_OSSE_ZMAP_BEZIER)
     # R-OSSE keeps the exact 20-segment ATH reference table (asro cases) and
     # interpolates it for other segment counts.
     ref_steps = len(_ATH_T_20) - 1
     if steps == ref_steps:
         return _ATH_T_20.copy()
+    positions = (np.arange(1, steps) / steps) * ref_steps
     out = np.empty(steps + 1, dtype=np.float64)
     out[0] = 0.0
     out[steps] = 1.0
-    for j in range(1, steps):
-        pos = (j / steps) * ref_steps
-        lo = int(math.floor(pos))
-        hi = min(ref_steps, lo + 1)
-        frac = pos - lo
-        out[j] = _ATH_T_20[lo] + (_ATH_T_20[hi] - _ATH_T_20[lo]) * frac
+    out[1:steps] = np.interp(positions, np.arange(ref_steps + 1), _ATH_T_20)
     return out
 
 

@@ -363,8 +363,16 @@ def _normalise_mode(
 ) -> str:
     raw = str(_pick(config, mesh, names=("mode",), default="")).strip().lower().replace("_", "-")
     enc_depth = _enc_depth_mm(config, mesh, enclosure, formula)
-    if raw in {"enclosure", "enclosed"} or enc_depth > 0:
+    if raw in {"enclosure", "enclosed"}:
         return "enclosure"
+    if enc_depth > 0:
+        if raw == "":
+            # An enclosure depth implies enclosure mode when no mode is given.
+            return "enclosure"
+        raise ConfigError(
+            f"mode {raw!r} contradicts the configured enclosure depth {enc_depth:g} mm; "
+            "drop the enclosure or use mode='enclosure'"
+        )
     if raw in {"bare", "inner", "open"}:
         return "bare"
     if raw in {"infinite-baffle", "infinitebaffle", "ib", "baffle"}:
@@ -600,7 +608,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         ),
         "throatResolution": _float(mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0),
         "mouthResolution": _float(mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0),
-        "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=25.0),
+        "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=15.0),
         "subdomainSlices": _scalar_or_expr(mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""),
         "interfaceOffset": _scalar_or_expr(mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=0.0),
         "interfaceResolution": _optional_float(
@@ -649,10 +657,20 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         common["termination"] = _pick(
             profile, config, names=("termination",), default="flat_baffle"
         )
-        common["L"] = _scalar_or_expr(profile, config, names=("L_mm", "L"), default=120.0)
-        common["R"] = _scalar_or_expr(profile, config, names=("R_mm", "R"), default=150.0)
+        termination = str(common["termination"] or "flat_baffle").strip().lower()
+        if termination == "flat_baffle":
+            common["L"] = _scalar_or_expr(profile, config, names=("L_mm", "L"), default=120.0)
+            common["R"] = _scalar_or_expr(profile, config, names=("R_mm", "R"), default=150.0)
+        else:
+            # Rollback reads R with r_aperture as a fallback; materialising the
+            # flat-baffle defaults here would silently override an explicit
+            # r_aperture with R=150. Thread L/R only when actually configured.
+            for key, src_names in (("L", ("L_mm", "L")), ("R", ("R_mm", "R"))):
+                if _pick(profile, config, names=src_names, default=None) is not None:
+                    common[key] = _scalar_or_expr(profile, config, names=src_names, default=None)
         for key, src_names in (
             ("kappa0", ("kappa0",)),
+            ("r_aperture", ("r_aperture",)),
             ("n_coeff", ("n_coeff",)),
             ("theta1", ("theta1_deg", "theta1")),
             ("x_aperture", ("x_aperture",)),
@@ -769,6 +787,17 @@ def _mesh_report(
     return report
 
 
+def _num_or_default(value: Any, default: float) -> float:
+    """Numeric param with an explicit unset check.
+
+    ``0`` is a meaningful value for several params (``sourceShape = 0`` is the
+    flat disc), so only ``None``/blank counts as unset — never falsiness.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return float(default)
+    return float(value)
+
+
 def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[HornInterface, ...]:
     offsets = _number_list(params.get("interfaceOffset"))
     if not offsets:
@@ -828,9 +857,9 @@ def build_from_config(
         closed=bool(grid.get("full_circle", True)),
         symmetry_planes=_symmetry_planes_for_quadrants(quadrants),
         vertical_offset_mm=float(grid.get("vertical_offset_mm", 0.0) or 0.0),
-        source_shape=int(float(params.get("sourceShape", 1) or 1)),
-        source_radius_mm=float(params.get("sourceRadius", -1) or -1),
-        source_curv=int(float(params.get("sourceCurv", 0) or 0)),
+        source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
+        source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
+        source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
         source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
         interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
         interfaces=_interfaces_from_params(params, n_length),
@@ -840,7 +869,7 @@ def build_from_config(
     density = MeshDensity(
         throat_res_mm=_float(mesh, names=("throat_res_mm", "throat_res", "throatResolution"), default=4.0),
         mouth_res_mm=_float(mesh, names=("mouth_res_mm", "mouth_res", "mouthResolution"), default=26.0),
-        rear_res_mm=_float(mesh, names=("rear_res_mm", "rear_res", "rearResolution"), default=25.0),
+        rear_res_mm=_float(mesh, names=("rear_res_mm", "rear_res", "rearResolution"), default=15.0),
         enc_front_res_mm=_pick(
             mesh,
             enclosure,

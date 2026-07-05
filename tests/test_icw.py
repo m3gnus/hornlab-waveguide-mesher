@@ -569,6 +569,41 @@ class TestAdversarial:
 # Regression: review fixes (2026-06-15)
 # =====================================================================================
 class TestReviewFixes:
+    def test_targets_mode_curve_is_memoised(self):
+        """The TARGETS-mode memo used to store under a shadowed loop variable
+        (the literal string "theta_max_deg") and never hit."""
+        from hornlab_mesher import profile_formulas as pf
+
+        params = {"type": "ICW", "r0": 12.7, "a0": 14.5, "L": 160.0, "R": 130.0}
+        pf._ICW_CURVE_CACHE.clear()
+        first = pf.build_icw_curve(params)
+        assert pf._icw_cache_key(params) in pf._ICW_CURVE_CACHE
+        assert "theta_max_deg" not in pf._ICW_CURVE_CACHE
+        second = pf.build_icw_curve(params)
+        assert second is first
+
+    def test_rollback_r_aperture_reaches_the_solver(self):
+        """config_builder used to materialise R=150.0 for every termination,
+        silently overriding an explicit rollback r_aperture."""
+        from hornlab_mesher.cli import build_geometry_params
+
+        params, formula, _mode = build_geometry_params(
+            {
+                "formula": "ICW",
+                "profile": {
+                    "formula": "ICW",
+                    "r0": 12.7,
+                    "a0": 14.5,
+                    "termination": "rollback",
+                    "r_aperture": 70.0,
+                    "depth": 90.0,
+                },
+            }
+        )
+        assert formula == "ICW"
+        assert float(params["r_aperture"]) == 70.0
+        assert "R" not in params or params.get("R") is None
+
     def test_theta90_plateau_to_end_counts_once(self):
         """A theta=90deg plateau running to the final node is ONE crossing, not two.
 

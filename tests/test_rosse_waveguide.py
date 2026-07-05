@@ -100,3 +100,22 @@ def test_rosse_tmax_truncates_total_profile_when_extension_is_enabled():
     expected = calculate_rosse(0.5, 0.0, params)
     assert np.allclose(points[-1], expected)
     assert points[-1, 1] < 150.0
+
+
+def test_rosse_nine_segment_zmap_uses_rosse_table_not_osse_solana():
+    """The 9-segment early return was formula-blind and handed R-OSSE the OSSE
+    solana table; R-OSSE must interpolate its own T20 reference."""
+    from hornlab_mesher.profile_sampling import _ath_default_zmap, _ATH_T_20
+    import numpy as np
+
+    nine = _ath_default_zmap(9, "R-OSSE")
+    positions = (np.arange(1, 9) / 9.0) * (len(_ATH_T_20) - 1)
+    expected = np.interp(positions, np.arange(len(_ATH_T_20)), _ATH_T_20)
+    assert np.allclose(nine[1:9], expected)
+    # neighbours stay monotone-consistent: first interior ring between 8- and 10-seg values
+    eight = _ath_default_zmap(8, "R-OSSE")[1]
+    ten = _ath_default_zmap(10, "R-OSSE")[1]
+    assert min(eight, ten) <= nine[1] <= max(eight, ten)
+    # OSSE keeps the exact solana table at 9 segments
+    from hornlab_mesher.profile_sampling import _ATH_T_9
+    assert np.array_equal(_ath_default_zmap(9, "OSSE"), _ATH_T_9)

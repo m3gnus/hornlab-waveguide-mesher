@@ -93,7 +93,9 @@ def build_mesh_with_info(
         initialized_here = False
         try:
             if not gmsh.isInitialized():
-                gmsh.initialize()
+                # interruptible=False skips gmsh's SIGINT handler, which only
+                # the main thread may install — required for worker threads.
+                gmsh.initialize(interruptible=False)
                 initialized_here = True
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)

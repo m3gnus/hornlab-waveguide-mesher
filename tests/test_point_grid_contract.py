@@ -1779,3 +1779,37 @@ def test_open_front_baffle_guard_catches_tangential_outside_reduced_mouth_contac
 
     with pytest.raises(NotImplementedError, match="outside the mouth opening"):
         _reject_front_baffle_wall_intersections(inner_points, closed=False)
+
+
+def test_source_shape_zero_builds_flat_disc(tmp_path):
+    """sourceShape=0 (flat disc) used to be silently coerced to 1 (cap) by an
+    ``or``-default; the driven surface must actually be flat."""
+    def _cfg(shape):
+        return {
+            "formula": "OSSE",
+            "mode": "bare",
+            "profile": {"r0": 12.7, "a": 45.0, "a0": 8.0, "L": 60.0},
+            "mesh": {
+                "angularSegments": 32,
+                "lengthSegments": 10,
+                "quadrants": 1234,
+                "wallThickness": 0,
+                "throatResolution": 5,
+                "mouthResolution": 12,
+                "scaleToMetres": False,
+            },
+            "source": {"sourceShape": shape, "sourceCurv": 1},
+        }
+
+    spreads = {}
+    for shape in (0, 1):
+        out = tmp_path / f"flat-src-{shape}.msh"
+        build_from_config(_cfg(shape), out)
+        mesh = meshio.read(out)
+        triangles, tags = _triangles_and_tags(mesh)
+        source_nodes = np.unique(triangles[tags == 2])
+        z = mesh.points[source_nodes][:, 2]
+        spreads[shape] = float(z.max() - z.min())
+
+    assert spreads[0] < 1e-6, "flat disc source must lie in the throat plane"
+    assert spreads[1] > 0.1, "curved cap control should have axial depth"

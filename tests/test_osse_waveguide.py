@@ -118,3 +118,15 @@ def test_axisymmetric_superellipse_aspect_ratio_matches_point_grid_semantics():
 
     assert np.isclose(float(np.max(ring[:, 0])), 15.0)
     assert np.isclose(float(np.max(ring[:, 1])), 10.0)
+
+
+def test_throat_extension_over_taper_raises():
+    """An extension that tapers below zero radius is a config error, not a
+    silent clamp producing a self-intersecting wall."""
+    import pytest
+    from hornlab_mesher.profiles import calculate_osse
+
+    params = {"r0": 5.0, "a": 45.0, "a0": 8.0, "L": 90.0,
+              "throatExtLength": 30.0, "throatExtAngle": 30.0}
+    with pytest.raises(ValueError, match="below zero radius"):
+        calculate_osse(10.0, 0.0, params)

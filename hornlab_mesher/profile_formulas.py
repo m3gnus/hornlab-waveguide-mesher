@@ -99,7 +99,12 @@ def calculate_osse(
     # enlarge the main throat. For a straight extension (angle 0) this is a plain r0
     # tube, identical to before.
     r0_main = r0_base
-    r0_throat = max(0.0, r0_base - ext_len * math.tan(ext_angle))
+    r0_throat = r0_base - ext_len * math.tan(ext_angle)
+    if r0_throat < 0.0:
+        raise ValueError(
+            f"Throat.Ext.Length {ext_len:g} at Throat.Ext.Angle tapers below zero radius "
+            f"(implied driver-end radius {r0_throat:.3f} mm); shorten the extension or reduce the angle"
+        )
     a_deg = eval_param(params.get("a"), p, 60.0)
     a0_deg = eval_param(params.get("a0"), p, 15.5)
 
@@ -519,10 +524,12 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     }
     if kappa0 is not None:
         target_kwargs["kappa0"] = float(kappa0)
-    for key in ("kappa_abs_max", "dkappa_ds_abs_max", "theta_max_deg"):
-        value = _icw_float(params, key)
+    # NB: must not shadow ``key`` (the cache key stored at the end of this
+    # function) — a shadowed loop variable silently defeated the memo once.
+    for cap_name in ("kappa_abs_max", "dkappa_ds_abs_max", "theta_max_deg"):
+        value = _icw_float(params, cap_name)
         if value is not None:
-            target_kwargs[key] = float(value)
+            target_kwargs[cap_name] = float(value)
 
     if termination == "flat_baffle":
         x_target = _icw_float(params, "L", "L_mm")

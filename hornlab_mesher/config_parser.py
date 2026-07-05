@@ -87,8 +87,26 @@ def _reject_unsupported_ath_keys(
     flat: Mapping[str, str],
     profile_items: Mapping[str, str],
     mesh_items: Mapping[str, str],
+    blocks: Mapping[str, Mapping[str, str]] = {},
 ) -> None:
     """Fail loudly on imported keys that change geometry we cannot build."""
+    # Multi-source ATH models (contour-drawn domes, secondary LF sources,
+    # velocity profiles) define driving surfaces this mesher cannot build; a
+    # silent drop would mesh a default cap source instead of the configured
+    # crossover model.
+    multi_source_keys = sorted(
+        key
+        for key in {*flat, *profile_items, *blocks}
+        if key == "Source.Contours"
+        or key.startswith("LFSource")
+        or key == "Source.Velocity"
+        or key.startswith("Source.Velocity.")
+    )
+    if multi_source_keys:
+        raise ConfigError(
+            "multi-source ATH configs are not supported by this mesher "
+            f"(saw {', '.join(multi_source_keys)}); only the single cap/disc throat source is implemented"
+        )
     throat_profile = _maybe_number(profile_items.get("Throat.Profile", flat.get("Throat.Profile")))
     if throat_profile is not None and throat_profile != 1:
         raise ConfigError(
@@ -251,11 +269,13 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if zmap_points is not None:
         mesh["zMapPoints"] = zmap_points
     mesh.setdefault("samplingMode", "zmap" if zmap_points is not None else "ath-default-zmap")
-    # ATH defaults (Ath 4.8.2 User Guide 4.1.4) for keys the import may omit.
+    # ATH defaults for keys the import may omit, verified against ath.exe
+    # V2025-12 by byte-identical mesh probes (absent vs explicit value):
+    # WallThickness 5, ThroatResolution 4, MouthResolution 8, RearResolution 15.
     mesh.setdefault("wallThickness", 5)
-    mesh.setdefault("throatResolution", 5)
+    mesh.setdefault("throatResolution", 4)
     mesh.setdefault("mouthResolution", 8)
-    mesh.setdefault("rearResolution", 10)
+    mesh.setdefault("rearResolution", 15)
     morph_items = {
         **prefixed("Morph."),
         **prefixed("MORPH."),
@@ -353,7 +373,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         elif ath_shape != 1:
             raise ConfigError(f"Source.Shape = {ath_shape!r} is not supported; use 1 (cap) or 2 (flat disc)")
 
-    _reject_unsupported_ath_keys(flat, profile_items, mesh_items)
+    _reject_unsupported_ath_keys(flat, profile_items, mesh_items, blocks)
 
     # ABEC.SimType selects the mesh topology: 1 = infinite baffle (the ATH
     # default), 2 = free standing. An enclosure implies a free-standing sim.
