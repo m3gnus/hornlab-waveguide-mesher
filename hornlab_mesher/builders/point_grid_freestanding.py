@@ -117,7 +117,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         n_phi=n_phi,
         closed=geometry.closed,
     )
-    throat = _add_source_surfaces(builder, inner_points, geometry)
+    throat = _add_source_surfaces(builder, inner_points, geometry, wall_dimtags=wall)
 
     wall_tags = [tag for _, tag in wall]
     outer_tags = [tag for _, tag in outer_wall]

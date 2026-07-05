@@ -74,11 +74,15 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             # chords through the shared point cache; B-spline cap spans through
             # the same points coincide with the chords only at the grid nodes
             # and leave an off-plane open seam ring at the throat.
-            throat = _add_source_surfaces(cap_builder, inner_points, geometry)
+            throat = _add_source_surfaces(
+                cap_builder, inner_points, geometry, wall_dimtags=wall
+            )
         else:
             # A reduced half-model grid must split into one wall patch per
             # quadrant so its rear enclosure can attach a sector to each mouth
             # curve; the throat cap reuses the same partition to stay watertight.
+            # Closed grids reuse the partition too: a diverging cap span split
+            # re-authors the throat curve and cracks the seam.
             wall_groups = _bspline_patch_phi_groups(
                 inner_points.shape[0],
                 closed=geometry.closed,
@@ -89,13 +93,13 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 closed=geometry.closed,
                 phi_groups=wall_groups,
             )
-            if not geometry.closed:
-                cap_boundary_groups = wall_groups
+            cap_boundary_groups = wall_groups
             throat = _add_occ_source_cap_surfaces(
                 cap_builder,
                 inner_points,
                 geometry,
                 boundary_phi_groups=cap_boundary_groups,
+                wall_dimtags=wall,
             )
         require_gmsh().model.occ.synchronize()
         if not throat:
@@ -111,7 +115,18 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         if source_shape == SOURCE_SHAPE_ROUNDED_CAP:
             cap_builder = _SharedSurfaceBuilder()
             cap_builder.add_grid("inner", inner_points)
-            throat = _add_occ_source_cap_surfaces(cap_builder, inner_points, geometry)
+            # Closed grids fill the cap on the wall's own throat edge. Open
+            # grids re-author the rim, which must span the wall patch's full
+            # angular row so both rims mesh identical 1D nodes and weld.
+            throat = _add_occ_source_cap_surfaces(
+                cap_builder,
+                inner_points,
+                geometry,
+                boundary_phi_groups=(
+                    None if geometry.closed else [list(range(inner_points.shape[0]))]
+                ),
+                wall_dimtags=wall,
+            )
         elif source_shape == SOURCE_SHAPE_FLAT_DISC and geometry.closed:
             throat = make_planar_fill_from_boundary(
                 wall,

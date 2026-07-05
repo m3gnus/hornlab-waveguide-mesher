@@ -237,14 +237,16 @@ def make_planar_sector_fill_from_ring(
     return [(2, int(surf))]
 
 
-def make_planar_fill_from_boundary(
+def extreme_boundary_loop_curves(
     dimtags: list[tuple[int, int]],
     *,
     source_axis: str = "z",
     use_min: bool = True,
-    closed: bool = True,
-) -> list[tuple[int, int]]:
-    """Fill an extreme boundary loop using the existing OCC boundary curves."""
+) -> list[int]:
+    """Boundary curves of ``dimtags`` lying entirely on the extreme axis plane.
+
+    Requires a prior ``occ.synchronize()``.
+    """
 
     gmsh = require_gmsh()
     boundary = gmsh.model.getBoundary(dimtags, oriented=False, combined=False)
@@ -277,11 +279,26 @@ def make_planar_fill_from_boundary(
 
     target = lo_all if use_min else hi_all
     eps = max(1e-6, abs(hi_all - lo_all) * 1e-3)
-    loop_curves = [
+    return [
         curve_tag
         for curve_tag, (lo, hi) in bounds.items()
         if abs(lo - target) <= eps and abs(hi - target) <= eps
     ]
+
+
+def make_planar_fill_from_boundary(
+    dimtags: list[tuple[int, int]],
+    *,
+    source_axis: str = "z",
+    use_min: bool = True,
+    closed: bool = True,
+) -> list[tuple[int, int]]:
+    """Fill an extreme boundary loop using the existing OCC boundary curves."""
+
+    gmsh = require_gmsh()
+    loop_curves = extreme_boundary_loop_curves(
+        dimtags, source_axis=source_axis, use_min=use_min
+    )
     if not loop_curves:
         return []
 

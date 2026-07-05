@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from ..geometry import PointGridHornGeometry
+from ._occ import extreme_boundary_loop_curves, require_gmsh
 from .point_grid_surfaces import (
     _GeoSurfaceBuilder,
     _SharedSurfaceBuilder,
@@ -39,125 +40,84 @@ def _geo_radial_source_curves(
     pole_tag: int,
     sphere_center_tag: int,
     cap_height: float,
+    indices: list[int] | None = None,
 ) -> dict[int, int]:
     n_phi = inner_points.shape[0]
+    radial_indices = sorted(set(indices)) if indices is not None else range(n_phi)
     if cap_height <= 1.0e-12:
         return {
             i: builder.line_tags(builder.point("inner", i, 0), pole_tag)
-            for i in range(n_phi)
+            for i in radial_indices
         }
 
     return {
         i: builder.circle_arc(builder.point("inner", i, 0), sphere_center_tag, pole_tag)
-        for i in range(n_phi)
+        for i in radial_indices
     }
 
 
-def _angle_from_center(point: np.ndarray, center: np.ndarray) -> float:
-    return math.atan2(float(point[1] - center[1]), float(point[0] - center[0]))
+_CAP_CONSTRAINT_RING_FRACTIONS = (1.0 / 3.0, 2.0 / 3.0)
+_CAP_CONSTRAINT_AZIMUTHS = 12
 
 
-def _positive_angle_delta(start: float, end: float) -> float:
-    delta = math.fmod(end - start, math.tau)
-    if delta <= 1.0e-12:
-        delta += math.tau
-    return delta
-
-
-def _geo_source_cap_phi_curve(
-    builder: _GeoSurfaceBuilder,
-    indices: list[int],
-    *,
-    center_tag: int,
-) -> int:
-    start_tag = builder.point("inner", indices[0], 0)
-    end_tag = builder.point("inner", indices[-1], 0)
-    if start_tag == end_tag:
-        return builder.spline([("inner", i, 0) for i in indices])
-    return builder.circle_arc(start_tag, center_tag, end_tag)
-
-
-def _spherical_occ_cap_surfaces(
-    builder: _SharedSurfaceBuilder,
-    inner_points: np.ndarray,
+def _occ_rounded_cap_on_wall_rim(
+    wall_dimtags: list[tuple[int, int]],
     geometry: PointGridHornGeometry,
     *,
     center: np.ndarray,
     throat_radius: float,
     cap_height: float,
 ) -> list[tuple[int, int]]:
+    """Rounded source cap filled directly on the wall's throat boundary curves.
+
+    Sharing the wall's own OCC edges is what welds the cap-throat seam
+    watertight: both surfaces mesh the same curve once, so the seam cannot
+    accumulate two mismatched node rings. A rim authored independently (an
+    exact sphere carve, or a re-built BSpline) meshes its own nodes and leaves
+    a free-edge crack around the throat. Interior on-sphere constraint points
+    pin the filling to the analytic source sphere; the rim itself follows the
+    wall edge, which chords the exact throat circle at grid resolution.
+    """
+
     if throat_radius <= 1.0e-9 or cap_height <= 1.0e-12:
         return []
 
-    gmsh = builder.gmsh
+    gmsh = require_gmsh()
+    gmsh.model.occ.synchronize()
+    curves = extreme_boundary_loop_curves(wall_dimtags, source_axis="z", use_min=True)
+    if not curves:
+        return []
+
     radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
     sphere_center = np.array(center, dtype=np.float64)
     sphere_center[2] += sign * (cap_height - radius)
-    base = math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
-    ring_angle = math.asin(max(-1.0, min(1.0, base / radius)))
-    if sign > 0.0:
-        angle1, angle2 = ring_angle, math.pi / 2.0
-    else:
-        angle1, angle2 = -math.pi / 2.0, -ring_angle
+    pole = np.array(center, dtype=np.float64)
+    pole[2] += sign * cap_height
 
-    ring = inner_points[:, 0, :]
-    volume_tags: list[int] = []
-    for indices in _source_cap_phi_groups(inner_points.shape[0], closed=True):
-        start_angle = _angle_from_center(ring[indices[0]], center)
-        end_angle = _angle_from_center(ring[indices[-1]], center)
-        angle3 = _positive_angle_delta(start_angle, end_angle)
-        volume_tag = int(
-            gmsh.model.occ.addSphere(
-                float(sphere_center[0]),
-                float(sphere_center[1]),
-                float(sphere_center[2]),
-                float(radius),
-                angle1=float(angle1),
-                angle2=float(angle2),
-                angle3=float(angle3),
+    constraint_tags = [
+        int(gmsh.model.occ.addPoint(float(pole[0]), float(pole[1]), float(pole[2])))
+    ]
+    rim_angle = math.asin(max(-1.0, min(1.0, throat_radius / radius)))
+    for fraction in _CAP_CONSTRAINT_RING_FRACTIONS:
+        polar = rim_angle * fraction
+        ring_radius = radius * math.sin(polar)
+        ring_z = float(sphere_center[2]) + sign * radius * math.cos(polar)
+        for step in range(_CAP_CONSTRAINT_AZIMUTHS):
+            azimuth = math.tau * step / _CAP_CONSTRAINT_AZIMUTHS
+            constraint_tags.append(
+                int(
+                    gmsh.model.occ.addPoint(
+                        float(center[0] + ring_radius * math.cos(azimuth)),
+                        float(center[1] + ring_radius * math.sin(azimuth)),
+                        ring_z,
+                    )
+                )
             )
-        )
-        if abs(start_angle) > 1.0e-12:
-            gmsh.model.occ.rotate(
-                [(3, volume_tag)],
-                float(sphere_center[0]),
-                float(sphere_center[1]),
-                float(sphere_center[2]),
-                0.0,
-                0.0,
-                1.0,
-                float(start_angle),
-            )
-        volume_tags.append(volume_tag)
 
-    gmsh.model.occ.synchronize()
-
-    surfaces: list[tuple[int, int]] = []
-    remove_surfaces: list[tuple[int, int]] = []
-    z_span_min = max(abs(cap_height) * 0.25, 1.0e-9)
-    for volume_tag in volume_tags:
-        boundary = gmsh.model.getBoundary([(3, volume_tag)], oriented=False, combined=False)
-        candidates: list[tuple[float, int]] = []
-        surface_tags = [int(tag) for dim, tag in boundary if int(dim) == 2]
-        for surface_tag in surface_tags:
-            box = gmsh.model.getBoundingBox(2, surface_tag)
-            z_span = abs(float(box[5]) - float(box[2]))
-            if z_span > z_span_min:
-                candidates.append((float(gmsh.model.occ.getMass(2, surface_tag)), surface_tag))
-        if not candidates:
-            candidates = [
-                (float(gmsh.model.occ.getMass(2, surface_tag)), surface_tag)
-                for surface_tag in surface_tags
-            ]
-        sphere_surface = max(candidates)[1]
-        surfaces.append((2, sphere_surface))
-        remove_surfaces.extend((2, tag) for tag in surface_tags if tag != sphere_surface)
-
-    gmsh.model.occ.remove([(3, tag) for tag in volume_tags], recursive=False)
-    if remove_surfaces:
-        gmsh.model.occ.remove(remove_surfaces, recursive=False)
-    return surfaces
+    loop = int(gmsh.model.occ.addCurveLoop([int(tag) for tag in curves]))
+    surf = int(gmsh.model.occ.addSurfaceFilling(loop, pointTags=constraint_tags))
+    return [(2, surf)]
 
 
 def _add_geo_source_cap_surfaces(
@@ -180,35 +140,52 @@ def _add_geo_source_cap_surfaces(
         sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
         pole[2] += sign * cap_height
         pole_tag = builder.add_point(pole, mesh_size=mesh_size)
-        center_tag = builder.add_point(center, mesh_size=mesh_size)
         sphere_center_tag = -1
         if cap_height > 1.0e-12:
             radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
             sphere_center = np.array(center, dtype=np.float64)
             sphere_center[2] += sign * (cap_height - radius)
             sphere_center_tag = builder.add_point(sphere_center, mesh_size=mesh_size)
+        # The cap rim must reuse the wall's own throat-edge splines (spline
+        # cache): a rim curve of its own -- even one tracing the identical
+        # throat circle -- meshes its own 1D nodes and leaves a free-edge
+        # crack around the throat. The cap still partitions on the coarser
+        # source-cap sectors (ATH builds 4 cap surfaces), so each sector's
+        # rim is stitched from the wall spans it covers.
+        wall_spans = _spline_span_phi_groups(n_phi, closed=True)
+        sector_spans = [[span] for span in wall_spans]
+        cap_groups = _source_cap_phi_groups(n_phi, closed=True)
+        if len(wall_spans) == 2 * len(cap_groups) and all(
+            wall_spans[2 * k][0] == group[0] and wall_spans[2 * k + 1][-1] == group[-1]
+            for k, group in enumerate(cap_groups)
+        ):
+            sector_spans = [
+                [wall_spans[2 * k], wall_spans[2 * k + 1]]
+                for k in range(len(cap_groups))
+            ]
+        endpoints = [
+            index for spans in sector_spans for index in (spans[0][0], spans[-1][-1])
+        ]
         radial_curves = _geo_radial_source_curves(
             builder,
             inner_points,
             pole_tag=pole_tag,
             sphere_center_tag=sphere_center_tag,
             cap_height=cap_height,
+            indices=endpoints,
         )
         cap: list[tuple[int, int]] = []
-        for indices in _source_cap_phi_groups(n_phi, closed=True):
-            start = indices[0]
-            end = indices[-1]
+        for spans in sector_spans:
+            start = spans[0][0]
+            end = spans[-1][-1]
+            rim = [builder.spline([("inner", i, 0) for i in span]) for span in spans]
+            boundary = [*rim, radial_curves[end], -radial_curves[start]]
             if cap_height > 1.0e-12:
-                phi_curve = _geo_source_cap_phi_curve(builder, indices, center_tag=center_tag)
                 cap.append(
-                    builder.surface(
-                        [phi_curve, radial_curves[end], -radial_curves[start]],
-                        sphere_center_tag=sphere_center_tag,
-                    )
+                    builder.surface(boundary, sphere_center_tag=sphere_center_tag)
                 )
             else:
-                phi_curve = builder.spline([("inner", i, 0) for i in indices])
-                cap.append(builder.surface([phi_curve, radial_curves[end], -radial_curves[start]]))
+                cap.append(builder.surface(boundary))
         return cap
 
     center[0] = 0.0
@@ -272,6 +249,7 @@ def _add_occ_source_cap_surfaces(
     geometry: PointGridHornGeometry,
     *,
     boundary_phi_groups: list[list[int]] | None = None,
+    wall_dimtags: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     shape = _validate_source_shape(geometry)
     n_phi = inner_points.shape[0]
@@ -285,9 +263,14 @@ def _add_occ_source_cap_surfaces(
     cap_height = _source_cap_height(throat_radius, geometry) if shape == SOURCE_SHAPE_ROUNDED_CAP else 0.0
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
     if geometry.closed and shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
-        return _spherical_occ_cap_surfaces(
-            builder,
-            inner_points,
+        if wall_dimtags is None:
+            raise ValueError(
+                "a closed rounded source cap requires wall_dimtags: the cap is "
+                "filled on the wall's own throat boundary curves so the seam "
+                "welds watertight"
+            )
+        return _occ_rounded_cap_on_wall_rim(
+            wall_dimtags,
             geometry,
             center=center,
             throat_radius=throat_radius,
@@ -323,10 +306,22 @@ def _add_occ_source_cap_surfaces(
 
     cap: list[tuple[int, int]] = []
     if geometry.closed:
-        for indices in _source_cap_phi_groups(n_phi, closed=True):
+        # Align the cap's rim spans with the wall patch boundaries when the
+        # caller provides them; a diverging span split re-authors the throat
+        # curve and the two coincident rims mesh mismatched node rings.
+        spans = (
+            boundary_phi_groups
+            if boundary_phi_groups is not None
+            else _source_cap_phi_groups(n_phi, closed=True)
+        )
+        for indices in spans:
             start = indices[0]
             end = indices[-1]
             phi_curve = builder.bspline_tags([builder.point("inner", i, 0) for i in indices])
+            if start == end:
+                # Single wrapped span: the rim is one closed curve.
+                cap.append(builder.surface([phi_curve]))
+                continue
             cap.append(builder.surface([phi_curve, radial_lines[end], -radial_lines[start]]))
         return cap
 
@@ -392,6 +387,8 @@ def _add_source_surfaces(
     builder: _SharedSurfaceBuilder,
     inner_points: np.ndarray,
     geometry: PointGridHornGeometry,
+    *,
+    wall_dimtags: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     shape = _validate_source_shape(geometry)
     n_phi = inner_points.shape[0]
@@ -415,9 +412,14 @@ def _add_source_surfaces(
         cap_height = _source_cap_height(throat_radius, geometry)
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
     if closed and shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
-        return _spherical_occ_cap_surfaces(
-            builder,
-            inner_points,
+        if wall_dimtags is None:
+            raise ValueError(
+                "a closed rounded source cap requires wall_dimtags: the cap is "
+                "filled on the wall's own throat boundary curves so the seam "
+                "welds watertight"
+            )
+        return _occ_rounded_cap_on_wall_rim(
+            wall_dimtags,
             geometry,
             center=center,
             throat_radius=throat_radius,

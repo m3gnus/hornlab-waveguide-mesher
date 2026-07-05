@@ -736,7 +736,8 @@ def test_point_grid_rounded_source_shape_builds_cap(tmp_path):
 def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, topology, source_curv):
     throat_radius = 12.7
     source_radius = 60.0
-    inner = _make_point_grid(n_phi=32, n_length=6, r0=throat_radius, r1=50.0)
+    n_phi = 32
+    inner = _make_point_grid(n_phi=n_phi, n_length=6, r0=throat_radius, r1=50.0)
     outer = _make_outer_point_grid(inner) if topology == "freestanding-geo" else None
 
     msh_path = build_mesh(
@@ -765,13 +766,107 @@ def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, top
     source_points = np.asarray(mesh.points, dtype=np.float64)[source_nodes]
     residuals = np.abs(np.linalg.norm(source_points - sphere_center, axis=1) - source_radius)
 
-    assert float(np.max(residuals)) < 1.0e-6 * source_radius
+    if topology == "freestanding-geo":
+        # The geo cap meshes directly on the analytic sphere (spherical
+        # surface fill bounded by the wall's own throat splines).
+        assert float(np.max(residuals)) < 1.0e-6 * source_radius
+    else:
+        # The OCC cap is a filling on the wall's own throat boundary curve,
+        # pinned to the sphere by interior constraint points. The rim follows
+        # the wall's control B-spline, which chords the exact throat circle
+        # at grid resolution (~ r * (2*pi/n_phi)^2 / 6), so the residual
+        # budget scales with that chord sagitta -- welding the seam beats
+        # nanometre rim exactness the flat mesh triangles cannot see anyway.
+        rim_chord_budget = throat_radius * (math.tau / n_phi) ** 2 / 6.0
+        assert float(np.max(residuals)) < 2.0 * rim_chord_budget
     if source_curv == -1:
         assert float(np.min(source_points[:, 2])) < -1.0
         assert float(np.max(source_points[:, 2])) <= 1.0e-9
     else:
         assert float(np.min(source_points[:, 2])) >= -1.0e-9
         assert float(np.max(source_points[:, 2])) > 1.0
+
+
+@pytest.mark.parametrize(
+    "topology",
+    [
+        "bare-occ",
+        "bare-occ-preserve",
+        "freestanding-geo",
+        "freestanding-legacy-occ",
+        "enclosure-occ",
+    ],
+)
+@pytest.mark.parametrize("source_curv", [0, -1])
+def test_closed_rounded_source_cap_welds_watertight_to_throat(tmp_path, topology, source_curv):
+    """The closed rounded cap must share the wall's throat rim discretization.
+
+    Regression: every closed-grid rounded-cap path used to author its own rim
+    curve (an exact sphere carve or a re-built spline over diverging phi
+    spans). The rim was geometrically coincident with the wall's throat edge
+    but meshed its own 1D nodes, leaving an unwelded free-edge crack around
+    the throat that reduced-domain metal solves reject and full-domain solves
+    silently absorb. Free edges may exist only at a genuinely open mouth.
+    """
+
+    inner = _make_point_grid(n_phi=32, n_length=6, r0=12.7, r1=50.0)
+    outer = (
+        _make_outer_point_grid(inner)
+        if topology in {"freestanding-geo", "freestanding-legacy-occ"}
+        else None
+    )
+    enclosure = (
+        HornEnclosure(depth_mm=120.0, edge_mm=8.0)
+        if topology == "enclosure-occ"
+        else None
+    )
+
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=inner,
+            outer_points=outer,
+            closed=True,
+            preserve_grid=(topology == "bare-occ-preserve"),
+            wall_thickness_mm=6.0 if outer is not None else 0.0,
+            source_shape=1,
+            source_radius_mm=60.0,
+            source_curv=source_curv,
+            wg_topology=(topology != "freestanding-legacy-occ"),
+            enclosure=enclosure,
+        ),
+        MeshDensity(throat_res_mm=3.0, mouth_res_mm=20.0, rear_res_mm=24.0),
+        tmp_path / f"cap-weld-{topology}-{source_curv}.msh",
+        scale_to_metres=False,
+    )
+
+    mesh = meshio.read(msh_path)
+    triangles, _ = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+    free_edges = _boundary_edges(triangles)
+    free_nodes = sorted({node for edge in free_edges for node in edge})
+
+    near_throat = [
+        node for node in free_nodes if abs(float(points[node, 2])) < 5.0
+    ]
+    assert not near_throat, (
+        f"{len(near_throat)} free-edge node(s) at the cap-throat seam; "
+        "the rounded cap did not weld to the wall"
+    )
+    if topology in {"freestanding-geo", "freestanding-legacy-occ", "enclosure-occ"}:
+        # Closed topologies have no legitimate opening at all.
+        assert not free_edges, (
+            f"{len(free_edges)} free edge(s) on a closed topology"
+        )
+    else:
+        # A bare horn's only opening is its mouth rim.
+        mouth_z = float(np.max(points[free_nodes, 2])) if free_nodes else 0.0
+        assert free_nodes and mouth_z > 100.0
+        off_mouth = [
+            node
+            for node in free_nodes
+            if abs(float(points[node, 2]) - mouth_z) > 1.0e-3
+        ]
+        assert not off_mouth
 
 
 def test_point_grid_unsupported_source_shape_fails_explicitly(tmp_path):
