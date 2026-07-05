@@ -484,7 +484,12 @@ def _apply_driver_adapter(
         raise ConfigError("driver adapter cannot shrink from waveguide throat to driver throat")
 
     delta_radius = waveguide_radius - driver_radius
-    common["r0"] = driver_radius
+    # Both formulas anchor r0 (Throat.Diameter) at the MAIN waveguide throat
+    # and taper the extension BACK to the driver end (r0 - ext*tan == driver
+    # radius) — the ATH convention. Setting r0 to the driver radius here (the
+    # old forward-expansion assumption) built a horn whose requested waveguide
+    # throat diameter appeared nowhere in the geometry.
+    common["r0"] = waveguide_radius
     if delta_radius <= 1.0e-12:
         common["throatExtLength"] = 0.0
         common["throatExtAngle"] = 0.0

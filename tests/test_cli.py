@@ -189,9 +189,17 @@ def test_driver_adapter_derives_extension_length_from_inch_diameters():
 
     expected_length = (0.5 * (1.4 - 1.0) * 25.4) / math.tan(math.radians(15.0))
     assert formula == "R-OSSE"
-    assert math.isclose(params["r0"], 12.7)
+    # r0 anchors the MAIN waveguide throat (taper-back convention); the
+    # extension lands exactly on the driver radius at z=0.
+    assert math.isclose(params["r0"], 17.78)
     assert math.isclose(params["throatExtLength"], expected_length)
     assert params["throatExtAngle"] == 15.0
+
+    from hornlab_mesher.profiles import calculate_rosse
+
+    z0, r_driver = calculate_rosse(0.0, 0.0, params)
+    assert math.isclose(z0, 0.0, abs_tol=1e-9)
+    assert math.isclose(r_driver, 12.7, abs_tol=1e-9)
 
 
 def test_driver_adapter_derives_extension_angle_from_length():
@@ -209,9 +217,15 @@ def test_driver_adapter_derives_extension_angle_from_length():
     )
 
     expected_angle = math.degrees(math.atan((17.78 - 12.7) / 20.0))
-    assert math.isclose(params["r0"], 12.7)
+    assert math.isclose(params["r0"], 17.78)
     assert params["throatExtLength"] == 20.0
     assert math.isclose(params["throatExtAngle"], expected_angle)
+
+    from hornlab_mesher.profiles import calculate_osse
+
+    # Evaluated geometry: driver radius at z=0, waveguide throat at z=ext.
+    assert math.isclose(calculate_osse(0.0, 0.0, params)[1], 12.7, abs_tol=1e-9)
+    assert math.isclose(calculate_osse(20.0, 0.0, params)[1], 17.78, abs_tol=1e-9)
 
 
 def test_load_config_accepts_ath_txt_extension(tmp_path):
