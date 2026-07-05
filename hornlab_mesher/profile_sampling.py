@@ -17,6 +17,7 @@ from .profile_formulas import (
     calculate_osse,
     calculate_rosse,
     icw_meridian_points,
+    osse_coverage_angle,
     osse_length_config,
 )
 from .profile_morph import (
@@ -489,6 +490,9 @@ def _raw_radial_grid(
             max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
             max_total_len = max(max_total_len, float(total))
             h_bulge = eval_param(params.get("h"), float(phi), 0.0)
+            # The guiding-curve inversion depends only on phi; hoist it out of
+            # the per-z loop (a 24-step bisection per grid point otherwise).
+            coverage_angle = osse_coverage_angle(params, float(phi))
             curve = [
                 (
                     z,
@@ -497,7 +501,12 @@ def _raw_radial_grid(
                 for t_unit, (z, radius) in zip(
                     t_unit_values,
                     (
-                        calculate_osse(float(t) * total, float(phi), params)
+                        calculate_osse(
+                            float(t) * total,
+                            float(phi),
+                            params,
+                            coverage_angle=coverage_angle,
+                        )
                         for t in t_values
                     ),
                 )

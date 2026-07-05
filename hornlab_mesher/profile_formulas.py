@@ -84,6 +84,28 @@ def _circular_arc_radius(
     return center[1] + sign * math.sqrt(under)
 
 
+def osse_coverage_angle(params: Mapping[str, Any], p: float) -> float | None:
+    """Resolve the guiding-curve coverage angle for azimuth ``p`` once.
+
+    The inversion (a bisection over the OSSE radius) depends only on the
+    azimuth, not on z, so grid builders hoist it per azimuth and pass the
+    result to :func:`calculate_osse` via ``coverage_angle`` instead of paying
+    the bisection for every axial sample (~8x the plain grid cost otherwise).
+    Returns ``None`` when no guiding curve is active.
+    """
+    L, _, _ext_len, _slot_len = osse_length_config(params, p)
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    a0_deg = eval_param(params.get("a0"), p, 15.5)
+    main_params = {**params, "L": L}
+    return _coverage_angle_from_guiding_curve(
+        p,
+        main_params,
+        main_length=L,
+        a0_deg=a0_deg,
+        r0_main=r0_base,
+    )
+
+
 def calculate_osse(
     z: float,
     p: float,
