@@ -9,6 +9,7 @@ translation layer.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -25,6 +26,17 @@ from .profile_common import (
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
 from .profiles import build_point_grid, eval_param
+from .builders.point_grid_freestanding import (
+    _outer_wall_axial_ring_indices,
+    _restored_outer_throat_points,
+)
+from .builders.point_grid_sources import (
+    SOURCE_SHAPE_ROUNDED_CAP,
+    _source_cap_height,
+    _source_cap_radius,
+)
+from .builders.point_grid_surfaces import _rear_rim_points
+from .tags import PhysicalGroup
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +85,43 @@ class BuildResult:
             "valid_f_max_hz": self.valid_f_max_hz,
             "solve_cost": self.solve_cost,
         }
+
+
+@dataclass(frozen=True)
+class MeridianBuildResult:
+    """CircSym meridian arrays derived from the public mesher config.
+
+    Coordinates are in metres and follow hornlab-metal-bem's MeridianMesh
+    contract: nodes are ``(rho, z)``, segments index adjacent nodes,
+    ``physical_tags`` is one tag per segment, and normals are cylindrical
+    ``(n_rho, n_z)``.
+    """
+
+    nodes: np.ndarray
+    segments: np.ndarray
+    physical_tags: np.ndarray
+    normals: np.ndarray
+    baffle_z: float | None
+    formula: str
+    mode: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_metal_meridian(self, meridian_cls: Any | None = None) -> Any:
+        """Materialise a hornlab-metal-bem MeridianMesh from these arrays."""
+
+        if meridian_cls is None:
+            try:
+                from hornlab_metal_bem import MeridianMesh as meridian_cls
+            except ImportError as exc:  # pragma: no cover - dependency-owned
+                raise RuntimeError(
+                    "hornlab-metal-bem is required to materialise a CircSym MeridianMesh."
+                ) from exc
+        return meridian_cls(
+            nodes=self.nodes,
+            segments=self.segments,
+            physical_tags=self.physical_tags,
+            normals=self.normals,
+        )
 
 
 def _number_list(value: Any) -> list[float]:
@@ -842,6 +891,292 @@ def _reshape_grid(raw: Any, n_phi: int, n_length: int, name: str) -> np.ndarray:
     return arr.reshape(n_phi, n_length + 1, 3)
 
 
+def _axisymmetric_rejection_reasons(
+    params: Mapping[str, Any],
+    *,
+    mode: str,
+    enclosure_obj: HornEnclosure | None,
+) -> list[str]:
+    reasons: list[str] = []
+    cross = params.get("profileSystem")
+    cross_section = (
+        cross.get("crossSection")
+        if isinstance(cross, Mapping) and isinstance(cross.get("crossSection"), Mapping)
+        else {}
+    )
+    exponent = float(cross_section.get("exponent", 2.0))
+    aspect = float(cross_section.get("aspectRatio", 1.0))
+    if not math.isclose(exponent, 2.0, rel_tol=0.0, abs_tol=1.0e-9):
+        reasons.append(f"CrossSection exponent is {exponent:g}, not 2")
+    if not math.isclose(aspect, 1.0, rel_tol=0.0, abs_tol=1.0e-9):
+        reasons.append(f"CrossSection aspectRatio is {aspect:g}, not 1")
+
+    morph_target = _static_float_or_none(params.get("morphTarget", 0))
+    if morph_target is None or not math.isclose(morph_target, 0.0, rel_tol=0.0, abs_tol=1.0e-9):
+        reasons.append(f"morphTarget is {params.get('morphTarget')!r}, not 0")
+
+    if enclosure_obj is not None or mode == "enclosure":
+        depth = getattr(enclosure_obj, "depth_mm", params.get("encDepth", None))
+        reasons.append(f"enclosure depth is {float(depth):g} mm")
+    return reasons
+
+
+def _radial_profile_from_grid(points: np.ndarray, *, name: str) -> np.ndarray:
+    radial = np.linalg.norm(points[:, :, :2], axis=2)
+    z_values = points[:, :, 2]
+    radial_span = np.ptp(radial, axis=0)
+    z_span = np.ptp(z_values, axis=0)
+    if np.any(radial_span > 1.0e-6) or np.any(z_span > 1.0e-6):
+        max_radial = float(np.max(radial_span)) if radial_span.size else 0.0
+        max_z = float(np.max(z_span)) if z_span.size else 0.0
+        raise ConfigError(
+            "CircSym requires a circular waveguide: "
+            f"{name} varies with azimuth (max radius span {max_radial:.6g} mm, "
+            f"max z span {max_z:.6g} mm)"
+        )
+    return np.column_stack((np.mean(radial, axis=0), np.mean(z_values, axis=0)))
+
+
+def _append_meridian_points(
+    nodes: list[tuple[float, float]],
+    tags: list[int],
+    points: np.ndarray,
+    *,
+    tag: int,
+) -> None:
+    for raw_point in np.asarray(points, dtype=np.float64):
+        point = (float(raw_point[0]), float(raw_point[1]))
+        if not nodes:
+            nodes.append(point)
+            continue
+        prev = nodes[-1]
+        if math.isclose(prev[0], point[0], rel_tol=0.0, abs_tol=1.0e-9) and math.isclose(
+            prev[1], point[1], rel_tol=0.0, abs_tol=1.0e-9
+        ):
+            continue
+        nodes.append(point)
+        tags.append(int(tag))
+
+
+def _source_cap_polyline(
+    *,
+    throat_radius_mm: float,
+    throat_z_mm: float,
+    geometry: PointGridHornGeometry,
+    target_segment_mm: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    shape = int(geometry.source_shape)
+    if shape != SOURCE_SHAPE_ROUNDED_CAP or throat_radius_mm <= 1.0e-9:
+        n_segments = max(1, int(math.ceil(throat_radius_mm / max(target_segment_mm, 1.0e-9))))
+        rho = np.linspace(0.0, throat_radius_mm, n_segments + 1, dtype=np.float64)
+        z = np.full_like(rho, float(throat_z_mm))
+        return np.column_stack((rho, z)), {
+            "source_cap_height_mm": 0.0,
+            "source_cap_radius_mm": math.inf,
+            "source_cap_center_z_mm": None,
+            "source_cap_segments": int(n_segments),
+        }
+
+    cap_height = _source_cap_height(throat_radius_mm, geometry)
+    if cap_height <= 1.0e-12:
+        n_segments = max(1, int(math.ceil(throat_radius_mm / max(target_segment_mm, 1.0e-9))))
+        rho = np.linspace(0.0, throat_radius_mm, n_segments + 1, dtype=np.float64)
+        z = np.full_like(rho, float(throat_z_mm))
+        return np.column_stack((rho, z)), {
+            "source_cap_height_mm": 0.0,
+            "source_cap_radius_mm": math.inf,
+            "source_cap_center_z_mm": None,
+            "source_cap_segments": int(n_segments),
+        }
+
+    radius = max(_source_cap_radius(throat_radius_mm, geometry), throat_radius_mm * 1.001)
+    sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    center_z = float(throat_z_mm) + sign * (cap_height - radius)
+    rim_angle = math.asin(max(-1.0, min(1.0, throat_radius_mm / radius)))
+    arc_length = abs(radius * rim_angle)
+    n_segments = max(8, int(math.ceil(arc_length / max(target_segment_mm, 1.0e-9))))
+    rho = np.linspace(0.0, throat_radius_mm, n_segments + 1, dtype=np.float64)
+    z = center_z + sign * np.sqrt(np.maximum(0.0, radius * radius - rho * rho))
+    z[-1] = float(throat_z_mm)
+    return np.column_stack((rho, z)), {
+        "source_cap_height_mm": float(cap_height),
+        "source_cap_radius_mm": float(radius),
+        "source_cap_center_z_mm": float(center_z),
+        "source_cap_segments": int(n_segments),
+    }
+
+
+def _polyline_normals(nodes: np.ndarray, segments: np.ndarray) -> np.ndarray:
+    p0 = nodes[segments[:, 0]]
+    p1 = nodes[segments[:, 1]]
+    delta = p1 - p0
+    lengths = np.linalg.norm(delta, axis=1)
+    if np.any(lengths <= 1.0e-15):
+        raise ConfigError("CircSym meridian contains a zero-length segment")
+    return np.column_stack((-delta[:, 1], delta[:, 0])) / lengths[:, None]
+
+
+def build_meridian(config: Mapping[str, Any]) -> MeridianBuildResult:
+    """Build a tagged CircSym body-of-revolution meridian from public config."""
+
+    params, formula, mode = build_geometry_params(config)
+    # CircSym is a cheap 1-D solve, so over-resolve the meridian independently of
+    # the (coarser) 3-D mesh resolution. A meridian sampled at the 3-D
+    # length-segment count under-radiates at HF (~-3 dB at 18 kHz on the WG
+    # default, where the max segment approaches one wavelength); sample the
+    # generating curve finely so CircSym stays accurate into the 30-40 kHz band.
+    params = dict(params)
+    params["lengthSegments"] = max(int(params.get("lengthSegments") or 32), 400)
+    mesh = _section(config, "mesh")
+    enclosure = _section(config, "enclosure")
+    enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
+
+    reasons = _axisymmetric_rejection_reasons(
+        params,
+        mode=mode,
+        enclosure_obj=enclosure_obj,
+    )
+    if reasons:
+        raise ConfigError("CircSym requires a circular waveguide: " + "; ".join(reasons))
+
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    inner_profile = _radial_profile_from_grid(inner_points, name="inner profile")
+
+    outer_profile: np.ndarray | None = None
+    rear_profile: np.ndarray | None = None
+    if grid.get("outer_points") is not None and mode != "infinite-baffle":
+        outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
+        outer_points = _restored_outer_throat_points(
+            inner_points,
+            outer_points,
+            wall_thickness_mm=float(params["wallThickness"] or 0.0),
+        )
+        outer_profile_grid = _radial_profile_from_grid(outer_points, name="outer profile")
+        rear_z = float(np.mean(inner_points[:, 0, 2]) - float(params["wallThickness"] or 0.0))
+        rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+        rear_profile = _radial_profile_from_grid(
+            rear_points[:, np.newaxis, :],
+            name="rear cap",
+        )[0:1, :]
+        outer_indices = _outer_wall_axial_ring_indices(inner_points)
+        topology_rows = [rear_profile[0], outer_profile_grid[0]]
+        topology_rows.extend(outer_profile_grid[index] for index in outer_indices)
+        outer_profile = np.asarray(topology_rows, dtype=np.float64)
+
+    baffle_z_mm: float | None = None
+    if mode == "infinite-baffle":
+        mouth_z = float(inner_profile[-1, 1])
+        inner_profile = inner_profile.copy()
+        inner_profile[:, 1] -= mouth_z
+        baffle_z_mm = 0.0
+
+    throat_radius = float(inner_profile[0, 0])
+    mouth_radius = float(inner_profile[-1, 0])
+    throat_z = float(inner_profile[0, 1])
+    source_geometry = PointGridHornGeometry(
+        inner_points=inner_points,
+        wall_thickness_mm=float(params["wallThickness"] or 0.0),
+        source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
+        source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
+        source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
+        source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
+        infinite_baffle=(mode == "infinite-baffle"),
+    )
+    cap_points, cap_meta = _source_cap_polyline(
+        throat_radius_mm=throat_radius,
+        throat_z_mm=throat_z,
+        geometry=source_geometry,
+        # Fine cap sampling for CircSym accuracy at HF (see lengthSegments note).
+        target_segment_mm=min(float(params.get("throatResolution") or 4.0), 0.5),
+    )
+
+    nodes_mm: list[tuple[float, float]] = []
+    tags: list[int] = []
+    _append_meridian_points(
+        nodes_mm,
+        tags,
+        cap_points,
+        tag=int(PhysicalGroup.PRIMARY_SOURCE),
+    )
+    _append_meridian_points(
+        nodes_mm,
+        tags,
+        inner_profile,
+        tag=int(PhysicalGroup.RIGID_WALL),
+    )
+
+    if outer_profile is not None and rear_profile is not None:
+        outer_reversed = outer_profile[::-1]
+        _append_meridian_points(
+            nodes_mm,
+            tags,
+            outer_reversed,
+            tag=int(PhysicalGroup.RIGID_WALL),
+        )
+        rear_axis = np.asarray([[0.0, float(rear_profile[0, 1])]], dtype=np.float64)
+        _append_meridian_points(
+            nodes_mm,
+            tags,
+            rear_axis,
+            tag=int(PhysicalGroup.RIGID_WALL),
+        )
+
+    nodes = np.asarray(nodes_mm, dtype=np.float64)
+    if nodes.ndim != 2 or nodes.shape[0] < 2:
+        raise ConfigError("CircSym meridian requires at least two nodes")
+    if len(tags) != nodes.shape[0] - 1:
+        raise ConfigError("CircSym meridian tag count does not match segment count")
+    segments = np.column_stack(
+        (
+            np.arange(nodes.shape[0] - 1, dtype=np.int32),
+            np.arange(1, nodes.shape[0], dtype=np.int32),
+        )
+    )
+    tags_arr = np.asarray(tags, dtype=np.int32)
+    normals = _polyline_normals(nodes, segments)
+
+    nodes_m = nodes * 0.001
+    baffle_z = None if baffle_z_mm is None else float(baffle_z_mm) * 0.001
+    metadata = {
+        "generatedBy": "hornlab-waveguide-mesher",
+        "units": "m",
+        "formula": formula,
+        "mode": mode,
+        "segmentCount": int(segments.shape[0]),
+        "nodeCount": int(nodes.shape[0]),
+        "sourceSegmentCount": int(np.count_nonzero(tags_arr == int(PhysicalGroup.PRIMARY_SOURCE))),
+        "wallSegmentCount": int(np.count_nonzero(tags_arr == int(PhysicalGroup.RIGID_WALL))),
+        "throatRadiusM": throat_radius * 0.001,
+        "mouthRadiusM": mouth_radius * 0.001,
+        "sourceCapHeightM": float(cap_meta["source_cap_height_mm"]) * 0.001,
+        "sourceCapRadiusM": (
+            None
+            if not math.isfinite(float(cap_meta["source_cap_radius_mm"]))
+            else float(cap_meta["source_cap_radius_mm"]) * 0.001
+        ),
+        "sourceCapCenterZM": (
+            None
+            if cap_meta["source_cap_center_z_mm"] is None
+            else float(cap_meta["source_cap_center_z_mm"]) * 0.001
+        ),
+        "baffleZM": baffle_z,
+        "closedOnAxis": bool(nodes[0, 0] <= 1.0e-9 and nodes[-1, 0] <= 1.0e-9),
+    }
+    return MeridianBuildResult(
+        nodes=nodes_m,
+        segments=segments,
+        physical_tags=tags_arr,
+        normals=normals,
+        baffle_z=baffle_z,
+        formula=formula,
+        mode=mode,
+        metadata=metadata,
+    )
+
+
 def build_from_config(
     config: Mapping[str, Any],
     output_path: str | Path,
@@ -958,8 +1293,10 @@ def build_from_config(
 
 __all__ = [
     "BuildResult",
+    "MeridianBuildResult",
     "build_from_config",
     "build_geometry_params",
+    "build_meridian",
     "_bool",
     "_enclosure_from_config",
     "_first_number",

@@ -45,6 +45,12 @@ def build_geometry_params(*args, **kwargs):
     return _build_geometry_params(*args, **kwargs)
 
 
+def build_meridian(*args, **kwargs):
+    from .config_builder import build_meridian as _build_meridian
+
+    return _build_meridian(*args, **kwargs)
+
+
 def load_config(*args, **kwargs):
     from .cli import load_config as _load_config
 
@@ -67,6 +73,7 @@ __all__ = [
     "worst_valid_f_max_hz",
     "build_from_config",
     "build_geometry_params",
+    "build_meridian",
     "build_mesh",
     "build_mesh_with_info",
     "build_osse_waveguide",
