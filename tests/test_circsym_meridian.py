@@ -103,19 +103,35 @@ def test_build_meridian_matches_round_3d_profile_and_source_cap_geometry():
     assert meridian.metadata["closedOnAxis"] is True
 
 
-def test_build_meridian_infinite_baffle_places_mouth_on_baffle_plane():
+def test_build_meridian_rejects_infinite_baffle_until_supported():
     config = _round_osse_config(
         mode="infinite-baffle",
         simType=1,
         mesh={"wallThickness": 0.0},
     )
-    meridian = build_meridian(config)
 
-    assert meridian.mode == "infinite-baffle"
-    assert meridian.baffle_z == pytest.approx(0.0, abs=1.0e-15)
-    assert meridian.metadata["baffleZM"] == pytest.approx(0.0, abs=1.0e-15)
-    assert float(np.max(meridian.nodes[:, 1])) == pytest.approx(0.0, abs=1.0e-12)
-    assert meridian.nodes[-1, 1] == pytest.approx(0.0, abs=1.0e-12)
+    with pytest.raises(ConfigError, match="CircSym does not support infinite baffle"):
+        build_meridian(config)
+
+
+def test_build_meridian_adapts_resolution_to_frequency_and_splits_closures():
+    freq_max_hz = 20_000.0
+    meridian = build_meridian(_round_osse_config(), freq_max_hz=freq_max_hz)
+    lengths = np.linalg.norm(
+        meridian.nodes[meridian.segments[:, 1]] - meridian.nodes[meridian.segments[:, 0]],
+        axis=1,
+    )
+    source_end = int(meridian.metadata["sourceSegmentCount"])
+    inner_end = source_end + int(meridian.metadata["innerSegmentCount"])
+    wavelength_m = 343.0 / freq_max_hz
+
+    assert 120 <= meridian.segments.shape[0] <= 220
+    assert meridian.metadata["adaptiveLengthSegments"] == 77
+    assert meridian.metadata["freqMaxHz"] == pytest.approx(freq_max_hz)
+    assert float(np.max(lengths[:inner_end])) <= wavelength_m / 8.0 * (1.0 + 1.0e-12)
+    assert int(meridian.metadata["mouthRimSegmentCount"]) > 1
+    assert int(meridian.metadata["rearCapSegmentCount"]) > 1
+    assert float(np.max(lengths[inner_end:])) <= wavelength_m / 6.0 * (1.0 + 1.0e-12)
 
 
 def test_build_meridian_rejects_non_circular_config():

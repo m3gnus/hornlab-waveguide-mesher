@@ -25,7 +25,7 @@ from .profile_common import (
     _parse_number_list,
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
-from .profiles import build_point_grid, eval_param
+from .profiles import build_point_grid, eval_param, profile_points
 from .builders.point_grid_freestanding import (
     _outer_wall_axial_ring_indices,
     _restored_outer_throat_points,
@@ -943,7 +943,8 @@ def _append_meridian_points(
     points: np.ndarray,
     *,
     tag: int,
-) -> None:
+) -> int:
+    added = 0
     for raw_point in np.asarray(points, dtype=np.float64):
         point = (float(raw_point[0]), float(raw_point[1]))
         if not nodes:
@@ -956,6 +957,111 @@ def _append_meridian_points(
             continue
         nodes.append(point)
         tags.append(int(tag))
+        added += 1
+    return added
+
+
+def _subdivision_count_between(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    target_segment_mm: float,
+) -> int:
+    distance = math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+    if distance <= 1.0e-9:
+        return 0
+    return max(1, int(math.ceil(distance / max(float(target_segment_mm), 1.0e-9))))
+
+
+def _append_subdivided_meridian_points(
+    nodes: list[tuple[float, float]],
+    tags: list[int],
+    points: np.ndarray,
+    *,
+    tag: int,
+    target_segment_mm: float,
+) -> int:
+    added = 0
+    for raw_point in np.asarray(points, dtype=np.float64):
+        point = (float(raw_point[0]), float(raw_point[1]))
+        if not nodes:
+            nodes.append(point)
+            continue
+        start = nodes[-1]
+        n_segments = _subdivision_count_between(start, point, target_segment_mm)
+        if n_segments == 0:
+            continue
+        for step in range(1, n_segments + 1):
+            alpha = step / n_segments
+            interp = (
+                float(start[0] + alpha * (point[0] - start[0])),
+                float(start[1] + alpha * (point[1] - start[1])),
+            )
+            prev = nodes[-1]
+            if math.isclose(prev[0], interp[0], rel_tol=0.0, abs_tol=1.0e-9) and math.isclose(
+                prev[1], interp[1], rel_tol=0.0, abs_tol=1.0e-9
+            ):
+                continue
+            nodes.append(interp)
+            tags.append(int(tag))
+            added += 1
+    return added
+
+
+def _profile_arc_length_mm(params: Mapping[str, Any]) -> float:
+    base_segments = max(64, int(params.get("lengthSegments") or 32))
+    sample_count = max(513, min(4097, 8 * base_segments + 1))
+    profile = np.asarray(profile_points(params, sample_count, phi=0.0), dtype=np.float64)
+    if profile.ndim != 2 or profile.shape[0] < 2:
+        return 0.0
+    return float(np.sum(np.linalg.norm(np.diff(profile, axis=0), axis=1)))
+
+
+def _resample_polyline_by_arc(points: np.ndarray, segment_count: int) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[0] < 2:
+        return pts.copy()
+    count = max(1, int(segment_count))
+    lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    total = float(np.sum(lengths))
+    if total <= 1.0e-12:
+        return np.vstack([pts[0], pts[-1]])
+    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+    samples = np.linspace(0.0, total, count + 1, dtype=np.float64)
+    out = np.empty((count + 1, pts.shape[1]), dtype=np.float64)
+    for axis in range(pts.shape[1]):
+        out[:, axis] = np.interp(samples, cumulative, pts[:, axis])
+    out[0] = pts[0]
+    out[-1] = pts[-1]
+    return out
+
+
+def _circsym_resolution_budget(
+    params: Mapping[str, Any],
+    freq_max_hz: float | None,
+) -> dict[str, float | int]:
+    if freq_max_hz is None:
+        frequency = 20_000.0
+    else:
+        try:
+            frequency = float(freq_max_hz)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"freq_max_hz must be numeric, got {freq_max_hz!r}") from exc
+    if not math.isfinite(frequency) or frequency <= 0.0:
+        raise ConfigError(f"freq_max_hz must be finite and > 0, got {freq_max_hz!r}")
+
+    wavelength_mm = 343.0 / frequency * 1000.0
+    inner_target_mm = wavelength_mm / 8.0
+    outer_target_mm = wavelength_mm / 6.0
+    arc_length_mm = _profile_arc_length_mm(params)
+    length_segments = max(64, int(math.ceil(arc_length_mm / max(inner_target_mm, 1.0e-9))))
+    return {
+        "freq_max_hz": float(frequency),
+        "wavelength_mm": float(wavelength_mm),
+        "inner_target_mm": float(inner_target_mm),
+        "outer_target_mm": float(outer_target_mm),
+        "profile_arc_length_mm": float(arc_length_mm),
+        "length_segments": int(length_segments),
+    }
 
 
 def _source_cap_polyline(
@@ -1016,17 +1122,14 @@ def _polyline_normals(nodes: np.ndarray, segments: np.ndarray) -> np.ndarray:
     return np.column_stack((-delta[:, 1], delta[:, 0])) / lengths[:, None]
 
 
-def build_meridian(config: Mapping[str, Any]) -> MeridianBuildResult:
+def build_meridian(
+    config: Mapping[str, Any],
+    *,
+    freq_max_hz: float | None = None,
+) -> MeridianBuildResult:
     """Build a tagged CircSym body-of-revolution meridian from public config."""
 
     params, formula, mode = build_geometry_params(config)
-    # CircSym is a cheap 1-D solve, so over-resolve the meridian independently of
-    # the (coarser) 3-D mesh resolution. A meridian sampled at the 3-D
-    # length-segment count under-radiates at HF (~-3 dB at 18 kHz on the WG
-    # default, where the max segment approaches one wavelength); sample the
-    # generating curve finely so CircSym stays accurate into the 30-40 kHz band.
-    params = dict(params)
-    params["lengthSegments"] = max(int(params.get("lengthSegments") or 32), 400)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
@@ -1039,11 +1142,39 @@ def build_meridian(config: Mapping[str, Any]) -> MeridianBuildResult:
     if reasons:
         raise ConfigError("CircSym requires a circular waveguide: " + "; ".join(reasons))
 
+    if mode == "infinite-baffle":
+        # The xy image-plane meridian (mouth ring on the plane, image completion)
+        # seals the mouth aperture: surface + mirror form a closed hourglass whose
+        # aperture carries zero axial velocity by symmetry, so the BIE degenerates
+        # to a driven sealed cavity and radiates an omnidirectional near-zero-level
+        # artifact (measured ~45 dB below free-standing, 0.00 dB directivity at all
+        # angles). A correct flush-mount IB needs a mouth-aperture interior/exterior
+        # coupling on the meridian; until then, reject it here rather than emit a
+        # silently-wrong solve.
+        raise ConfigError(
+            "CircSym does not support infinite baffle: the image-plane meridian "
+            "seals the mouth aperture into a driven closed cavity. Use the full-3D "
+            "solver for infinite baffle, or set Simulation Type to Free-standing."
+        )
+
+    resolution = _circsym_resolution_budget(params, freq_max_hz)
+    params = dict(params)
+    params["lengthSegments"] = max(
+        int(params.get("lengthSegments") or 32),
+        int(resolution["length_segments"]),
+    )
+    target_inner_mm = float(resolution["inner_target_mm"])
+    target_outer_mm = float(resolution["outer_target_mm"])
+
     grid = build_point_grid(params)
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
     inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
     inner_profile = _radial_profile_from_grid(inner_points, name="inner profile")
+    inner_profile = _resample_polyline_by_arc(
+        inner_profile,
+        int(params["lengthSegments"]),
+    )
 
     outer_profile: np.ndarray | None = None
     rear_profile: np.ndarray | None = None
@@ -1089,39 +1220,57 @@ def build_meridian(config: Mapping[str, Any]) -> MeridianBuildResult:
         throat_radius_mm=throat_radius,
         throat_z_mm=throat_z,
         geometry=source_geometry,
-        # Fine cap sampling for CircSym accuracy at HF (see lengthSegments note).
-        target_segment_mm=min(float(params.get("throatResolution") or 4.0), 0.5),
+        target_segment_mm=target_inner_mm,
     )
 
     nodes_mm: list[tuple[float, float]] = []
     tags: list[int] = []
-    _append_meridian_points(
+    source_segment_count = _append_subdivided_meridian_points(
         nodes_mm,
         tags,
         cap_points,
         tag=int(PhysicalGroup.PRIMARY_SOURCE),
+        target_segment_mm=target_inner_mm,
     )
-    _append_meridian_points(
+    inner_segment_count = _append_subdivided_meridian_points(
         nodes_mm,
         tags,
         inner_profile,
         tag=int(PhysicalGroup.RIGID_WALL),
+        target_segment_mm=target_inner_mm,
     )
 
+    mouth_rim_segment_count = 0
+    outer_segment_count = 0
+    rear_cap_segment_count = 0
     if outer_profile is not None and rear_profile is not None:
         outer_reversed = outer_profile[::-1]
-        _append_meridian_points(
+        if nodes_mm and outer_reversed.shape[0] > 0:
+            mouth_rim_segment_count = _subdivision_count_between(
+                nodes_mm[-1],
+                (float(outer_reversed[0, 0]), float(outer_reversed[0, 1])),
+                target_outer_mm,
+            )
+        outer_segment_count = _append_subdivided_meridian_points(
             nodes_mm,
             tags,
             outer_reversed,
             tag=int(PhysicalGroup.RIGID_WALL),
+            target_segment_mm=target_outer_mm,
         )
         rear_axis = np.asarray([[0.0, float(rear_profile[0, 1])]], dtype=np.float64)
-        _append_meridian_points(
+        if nodes_mm:
+            rear_cap_segment_count = _subdivision_count_between(
+                nodes_mm[-1],
+                (float(rear_axis[0, 0]), float(rear_axis[0, 1])),
+                target_outer_mm,
+            )
+        _append_subdivided_meridian_points(
             nodes_mm,
             tags,
             rear_axis,
             tag=int(PhysicalGroup.RIGID_WALL),
+            target_segment_mm=target_outer_mm,
         )
 
     nodes = np.asarray(nodes_mm, dtype=np.float64)
@@ -1147,7 +1296,17 @@ def build_meridian(config: Mapping[str, Any]) -> MeridianBuildResult:
         "mode": mode,
         "segmentCount": int(segments.shape[0]),
         "nodeCount": int(nodes.shape[0]),
-        "sourceSegmentCount": int(np.count_nonzero(tags_arr == int(PhysicalGroup.PRIMARY_SOURCE))),
+        "freqMaxHz": float(resolution["freq_max_hz"]),
+        "wavelengthM": float(resolution["wavelength_mm"]) * 0.001,
+        "innerTargetSegmentM": target_inner_mm * 0.001,
+        "outerTargetSegmentM": target_outer_mm * 0.001,
+        "profileArcLengthM": float(resolution["profile_arc_length_mm"]) * 0.001,
+        "adaptiveLengthSegments": int(params["lengthSegments"]),
+        "sourceSegmentCount": int(source_segment_count),
+        "innerSegmentCount": int(inner_segment_count),
+        "outerSegmentCount": int(outer_segment_count),
+        "mouthRimSegmentCount": int(mouth_rim_segment_count),
+        "rearCapSegmentCount": int(rear_cap_segment_count),
         "wallSegmentCount": int(np.count_nonzero(tags_arr == int(PhysicalGroup.RIGID_WALL))),
         "throatRadiusM": throat_radius * 0.001,
         "mouthRadiusM": mouth_radius * 0.001,
