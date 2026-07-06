@@ -1122,6 +1122,31 @@ def _polyline_normals(nodes: np.ndarray, segments: np.ndarray) -> np.ndarray:
     return np.column_stack((-delta[:, 1], delta[:, 0])) / lengths[:, None]
 
 
+def circsym_rejection_reasons(
+    config: Mapping[str, Any],
+    *,
+    freq_max_hz: float | None = None,
+) -> list[str]:
+    """Reasons ``config`` cannot be solved as a CircSym body-of-revolution.
+
+    Empty list => the config is CircSym-eligible (circular cross-section, no
+    morph/enclosure/infinite-baffle). Non-empty => the full-3D solver is
+    required. This is the *authoritative* eligibility gate for auto-mode: it
+    defers to :func:`build_meridian`, so it agrees with the real solve path by
+    construction -- covering the static cross-section/morph/enclosure/infinite-
+    baffle checks *and* the runtime azimuthal-variation guard that a cheap
+    param-only check would miss (e.g. a non-unity superellipse guiding curve).
+    Cheap: a meridian build is ~1 ms and never touches gmsh; auto-mode discards
+    the returned mesh and rebuilds it inside the solve path (a negligible
+    double-build) so the eligibility check can stay a pure predicate.
+    """
+    try:
+        build_meridian(config, freq_max_hz=freq_max_hz)
+    except ConfigError as exc:
+        return [str(exc)]
+    return []
+
+
 def build_meridian(
     config: Mapping[str, Any],
     *,

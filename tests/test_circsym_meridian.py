@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from hornlab_mesher import build_meridian
+from hornlab_mesher import build_meridian, circsym_rejection_reasons
 from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.profiles import build_point_grid, profile_points
@@ -139,3 +139,30 @@ def test_build_meridian_rejects_non_circular_config():
 
     with pytest.raises(ConfigError, match="CircSym requires a circular waveguide: .*aspectRatio"):
         build_meridian(config)
+
+
+def test_circsym_rejection_reasons_empty_for_eligible_round_config():
+    # The authoritative auto-mode gate: a plain round OSSE horn is CircSym-eligible.
+    assert circsym_rejection_reasons(_round_osse_config()) == []
+
+
+def test_circsym_rejection_reasons_flags_non_circular_cross_section():
+    reasons = circsym_rejection_reasons(_round_osse_config(cross_section={"aspectRatio": 1.15}))
+    assert reasons
+    assert any("aspectRatio" in reason for reason in reasons)
+
+
+def test_circsym_rejection_reasons_flags_infinite_baffle():
+    reasons = circsym_rejection_reasons(
+        _round_osse_config(mode="infinite-baffle", simType=1, mesh={"wallThickness": 0.0})
+    )
+    assert reasons
+    assert any("infinite baffle" in reason.lower() for reason in reasons)
+
+
+def test_circsym_rejection_reasons_flags_enclosure():
+    reasons = circsym_rejection_reasons(
+        _round_osse_config(mode="enclosure", enclosure={"depth_mm": 60.0})
+    )
+    assert reasons
+    assert any("enclosure" in reason.lower() for reason in reasons)
