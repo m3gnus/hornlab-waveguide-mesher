@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -262,6 +262,7 @@ class BuiltGeometry:
     symmetry_snap_axes: tuple[Literal["x", "y", "z"], ...] = ()
     symmetry_snap_tol_mm: float = 1.0e-6
     mesh_algorithm: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -275,3 +276,4 @@ class MeshInfo:
     # Per physical tag edge-length statistics in millimetres:
     # {tag: {"median_edge_mm": ..., "p95_edge_mm": ..., "max_edge_mm": ...}}.
     edge_stats_mm: dict[int, dict[str, float]] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)

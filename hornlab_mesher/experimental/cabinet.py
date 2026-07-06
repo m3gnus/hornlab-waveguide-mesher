@@ -480,6 +480,8 @@ def build_mesh_via_hornlab(
         "validFreqMaxHz": worst_valid_f_max_hz(mesh_report),
         "solveCost": estimate_solve_cost(info.n_triangles).to_dict(),
     }
+    if info.metadata:
+        stats["buildMetadata"] = dict(info.metadata)
     result: dict[str, Any] = {"msh_text": msh_text, "stats": stats}
     if include_canonical:
         result["canonical_mesh"] = canonical

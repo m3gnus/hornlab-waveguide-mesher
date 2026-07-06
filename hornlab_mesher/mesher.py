@@ -138,6 +138,8 @@ def build_mesh_with_info(
                     getattr(geometry, "infinite_baffle", False)
                 ),
             )
+            if built.metadata:
+                info.metadata.update(built.metadata)
             raw_path.unlink(missing_ok=True)
             _validate_physical_tags(set(info.physical_groups))
             return out_path, info

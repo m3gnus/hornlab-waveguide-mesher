@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.config_builder import build_geometry_params
+from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.profile_formulas import build_icw_curve
 from hornlab_mesher.profiles import profile_points
 
@@ -163,6 +164,54 @@ def test_config_builder_forwards_coverage_and_manufacturability_keys() -> None:
     assert params["dkappa_ds_abs_max"] == 10.0
     assert params["theta_max_deg"] == 91.0
     assert params["pin_mouth_radius"] is False
+
+
+@pytest.mark.parametrize(
+    "extension",
+    [
+        {"throatExtLength": 8.0},
+        {"throat_ext_angle_deg": 12.0},
+        {"throat_ext_length_mm": "5*cos(p)"},
+    ],
+)
+def test_config_builder_rejects_icw_throat_extension(extension) -> None:
+    config = {
+        "profile": {
+            "formula": "ICW",
+            "r0_mm": 12.7,
+            "a0_deg": 14.5,
+            "termination": "flat_baffle",
+            "L_mm": 160.0,
+            "R_mm": 130.0,
+            **extension,
+        },
+        "mesh": {},
+    }
+
+    with pytest.raises(ConfigError, match="formula ICW does not support throat extension"):
+        build_geometry_params(config)
+
+
+def test_config_builder_allows_zero_icw_throat_extension_sentinel() -> None:
+    params, formula, _mode = build_geometry_params(
+        {
+            "profile": {
+                "formula": "ICW",
+                "r0_mm": 12.7,
+                "a0_deg": 14.5,
+                "termination": "flat_baffle",
+                "L_mm": 160.0,
+                "R_mm": 130.0,
+                "throatExtLength": 0.0,
+                "throatExtAngle": "0",
+            },
+            "mesh": {},
+        }
+    )
+
+    assert formula == "ICW"
+    assert params["throatExtLength"] == 0.0
+    assert params["throatExtAngle"] == 0
 
 
 def test_osse_and_rosse_config_paths_remain_unchanged() -> None:

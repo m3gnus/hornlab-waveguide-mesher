@@ -68,6 +68,7 @@ class BuildResult:
     # for the built triangle count. See hornlab_mesher.cost.
     valid_f_max_hz: float | None = None
     solve_cost: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +85,7 @@ class BuildResult:
             "mesh_report": self.mesh_report,
             "valid_f_max_hz": self.valid_f_max_hz,
             "solve_cost": self.solve_cost,
+            "metadata": self.metadata,
         }
 
 
@@ -543,6 +545,31 @@ def _apply_driver_adapter(
         )
 
 
+def _param_is_nonzero(value: Any, *, name: str) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return True
+    if not np.isfinite(out):
+        raise ConfigError(f"{name} must be finite, got {value!r}")
+    return abs(out) > 1.0e-12
+
+
+def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
+    names = [
+        key
+        for key in ("throatExtLength", "throatExtAngle")
+        if _param_is_nonzero(common.get(key), name=key)
+    ]
+    if names:
+        joined = "/".join(names)
+        raise ConfigError(f"formula ICW does not support throat extension ({joined})")
+
+
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
@@ -672,6 +699,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     if length_mode is not None:
         common["_athLengthMode"] = length_mode
     _apply_driver_adapter(common, profile, config)
+    if formula == "ICW":
+        _reject_icw_throat_extension(common)
 
     if formula == "OSSE":
         common.update(
@@ -1473,6 +1502,7 @@ def build_from_config(
         mesh_report=mesh_report,
         valid_f_max_hz=cost.worst_valid_f_max_hz(mesh_report),
         solve_cost=cost.estimate_solve_cost(info.n_triangles).to_dict(),
+        metadata=dict(info.metadata),
     )
 
 

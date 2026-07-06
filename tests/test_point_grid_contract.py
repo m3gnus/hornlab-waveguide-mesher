@@ -1270,11 +1270,13 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
         },
     }
 
-    build_from_config(cfg, tmp_path / "superduper-small-5-open-enclosure.msh")
+    result = build_from_config(cfg, tmp_path / "superduper-small-5-open-enclosure.msh")
     mesh = meshio.read(tmp_path / "superduper-small-5-open-enclosure.msh")
     triangles, tags = _triangles_and_tags(mesh)
 
-    assert int(np.count_nonzero(tags == 1)) >= 900
+    assert result.metadata["enclosureMeshCapped"] is True
+    assert result.metadata["enclosureMeshTriangleEstimatePost"] == pytest.approx(18_000, abs=2)
+    assert int(np.count_nonzero(tags == 1)) >= 800
     assert int(np.count_nonzero(tags == 2)) > 0
     assert int(np.count_nonzero(tags == 3)) > 0
     assert len(_tag_components(triangles, tags, 1)) == 1
