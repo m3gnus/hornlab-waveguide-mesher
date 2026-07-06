@@ -25,8 +25,10 @@ Unsupported extensions fail before any geometry is built.
 
 If enclosure depth is positive, mode becomes `enclosure` even when `mode` is
 omitted. `enclosure` mode requires `enclosure.depth_mm > 0`. `infinite-baffle`
-mode builds the inner surface, source, and a planar mouth-aperture interface
-(`I1-2`) with no outer wall or rear cap.
+mode builds the Metal image-plane open shell: source cap plus inner wall only,
+translated so the mouth rim lies exactly on z=0 and the horn body lies in
+z >= 0, with no `I1-2` mouth interface, outer wall, mouth closing surface, or
+rear cap.
 
 ## Sections
 
@@ -174,10 +176,12 @@ Use `[cross_section]` or `[crossSection]`.
 | `curvature_segments` | `curvatureSegments` | `0` | Gmsh `MeshSizeFromCurvature` segments per full circle; `0` disables curvature-adaptive refinement. |
 
 `BuildResult` reports `quadrants`, the matching `native_symmetry_plane` solver
-flag for reduced grids (`1` -> `yz+xz`, `12` -> `xz`, `14` -> `yz`), and a
-`mesh_report` with per-group edge statistics plus `valid_f_max_hz` -- the
-highest frequency each surface group resolves at the configured
-elements-per-wavelength. Downstream solves should clamp or warn from it.
+flag for reduced grids (`1` -> `yz+xz`, `12` -> `xz`, `14` -> `yz`; full
+infinite-baffle -> `xy`), and a `mesh_report` with per-group edge statistics
+plus `valid_f_max_hz` -- the highest frequency each surface group resolves at
+the configured elements-per-wavelength. Downstream solves should clamp or warn
+from it. Infinite-baffle currently requires `quadrants = 1234`; composing `xy`
+with `yz`/`xz` is not an accepted Metal solver symmetry string.
 Note the report applies the generic target to every group: on freestanding
 horns the rigid-wall tag mixes the inner wall with the deliberately coarser
 rear/outer surfaces, so its strict figure is conservative.

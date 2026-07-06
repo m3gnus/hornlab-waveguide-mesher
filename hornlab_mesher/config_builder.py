@@ -42,11 +42,11 @@ class BuildResult:
     # reduced mesh requires (hornlab-metal-bem SolveConfig.native_symmetry_plane).
     quadrants: str = "1234"
     native_symmetry_plane: str | None = None
-    # Whether the metal solver's cut-plane open-edge guard applies. A bare horn
-    # is an open shell whose mirror-reduced rim (the open mouth) is a real free
-    # edge off the symmetry planes, so the guard must be relaxed
-    # (hornlab-metal-bem SolveConfig.native_check_open_edges=False). Closed modes
-    # cap the mouth and keep the strict check.
+    # Whether the metal solver's cut-plane open-edge guard applies. Bare and
+    # image-plane infinite-baffle horns are open shells whose free mouth rims are
+    # legitimate solve boundaries, so the guard must be relaxed
+    # (hornlab-metal-bem SolveConfig.native_check_open_edges=False). Closed
+    # modes cap the mouth and keep the strict check.
     native_check_open_edges: bool = True
     # Per physical-group mesh validity: edge stats in mm plus the highest
     # frequency the group resolves at the configured elements-per-wavelength.
@@ -732,6 +732,19 @@ def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
     }.get(_normalised_quadrants(quadrants))
 
 
+def _native_symmetry_plane_for_mode(mode: str, quadrants: str) -> str | None:
+    q = _normalised_quadrants(quadrants)
+    if mode == "infinite-baffle":
+        if q == "1234":
+            return "xy"
+        raise ConfigError(
+            "infinite-baffle xy image solves currently support only "
+            "Mesh.Quadrants=1234. Quadrant IB would require composing xy with "
+            "yz/xz native symmetry planes, which hornlab-metal-bem does not accept."
+        )
+    return _native_symmetry_plane_for_quadrants(q)
+
+
 def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
     """Map grid quadrant coverage to open-grid snap axes.
 
@@ -748,14 +761,14 @@ def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
 def _native_check_open_edges_for_mode(mode: str) -> bool:
     """Whether the metal solver's cut-plane open-edge guard applies to ``mode``.
 
-    A ``bare`` horn is an open shell radiating from an open mouth, so its
-    mirror-reduced rim is a real free edge off the symmetry planes and the guard
-    must be disabled. Closed modes (freestanding / enclosure / infinite-baffle)
-    cap the mouth, so their reduced rim lies entirely on the cut planes and the
+    ``bare`` and image-plane ``infinite-baffle`` horns are open shells radiating
+    from an open mouth, so their free mouth rims are legitimate solve boundaries
+    and the guard must be disabled. Closed modes (freestanding / enclosure) cap
+    the mouth, so their reduced rim lies entirely on the cut planes and the
     strict check stays on.
     """
 
-    return mode != "bare"
+    return mode not in {"bare", "infinite-baffle"}
 
 
 def _mesh_report(
@@ -850,18 +863,19 @@ def build_from_config(
     interface_offsets = _number_list(params.get("interfaceOffset"))
     interfaces = _interfaces_from_params(params, n_length)
     # ATH builds free-standing subdomain models (mouth interface I1-2 plus an
-    # SD2 exterior); this mesher only builds interfaces for enclosure and
-    # infinite-baffle models, so an explicit request on other modes must fail
-    # loudly instead of silently dropping the subdomain topology.
-    if mode in {"freestanding", "bare"} and (
+    # SD2 exterior); this mesher only builds interfaces for enclosure models, so
+    # an explicit request on other modes must fail loudly instead of silently
+    # dropping the subdomain topology.
+    if mode != "enclosure" and (
         interfaces or any(offset > 0.0 for offset in interface_offsets)
     ):
         raise ConfigError(
             "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, "
-            "which are only supported for enclosure or infinite-baffle builds "
+            "which are only supported for enclosure builds "
             "(ATH's free-standing two-subdomain construction is not implemented)"
         )
     quadrants = _normalised_quadrants(params.get("quadrants"))
+    native_plane = _native_symmetry_plane_for_mode(mode, quadrants)
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -934,7 +948,7 @@ def build_from_config(
         units=info.units,
         physical_groups=info.physical_groups,
         quadrants=quadrants,
-        native_symmetry_plane=_native_symmetry_plane_for_quadrants(quadrants),
+        native_symmetry_plane=native_plane,
         native_check_open_edges=_native_check_open_edges_for_mode(mode),
         mesh_report=mesh_report,
         valid_f_max_hz=cost.worst_valid_f_max_hz(mesh_report),

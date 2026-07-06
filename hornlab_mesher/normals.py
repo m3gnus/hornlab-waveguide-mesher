@@ -32,6 +32,15 @@ class MeshOrientationReport:
         return self.nonmanifold_edges == 0 and self.inconsistent_edges == 0
 
 
+def _source_axis_index_and_sign(source_axis: str) -> tuple[int, float, str]:
+    axis = str(source_axis or "z").strip().lower()
+    sign = -1.0 if axis.startswith("-") else 1.0
+    axis = axis[1:] if axis[:1] in {"+", "-"} else axis
+    if axis not in {"x", "y", "z"}:
+        axis = "z"
+    return {"x": 0, "y": 1, "z": 2}[axis], sign, ("-" if sign < 0.0 else "") + axis
+
+
 def remove_degenerate_triangles(
     points: NDArray[np.float64],
     triangles: NDArray[np.int64],
@@ -119,14 +128,16 @@ def validate_orientation(
     p2 = points[triangles[:, 2]]
     signed_volume = float(np.sum(p0 * np.cross(p1, p2)) / 6.0)
 
-    axis_idx = {"x": 0, "y": 1, "z": 2}.get(source_axis, 2)
+    axis_idx, axis_sign, axis_label = _source_axis_index_and_sign(source_axis)
     source_mask = tags == int(PhysicalGroup.PRIMARY_SOURCE)
     source_projection = 0.0
     if np.any(source_mask):
         s0 = points[triangles[source_mask, 0]]
         s1 = points[triangles[source_mask, 1]]
         s2 = points[triangles[source_mask, 2]]
-        source_projection = float(np.sum(np.cross(s1 - s0, s2 - s0)[:, axis_idx]))
+        source_projection = float(
+            axis_sign * np.sum(np.cross(s1 - s0, s2 - s0)[:, axis_idx])
+        )
 
     report = MeshOrientationReport(
         n_triangles=int(len(triangles)),
@@ -153,7 +164,7 @@ def validate_orientation(
     if require_source_normal and np.any(source_mask) and report.source_normal_projection < -eps:
         failures.append(
             "primary source normals point opposite "
-            f"{source_axis}-axis ({report.source_normal_projection:.6g})"
+            f"{axis_label}-axis ({report.source_normal_projection:.6g})"
         )
     if failures:
         raise MeshOrientationError("; ".join(failures))
@@ -231,13 +242,13 @@ def repair_orientation(
         repaired[:, [1, 2]] = repaired[:, [2, 1]]
         stats["flipped_global"] = int(len(repaired))
 
-    axis_idx = {"x": 0, "y": 1, "z": 2}.get(source_axis, 2)
+    axis_idx, axis_sign, _axis_label = _source_axis_index_and_sign(source_axis)
     mask = tags == int(PhysicalGroup.PRIMARY_SOURCE)
     if np.any(mask):
         p0 = points[repaired[mask, 0]]
         p1 = points[repaired[mask, 1]]
         p2 = points[repaired[mask, 2]]
-        projection = float(np.sum(np.cross(p1 - p0, p2 - p0)[:, axis_idx]))
+        projection = float(axis_sign * np.sum(np.cross(p1 - p0, p2 - p0)[:, axis_idx]))
         if projection < 0.0:
             # Flip the source's whole connected component(s), not just the
             # tagged triangles: flipping only the source of an edge-connected

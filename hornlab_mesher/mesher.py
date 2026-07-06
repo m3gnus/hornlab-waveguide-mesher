@@ -126,13 +126,14 @@ def build_mesh_with_info(
                 symmetry_snap_axes=built.symmetry_snap_axes,
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
                 vertical_offset_mm=float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0),
-                # A closed infinite-baffle mesh is the boundary of the acoustic
-                # air column itself: source normals point +z into that volume
-                # (the acoustic convention repair_orientation enforces), so a
-                # correctly oriented watertight IB mesh has negative signed
-                # volume. Every other topology bounds wall-material or box
-                # volume, where source-into-domain and outward winding agree,
-                # so those keep the inside-out (positive volume) guard.
+                orient_open_shell_for_metal=bool(
+                    getattr(geometry, "infinite_baffle", False)
+                ),
+                # Infinite-baffle now emits an image-plane open shell, not a
+                # watertight solid, so the signed-volume orientation guard is
+                # not meaningful there. Other topologies bound wall-material or
+                # box volume, where source-into-domain and outward winding
+                # agree, so those keep the positive-volume guard.
                 require_positive_volume=not bool(
                     getattr(geometry, "infinite_baffle", False)
                 ),
@@ -175,6 +176,7 @@ def _postprocess_mesh(
     symmetry_snap_axes: tuple[str, ...] = (),
     symmetry_snap_tol_mm: float = 1.0e-6,
     vertical_offset_mm: float = 0.0,
+    orient_open_shell_for_metal: bool = False,
     require_positive_volume: bool = True,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
@@ -206,6 +208,8 @@ def _postprocess_mesh(
         phys,
         source_axis=source_axis,
     )
+    if orient_open_shell_for_metal:
+        triangles = _orient_open_shell_for_metal(points, triangles, phys)
     report = validate_orientation(
         points,
         triangles,
@@ -258,6 +262,44 @@ def _postprocess_mesh(
         units="m" if _looks_like_metres(points) else "mm",
         edge_stats_mm=edge_stats,
     )
+
+
+def _signed_volume_indicator(points: np.ndarray, triangles: np.ndarray) -> float:
+    if len(triangles) == 0:
+        return 0.0
+    p0 = points[triangles[:, 0]]
+    p1 = points[triangles[:, 1]]
+    p2 = points[triangles[:, 2]]
+    return float(np.sum(p0 * np.cross(p1, p2)) / 6.0)
+
+
+def _orient_open_shell_for_metal(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+) -> np.ndarray:
+    """Keep source winding while satisfying Metal's canonical winding heuristic.
+
+    A mouth-open image-plane horn is not a watertight solid, but
+    hornlab-metal-bem still rejects a negative signed-volume indicator when it
+    loads canonical meshes. Flipping only the zero-velocity rigid-wall triangles
+    makes that open-shell indicator positive while preserving the driven source
+    cap's acoustic normal in the emitted file.
+    """
+
+    if _signed_volume_indicator(points, triangles) >= 0.0:
+        return triangles
+    wall_mask = phys != int(PhysicalGroup.PRIMARY_SOURCE)
+    if not np.any(wall_mask):
+        return triangles
+    oriented = np.array(triangles, dtype=np.int64, copy=True)
+    oriented[wall_mask] = oriented[wall_mask][:, [0, 2, 1]]
+    if _signed_volume_indicator(points, oriented) < 0.0:
+        raise MesherError(
+            "could not orient infinite-baffle open shell with positive Metal "
+            "signed-volume indicator while preserving source normals"
+        )
+    return oriented
 
 
 def _weld_near_duplicate_vertices(

@@ -56,19 +56,13 @@ The point-grid dispatcher selects topology from `PointGridHornGeometry.build_mod
 
 Bare mode builds the inner horn surface and a source cap. Infinite-baffle
 mode (ABEC.SimType = 1, the ATH default for imported text configs) builds the
-bare topology plus a planar mouth-aperture subdomain interface tagged `I1-2`
-in the baffle plane; it has no outer wall, rear cap, or geometry behind the
-throat plane. Freestanding mode builds an inner wall, outer wall, mouth rim,
-rear cap, and source cap. Enclosure mode builds the inner horn, source cap,
-optional interfaces, and enclosure surfaces around the mouth.
-
-Consumer caveat: the `I1-2` interface group targets ABEC-style subdomain
-workflows. The canonical solvers (`hornlab-metal-bem`, `hornlab-bempp-bem`)
-have no subdomain-interface formulation today and treat tag 4 as a rigid
-wall, which closes the mouth with a rigid lid — do not feed infinite-baffle
-meshes to them. Their infinite-baffle path is instead a mouth-flush-at-plane
-mesh solved with the metal solver's image-source symmetry machinery (see the
-solver docs).
+image-plane open shell used by the Metal solver: source cap plus inner wall
+only, translated so the mouth rim lies exactly on z=0 and the horn body lies in
+z >= 0. It has no planar `I1-2` mouth interface, outer wall, mouth closing
+surface, rear cap, or geometry in front of the baffle plane. Freestanding mode
+builds an inner wall, outer wall, mouth rim, rear cap, and source cap.
+Enclosure mode builds the inner horn, source cap, optional interfaces, and
+enclosure surfaces around the mouth.
 
 Supported point-grid source shapes are explicit: `source_shape = 0` builds a
 flat throat disc/sector, and `source_shape = 1` builds a rounded throat cap.

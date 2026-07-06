@@ -67,6 +67,8 @@ def _occ_rounded_cap_on_wall_rim(
     center: np.ndarray,
     throat_radius: float,
     cap_height: float,
+    throat_use_min: bool = True,
+    source_axis_sign: float = 1.0,
 ) -> list[tuple[int, int]]:
     """Rounded source cap filled directly on the wall's throat boundary curves.
 
@@ -84,12 +86,14 @@ def _occ_rounded_cap_on_wall_rim(
 
     gmsh = require_gmsh()
     gmsh.model.occ.synchronize()
-    curves = extreme_boundary_loop_curves(wall_dimtags, source_axis="z", use_min=True)
+    curves = extreme_boundary_loop_curves(
+        wall_dimtags, source_axis="z", use_min=throat_use_min
+    )
     if not curves:
         return []
 
     radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
-    sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    sign = float(source_axis_sign) * (-1.0 if int(geometry.source_curv) == -1 else 1.0)
     sphere_center = np.array(center, dtype=np.float64)
     sphere_center[2] += sign * (cap_height - radius)
     pole = np.array(center, dtype=np.float64)
@@ -249,6 +253,8 @@ def _add_occ_source_cap_surfaces(
     geometry: PointGridHornGeometry,
     *,
     boundary_phi_groups: list[list[int]] | None = None,
+    throat_use_min: bool = True,
+    source_axis_sign: float = 1.0,
     wall_dimtags: list[tuple[int, int]] | None = None,
 ) -> list[tuple[int, int]]:
     shape = _validate_source_shape(geometry)
@@ -261,7 +267,7 @@ def _add_occ_source_cap_surfaces(
         center[1] = 0.0
     throat_radius = _throat_radius(inner_points, closed=geometry.closed)
     cap_height = _source_cap_height(throat_radius, geometry) if shape == SOURCE_SHAPE_ROUNDED_CAP else 0.0
-    sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
+    sign = float(source_axis_sign) * (-1.0 if int(geometry.source_curv) == -1 else 1.0)
     if geometry.closed and shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
         if wall_dimtags is None:
             raise ValueError(
@@ -275,6 +281,8 @@ def _add_occ_source_cap_surfaces(
             center=center,
             throat_radius=throat_radius,
             cap_height=cap_height,
+            throat_use_min=throat_use_min,
+            source_axis_sign=source_axis_sign,
         )
 
     pole = np.array(center, dtype=np.float64)

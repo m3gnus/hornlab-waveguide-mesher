@@ -574,6 +574,7 @@ def test_custom_zmap_sampling_interpolates_control_points():
 
 def _asro2_ath_cfg_text(*, throat: float = 5.0, mouth: float = 8.0, rear: float = 25.0) -> str:
     return f"""
+ABEC.SimType = 2
 R-OSSE = {{
   R = {_ASRO2_PARAMS["R"]}
   r = {_ASRO2_PARAMS["r"]}
@@ -632,6 +633,7 @@ def test_ath_config_tessellation_follows_resolution_inputs(tmp_path):
 def test_flat_ath_config_keys_build_partial_source_group(tmp_path):
     cfg = parse_ath_config(
         """
+ABEC.SimType = 2
 R-OSSE = {
 R = 160 * (abs(cos(p)/1.8)^3 + abs(sin(p)/1)^4)^(-1/7)
 a = 22 * (abs(cos(p)/1.2)^8 + abs(sin(p)/1)^4)^(-1/4)
@@ -2089,26 +2091,26 @@ def test_source_shape_zero_builds_flat_disc(tmp_path):
     assert spreads[1] > 0.1, "curved cap control should have axial depth"
 
 
-def test_closed_infinite_baffle_mouth_interface_welds_to_wall_rim(tmp_path):
-    """The infinite-baffle interface must share the horn wall's mouth rim."""
+@pytest.mark.parametrize("source_shape", [0, 1])
+def test_infinite_baffle_image_shell_is_positive_z_with_open_mouth_only(
+    tmp_path, source_shape
+):
+    """The xy-image infinite baffle is a positive-z half mesh with an open mouth."""
     config = {
-        "formula": "R-OSSE",
+        "formula": "OSSE",
         "mode": "infinite-baffle",
         "profile": {
-            "R": 140,
-            "a": 25,
+            "L": 100,
+            "a": 45,
             "a0": 15.5,
             "r0": 12.7,
-            "k": 2,
-            "m": 0.85,
-            "b": 0.2,
-            "r": 0.4,
-            "q": 3.4,
-            "tmax": 1,
+            "k": 1,
+            "n": 4,
+            "q": 0.995,
         },
         "mesh": {
-            "angularSegments": 120,
-            "lengthSegments": 40,
+            "angularSegments": 64,
+            "lengthSegments": 16,
             "quadrants": 1234,
             "wallThickness": 5,
             "throatResolution": 6,
@@ -2116,32 +2118,58 @@ def test_closed_infinite_baffle_mouth_interface_welds_to_wall_rim(tmp_path):
             "rearResolution": 40,
             "scaleToMetres": False,
         },
-        "source": {"sourceShape": 0},
+        "source": {"sourceShape": source_shape},
     }
 
-    params, _formula, _mode = build_geometry_params(config)
-    grid = build_point_grid(params)
-    n_phi = int(grid["grid_n_phi"])
-    n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
-    mouth_z = float(np.mean(inner[:, -1, 2]))
+    result = build_from_config(
+        config, tmp_path / f"image-infinite-baffle-source-{source_shape}.msh"
+    )
+    assert result.native_symmetry_plane == "xy"
+    assert result.native_check_open_edges is False
 
-    out = tmp_path / "closed-infinite-baffle-weld.msh"
-    build_from_config(config, out)
-    mesh = meshio.read(out)
+    mesh = meshio.read(result.mesh_path)
     triangles, tags = _triangles_and_tags(mesh)
     points = np.asarray(mesh.points, dtype=np.float64)
 
-    assert 4 in set(int(tag) for tag in tags)
-    assert mouth_z < float(np.max(points[:, 2])) - 1.0
-    mouth_free_edges = [
+    assert 2 in set(int(tag) for tag in tags)
+    assert 4 not in set(int(tag) for tag in tags)
+
+    referenced = points[np.unique(triangles)]
+    assert float(np.min(referenced[:, 2])) >= -1.0e-9
+    assert float(np.max(referenced[:, 2])) > 90.0
+
+    p0 = points[triangles[:, 0]]
+    p1 = points[triangles[:, 1]]
+    p2 = points[triangles[:, 2]]
+    corners = points[triangles]
+    in_xy_plane = np.all(np.abs(corners[:, :, 2]) <= 1.0e-9, axis=1)
+    areas = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+    assert int(np.count_nonzero(in_xy_plane & (areas > 1.0e-12))) == 0
+
+    signed_volume = float(np.sum(p0 * np.cross(p1, p2)) / 6.0)
+    assert signed_volume > 0.0
+
+    source = tags == 2
+    assert not np.any(in_xy_plane[source])
+    source_vertices = points[np.unique(triangles[source])]
+    assert float(np.min(source_vertices[:, 2])) > 1.0
+    source_z_projection = float(
+        np.sum(np.cross(p1[source] - p0[source], p2[source] - p0[source])[:, 2])
+    )
+    assert source_z_projection < 0.0
+
+    open_edges = list(_boundary_edges(triangles))
+    assert open_edges
+    mouth_nodes = np.unique(np.asarray(open_edges, dtype=np.int64))
+    assert np.all(np.abs(points[mouth_nodes, 2]) <= 1.0e-9)
+    off_plane = [
         edge
-        for edge in _boundary_edges(triangles)
-        if abs(float(points[edge[0], 2]) - mouth_z) < 1.0e-6
-        and abs(float(points[edge[1], 2]) - mouth_z) < 1.0e-6
+        for edge in open_edges
+        if abs(float(points[edge[0], 2])) > 1.0e-9
+        or abs(float(points[edge[1], 2])) > 1.0e-9
     ]
 
-    assert not mouth_free_edges
+    assert not off_plane, f"{len(off_plane)} off-plane open edges, e.g. {off_plane[:4]}"
 
 
 def test_preserve_grid_quarter_enclosure_has_no_off_plane_open_edges(tmp_path):

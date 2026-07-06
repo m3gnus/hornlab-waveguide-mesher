@@ -135,6 +135,16 @@ def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]
     }
 
 
+def _axis_coordinate_expression(source_axis: str) -> tuple[str, str]:
+    axis = str(source_axis or "z").strip().lower()
+    sign = "-" if axis.startswith("-") else ""
+    axis = axis[1:] if axis[:1] in {"+", "-"} else axis
+    if axis not in {"x", "y", "z"}:
+        axis = "z"
+        sign = ""
+    return axis, f"(-{axis})" if sign == "-" else axis
+
+
 def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     """Configure waveguide-compatible Gmsh mesh-size fields.
 
@@ -169,7 +179,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     rear_res = _sz(density.rear_res_mm, "rear")
     interface_res = _sz(density.interface_res_mm or density.mouth_res_mm, "interface")
 
-    coord = {"x": "x", "y": "y", "z": "z"}[geometry.source_axis]
+    _axis, coord = _axis_coordinate_expression(geometry.source_axis)
     a0, a1 = geometry.axial_bounds_mm
     span = max(abs(a1 - a0), 1e-9)
     slope = (mouth_res - throat_res) / span

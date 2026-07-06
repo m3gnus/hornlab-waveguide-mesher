@@ -256,7 +256,7 @@ class BuiltGeometry:
 
     surface_groups: dict[int, list[int]]
     axial_bounds_mm: tuple[float, float]
-    source_axis: Literal["x", "y", "z"] = "z"
+    source_axis: Literal["x", "y", "z", "-x", "-y", "-z"] = "z"
     mesh_surface_groups: dict[str, list[int]] = field(default_factory=dict)
     enclosure_bounds: dict[str, float] | None = None
     symmetry_snap_axes: tuple[Literal["x", "y", "z"], ...] = ()
