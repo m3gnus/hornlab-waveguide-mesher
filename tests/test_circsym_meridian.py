@@ -7,6 +7,7 @@ from hornlab_mesher import build_meridian, circsym_rejection_reasons
 from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.profiles import build_point_grid, profile_points
+from hornlab_mesher.tags import PhysicalGroup
 
 
 def _round_osse_config(**overrides):
@@ -103,15 +104,38 @@ def test_build_meridian_matches_round_3d_profile_and_source_cap_geometry():
     assert meridian.metadata["closedOnAxis"] is True
 
 
-def test_build_meridian_rejects_infinite_baffle_until_supported():
+def test_build_meridian_builds_infinite_baffle_channel_with_aperture_disc():
     config = _round_osse_config(
         mode="infinite-baffle",
         simType=1,
         mesh={"wallThickness": 0.0},
     )
 
-    with pytest.raises(ConfigError, match="CircSym does not support infinite baffle"):
-        build_meridian(config)
+    meridian = build_meridian(config)
+    aperture_tag = int(PhysicalGroup.MOUTH_APERTURE)
+    source_count = int(meridian.metadata["sourceSegmentCount"])
+    inner_count = int(meridian.metadata["innerSegmentCount"])
+    aperture_count = int(meridian.metadata["apertureSegmentCount"])
+    aperture_start = source_count + inner_count
+    aperture_stop = aperture_start + aperture_count
+    inner_nodes = meridian.nodes[source_count : aperture_start + 1]
+    aperture_nodes = meridian.nodes[aperture_start : aperture_stop + 1]
+
+    assert meridian.metadata["apertureTag"] == aperture_tag
+    assert aperture_count > 0
+    assert aperture_tag in set(meridian.physical_tags.tolist())
+    assert meridian.baffle_z is None
+    assert meridian.metadata["baffleZM"] is None
+
+    assert inner_nodes[-1, 0] == pytest.approx(meridian.metadata["mouthRadiusM"], abs=1.0e-12)
+    assert inner_nodes[-1, 1] == pytest.approx(0.0, abs=1.0e-15)
+    assert np.all(inner_nodes[:-1, 1] < -1.0e-9)
+    assert aperture_nodes[0, 0] == pytest.approx(meridian.metadata["mouthRadiusM"], abs=1.0e-12)
+    assert aperture_nodes[0, 1] == pytest.approx(0.0, abs=1.0e-15)
+    assert aperture_nodes[-1, 0] == pytest.approx(0.0, abs=1.0e-15)
+    assert np.allclose(aperture_nodes[:, 1], 0.0, atol=1.0e-15)
+    assert np.all(meridian.physical_tags[aperture_start:aperture_stop] == aperture_tag)
+    assert np.all(meridian.normals[aperture_start:aperture_stop, 1] < 0.0)
 
 
 def test_build_meridian_adapts_resolution_to_frequency_and_splits_closures():
@@ -152,12 +176,11 @@ def test_circsym_rejection_reasons_flags_non_circular_cross_section():
     assert any("aspectRatio" in reason for reason in reasons)
 
 
-def test_circsym_rejection_reasons_flags_infinite_baffle():
+def test_circsym_rejection_reasons_empty_for_infinite_baffle_channel_meridian():
     reasons = circsym_rejection_reasons(
         _round_osse_config(mode="infinite-baffle", simType=1, mesh={"wallThickness": 0.0})
     )
-    assert reasons
-    assert any("infinite baffle" in reason.lower() for reason in reasons)
+    assert reasons == []
 
 
 def test_circsym_rejection_reasons_flags_enclosure():

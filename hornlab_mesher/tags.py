@@ -14,6 +14,7 @@ class PhysicalGroup(IntEnum):
     PORT_INTERIOR = 9
     MID_PORT_EXIT_LEFT = 10
     MID_PORT_EXIT_RIGHT = 11
+    MOUTH_APERTURE = 12
 
 
 PHYSICAL_NAMES: dict[int, str] = {
@@ -25,6 +26,7 @@ PHYSICAL_NAMES: dict[int, str] = {
     PhysicalGroup.PORT_INTERIOR: "mid_port_interior",
     PhysicalGroup.MID_PORT_EXIT_LEFT: "mid_port_exit_left",
     PhysicalGroup.MID_PORT_EXIT_RIGHT: "mid_port_exit_right",
+    PhysicalGroup.MOUTH_APERTURE: "mouth_aperture",
 }
 
 

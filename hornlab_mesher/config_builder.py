@@ -1130,12 +1130,12 @@ def circsym_rejection_reasons(
     """Reasons ``config`` cannot be solved as a CircSym body-of-revolution.
 
     Empty list => the config is CircSym-eligible (circular cross-section, no
-    morph/enclosure/infinite-baffle). Non-empty => the full-3D solver is
+    morph/enclosure). Non-empty => the full-3D solver is
     required. This is the *authoritative* eligibility gate for auto-mode: it
     defers to :func:`build_meridian`, so it agrees with the real solve path by
-    construction -- covering the static cross-section/morph/enclosure/infinite-
-    baffle checks *and* the runtime azimuthal-variation guard that a cheap
-    param-only check would miss (e.g. a non-unity superellipse guiding curve).
+    construction -- covering the static cross-section/morph/enclosure checks
+    *and* the runtime azimuthal-variation guard that a cheap param-only check
+    would miss (e.g. a non-unity superellipse guiding curve).
     Cheap: a meridian build is ~1 ms and never touches gmsh; auto-mode discards
     the returned mesh and rebuilds it inside the solve path (a negligible
     double-build) so the eligibility check can stay a pure predicate.
@@ -1166,21 +1166,6 @@ def build_meridian(
     )
     if reasons:
         raise ConfigError("CircSym requires a circular waveguide: " + "; ".join(reasons))
-
-    if mode == "infinite-baffle":
-        # The xy image-plane meridian (mouth ring on the plane, image completion)
-        # seals the mouth aperture: surface + mirror form a closed hourglass whose
-        # aperture carries zero axial velocity by symmetry, so the BIE degenerates
-        # to a driven sealed cavity and radiates an omnidirectional near-zero-level
-        # artifact (measured ~45 dB below free-standing, 0.00 dB directivity at all
-        # angles). A correct flush-mount IB needs a mouth-aperture interior/exterior
-        # coupling on the meridian; until then, reject it here rather than emit a
-        # silently-wrong solve.
-        raise ConfigError(
-            "CircSym does not support infinite baffle: the image-plane meridian "
-            "seals the mouth aperture into a driven closed cavity. Use the full-3D "
-            "solver for infinite baffle, or set Simulation Type to Free-standing."
-        )
 
     resolution = _circsym_resolution_budget(params, freq_max_hz)
     params = dict(params)
@@ -1227,7 +1212,6 @@ def build_meridian(
         mouth_z = float(inner_profile[-1, 1])
         inner_profile = inner_profile.copy()
         inner_profile[:, 1] -= mouth_z
-        baffle_z_mm = 0.0
 
     throat_radius = float(inner_profile[0, 0])
     mouth_radius = float(inner_profile[-1, 0])
@@ -1264,6 +1248,19 @@ def build_meridian(
         tag=int(PhysicalGroup.RIGID_WALL),
         target_segment_mm=target_inner_mm,
     )
+    aperture_segment_count = 0
+    if mode == "infinite-baffle":
+        disc_points = np.asarray(
+            [[mouth_radius, 0.0], [0.0, 0.0]],
+            dtype=np.float64,
+        )
+        aperture_segment_count = _append_subdivided_meridian_points(
+            nodes_mm,
+            tags,
+            disc_points,
+            tag=int(PhysicalGroup.MOUTH_APERTURE),
+            target_segment_mm=target_inner_mm,
+        )
 
     mouth_rim_segment_count = 0
     outer_segment_count = 0
@@ -1332,6 +1329,10 @@ def build_meridian(
         "outerSegmentCount": int(outer_segment_count),
         "mouthRimSegmentCount": int(mouth_rim_segment_count),
         "rearCapSegmentCount": int(rear_cap_segment_count),
+        "apertureTag": (
+            int(PhysicalGroup.MOUTH_APERTURE) if mode == "infinite-baffle" else None
+        ),
+        "apertureSegmentCount": int(aperture_segment_count),
         "wallSegmentCount": int(np.count_nonzero(tags_arr == int(PhysicalGroup.RIGID_WALL))),
         "throatRadiusM": throat_radius * 0.001,
         "mouthRadiusM": mouth_radius * 0.001,
