@@ -117,6 +117,7 @@ Physical tags are solver-facing API:
 - `2` / `SD1D1001`: primary source.
 - `3` / `SD2G0`: enclosure wall.
 - `4` / `I1-2`: interface.
+- `12` / `mouth_aperture`: infinite-baffle Rayleigh aperture cap.
 
 When changing tags:
 

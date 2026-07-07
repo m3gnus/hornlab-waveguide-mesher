@@ -46,8 +46,8 @@ Implemented:
 - R-OSSE point-grid generation.
 - ICW (Intrinsic-Curvature Waveguide) point-grid generation through TOML/JSON
   or dict configs.
-- Freestanding wall-shell, infinite-baffle (ABEC.SimType = 1), and
-  enclosure-capable point-grid meshing.
+- Freestanding wall-shell, coupled-aperture infinite-baffle
+  (ABEC.SimType = 1), and enclosure-capable point-grid meshing.
 - ATH text-config import with ATH defaults, global Scale/VerticalOffset,
   and azimuth-dependent profile expressions.
 - Orientation validation and ABEC-compatible physical tags.

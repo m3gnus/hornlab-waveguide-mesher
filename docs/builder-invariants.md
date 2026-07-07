@@ -56,11 +56,13 @@ The point-grid dispatcher selects topology from `PointGridHornGeometry.build_mod
 
 Bare mode builds the inner horn surface and a source cap. Infinite-baffle
 mode (ABEC.SimType = 1, the ATH default for imported text configs) builds the
-image-plane open shell used by the Metal solver: source cap plus inner wall
-only, translated so the mouth rim lies exactly on z=0 and the horn body lies in
-z >= 0. It has no planar `I1-2` mouth interface, outer wall, mouth closing
-surface, rear cap, or geometry in front of the baffle plane. Freestanding mode
-builds an inner wall, outer wall, mouth rim, rear cap, and source cap.
+coupled interior-BEM/Rayleigh-aperture mesh: source cap plus inner wall plus a
+planar aperture cap across the mouth. The mouth rim lies exactly on z=0, the
+cavity lies in z <= 0, and the aperture cap is physical tag `12` with normals
+toward +z. It has no planar `I1-2` mouth interface, outer wall, baffle skin,
+wall thickening, rear cap, enclosure box, or geometry in front of the baffle
+plane. Freestanding mode builds an inner wall, outer wall, mouth rim, rear cap,
+and source cap.
 Enclosure mode builds the inner horn, source cap, optional interfaces, and
 enclosure surfaces around the mouth.
 
@@ -95,9 +97,11 @@ Physical tags are a public compatibility contract:
 | `2` | `SD1D1001` | Primary source surface. |
 | `3` | `SD2G0` | Enclosure wall. |
 | `4` | `I1-2` | Acoustic interface surface. |
+| `12` | `mouth_aperture` | Infinite-baffle Rayleigh aperture cap. |
 
 Every valid final mesh must contain at least tags `1` and `2`. Enclosure and
-interface tags appear only when those surfaces are built.
+interface tags appear only when those surfaces are built. Tag `12` appears only
+for coupled infinite-baffle meshes.
 
 Surface splits are allowed to change inside a physical group when topology
 needs more stable splines. Tag numbers and names must not drift casually.
@@ -111,6 +115,7 @@ Recognized role names include:
 
 - `inner`: axial interpolation from throat to mouth resolution.
 - `mouth`: axial interpolation from throat to mouth resolution.
+- `mouth_aperture`: axial interpolation from throat to mouth resolution.
 - `outer`: rear resolution for freestanding outer walls, otherwise axial
   interpolation.
 - `throat_disc`: throat resolution.
@@ -155,7 +160,9 @@ Gmsh/OCC topology is not the final contract. After raw mesh generation,
 
 Orientation validation currently does not require watertightness or shared-edge
 consistency for all meshes. If a mesh is watertight, inconsistent shared edges
-are treated as an error.
+are treated as an error, except coupled infinite-baffle meshes may carry the
+explicit +z aperture normal by breaking winding consistency only on shared
+wall-aperture tag `1`/`12` rim edges.
 
 ## Failure Policy
 

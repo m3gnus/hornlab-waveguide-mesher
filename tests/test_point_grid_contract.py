@@ -222,6 +222,47 @@ def _boundary_edges(triangles: np.ndarray) -> dict[tuple[int, int], list[int]]:
     return {edge: owners for edge, owners in edges.items() if len(owners) == 1}
 
 
+def _edge_owner_tags(
+    triangles: np.ndarray,
+    tags: np.ndarray,
+) -> dict[tuple[int, int], list[int]]:
+    edges: dict[tuple[int, int], list[int]] = {}
+    for tri_idx, tri in enumerate(triangles):
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            key = tuple(sorted((int(a), int(b))))
+            edges.setdefault(key, []).append(int(tags[int(tri_idx)]))
+    return edges
+
+
+def _duplicate_used_vertex_coordinates(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    *,
+    tol: float = 1.0e-9,
+) -> list[list[int]]:
+    used = np.unique(triangles)
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    for idx in used:
+        key = tuple(np.round(points[int(idx)] / tol).astype(np.int64))
+        buckets.setdefault(key, []).append(int(idx))
+    return [indices for indices in buckets.values() if len(indices) > 1]
+
+
+def _tag_normal_projection(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    tags: np.ndarray,
+    tag: int,
+    *,
+    axis: int = 2,
+) -> float:
+    mask = tags == int(tag)
+    p0 = points[triangles[mask, 0]]
+    p1 = points[triangles[mask, 1]]
+    p2 = points[triangles[mask, 2]]
+    return float(np.sum(np.cross(p1 - p0, p2 - p0)[:, axis]))
+
+
 def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[int]:
     tri_indices = np.flatnonzero(tags == int(tag))
     local = {int(tri_idx): idx for idx, tri_idx in enumerate(tri_indices)}
@@ -1275,7 +1316,11 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
     triangles, tags = _triangles_and_tags(mesh)
 
     assert result.metadata["enclosureMeshCapped"] is True
-    assert result.metadata["enclosureMeshTriangleEstimatePost"] == pytest.approx(18_000, abs=2)
+    assert result.metadata["enclosureMeshTriangleCeiling"] == 18_000
+    assert result.metadata["enclosureMeshEffectiveTriangleCeiling"] == 4_500
+    assert result.metadata["enclosureMeshDomainMultiplier"] == 4.0
+    assert result.metadata["enclosureMeshTriangleEstimatePost"] == pytest.approx(4_500, abs=2)
+    assert result.metadata["enclosureMeshTriangleEstimatePostFullDomain"] == pytest.approx(18_000, abs=8)
     assert int(np.count_nonzero(tags == 1)) >= 800
     assert int(np.count_nonzero(tags == 2)) > 0
     assert int(np.count_nonzero(tags == 3)) > 0
@@ -2094,10 +2139,11 @@ def test_source_shape_zero_builds_flat_disc(tmp_path):
 
 
 @pytest.mark.parametrize("source_shape", [0, 1])
-def test_infinite_baffle_image_shell_is_positive_z_with_open_mouth_only(
-    tmp_path, source_shape
+@pytest.mark.parametrize("preserve_grid", [False, True])
+def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
+    tmp_path, source_shape, preserve_grid
 ):
-    """The xy-image infinite baffle is a positive-z half mesh with an open mouth."""
+    """The coupled IB mesh is an interior cavity closed by a Rayleigh aperture."""
     config = {
         "formula": "OSSE",
         "mode": "infinite-baffle",
@@ -2119,59 +2165,138 @@ def test_infinite_baffle_image_shell_is_positive_z_with_open_mouth_only(
             "mouthResolution": 15,
             "rearResolution": 40,
             "scaleToMetres": False,
+            "preserveGrid": preserve_grid,
         },
         "source": {"sourceShape": source_shape},
     }
 
     result = build_from_config(
-        config, tmp_path / f"image-infinite-baffle-source-{source_shape}.msh"
+        config,
+        tmp_path / (
+            f"coupled-infinite-baffle-source-{source_shape}-"
+            f"preserve-{int(preserve_grid)}.msh"
+        ),
     )
-    assert result.native_symmetry_plane == "xy"
-    assert result.native_check_open_edges is False
+    assert result.native_symmetry_plane is None
+    assert result.native_check_open_edges is True
+    assert result.metadata["apertureTag"] == 12
 
     mesh = meshio.read(result.mesh_path)
     triangles, tags = _triangles_and_tags(mesh)
     points = np.asarray(mesh.points, dtype=np.float64)
 
     assert 2 in set(int(tag) for tag in tags)
+    assert 12 in set(int(tag) for tag in tags)
     assert 4 not in set(int(tag) for tag in tags)
 
     referenced = points[np.unique(triangles)]
-    assert float(np.min(referenced[:, 2])) >= -1.0e-9
-    assert float(np.max(referenced[:, 2])) > 90.0
+    assert float(np.max(referenced[:, 2])) <= 1.0e-9
+    assert float(np.min(referenced[:, 2])) == pytest.approx(-100.0, abs=1.0e-6)
 
-    p0 = points[triangles[:, 0]]
-    p1 = points[triangles[:, 1]]
-    p2 = points[triangles[:, 2]]
-    corners = points[triangles]
+    aperture = tags == 12
+    corners = points[triangles[aperture]]
     in_xy_plane = np.all(np.abs(corners[:, :, 2]) <= 1.0e-9, axis=1)
-    areas = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
-    assert int(np.count_nonzero(in_xy_plane & (areas > 1.0e-12))) == 0
-
-    signed_volume = float(np.sum(p0 * np.cross(p1, p2)) / 6.0)
-    assert signed_volume > 0.0
+    assert bool(np.all(in_xy_plane))
+    assert _tag_normal_projection(points, triangles, tags, 12) > 0.0
 
     source = tags == 2
-    assert not np.any(in_xy_plane[source])
     source_vertices = points[np.unique(triangles[source])]
-    assert float(np.min(source_vertices[:, 2])) > 1.0
-    source_z_projection = float(
-        np.sum(np.cross(p1[source] - p0[source], p2[source] - p0[source])[:, 2])
-    )
-    assert source_z_projection < 0.0
+    assert float(np.min(source_vertices[:, 2])) == pytest.approx(-100.0, abs=1.0e-6)
+    assert float(np.max(source_vertices[:, 2])) <= 0.0
+    assert _tag_normal_projection(points, triangles, tags, 2) > 0.0
 
     open_edges = list(_boundary_edges(triangles))
-    assert open_edges
-    mouth_nodes = np.unique(np.asarray(open_edges, dtype=np.int64))
-    assert np.all(np.abs(points[mouth_nodes, 2]) <= 1.0e-9)
-    off_plane = [
+    assert not open_edges
+    edge_owners = _edge_owner_tags(triangles, tags)
+    assert max(len(owners) for owners in edge_owners.values()) <= 2
+    wall_aperture_edges = [
         edge
-        for edge in open_edges
-        if abs(float(points[edge[0], 2])) > 1.0e-9
-        or abs(float(points[edge[1], 2])) > 1.0e-9
+        for edge, owners in edge_owners.items()
+        if set(owners) == {1, 12}
     ]
+    assert wall_aperture_edges
+    for edge in wall_aperture_edges:
+        assert np.all(np.abs(points[list(edge), 2]) <= 1.0e-9)
+    assert _duplicate_used_vertex_coordinates(points, triangles) == []
 
-    assert not off_plane, f"{len(off_plane)} off-plane open edges, e.g. {off_plane[:4]}"
+
+@pytest.mark.parametrize(
+    ("quadrants", "sym_plane", "cut_axes"),
+    [
+        ("1", "yz+xz", (0, 1)),
+        ("12", "xz", (1,)),
+        ("14", "yz", (0,)),
+    ],
+)
+@pytest.mark.parametrize("source_shape", [0, 1])
+def test_infinite_baffle_reduced_domains_open_only_on_cut_planes(
+    tmp_path, quadrants, sym_plane, cut_axes, source_shape
+):
+    config = {
+        "formula": "OSSE",
+        "mode": "infinite-baffle",
+        "profile": {
+            "L": 80,
+            "a": 40,
+            "a0": 8,
+            "r0": 10,
+            "k": 1,
+            "n": 4,
+            "q": 0.995,
+        },
+        "mesh": {
+            "angularSegments": 32,
+            "lengthSegments": 8,
+            "quadrants": quadrants,
+            "throatResolution": 6,
+            "mouthResolution": 15,
+            "rearResolution": 40,
+            "scaleToMetres": False,
+        },
+        "source": {"sourceShape": source_shape},
+    }
+
+    result = build_from_config(
+        config,
+        tmp_path / f"coupled-infinite-baffle-{quadrants}-source-{source_shape}.msh",
+    )
+    assert result.native_symmetry_plane == sym_plane
+    assert result.native_check_open_edges is True
+    assert result.metadata["apertureTag"] == 12
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    assert {1, 2, 12}.issubset({int(tag) for tag in tags})
+    assert float(points[:, 2].max()) <= 1.0e-9
+    assert _tag_normal_projection(points, triangles, tags, 12) > 0.0
+
+    aperture_corners = points[triangles[tags == 12]]
+    assert np.all(np.abs(aperture_corners[:, :, 2]) <= 1.0e-9)
+
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        assert any(
+            abs(points[a][axis]) < 1.0e-7 and abs(points[b][axis]) < 1.0e-7
+            for axis in cut_axes
+        )
+
+    edge_owners = _edge_owner_tags(triangles, tags)
+    assert max(len(owners) for owners in edge_owners.values()) <= 2
+    wall_aperture_edges = [
+        edge
+        for edge, owners in edge_owners.items()
+        if set(owners) == {1, 12}
+    ]
+    assert wall_aperture_edges
+    for edge in wall_aperture_edges:
+        assert np.all(np.abs(points[list(edge), 2]) <= 1.0e-9)
+    assert _duplicate_used_vertex_coordinates(points, triangles) == []
+
+    for axis in cut_axes:
+        assert points[:, axis].min() >= -1.0e-7
 
 
 def test_preserve_grid_quarter_enclosure_has_no_off_plane_open_edges(tmp_path):

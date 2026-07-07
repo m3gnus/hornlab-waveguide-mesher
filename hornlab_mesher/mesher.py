@@ -118,6 +118,15 @@ def build_mesh_with_info(
                 raw_path = Path(tmp.name)
             gmsh.write(str(raw_path))
 
+            is_infinite_baffle = bool(getattr(geometry, "infinite_baffle", False))
+            allowed_inconsistent_edge_tag_pairs = (
+                (
+                    int(PhysicalGroup.RIGID_WALL),
+                    int(PhysicalGroup.MOUTH_APERTURE),
+                ),
+            )
+            if not is_infinite_baffle:
+                allowed_inconsistent_edge_tag_pairs = ()
             info = _postprocess_mesh(
                 raw_path,
                 out_path,
@@ -126,17 +135,14 @@ def build_mesh_with_info(
                 symmetry_snap_axes=built.symmetry_snap_axes,
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
                 vertical_offset_mm=float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0),
-                orient_open_shell_for_metal=bool(
-                    getattr(geometry, "infinite_baffle", False)
-                ),
-                # Infinite-baffle now emits an image-plane open shell, not a
-                # watertight solid, so the signed-volume orientation guard is
-                # not meaningful there. Other topologies bound wall-material or
-                # box volume, where source-into-domain and outward winding
-                # agree, so those keep the positive-volume guard.
-                require_positive_volume=not bool(
-                    getattr(geometry, "infinite_baffle", False)
-                ),
+                orient_aperture_positive_z=is_infinite_baffle,
+                # Coupled infinite-baffle meshes carry an interior source
+                # normal and a Rayleigh aperture normal as explicit acoustic
+                # contracts; that can intentionally disagree with closed-solid
+                # signed-volume orientation. Other topologies keep the
+                # positive-volume guard.
+                require_positive_volume=not is_infinite_baffle,
+                allowed_inconsistent_edge_tag_pairs=allowed_inconsistent_edge_tag_pairs,
             )
             if built.metadata:
                 info.metadata.update(built.metadata)
@@ -179,7 +185,9 @@ def _postprocess_mesh(
     symmetry_snap_tol_mm: float = 1.0e-6,
     vertical_offset_mm: float = 0.0,
     orient_open_shell_for_metal: bool = False,
+    orient_aperture_positive_z: bool = False,
     require_positive_volume: bool = True,
+    allowed_inconsistent_edge_tag_pairs: tuple[tuple[int, int], ...] = (),
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -212,6 +220,15 @@ def _postprocess_mesh(
     )
     if orient_open_shell_for_metal:
         triangles = _orient_open_shell_for_metal(points, triangles, phys)
+    if orient_aperture_positive_z:
+        triangles = _orient_tag_axis_projection(
+            points,
+            triangles,
+            phys,
+            tag=int(PhysicalGroup.MOUTH_APERTURE),
+            axis_idx=2,
+            sign=1.0,
+        )
     report = validate_orientation(
         points,
         triangles,
@@ -222,10 +239,23 @@ def _postprocess_mesh(
         require_positive_volume=require_positive_volume,
         require_source_normal=True,
     )
-    if report.watertight and not report.edge_consistent:
-        raise MeshOrientationError(
-            f"watertight mesh has {report.inconsistent_edges} inconsistent shared edges"
+    if not report.edge_consistent:
+        unexpected = _count_unexpected_inconsistent_edges(
+            triangles,
+            phys,
+            allowed_inconsistent_edge_tag_pairs,
         )
+        if unexpected and (report.watertight or allowed_inconsistent_edge_tag_pairs):
+            detail = (
+                f" ({unexpected} outside allowed tag seams)"
+                if allowed_inconsistent_edge_tag_pairs
+                else ""
+            )
+            prefix = "watertight mesh" if report.watertight else "mesh"
+            raise MeshOrientationError(
+                f"{prefix} has {report.inconsistent_edges} inconsistent shared edges"
+                f"{detail}"
+            )
     points, triangles = _compact_unused_vertices(points, triangles)
     if vertical_offset_mm:
         # Mesh.VerticalOffset: rigid +y placement of the finished reduced/full
@@ -302,6 +332,63 @@ def _orient_open_shell_for_metal(
             "signed-volume indicator while preserving source normals"
         )
     return oriented
+
+
+def _orient_tag_axis_projection(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+    *,
+    tag: int,
+    axis_idx: int,
+    sign: float,
+) -> np.ndarray:
+    mask = phys == int(tag)
+    if not np.any(mask):
+        return triangles
+    p0 = points[triangles[mask, 0]]
+    p1 = points[triangles[mask, 1]]
+    p2 = points[triangles[mask, 2]]
+    projection = float(sign) * float(np.sum(np.cross(p1 - p0, p2 - p0)[:, int(axis_idx)]))
+    if projection >= 0.0:
+        return triangles
+    oriented = np.array(triangles, dtype=np.int64, copy=True)
+    oriented[mask] = oriented[mask][:, [0, 2, 1]]
+    return oriented
+
+
+def _count_unexpected_inconsistent_edges(
+    triangles: np.ndarray,
+    phys: np.ndarray,
+    allowed_tag_pairs: tuple[tuple[int, int], ...],
+) -> int:
+    allowed = {frozenset((int(a), int(b))) for a, b in allowed_tag_pairs}
+    edge_uses: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for tri_idx, tri in enumerate(np.asarray(triangles, dtype=np.int64)):
+        tag = int(phys[int(tri_idx)])
+        for start, end in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            a = int(start)
+            b = int(end)
+            if a == b:
+                continue
+            if a < b:
+                key = (a, b)
+                direction = 1
+            else:
+                key = (b, a)
+                direction = -1
+            edge_uses.setdefault(key, []).append((direction, tag))
+
+    unexpected = 0
+    for uses in edge_uses.values():
+        if len(uses) != 2:
+            continue
+        (dir_a, tag_a), (dir_b, tag_b) = uses
+        if dir_a != dir_b:
+            continue
+        if frozenset((tag_a, tag_b)) not in allowed:
+            unexpected += 1
+    return unexpected
 
 
 def _weld_near_duplicate_vertices(

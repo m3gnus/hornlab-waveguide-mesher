@@ -145,6 +145,7 @@ Physical tags are public solver-facing API:
 | `2` | `SD1D1001` | Primary source surface. |
 | `3` | `SD2G0` | Enclosure wall. |
 | `4` | `I1-2` | Acoustic interface surface. |
+| `12` | `mouth_aperture` | Infinite-baffle Rayleigh aperture cap. |
 
 Downstream solver integrations should consume physical tags and names rather
 than relying on Gmsh surface counts.

@@ -113,6 +113,7 @@ Related reference docs:
   - `2`: primary source, `SD1D1001`
   - `3`: enclosure wall, `SD2G0`
   - `4`: interface, `I1-2`
+  - `12`: infinite-baffle mouth aperture, `mouth_aperture`
 
 ## Geometry Modes
 
@@ -120,6 +121,8 @@ The config-level `mode` controls the topology produced from the evaluated point
 grid:
 
 - `bare`: inner horn surface plus source surfaces only.
+- `infinite-baffle`: inner horn surface plus source cap and a planar
+  `mouth_aperture` cap across the z=0 mouth, with the cavity in z <= 0.
 - `freestanding`: horn wall shell with outer wall, mouth rim, rear cap, and
   source surfaces.
 - `enclosure`: horn surface plus rear enclosure geometry around the mouth.

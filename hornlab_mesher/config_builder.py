@@ -54,11 +54,11 @@ class BuildResult:
     # reduced mesh requires (hornlab-metal-bem SolveConfig.native_symmetry_plane).
     quadrants: str = "1234"
     native_symmetry_plane: str | None = None
-    # Whether the metal solver's cut-plane open-edge guard applies. Bare and
-    # image-plane infinite-baffle horns are open shells whose free mouth rims are
-    # legitimate solve boundaries, so the guard must be relaxed
-    # (hornlab-metal-bem SolveConfig.native_check_open_edges=False). Closed
-    # modes cap the mouth and keep the strict check.
+    # Whether the metal solver's cut-plane open-edge guard applies. Bare horns
+    # are open shells whose free mouth rims are legitimate solve boundaries, so
+    # the guard must be relaxed (hornlab-metal-bem
+    # SolveConfig.native_check_open_edges=False). Closed/coupled modes cap the
+    # mouth and keep the strict check.
     native_check_open_edges: bool = True
     # Per physical-group mesh validity: edge stats in mm plus the highest
     # frequency the group resolves at the configured elements-per-wavelength.
@@ -811,16 +811,7 @@ def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
 
 
 def _native_symmetry_plane_for_mode(mode: str, quadrants: str) -> str | None:
-    q = _normalised_quadrants(quadrants)
-    if mode == "infinite-baffle":
-        if q == "1234":
-            return "xy"
-        raise ConfigError(
-            "infinite-baffle xy image solves currently support only "
-            "Mesh.Quadrants=1234. Quadrant IB would require composing xy with "
-            "yz/xz native symmetry planes, which hornlab-metal-bem does not accept."
-        )
-    return _native_symmetry_plane_for_quadrants(q)
+    return _native_symmetry_plane_for_quadrants(quadrants)
 
 
 def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
@@ -839,14 +830,13 @@ def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
 def _native_check_open_edges_for_mode(mode: str) -> bool:
     """Whether the metal solver's cut-plane open-edge guard applies to ``mode``.
 
-    ``bare`` and image-plane ``infinite-baffle`` horns are open shells radiating
-    from an open mouth, so their free mouth rims are legitimate solve boundaries
-    and the guard must be disabled. Closed modes (freestanding / enclosure) cap
-    the mouth, so their reduced rim lies entirely on the cut planes and the
-    strict check stays on.
+    ``bare`` horns radiate from an open mouth, so their free mouth rims are
+    legitimate solve boundaries and the guard must be disabled. Coupled
+    infinite-baffle, freestanding, and enclosure modes cap the mouth, so any
+    reduced-domain open edges lie on cut planes and the strict check stays on.
     """
 
-    return mode not in {"bare", "infinite-baffle"}
+    return mode != "bare"
 
 
 def _mesh_report(

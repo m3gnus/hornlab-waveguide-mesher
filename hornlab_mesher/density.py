@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .cost import estimate_triangle_count
+from .cost import TRIANGLES_PER_AREA_OVER_H2
 from .geometry import BuiltGeometry, MeshDensity
 from .profile_common import _parse_number_list
 from .tags import PhysicalGroup, SOURCE_TAGS
@@ -304,8 +304,26 @@ def _enclosure_triangle_regions(
     return regions
 
 
+def _estimate_triangle_count_float(regions: list[tuple[float, float]]) -> float:
+    total = 0.0
+    for area_mm2, size_mm in regions:
+        area_mm2 = float(area_mm2)
+        size_mm = float(size_mm)
+        if size_mm > 0.0 and area_mm2 > 0.0:
+            total += TRIANGLES_PER_AREA_OVER_H2 * area_mm2 / (size_mm * size_mm)
+    return total
+
+
 def _scaled_values(values: list[float], scale: float) -> list[float]:
     return [float(value) * float(scale) for value in values]
+
+
+def _enclosure_domain_multiplier(geometry: BuiltGeometry) -> float:
+    """Return the mirror multiplier from the meshed enclosure sector to full domain."""
+
+    axes = {str(axis).lower() for axis in geometry.symmetry_snap_axes}
+    lateral_cut_count = len(axes.intersection({"x", "y"}))
+    return float(2**lateral_cut_count)
 
 
 def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]:
@@ -414,10 +432,21 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             front_panels=front_panels,
             back_panels=back_panels,
         )
-        pre_cap_estimate = estimate_triangle_count(triangle_regions)
-        if pre_cap_estimate > _ENCLOSURE_TRIANGLE_CEILING:
+        pre_cap_estimate_raw = _estimate_triangle_count_float(triangle_regions)
+        pre_cap_estimate = int(round(pre_cap_estimate_raw))
+        enclosure_domain_multiplier = _enclosure_domain_multiplier(geometry)
+        enclosure_domain_fraction = 1.0 / enclosure_domain_multiplier
+        effective_triangle_ceiling = max(
+            1,
+            int(round(float(_ENCLOSURE_TRIANGLE_CEILING) * enclosure_domain_fraction)),
+        )
+        pre_cap_estimate_full_domain = int(
+            round(float(pre_cap_estimate_raw) * enclosure_domain_multiplier)
+        )
+        pre_cap_estimate_full_domain_raw = pre_cap_estimate_raw * enclosure_domain_multiplier
+        if pre_cap_estimate_full_domain_raw > _ENCLOSURE_TRIANGLE_CEILING:
             enclosure_cap_scale = math.sqrt(
-                float(pre_cap_estimate) / float(_ENCLOSURE_TRIANGLE_CEILING)
+                float(pre_cap_estimate_full_domain_raw) / float(_ENCLOSURE_TRIANGLE_CEILING)
             )
             throat_res *= enclosure_cap_scale
             mouth_res *= enclosure_cap_scale
@@ -431,15 +460,29 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                 front_edge_size *= enclosure_cap_scale
             if back_edge_size is not None:
                 back_edge_size *= enclosure_cap_scale
-            post_cap_estimate = estimate_triangle_count(
+            post_triangle_regions = [
                 (area, size * enclosure_cap_scale) for area, size in triangle_regions
+            ]
+            post_cap_estimate_raw = _estimate_triangle_count_float(post_triangle_regions)
+            post_cap_estimate = int(round(post_cap_estimate_raw))
+            post_cap_estimate_full_domain = int(
+                round(float(post_cap_estimate_raw) * enclosure_domain_multiplier)
             )
             geometry.metadata.update(
                 {
                     "enclosureMeshCapped": True,
                     "enclosureMeshTriangleCeiling": int(_ENCLOSURE_TRIANGLE_CEILING),
+                    "enclosureMeshEffectiveTriangleCeiling": int(effective_triangle_ceiling),
+                    "enclosureMeshDomainFraction": float(enclosure_domain_fraction),
+                    "enclosureMeshDomainMultiplier": float(enclosure_domain_multiplier),
                     "enclosureMeshTriangleEstimatePre": int(pre_cap_estimate),
+                    "enclosureMeshTriangleEstimatePreFullDomain": int(
+                        pre_cap_estimate_full_domain
+                    ),
                     "enclosureMeshTriangleEstimatePost": int(post_cap_estimate),
+                    "enclosureMeshTriangleEstimatePostFullDomain": int(
+                        post_cap_estimate_full_domain
+                    ),
                     "enclosureMeshCapScale": float(enclosure_cap_scale),
                 }
             )
@@ -474,7 +517,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             gmsh.model.mesh.field.setNumbers(restrict, "CurvesList", [int(c) for c in curves])
         fields.append(restrict)
 
-    for group_key in ("inner", "mouth"):
+    for group_key in ("inner", "mouth", "mouth_aperture"):
         add_field(
             axial_formula,
             mesh_groups.get(group_key, []),

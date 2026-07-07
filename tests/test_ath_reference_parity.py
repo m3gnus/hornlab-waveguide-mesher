@@ -358,15 +358,17 @@ def test_m2_clone_point_grid_matches_ath_mesh_geo():
 
 
 @pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
-def test_m2_clone_infinite_baffle_build_matches_abec_mesh(tmp_path):
+def test_m2_clone_infinite_baffle_build_matches_coupled_aperture_contract(tmp_path):
     case_dir = ATH_REFERENCE_ROOT / "m2-clone"
     result = build_from_config(load_config(case_dir / "config.txt"), tmp_path / "m2-clone.msh")
 
     assert result.mode == "infinite-baffle"
-    assert result.native_symmetry_plane == "xy"
-    assert result.native_check_open_edges is False
+    assert result.native_symmetry_plane is None
+    assert result.native_check_open_edges is True
     assert result.physical_groups[1] == "SD1G0"
     assert result.physical_groups[2] == "SD1D1001"
+    assert result.physical_groups[12] == "mouth_aperture"
+    assert result.metadata["apertureTag"] == 12
     assert 4 not in result.physical_groups
 
     actual = meshio.read(result.mesh_path)
@@ -376,4 +378,19 @@ def test_m2_clone_infinite_baffle_build_matches_abec_mesh(tmp_path):
 
     actual_triangles, tags = _triangles_and_physical_tags(actual)
     assert len(actual_triangles) > 0
-    assert {1, 2}.issubset({int(tag) for tag in tags})
+    assert {1, 2, 12}.issubset({int(tag) for tag in tags})
+
+    edge_counts: dict[tuple[int, int], int] = {}
+    for tri in actual_triangles:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            key = tuple(sorted((int(a), int(b))))
+            edge_counts[key] = edge_counts.get(key, 0) + 1
+    assert not [edge for edge, count in edge_counts.items() if count == 1]
+    assert max(edge_counts.values()) <= 2
+
+    aperture = tags == 12
+    assert np.all(np.abs(points[actual_triangles[aperture], 2]) < 1.0e-6)
+    p0 = points[actual_triangles[aperture, 0]]
+    p1 = points[actual_triangles[aperture, 1]]
+    p2 = points[actual_triangles[aperture, 2]]
+    assert float(np.sum(np.cross(p1 - p0, p2 - p0)[:, 2])) > 0.0

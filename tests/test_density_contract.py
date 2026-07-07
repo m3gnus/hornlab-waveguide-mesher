@@ -74,8 +74,9 @@ class _FakeField:
 
 
 class _FakeModel:
-    def __init__(self, bboxes):
+    def __init__(self, bboxes, masses=None):
         self._bboxes = dict(bboxes)
+        self._masses = dict(masses or {})
         self.mesh = types.SimpleNamespace(field=_FakeField())
 
     def getBoundary(self, dimtags, oriented=False, combined=False):
@@ -84,6 +85,10 @@ class _FakeModel:
     def getBoundingBox(self, dim, tag):
         assert int(dim) == 2
         return self._bboxes[int(tag)]
+
+    def getMass(self, dim, tag):
+        assert int(dim) == 2
+        return self._masses[int(tag)]
 
 
 def _restriction_formulas(fake_gmsh):
@@ -96,6 +101,23 @@ def _restriction_formulas(fake_gmsh):
         surfaces = tuple(field.number_lists.get((tag, "SurfacesList"), ()))
         out[surfaces] = field.strings[(in_field, "F")]
     return out
+
+
+def _fake_panel_enclosure_geometry(*, symmetry_snap_axes=()):
+    return BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(0.0, 100.0),
+        mesh_surface_groups={"enclosure": [1, 2]},
+        enclosure_bounds={
+            "bx0": -150.0,
+            "bx1": 150.0,
+            "by0": -150.0,
+            "by1": 150.0,
+            "z_front": 100.0,
+            "z_back": 0.0,
+        },
+        symmetry_snap_axes=tuple(symmetry_snap_axes),
+    )
 
 
 def test_enclosure_density_refines_panels_and_roundover_without_global_box_fillet_size(monkeypatch):
@@ -201,8 +223,15 @@ def test_enclosure_density_caps_large_high_frequency_triangle_estimate(monkeypat
     metadata = geometry.metadata
     assert metadata["enclosureMeshCapped"] is True
     assert metadata["enclosureMeshTriangleCeiling"] == 18_000
+    assert metadata["enclosureMeshEffectiveTriangleCeiling"] == 18_000
+    assert metadata["enclosureMeshDomainFraction"] == 1.0
+    assert metadata["enclosureMeshDomainMultiplier"] == 1.0
     assert metadata["enclosureMeshTriangleEstimatePre"] > 18_000
+    assert metadata["enclosureMeshTriangleEstimatePreFullDomain"] == metadata[
+        "enclosureMeshTriangleEstimatePre"
+    ]
     assert metadata["enclosureMeshTriangleEstimatePost"] == pytest.approx(18_000, abs=2)
+    assert metadata["enclosureMeshTriangleEstimatePostFullDomain"] == pytest.approx(18_000, abs=2)
     assert metadata["enclosureMeshCapScale"] > 1.0
 
     raw_panel_target = 343_000.0 / (6.0 * 20_000.0)
@@ -218,3 +247,64 @@ def test_enclosure_density_caps_large_high_frequency_triangle_estimate(monkeypat
     )
     assert front_panel_value == pytest.approx(expected_capped_target)
     assert float(formulas[(3,)]) == pytest.approx(expected_capped_target)
+
+
+def test_enclosure_triangle_cap_is_quadrant_consistent(monkeypatch):
+    density = MeshDensity(
+        throat_res_mm=30.0,
+        mouth_res_mm=30.0,
+        rear_res_mm=30.0,
+        max_frequency_hz=20_000.0,
+    )
+
+    full_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {
+                1: (-150.0, -150.0, 100.0, 150.0, 150.0, 100.0),
+                2: (-150.0, -150.0, 0.0, 150.0, 150.0, 0.0),
+            },
+            masses={1: 90_000.0, 2: 90_000.0},
+        ),
+        option=types.SimpleNamespace(setNumber=lambda *_args: None),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", full_gmsh)
+    full_geometry = _fake_panel_enclosure_geometry()
+    configure_density(full_geometry, density)
+
+    quarter_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {
+                1: (0.0, 0.0, 100.0, 150.0, 150.0, 100.0),
+                2: (0.0, 0.0, 0.0, 150.0, 150.0, 0.0),
+            },
+            masses={1: 22_500.0, 2: 22_500.0},
+        ),
+        option=types.SimpleNamespace(setNumber=lambda *_args: None),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", quarter_gmsh)
+    quarter_geometry = _fake_panel_enclosure_geometry(symmetry_snap_axes=("x", "y"))
+    configure_density(quarter_geometry, density)
+
+    full = full_geometry.metadata
+    quarter = quarter_geometry.metadata
+    assert full["enclosureMeshCapped"] is True
+    assert quarter["enclosureMeshCapped"] is True
+    assert full["enclosureMeshCapScale"] == pytest.approx(quarter["enclosureMeshCapScale"])
+    assert full["enclosureMeshEffectiveTriangleCeiling"] == 18_000
+    assert quarter["enclosureMeshEffectiveTriangleCeiling"] == 4_500
+    assert full["enclosureMeshTriangleEstimatePost"] == pytest.approx(18_000, abs=2)
+    assert quarter["enclosureMeshTriangleEstimatePost"] == pytest.approx(4_500, abs=2)
+    assert quarter["enclosureMeshTriangleEstimatePostFullDomain"] == pytest.approx(
+        full["enclosureMeshTriangleEstimatePostFullDomain"],
+        abs=4,
+    )
+
+    full_formula = _restriction_formulas(full_gmsh)[(1,)]
+    quarter_formula = _restriction_formulas(quarter_gmsh)[(1,)]
+    full_panel_value = float(
+        eval(full_formula, {"__builtins__": {}}, {"x": 0.0, "y": 0.0, "z": 100.0})
+    )
+    quarter_panel_value = float(
+        eval(quarter_formula, {"__builtins__": {}}, {"x": 75.0, "y": 75.0, "z": 100.0})
+    )
+    assert quarter_panel_value == pytest.approx(full_panel_value)

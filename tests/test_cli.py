@@ -670,7 +670,7 @@ def test_toml_dict_config_without_mode_stays_freestanding():
     assert mode == "freestanding"
 
 
-def test_infinite_baffle_build_emits_xy_image_open_shell(tmp_path):
+def test_infinite_baffle_build_emits_coupled_aperture_contract(tmp_path):
     cfg_path = tmp_path / "ib.cfg"
     cfg_path.write_text(
         ATH_FLAT_OSSE_CFG + "Mesh.AngularSegments = 12\nMesh.LengthSegments = 4\n",
@@ -680,10 +680,12 @@ def test_infinite_baffle_build_emits_xy_image_open_shell(tmp_path):
     result = build_from_config(load_config(cfg_path), tmp_path / "ib.msh")
 
     assert result.mode == "infinite-baffle"
-    assert result.native_symmetry_plane == "xy"
-    assert result.native_check_open_edges is False
+    assert result.native_symmetry_plane is None
+    assert result.native_check_open_edges is True
     assert result.physical_groups[1] == "SD1G0"
     assert result.physical_groups[2] == "SD1D1001"
+    assert result.physical_groups[12] == "mouth_aperture"
+    assert result.metadata["apertureTag"] == 12
     assert 4 not in result.physical_groups
 
     import meshio
@@ -698,23 +700,42 @@ def test_infinite_baffle_build_emits_xy_image_open_shell(tmp_path):
             key = tuple(sorted((int(a), int(b))))
             edge_counts[key] = edge_counts.get(key, 0) + 1
     open_edges = np.asarray([edge for edge, count in edge_counts.items() if count == 1], dtype=np.int64)
-    assert len(open_edges) > 0
+    assert len(open_edges) == 0
     referenced = points[np.unique(triangles)]
-    assert float(referenced[:, 2].min()) >= -1.0e-9
-    assert float(referenced[:, 2].max()) > 1.0e-3
-    assert np.all(np.abs(points[open_edges][:, :, 2]) <= 1.0e-9)
+    assert float(referenced[:, 2].max()) <= 1.0e-9
+    assert float(referenced[:, 2].min()) < -1.0e-3
+
+    tags = np.asarray(mesh.cell_data_dict["gmsh:physical"]["triangle"], dtype=np.int32)
+    aperture = tags == 12
+    assert np.any(aperture)
+    corners = points[triangles[aperture]]
+    assert np.all(np.abs(corners[:, :, 2]) <= 1.0e-9)
+    p0 = points[triangles[aperture, 0]]
+    p1 = points[triangles[aperture, 1]]
+    p2 = points[triangles[aperture, 2]]
+    assert float(np.sum(np.cross(p1 - p0, p2 - p0)[:, 2])) > 0.0
 
 
-def test_infinite_baffle_rejects_quadrant_reduction(tmp_path):
+@pytest.mark.parametrize(
+    ("quadrants", "native_symmetry_plane"),
+    [("1", "yz+xz"), ("12", "xz"), ("14", "yz")],
+)
+def test_infinite_baffle_supports_quadrant_native_symmetry(
+    tmp_path, quadrants, native_symmetry_plane
+):
     cfg_path = tmp_path / "ib-quarter.cfg"
     cfg_path.write_text(
         ATH_FLAT_OSSE_CFG
-        + "Mesh.AngularSegments = 12\nMesh.LengthSegments = 4\nMesh.Quadrants = 1\n",
+        + f"Mesh.AngularSegments = 12\nMesh.LengthSegments = 4\nMesh.Quadrants = {quadrants}\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="infinite-baffle.*Quadrants=1234"):
-        build_from_config(load_config(cfg_path), tmp_path / "ib-quarter.msh")
+    result = build_from_config(load_config(cfg_path), tmp_path / f"ib-quarter-{quadrants}.msh")
+
+    assert result.mode == "infinite-baffle"
+    assert result.native_symmetry_plane == native_symmetry_plane
+    assert result.native_check_open_edges is True
+    assert result.metadata["apertureTag"] == 12
 
 
 def test_auto_source_cap_is_flat_at_zero_throat_angle(tmp_path):
@@ -740,7 +761,9 @@ def test_auto_source_cap_is_flat_at_zero_throat_angle(tmp_path):
         source_vertex_ids.update(block.data[data == source_tag].ravel().tolist())
     source_z = mesh.points[sorted(source_vertex_ids), 2]
     assert float(np.ptp(source_z)) < 1.0e-9
-    assert float(np.mean(source_z)) > 0.0
+    assert float(np.mean(source_z)) == pytest.approx(
+        -0.001 * result.metadata["cavityDepthMm"]
+    )
 
 
 def test_build_result_reports_symmetry_hint_for_quadrant_grids(tmp_path):

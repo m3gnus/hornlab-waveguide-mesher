@@ -29,14 +29,17 @@ from .point_grid_surfaces import (
     _SharedSurfaceBuilder,
     _add_grid_wall_surfaces,
     _add_occ_bspline_patch_wall_surfaces,
+    _add_occ_spline_span_wall_surfaces,
     _bspline_patch_phi_groups,
+    _phi_segments,
     _snap_open_symmetry_grid,
+    _spline_span_phi_groups,
     _validated_grid,
 )
 
 
-_IMAGE_BAFFLE_SNAP_TOL_MM = 1.0e-6
-_IMAGE_BAFFLE_PROTRUSION_TOL_MM = 1.0e-7
+_BAFFLE_PLANE_SNAP_TOL_MM = 1.0e-6
+_BAFFLE_PROTRUSION_TOL_MM = 1.0e-7
 
 
 def _open_sector_count(geometry: PointGridHornGeometry) -> int:
@@ -53,88 +56,183 @@ def _open_sector_count(geometry: PointGridHornGeometry) -> int:
     return 1 if len(tuple(geometry.symmetry_planes)) >= 2 else 2
 
 
-def _snap_image_baffle_grid(points: np.ndarray) -> np.ndarray:
+def _shift_coupled_baffle_grid(points: np.ndarray) -> np.ndarray:
     out = np.array(points, dtype=np.float64, copy=True)
     mouth_z = float(np.mean(out[:, -1, 2]))
-    out[:, :, 2] = mouth_z - out[:, :, 2]
+    out[:, :, 2] -= mouth_z
     out[:, -1, 2] = 0.0
 
-    min_z = float(np.min(out[:, :, 2]))
-    if min_z < -_IMAGE_BAFFLE_PROTRUSION_TOL_MM:
+    max_z = float(np.max(out[:, :, 2]))
+    if max_z > _BAFFLE_PROTRUSION_TOL_MM:
         raise ValueError(
-            "infinite-baffle xy image mesh requires the mouth ring to be the "
-            "front-most z station so the reduced horn body lies in z >= 0; "
-            f"the translated point grid protrudes through the image plane to z={min_z:.6g} mm"
+            "infinite-baffle coupled aperture mesh requires the mouth ring to "
+            "be the front-most z station so the interior cavity lies in z <= 0; "
+            f"the translated point grid protrudes through the baffle plane to z={max_z:.6g} mm"
         )
     return out
 
 
-def _build_image_baffle_point_grid(
+def _add_mouth_aperture_surfaces(
+    builder: _SharedSurfaceBuilder,
+    *,
+    n_phi: int,
+    n_len: int,
+    closed: bool,
+    preserve_grid: bool,
+) -> list[tuple[int, int]]:
+    """Fill the mouth aperture on the wall's own rim curves.
+
+    The Rayleigh aperture must share the exact mouth rim authored for the wall:
+    a geometrically coincident re-built profile curve gets its own 1D mesh nodes
+    and leaves a crack at the coupling boundary.
+    """
+
+    mouth_j = n_len - 1
+    center_tag = builder.add_point((0.0, 0.0, 0.0))
+    radial_lines = {
+        i: builder.line_tags(builder.point("inner", i, mouth_j), center_tag)
+        for i in range(n_phi)
+    }
+
+    aperture: list[tuple[int, int]] = []
+    if preserve_grid:
+        rim_curves: list[int] = []
+        for i in _phi_segments(n_phi, closed=closed):
+            ni = (i + 1) % n_phi
+            rim = builder.line(("inner", i, mouth_j), ("inner", ni, mouth_j))
+            if closed:
+                aperture.append(builder.surface([rim, radial_lines[ni], -radial_lines[i]]))
+            else:
+                rim_curves.append(rim)
+        if not closed and rim_curves:
+            aperture.append(
+                builder.surface([*rim_curves, radial_lines[n_phi - 1], -radial_lines[0]])
+            )
+        return aperture
+
+    rim_spans = _spline_span_phi_groups(n_phi, closed=closed)
+    if closed:
+        for indices in rim_spans:
+            start = indices[0]
+            end = indices[-1]
+            rim = builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
+            aperture.append(builder.surface([rim, radial_lines[end], -radial_lines[start]]))
+        return aperture
+
+    rim_curves = [
+        builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
+        for indices in rim_spans
+    ]
+    if rim_curves:
+        aperture.append(
+            builder.surface([*rim_curves, radial_lines[n_phi - 1], -radial_lines[0]])
+        )
+    return aperture
+
+
+def _build_coupled_baffle_point_grid(
     geometry: PointGridHornGeometry,
     inner_points: np.ndarray,
     source_shape: int,
 ) -> BuiltGeometry:
-    if not geometry.closed:
-        raise ValueError(
-            "infinite-baffle xy image meshes currently support only full-azimuth "
-            "Mesh.Quadrants=1234; quadrant IB would require composing xy with "
-            "yz/xz native symmetry planes, which hornlab-metal-bem does not accept"
+    inner_points = _shift_coupled_baffle_grid(inner_points)
+    inner_points = _snap_open_symmetry_grid(
+        inner_points,
+        closed=geometry.closed,
+        symmetry_planes=geometry.symmetry_planes,
+    )
+
+    n_phi, n_len, _ = inner_points.shape
+    builder = _SharedSurfaceBuilder()
+    builder.add_grid("inner", inner_points)
+    if geometry.preserve_grid:
+        wall = _add_grid_wall_surfaces(
+            builder,
+            "inner",
+            n_phi=n_phi,
+            n_len=n_len,
+            closed=geometry.closed,
+        )
+        cap_boundary_groups = None
+    else:
+        cap_boundary_groups = _spline_span_phi_groups(n_phi, closed=geometry.closed)
+        wall = _add_occ_spline_span_wall_surfaces(
+            builder,
+            "inner",
+            n_phi=n_phi,
+            n_len=n_len,
+            closed=geometry.closed,
         )
 
-    inner_points = _snap_image_baffle_grid(inner_points)
-    wall = build_surface_from_points(
-        inner_points,
-        closed=True,
+    aperture = _add_mouth_aperture_surfaces(
+        builder,
+        n_phi=n_phi,
+        n_len=n_len,
+        closed=geometry.closed,
         preserve_grid=geometry.preserve_grid,
     )
-    require_gmsh().model.occ.synchronize()
-
-    throat_radius = _throat_radius(inner_points, closed=True)
+    throat_radius = _throat_radius(inner_points, closed=geometry.closed)
     cap_height = (
         _source_cap_height(throat_radius, geometry)
         if source_shape == SOURCE_SHAPE_ROUNDED_CAP
         else 0.0
     )
-    if source_shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
-        cap_builder = _SharedSurfaceBuilder()
-        cap_builder.add_grid("inner", inner_points)
-        throat = _add_occ_source_cap_surfaces(
-            cap_builder,
+    if geometry.preserve_grid:
+        throat = _add_source_surfaces(
+            builder,
             inner_points,
             geometry,
-            throat_use_min=False,
-            source_axis_sign=-1.0,
+            wall_dimtags=wall,
+        )
+    elif source_shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
+        throat = _add_occ_source_cap_surfaces(
+            builder,
+            inner_points,
+            geometry,
+            boundary_phi_groups=cap_boundary_groups,
+            throat_use_min=True,
+            source_axis_sign=1.0,
             wall_dimtags=wall,
         )
     elif source_shape in {SOURCE_SHAPE_FLAT_DISC, SOURCE_SHAPE_ROUNDED_CAP}:
-        throat = make_planar_fill_from_boundary(
-            wall,
-            source_axis="z",
-            use_min=False,
-            closed=True,
+        throat = _add_occ_source_cap_surfaces(
+            builder,
+            inner_points,
+            geometry,
+            boundary_phi_groups=cap_boundary_groups,
+            throat_use_min=True,
+            source_axis_sign=1.0,
+            wall_dimtags=wall,
         )
-        if not throat:
-            throat = make_planar_fill_from_ring(inner_points[:, 0, :])
     else:
         raise AssertionError(f"unhandled source shape {source_shape!r}")
 
+    require_gmsh().model.occ.synchronize()
     wall_tags = [tag for _, tag in wall]
     throat_tags = [tag for _, tag in throat]
+    aperture_tags = [tag for _, tag in aperture]
     throat_z = float(np.mean(inner_points[:, 0, 2]))
     mouth_z = float(np.mean(inner_points[:, -1, 2]))
     return BuiltGeometry(
         surface_groups={
             int(PhysicalGroup.RIGID_WALL): wall_tags,
             int(PhysicalGroup.PRIMARY_SOURCE): throat_tags,
+            int(PhysicalGroup.MOUTH_APERTURE): aperture_tags,
         },
-        axial_bounds_mm=(-throat_z, -mouth_z),
-        source_axis="-z",
+        axial_bounds_mm=(throat_z, mouth_z),
+        source_axis="z",
         mesh_surface_groups={
             "inner": list(wall_tags),
             "throat_disc": list(throat_tags),
+            "mouth_aperture": list(aperture_tags),
         },
-        symmetry_snap_axes=("z",),
-        symmetry_snap_tol_mm=_IMAGE_BAFFLE_SNAP_TOL_MM,
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+        symmetry_snap_tol_mm=_BAFFLE_PLANE_SNAP_TOL_MM,
+        metadata={
+            "apertureTag": int(PhysicalGroup.MOUTH_APERTURE),
+            "apertureZMm": 0.0,
+            "cavityDepthMm": float(abs(throat_z - mouth_z)),
+        },
     )
 
 
@@ -147,7 +245,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         return _build_freestanding_point_grid(geometry)
 
     if build_mode is PointGridBuildMode.INFINITE_BAFFLE:
-        return _build_image_baffle_point_grid(geometry, inner_points, source_shape)
+        return _build_coupled_baffle_point_grid(geometry, inner_points, source_shape)
 
     if build_mode is PointGridBuildMode.ENCLOSURE:
         inner_points = _snap_open_symmetry_grid(
@@ -304,4 +402,5 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         source_axis="z",
         mesh_surface_groups=mesh_surface_groups,
         enclosure_bounds=enclosure_bounds,
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
     )
