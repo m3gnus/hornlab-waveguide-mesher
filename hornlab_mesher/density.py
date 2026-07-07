@@ -386,6 +386,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     mouth_res = _sz(density.mouth_res_mm, "mouth")
     rear_res = _sz(density.rear_res_mm, "rear")
     interface_res = _sz(density.interface_res_mm or density.mouth_res_mm, "interface")
+    aperture_res_scale = float(getattr(density, "aperture_res_scale", 1.0) or 1.0)
+    if not math.isfinite(aperture_res_scale) or aperture_res_scale < 1.0:
+        aperture_res_scale = 1.0
+    aperture_res = mouth_res * aperture_res_scale
 
     enclosure_cap_scale = 1.0
     enclosure_resolution_values: list[float] = []
@@ -517,11 +521,21 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             gmsh.model.mesh.field.setNumbers(restrict, "CurvesList", [int(c) for c in curves])
         fields.append(restrict)
 
-    for group_key in ("inner", "mouth", "mouth_aperture"):
+    for group_key in ("inner", "mouth"):
         add_field(
             axial_formula,
             mesh_groups.get(group_key, []),
             curve_groups.get(group_key, []),
+        )
+    aperture_surfaces = mesh_groups.get("mouth_aperture", [])
+    if aperture_surfaces:
+        add_field(f"{aperture_res:.12g}", aperture_surfaces)
+        geometry.metadata.update(
+            {
+                "apertureMeshResolutionScale": float(aperture_res_scale),
+                "apertureMeshRimSizeMm": float(mouth_res),
+                "apertureMeshInteriorSizeMm": float(aperture_res),
+            }
         )
 
     free_standing_wall_mode = bool(mesh_groups.get("outer")) and not bool(mesh_groups.get("enclosure"))
@@ -624,7 +638,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [throat_res, mouth_res, rear_res, interface_res]
+    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
     sizes.extend(enclosure_resolution_values)
     sizes = [v for v in sizes if math.isfinite(v) and v > 0.0]
     if not sizes:

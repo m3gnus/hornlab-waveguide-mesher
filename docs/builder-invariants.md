@@ -115,7 +115,10 @@ Recognized role names include:
 
 - `inner`: axial interpolation from throat to mouth resolution.
 - `mouth`: axial interpolation from throat to mouth resolution.
-- `mouth_aperture`: axial interpolation from throat to mouth resolution.
+- `mouth_aperture`: aperture-cap interior resolution. The shared wall rim is
+  still controlled by the `inner`/mouth boundary field; the cap interior uses
+  `mouth_res_mm * aperture_res_scale` so coupled infinite-baffle solves do not
+  over-mesh the smooth Rayleigh aperture.
 - `outer`: rear resolution for freestanding outer walls, otherwise axial
   interpolation.
 - `throat_disc`: throat resolution.

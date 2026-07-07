@@ -120,6 +120,52 @@ def _fake_panel_enclosure_geometry(*, symmetry_snap_axes=()):
     )
 
 
+def test_aperture_density_coarsens_surface_not_rim_curves(monkeypatch):
+    fake_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {
+                1: (-20.0, -20.0, -80.0, 20.0, 20.0, 0.0),
+                2: (-20.0, -20.0, 0.0, 20.0, 20.0, 0.0),
+            }
+        ),
+        option=types.SimpleNamespace(setNumber=lambda *_args: None),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
+
+    geometry = BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(-80.0, 0.0),
+        mesh_surface_groups={
+            "inner": [1],
+            "mouth_aperture": [2],
+        },
+    )
+
+    configure_density(
+        geometry,
+        MeshDensity(
+            throat_res_mm=5.0,
+            mouth_res_mm=10.0,
+            rear_res_mm=30.0,
+            aperture_res_scale=2.5,
+        ),
+    )
+
+    formulas = _restriction_formulas(fake_gmsh)
+    assert formulas[(2,)] == "25"
+    assert geometry.metadata["apertureMeshResolutionScale"] == pytest.approx(2.5)
+    assert geometry.metadata["apertureMeshRimSizeMm"] == pytest.approx(10.0)
+    assert geometry.metadata["apertureMeshInteriorSizeMm"] == pytest.approx(25.0)
+
+    field = fake_gmsh.model.mesh.field
+    aperture_restrict = next(
+        tag
+        for tag, kind in field.kinds.items()
+        if kind == "Restrict" and tuple(field.number_lists.get((tag, "SurfacesList"), ())) == (2,)
+    )
+    assert (aperture_restrict, "CurvesList") not in field.number_lists
+
+
 def test_enclosure_density_refines_panels_and_roundover_without_global_box_fillet_size(monkeypatch):
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(

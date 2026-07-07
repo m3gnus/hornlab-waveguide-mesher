@@ -1441,6 +1441,17 @@ def build_from_config(
         throat_res_mm=_float(mesh, config, names=("throat_res_mm", "throat_res", "throatResolution"), default=4.0),
         mouth_res_mm=_float(mesh, config, names=("mouth_res_mm", "mouth_res", "mouthResolution"), default=26.0),
         rear_res_mm=_float(mesh, config, names=("rear_res_mm", "rear_res", "rearResolution"), default=15.0),
+        aperture_res_scale=_float(
+            mesh,
+            config,
+            names=(
+                "aperture_res_scale",
+                "apertureResolutionScale",
+                "aperture_cap_coarsening",
+                "apertureCapCoarsening",
+            ),
+            default=1.5,
+        ),
         enc_front_res_mm=_pick(
             mesh,
             enclosure,

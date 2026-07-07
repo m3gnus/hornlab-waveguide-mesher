@@ -88,45 +88,28 @@ def _add_mouth_aperture_surfaces(
     """
 
     mouth_j = n_len - 1
-    center_tag = builder.add_point((0.0, 0.0, 0.0))
-    radial_lines = {
-        i: builder.line_tags(builder.point("inner", i, mouth_j), center_tag)
-        for i in range(n_phi)
-    }
-
-    aperture: list[tuple[int, int]] = []
+    rim_curves: list[int] = []
     if preserve_grid:
-        rim_curves: list[int] = []
         for i in _phi_segments(n_phi, closed=closed):
             ni = (i + 1) % n_phi
-            rim = builder.line(("inner", i, mouth_j), ("inner", ni, mouth_j))
-            if closed:
-                aperture.append(builder.surface([rim, radial_lines[ni], -radial_lines[i]]))
-            else:
-                rim_curves.append(rim)
-        if not closed and rim_curves:
-            aperture.append(
-                builder.surface([*rim_curves, radial_lines[n_phi - 1], -radial_lines[0]])
-            )
-        return aperture
+            rim_curves.append(builder.line(("inner", i, mouth_j), ("inner", ni, mouth_j)))
+    else:
+        rim_curves = [
+            builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
+            for indices in _spline_span_phi_groups(n_phi, closed=closed)
+        ]
+    if not rim_curves:
+        return []
 
-    rim_spans = _spline_span_phi_groups(n_phi, closed=closed)
     if closed:
-        for indices in rim_spans:
-            start = indices[0]
-            end = indices[-1]
-            rim = builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
-            aperture.append(builder.surface([rim, radial_lines[end], -radial_lines[start]]))
-        return aperture
+        return [builder.surface(rim_curves)]
 
-    rim_curves = [
-        builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
-        for indices in rim_spans
-    ]
+    center_tag = builder.add_point((0.0, 0.0, 0.0))
+    end_to_center = builder.line_tags(builder.point("inner", n_phi - 1, mouth_j), center_tag)
+    center_to_start = builder.line_tags(center_tag, builder.point("inner", 0, mouth_j))
+    aperture: list[tuple[int, int]] = []
     if rim_curves:
-        aperture.append(
-            builder.surface([*rim_curves, radial_lines[n_phi - 1], -radial_lines[0]])
-        )
+        aperture.append(builder.surface([*rim_curves, end_to_center, center_to_start]))
     return aperture
 
 
