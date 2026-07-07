@@ -263,6 +263,13 @@ def _tag_normal_projection(
     return float(np.sum(np.cross(p1 - p0, p2 - p0)[:, axis]))
 
 
+def _signed_volume_indicator(points: np.ndarray, triangles: np.ndarray) -> float:
+    p0 = points[triangles[:, 0]]
+    p1 = points[triangles[:, 1]]
+    p2 = points[triangles[:, 2]]
+    return float(np.sum(p0 * np.cross(p1, p2)))
+
+
 def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[int]:
     tri_indices = np.flatnonzero(tags == int(tag))
     local = {int(tri_idx): idx for idx, tri_idx in enumerate(tri_indices)}
@@ -2192,6 +2199,7 @@ def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
     referenced = points[np.unique(triangles)]
     assert float(np.max(referenced[:, 2])) <= 1.0e-9
     assert float(np.min(referenced[:, 2])) == pytest.approx(-100.0, abs=1.0e-6)
+    assert _signed_volume_indicator(points, triangles) < 0.0
 
     aperture = tags == 12
     corners = points[triangles[aperture]]
@@ -2270,6 +2278,7 @@ def test_infinite_baffle_reduced_domains_open_only_on_cut_planes(
 
     assert {1, 2, 12}.issubset({int(tag) for tag in tags})
     assert float(points[:, 2].max()) <= 1.0e-9
+    assert _signed_volume_indicator(points, triangles) < 0.0
     assert _tag_normal_projection(points, triangles, tags, 12) > 0.0
 
     aperture_corners = points[triangles[tags == 12]]
