@@ -2206,7 +2206,7 @@ def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
     corners = points[triangles[aperture]]
     in_xy_plane = np.all(np.abs(corners[:, :, 2]) <= 1.0e-9, axis=1)
     assert bool(np.all(in_xy_plane))
-    assert _tag_normal_projection(points, triangles, tags, 12) > 0.0
+    assert _tag_normal_projection(points, triangles, tags, 12) < 0.0
 
     source = tags == 2
     source_vertices = points[np.unique(triangles[source])]
@@ -2327,7 +2327,7 @@ def test_infinite_baffle_reduced_domains_open_only_on_cut_planes(
     assert {1, 2, 12}.issubset({int(tag) for tag in tags})
     assert float(points[:, 2].max()) <= 1.0e-9
     assert _signed_volume_indicator(points, triangles) < 0.0
-    assert _tag_normal_projection(points, triangles, tags, 12) > 0.0
+    assert _tag_normal_projection(points, triangles, tags, 12) < 0.0
 
     aperture_corners = points[triangles[tags == 12]]
     assert np.all(np.abs(aperture_corners[:, :, 2]) <= 1.0e-9)

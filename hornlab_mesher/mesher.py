@@ -119,14 +119,6 @@ def build_mesh_with_info(
             gmsh.write(str(raw_path))
 
             is_infinite_baffle = bool(getattr(geometry, "infinite_baffle", False))
-            allowed_inconsistent_edge_tag_pairs = (
-                (
-                    int(PhysicalGroup.RIGID_WALL),
-                    int(PhysicalGroup.MOUTH_APERTURE),
-                ),
-            )
-            if not is_infinite_baffle:
-                allowed_inconsistent_edge_tag_pairs = ()
             info = _postprocess_mesh(
                 raw_path,
                 out_path,
@@ -135,14 +127,12 @@ def build_mesh_with_info(
                 symmetry_snap_axes=built.symmetry_snap_axes,
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
                 vertical_offset_mm=float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0),
-                orient_aperture_positive_z=is_infinite_baffle,
-                # Coupled infinite-baffle meshes carry an interior source
-                # normal and a Rayleigh aperture normal as explicit acoustic
-                # contracts; that can intentionally disagree with closed-solid
-                # signed-volume orientation. Other topologies keep the
-                # positive-volume guard.
+                # Coupled infinite-baffle meshes are interior-domain BIE
+                # surfaces. Keep one consistent negative-volume winding:
+                # source/wall normals point into the cavity and aperture
+                # normals point -Z. Rayleigh exterior evaluation is selected by
+                # the aperture tag, not by changing triangle winding.
                 require_positive_volume=not is_infinite_baffle,
-                allowed_inconsistent_edge_tag_pairs=allowed_inconsistent_edge_tag_pairs,
             )
             if built.metadata:
                 info.metadata.update(built.metadata)

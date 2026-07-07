@@ -713,7 +713,7 @@ def test_infinite_baffle_build_emits_coupled_aperture_contract(tmp_path):
     p0 = points[triangles[aperture, 0]]
     p1 = points[triangles[aperture, 1]]
     p2 = points[triangles[aperture, 2]]
-    assert float(np.sum(np.cross(p1 - p0, p2 - p0)[:, 2])) > 0.0
+    assert float(np.sum(np.cross(p1 - p0, p2 - p0)[:, 2])) < 0.0
 
 
 @pytest.mark.parametrize(
