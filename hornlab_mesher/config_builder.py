@@ -937,7 +937,24 @@ def _axisymmetric_rejection_reasons(
     if enclosure_obj is not None or mode == "enclosure":
         depth = getattr(enclosure_obj, "depth_mm", params.get("encDepth", None))
         reasons.append(f"enclosure depth is {float(depth):g} mm")
+    if _number_list(params.get("subdomainSlices")) or _number_list(
+        params.get("interfaceOffset")
+    ):
+        reasons.append(
+            "Mesh.SubdomainSlices/Mesh.InterfaceOffset subdomain interfaces are not "
+            "implemented by the CircSym meridian builder"
+        )
     return reasons
+
+
+def _validate_mode_contract(params: Mapping[str, Any], mode: str) -> None:
+    if mode == "freestanding":
+        thickness = float(params.get("wallThickness") or 0.0)
+        if not math.isfinite(thickness) or thickness <= 0.0:
+            raise ConfigError(
+                "freestanding mode requires Mesh.WallThickness/wall_thickness_mm > 0; "
+                "use mode='bare' for an inner-only open horn"
+            )
 
 
 def _radial_profile_from_grid(points: np.ndarray, *, name: str) -> np.ndarray:
@@ -1024,6 +1041,54 @@ def _append_subdivided_meridian_points(
             tags.append(int(tag))
             added += 1
     return added
+
+
+def _semicircular_meridian_join_points(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    incoming_tangent: tuple[float, float],
+    target_segment_mm: float,
+) -> np.ndarray:
+    """ATH-compatible rounded closure between inner and outer mouth points.
+
+    The free-standing CircSym body closes its wall thickness with the
+    semicircle whose diameter is the inner-to-outer mouth chord.  Choose the
+    half-circle that continues the incoming inner-wall tangent, then retain
+    ATH's five-segment minimum while refining further when the frequency
+    budget requires it.
+    """
+
+    p0 = np.asarray(start, dtype=np.float64)
+    p1 = np.asarray(end, dtype=np.float64)
+    midpoint = 0.5 * (p0 + p1)
+    radius_vector = p0 - midpoint
+    radius = float(np.linalg.norm(radius_vector))
+    if radius <= 1.0e-12:
+        return np.asarray([p0, p1], dtype=np.float64)
+
+    tangent_vector = np.asarray(incoming_tangent, dtype=np.float64)
+    arc_direction = np.asarray(
+        [radius_vector[1], -radius_vector[0]],
+        dtype=np.float64,
+    )
+    if float(np.dot(arc_direction, tangent_vector)) < 0.0:
+        arc_direction *= -1.0
+
+    arc_length = math.pi * radius
+    segment_count = max(
+        5,
+        int(math.ceil(arc_length / max(float(target_segment_mm), 1.0e-9))),
+    )
+    angles = np.linspace(0.0, math.pi, segment_count + 1, dtype=np.float64)
+    points = (
+        midpoint[None, :]
+        + np.cos(angles)[:, None] * radius_vector[None, :]
+        + np.sin(angles)[:, None] * arc_direction[None, :]
+    )
+    points[0] = p0
+    points[-1] = p1
+    return points
 
 
 def _profile_arc_length_mm(params: Mapping[str, Any]) -> float:
@@ -1174,6 +1239,7 @@ def build_meridian(
     """Build a tagged CircSym body-of-revolution meridian from public config."""
 
     params, formula, mode = build_geometry_params(config)
+    _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
@@ -1244,6 +1310,17 @@ def build_meridian(
         source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
         infinite_baffle=(mode == "infinite-baffle"),
     )
+    source_shape = int(source_geometry.source_shape)
+    if source_shape not in {0, 1}:
+        raise ConfigError(
+            f"CircSym source_shape={source_shape} is not supported; "
+            "expected 0 (flat) or 1 (rounded)"
+        )
+    if not math.isfinite(throat_radius) or throat_radius <= 1.0e-9:
+        raise ConfigError(
+            "CircSym driven source must have positive swept area; "
+            f"throat radius is {throat_radius:.6g} mm"
+        )
     cap_points, cap_meta = _source_cap_polyline(
         throat_radius_mm=throat_radius,
         throat_z_mm=throat_z,
@@ -1287,12 +1364,24 @@ def build_meridian(
     if outer_profile is not None and rear_profile is not None:
         outer_reversed = outer_profile[::-1]
         if nodes_mm and outer_reversed.shape[0] > 0:
-            mouth_rim_segment_count = _subdivision_count_between(
+            incoming = (
+                float(nodes_mm[-1][0] - nodes_mm[-2][0]),
+                float(nodes_mm[-1][1] - nodes_mm[-2][1]),
+            )
+            rounded_mouth = _semicircular_meridian_join_points(
                 nodes_mm[-1],
                 (float(outer_reversed[0, 0]), float(outer_reversed[0, 1])),
-                target_outer_mm,
+                incoming_tangent=incoming,
+                target_segment_mm=target_outer_mm,
             )
-        outer_segment_count = _append_subdivided_meridian_points(
+            mouth_rim_segment_count = _append_subdivided_meridian_points(
+                nodes_mm,
+                tags,
+                rounded_mouth,
+                tag=int(PhysicalGroup.RIGID_WALL),
+                target_segment_mm=target_outer_mm,
+            )
+        outer_segment_count = mouth_rim_segment_count + _append_subdivided_meridian_points(
             nodes_mm,
             tags,
             outer_reversed,
@@ -1327,6 +1416,15 @@ def build_meridian(
     )
     tags_arr = np.asarray(tags, dtype=np.int32)
     normals = _polyline_normals(nodes, segments)
+    source_mask = tags_arr == int(PhysicalGroup.PRIMARY_SOURCE)
+    source_delta = nodes[segments[source_mask, 1]] - nodes[segments[source_mask, 0]]
+    source_length = np.linalg.norm(source_delta, axis=1)
+    source_rho = 0.5 * (
+        nodes[segments[source_mask, 0], 0] + nodes[segments[source_mask, 1], 0]
+    )
+    source_swept_area_mm2 = float(np.sum(2.0 * math.pi * source_rho * source_length))
+    if source_segment_count <= 0 or source_swept_area_mm2 <= 1.0e-12:
+        raise ConfigError("CircSym driven source has zero swept surface measure")
 
     nodes_m = nodes * 0.001
     baffle_z = None if baffle_z_mm is None else float(baffle_z_mm) * 0.001
@@ -1344,6 +1442,7 @@ def build_meridian(
         "profileArcLengthM": float(resolution["profile_arc_length_mm"]) * 0.001,
         "adaptiveLengthSegments": int(params["lengthSegments"]),
         "sourceSegmentCount": int(source_segment_count),
+        "sourceSweptAreaM2": source_swept_area_mm2 * 1.0e-6,
         "innerSegmentCount": int(inner_segment_count),
         "outerSegmentCount": int(outer_segment_count),
         "mouthRimSegmentCount": int(mouth_rim_segment_count),
@@ -1386,6 +1485,7 @@ def build_from_config(
     output_path: str | Path,
 ) -> BuildResult:
     params, formula, mode = build_geometry_params(config)
+    _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
@@ -1406,7 +1506,7 @@ def build_from_config(
     # an explicit request on other modes must fail loudly instead of silently
     # dropping the subdomain topology.
     if mode != "enclosure" and (
-        interfaces or any(offset > 0.0 for offset in interface_offsets)
+        _number_list(params.get("subdomainSlices")) or interface_offsets
     ):
         raise ConfigError(
             "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, "
@@ -1479,6 +1579,7 @@ def build_from_config(
         mouth_epw=_float(mesh, names=("mouth_epw", "mouthEpw"), default=6.0),
         rear_epw=_float(mesh, names=("rear_epw", "rearEpw"), default=2.5),
         interface_epw=_float(mesh, names=("interface_epw", "interfaceEpw"), default=6.0),
+        aperture_epw=_float(mesh, names=("aperture_epw", "apertureEpw"), default=6.0),
         speed_of_sound_m_s=_float(
             mesh, names=("speed_of_sound_m_s", "speedOfSound"), default=343.0
         ),

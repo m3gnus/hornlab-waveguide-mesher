@@ -17,6 +17,7 @@ from hornlab_mesher.builders.enclosure import (
 )
 from hornlab_mesher.builders import point_grid_surfaces as point_grid_surfaces_mod
 from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
+from hornlab_mesher.builders.point_grid_dispatch import _shift_coupled_baffle_grid
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
 from hornlab_mesher.builders.point_grid_sources import _add_occ_source_cap_surfaces
 from hornlab_mesher.builders.point_grid_surfaces import _SharedSurfaceBuilder, _rear_rim_points
@@ -54,6 +55,14 @@ _ASRO2_PARAMS = {
     "sourceRadius": -1.0,
     "sourceCurv": 0,
 }
+
+
+def test_infinite_baffle_rejects_nonplanar_mouth_instead_of_flattening_it():
+    points = np.zeros((4, 2, 3), dtype=np.float64)
+    points[:, -1, 2] = [10.0, 10.0, 10.01, 10.0]
+
+    with pytest.raises(ValueError, match="requires a planar mouth ring"):
+        _shift_coupled_baffle_grid(points)
 
 _ATH_ASRO2_T_VALUES = np.asarray(
     [

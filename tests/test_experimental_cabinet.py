@@ -146,6 +146,16 @@ def test_raw_point_grid_payload_builds(tmp_path):
     assert int(PhysicalGroup.PRIMARY_SOURCE) in tags
 
 
+def test_raw_reduced_grid_infers_declared_quadrant_symmetry_planes():
+    payload = _raw_point_grid_payload()
+    payload.update({"full_circle": False, "quadrants": "12"})
+
+    _inner, _outer, closed, planes, _offset = _grid_from_payload(payload)
+
+    assert closed is False
+    assert planes == ("y",)
+
+
 def test_measure_horn_mouth_uses_raw_grid():
     width, height = measure_horn_mouth(_raw_point_grid_payload())
 

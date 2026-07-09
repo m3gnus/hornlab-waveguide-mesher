@@ -24,11 +24,15 @@ Unsupported extensions fail before any geometry is built.
 | `output.path` | top-level `path`, `output_path`, CLI `-o` | none | Required by the CLI unless `-o/--output` is passed. |
 
 If enclosure depth is positive, mode becomes `enclosure` even when `mode` is
-omitted. `enclosure` mode requires `enclosure.depth_mm > 0`. `infinite-baffle`
+omitted. `enclosure` mode requires `enclosure.depth_mm > 0`, and explicit
+`freestanding` mode requires positive wall thickness (use `bare` for an
+inner-only open horn). `infinite-baffle`
 mode builds the coupled interior-BEM/Rayleigh-aperture surface: inner wall plus
 source cap plus a planar mouth aperture cap tagged `mouth_aperture`. The mouth
-rim lies exactly on z=0, the cavity lies in z <= 0, and the aperture triangles
-normal toward +z. It has no `I1-2` mouth interface, outer wall, baffle skin,
+rim lies exactly on z=0, the cavity lies in z <= 0, and all triangles use one
+consistent interior-domain winding: source normals point +z while the aperture
+normals point -z into the cavity. It has no `I1-2` mouth interface, outer wall,
+baffle skin,
 wall thickening, rear cap, enclosure box, or geometry in front of the baffle
 plane. The aperture cap reuses the wall rim curves and defaults to a coarser
 interior mesh via `aperture_res_scale = 1.5`; set it to `1.0` for a mouth-density
@@ -177,6 +181,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `mouth_epw` | `mouthEpw` | `6.0` | Elements-per-wavelength at the mouth; the inner wall grades from the throat value to this. |
 | `rear_epw` | `rearEpw` | `2.5` | Elements-per-wavelength on shadowed rear/outer surfaces, which contribute little to the radiated field. |
 | `interface_epw` | `interfaceEpw` | `6.0` | Elements-per-wavelength on subdomain interfaces. |
+| `aperture_epw` | `apertureEpw` | `6.0` | Elements-per-wavelength ceiling for the infinite-baffle aperture interior. Applied after `aperture_res_scale`, so coarsening cannot violate a requested frequency limit. |
 | `speed_of_sound_m_s` | `speedOfSound` | `343.0` | Speed of sound for frequency-aware sizing. |
 | `curvature_segments` | `curvatureSegments` | `0` | Gmsh `MeshSizeFromCurvature` segments per full circle; `0` disables curvature-adaptive refinement. |
 

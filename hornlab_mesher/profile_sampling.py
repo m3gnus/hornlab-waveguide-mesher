@@ -97,10 +97,12 @@ def _morph_angle_list(
         return None
     corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
     corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
-    # ATH adds CornerSegments to the angular point budget and rounds the
-    # total up to a whole number of points per quadrant (m2-clone: 100 + 4 ->
-    # 104; solana: 36 + 1 -> 40).
-    points_per_quadrant = max(1, int(math.ceil((angular_segments + corner_segments) / 4.0)))
+    # ``angular_segments`` has already been rounded to ATH's admissible
+    # multiple-of-eight budget. CornerSegments controls how that fixed budget
+    # is placed around the rounded corner; it does not add profiles. Current
+    # ATH V2025-12 emits 80 full-circle profiles (21 boundary-inclusive points
+    # for quadrant 1) for AngularSegments=80, CornerSegments=4.
+    points_per_quadrant = max(1, int(angular_segments // 4))
     return _mirror_quadrant_angles(
         _rounded_rect_quadrant_angles(
             points_per_quadrant,

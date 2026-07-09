@@ -390,6 +390,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     if not math.isfinite(aperture_res_scale) or aperture_res_scale < 1.0:
         aperture_res_scale = 1.0
     aperture_res = mouth_res * aperture_res_scale
+    if freq_active:
+        aperture_ceiling = density.role_ceiling_mm("aperture")
+        if aperture_ceiling:
+            aperture_res = min(aperture_res, aperture_ceiling)
 
     enclosure_cap_scale = 1.0
     enclosure_resolution_values: list[float] = []
@@ -650,7 +654,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         # Restrict field fall back to MeshSizeMax. Use the coarsest role
         # ceiling so the cap does not re-impose the strict target globally.
         ceilings = [
-            density.role_ceiling_mm(role) for role in ("throat", "mouth", "rear", "interface")
+            density.role_ceiling_mm(role)
+            for role in ("throat", "mouth", "rear", "interface", "aperture")
         ]
         ceilings = [value for value in ceilings if value]
         if ceilings:

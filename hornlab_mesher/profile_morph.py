@@ -284,11 +284,11 @@ def _rounded_rect_quadrant_angles(
 
     ATH always samples the corner arc with four profiles per quadrant (both
     wall-tangency endpoints plus two interior points at 30/60 degrees of arc
-    parameter) regardless of Mesh.CornerSegments, which only grows the total
-    point budget. The remaining segments are uniform in azimuth on the two
-    wall spans, split proportionally to their angular extents. Verified
-    against the ATH m2-clone (CornerSegments 4) and solana (CornerSegments 1)
-    reference grids.
+    parameter). ``Mesh.CornerSegments`` selects this rounded-corner placement
+    policy but does not grow the total ``Mesh.AngularSegments`` budget. The
+    remaining segments are uniform in azimuth on the two wall spans, split
+    proportionally to their angular extents. Verified directly against ATH
+    V2025-12 with AngularSegments=80, CornerSegments=4.
     """
     points_per_quadrant = max(1, int(points_per_quadrant))
     corner_radius = min(max(float(corner_radius), 0.0), half_width, half_height)
@@ -302,7 +302,10 @@ def _rounded_rect_quadrant_angles(
     side_segments = max(2, points_per_quadrant - arc_segments)
     span1 = theta1
     span2 = math.pi / 2.0 - theta2
-    side1_segments = max(1, int(round(side_segments * span1 / max(span1 + span2, 1.0e-12))))
+    # ATH/C++ rounds an exact .5 upward; Python's bankers-rounding would put
+    # the extra span on the opposite side of a symmetric quadrant.
+    side1_share = side_segments * span1 / max(span1 + span2, 1.0e-12)
+    side1_segments = max(1, int(math.floor(side1_share + 0.5)))
     side2_segments = max(1, side_segments - side1_segments)
 
     angles: list[float] = []

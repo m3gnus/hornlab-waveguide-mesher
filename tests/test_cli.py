@@ -899,6 +899,36 @@ def test_freestanding_subdomain_interfaces_raise(tmp_path):
         build_from_config(config, tmp_path / "iface.msh")
 
 
+def test_freestanding_zero_wall_thickness_fails_instead_of_becoming_bare(tmp_path):
+    config = {
+        "formula": "OSSE",
+        "mode": "freestanding",
+        "profile": {"r0": 2.0, "a": 4.0, "a0": 0.0, "L": 5.0},
+        "mesh": {"wallThickness": 0.0},
+    }
+
+    with pytest.raises(ConfigError, match="freestanding mode requires.*> 0"):
+        build_from_config(config, tmp_path / "not-bare.msh")
+
+
+def test_small_unscaled_build_reports_known_millimetre_units(tmp_path):
+    config = {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {"r0": 1.0, "a": 2.0, "a0": 0.0, "L": 4.0},
+        "mesh": {
+            "angularSegments": 12,
+            "lengthSegments": 4,
+            "scaleToMetres": False,
+        },
+        "source": {"sourceShape": 0},
+    }
+
+    result = build_from_config(config, tmp_path / "small-mm.msh")
+
+    assert result.units == "mm"
+
+
 def test_subdomain_slices_get_ath_default_interface_offset():
     from hornlab_mesher.config_builder import _interfaces_from_params
 

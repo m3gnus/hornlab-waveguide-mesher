@@ -58,8 +58,17 @@ def _open_sector_count(geometry: PointGridHornGeometry) -> int:
 
 def _shift_coupled_baffle_grid(points: np.ndarray) -> np.ndarray:
     out = np.array(points, dtype=np.float64, copy=True)
-    mouth_z = float(np.mean(out[:, -1, 2]))
+    mouth_z_values = out[:, -1, 2]
+    mouth_span = float(np.ptp(mouth_z_values))
+    if mouth_span > _BAFFLE_PLANE_SNAP_TOL_MM:
+        raise ValueError(
+            "infinite-baffle coupled aperture mesh requires a planar mouth ring; "
+            f"mouth z spans {mouth_span:.6g} mm"
+        )
+    mouth_z = float(np.mean(mouth_z_values))
     out[:, :, 2] -= mouth_z
+    # Only snap numerical noise after planarity has been established. Flattening
+    # a genuinely non-planar mouth here would shear the waveguide wall.
     out[:, -1, 2] = 0.0
 
     max_z = float(np.max(out[:, :, 2]))

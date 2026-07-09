@@ -133,6 +133,7 @@ def build_mesh_with_info(
                 # normals point -Z. Rayleigh exterior evaluation is selected by
                 # the aperture tag, not by changing triangle winding.
                 require_positive_volume=not is_infinite_baffle,
+                infinite_baffle=is_infinite_baffle,
             )
             if built.metadata:
                 info.metadata.update(built.metadata)
@@ -177,6 +178,7 @@ def _postprocess_mesh(
     orient_open_shell_for_metal: bool = False,
     orient_aperture_positive_z: bool = False,
     require_positive_volume: bool = True,
+    infinite_baffle: bool = False,
     allowed_inconsistent_edge_tag_pairs: tuple[tuple[int, int], ...] = (),
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
@@ -229,6 +231,15 @@ def _postprocess_mesh(
         require_positive_volume=require_positive_volume,
         require_source_normal=True,
     )
+    if infinite_baffle:
+        _validate_infinite_baffle_contract(
+            points,
+            triangles,
+            phys,
+            report=report,
+            symmetry_snap_axes=symmetry_snap_axes,
+            symmetry_snap_tol_mm=symmetry_snap_tol_mm,
+        )
     if not report.edge_consistent:
         unexpected = _count_unexpected_inconsistent_edges(
             triangles,
@@ -281,9 +292,158 @@ def _postprocess_mesh(
         n_triangles=int(len(triangles)),
         physical_groups=physical_names,
         bounding_box=(np.min(points, axis=0), np.max(points, axis=0)),
-        units="m" if _looks_like_metres(points) else "mm",
+        # Generated arrays have known units. Keep load_mesh's conservative
+        # magnitude heuristic for arbitrary third-party files, but never use it
+        # to mislabel a small unscaled build as metres.
+        units="m" if scale_to_metres else "mm",
         edge_stats_mm=edge_stats,
     )
+
+
+def _edge_uses(
+    triangles: np.ndarray,
+    phys: np.ndarray,
+) -> dict[tuple[int, int], list[int]]:
+    uses: dict[tuple[int, int], list[int]] = {}
+    for tri, raw_tag in zip(triangles, phys):
+        tag = int(raw_tag)
+        for start, end in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            a, b = sorted((int(start), int(end)))
+            if a != b:
+                uses.setdefault((a, b), []).append(tag)
+    return uses
+
+
+def _tag_axis_projections(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+    *,
+    tag: int,
+    axis_idx: int,
+) -> np.ndarray:
+    mask = phys == int(tag)
+    if not np.any(mask):
+        return np.empty((0,), dtype=np.float64)
+    p0 = points[triangles[mask, 0]]
+    p1 = points[triangles[mask, 1]]
+    p2 = points[triangles[mask, 2]]
+    return np.cross(p1 - p0, p2 - p0)[:, axis_idx]
+
+
+def _validate_infinite_baffle_contract(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+    *,
+    report: object,
+    symmetry_snap_axes: tuple[str, ...],
+    symmetry_snap_tol_mm: float,
+) -> None:
+    """Enforce the coupled interior-BEM/Rayleigh mesh contract at write time."""
+
+    wall_tag = int(PhysicalGroup.RIGID_WALL)
+    source_tag = int(PhysicalGroup.PRIMARY_SOURCE)
+    aperture_tag = int(PhysicalGroup.MOUTH_APERTURE)
+    used_tags = {int(value) for value in phys.tolist()}
+    missing = sorted({wall_tag, source_tag, aperture_tag} - used_tags)
+    if missing:
+        raise MesherError(
+            "infinite-baffle mesh is missing required physical tag(s): "
+            + ", ".join(str(tag) for tag in missing)
+        )
+
+    scale = max(float(np.ptp(points, axis=0).max()), 1.0)
+    area_eps = max(1.0e-12, scale * scale * 1.0e-12)
+    volume_eps = max(1.0e-12, scale * scale * scale * 1.0e-12)
+    source_face_projections = _tag_axis_projections(
+        points, triangles, phys, tag=source_tag, axis_idx=2
+    )
+    aperture_face_projections = _tag_axis_projections(
+        points, triangles, phys, tag=aperture_tag, axis_idx=2
+    )
+    source_projection = float(np.sum(source_face_projections))
+    aperture_projection = float(np.sum(aperture_face_projections))
+    if source_projection <= area_eps:
+        raise MesherError(
+            "infinite-baffle primary source must have positive driven area with +Z normals "
+            f"(projection {source_projection:.6g})"
+        )
+    if np.any(source_face_projections < -area_eps):
+        raise MesherError(
+            "infinite-baffle primary source contains triangle normals opposite +Z"
+        )
+    if aperture_projection >= -area_eps:
+        raise MesherError(
+            "infinite-baffle mouth aperture must have nonzero area with -Z normals "
+            f"(projection {aperture_projection:.6g})"
+        )
+    if np.any(aperture_face_projections > area_eps):
+        raise MesherError(
+            "infinite-baffle mouth aperture contains triangle normals opposite -Z"
+        )
+    if float(getattr(report, "signed_volume")) >= -volume_eps:
+        raise MesherError(
+            "infinite-baffle interior domain must have negative signed volume "
+            f"(got {float(getattr(report, 'signed_volume')):.6g})"
+        )
+    if int(getattr(report, "nonmanifold_edges")):
+        raise MesherError(
+            "infinite-baffle mesh is nonmanifold: "
+            f"{int(getattr(report, 'nonmanifold_edges'))} edge(s)"
+        )
+    if int(getattr(report, "inconsistent_edges")):
+        raise MesherError(
+            "infinite-baffle mesh has inconsistent winding on "
+            f"{int(getattr(report, 'inconsistent_edges'))} shared edge(s)"
+        )
+
+    aperture_nodes = np.unique(triangles[phys == aperture_tag])
+    plane_tol = max(float(symmetry_snap_tol_mm), 1.0e-7)
+    if np.any(np.abs(points[aperture_nodes, 2]) > plane_tol):
+        span = float(np.ptp(points[aperture_nodes, 2]))
+        raise MesherError(
+            "infinite-baffle mouth aperture must be coplanar at z=0 "
+            f"(z span {span:.6g} mm)"
+        )
+
+    edge_uses = _edge_uses(triangles, phys)
+    shared_rim = [
+        edge
+        for edge, tags in edge_uses.items()
+        if len(tags) == 2 and set(tags) == {wall_tag, aperture_tag}
+    ]
+    if not shared_rim:
+        raise MesherError(
+            "infinite-baffle wall and mouth aperture do not share a welded rim"
+        )
+    for edge in shared_rim:
+        if np.any(np.abs(points[list(edge), 2]) > plane_tol):
+            raise MesherError("infinite-baffle wall/aperture rim is not on z=0")
+
+    boundary_edges = [edge for edge, tags in edge_uses.items() if len(tags) == 1]
+    axes = tuple(str(axis) for axis in symmetry_snap_axes)
+    if not axes:
+        if boundary_edges:
+            raise MesherError(
+                "full infinite-baffle domain must be watertight; "
+                f"found {len(boundary_edges)} open edge(s)"
+            )
+        return
+
+    axis_idx = {"x": 0, "y": 1, "z": 2}
+    unknown = [axis for axis in axes if axis not in axis_idx]
+    if unknown:
+        raise MesherError(f"unknown infinite-baffle cut plane axis/axes: {unknown!r}")
+    for edge in boundary_edges:
+        if not any(
+            abs(float(points[edge[0], axis_idx[axis]])) <= plane_tol
+            and abs(float(points[edge[1], axis_idx[axis]])) <= plane_tol
+            for axis in axes
+        ):
+            raise MesherError(
+                "reduced infinite-baffle domain has an open edge away from its declared cut planes"
+            )
 
 
 def _signed_volume_indicator(points: np.ndarray, triangles: np.ndarray) -> float:

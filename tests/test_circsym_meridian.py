@@ -189,3 +189,89 @@ def test_circsym_rejection_reasons_flags_enclosure():
     )
     assert reasons
     assert any("enclosure" in reason.lower() for reason in reasons)
+
+
+@pytest.mark.parametrize(
+    "mesh_override",
+    [
+        {"subdomainSlices": "8", "interfaceOffset": 5.0},
+        {"interfaceOffset": 5.0},
+    ],
+)
+def test_circsym_rejects_subdomain_interface_controls(mesh_override):
+    config = _round_osse_config(mesh=mesh_override)
+
+    reasons = circsym_rejection_reasons(config)
+    assert any("subdomain interfaces" in reason for reason in reasons)
+    with pytest.raises(ConfigError, match="subdomain interfaces"):
+        build_meridian(config)
+
+
+def test_circsym_rejects_unsupported_source_shape():
+    config = _round_osse_config(source={"sourceShape": 2})
+
+    with pytest.raises(ConfigError, match="source_shape=2 is not supported"):
+        build_meridian(config)
+
+
+def test_circsym_reports_positive_driven_source_measure():
+    meridian = build_meridian(_round_osse_config())
+
+    assert meridian.metadata["sourceSegmentCount"] > 0
+    assert meridian.metadata["sourceSweptAreaM2"] > 0.0
+
+
+def test_freestanding_circsym_requires_positive_wall_thickness():
+    config = _round_osse_config(mesh={"wallThickness": 0.0})
+
+    with pytest.raises(ConfigError, match="freestanding mode requires.*> 0"):
+        build_meridian(config)
+
+
+def test_rosse_freestanding_lip_closure_matches_ath_semicircle_nodes():
+    config = {
+        "formula": "R-OSSE",
+        "mode": "freestanding",
+        "profile": {
+            "R": 250.0,
+            "a": 41.0,
+            "a0": 15.5,
+            "b": 0.3,
+            "k": 1.0,
+            "m": 0.8,
+            "q": 3.7,
+            "r": 0.3,
+            "r0": 12.7,
+        },
+        "mesh": {
+            "lengthSegments": 256,
+            "wallThickness": 5.0,
+            "samplingMode": "ath-default-zmap",
+        },
+        "source": {"sourceShape": 1, "sourceRadius": -1.0, "sourceCurv": 0},
+    }
+
+    meridian = build_meridian(config, freq_max_hz=20_000.0)
+    source_count = int(meridian.metadata["sourceSegmentCount"])
+    inner_count = int(meridian.metadata["innerSegmentCount"])
+    rim_count = int(meridian.metadata["mouthRimSegmentCount"])
+    rim_start = source_count + inner_count
+    actual_z_r_mm = meridian.nodes[
+        rim_start : rim_start + rim_count + 1,
+        [1, 0],
+    ] * 1000.0
+    # ATH V2025-12 nodes 257..262 from the supplied R-OSSE CircSym project.
+    expected_z_r_mm = np.asarray(
+        [
+            [97.692, 250.000],
+            [96.216, 249.542],
+            [95.292, 248.303],
+            [95.272, 246.758],
+            [96.164, 245.497],
+            [97.627, 245.000],
+        ],
+        dtype=np.float64,
+    )
+
+    assert rim_count == 5
+    assert np.allclose(actual_z_r_mm, expected_z_r_mm, rtol=0.0, atol=0.02)

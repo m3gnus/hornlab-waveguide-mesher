@@ -51,7 +51,9 @@ The point-grid dispatcher selects topology from `PointGridHornGeometry.build_mod
 
 - `bare`: `enclosure is None`, `outer_points is None`, not infinite baffle.
 - `infinite-baffle`: `infinite_baffle` is set and `enclosure is None`.
-- `freestanding`: `enclosure is None` and `outer_points is not None`.
+- `freestanding`: `enclosure is None`, `outer_points is not None`, and the
+  requested wall thickness is positive. Config-driven freestanding requests
+  with zero/negative thickness fail instead of silently becoming `bare`.
 - `enclosure`: `enclosure is not None`.
 
 Bare mode builds the inner horn surface and a source cap. Infinite-baffle
@@ -59,7 +61,9 @@ mode (ABEC.SimType = 1, the ATH default for imported text configs) builds the
 coupled interior-BEM/Rayleigh-aperture mesh: source cap plus inner wall plus a
 planar aperture cap across the mouth. The mouth rim lies exactly on z=0, the
 cavity lies in z <= 0, and the aperture cap is physical tag `12` with normals
-toward +z. It has no planar `I1-2` mouth interface, outer wall, baffle skin,
+toward -z into the cavity. Source normals point +z and the whole closed surface
+uses one consistent negative-volume interior-domain winding. It has no planar
+`I1-2` mouth interface, outer wall, baffle skin,
 wall thickening, rear cap, enclosure box, or geometry in front of the baffle
 plane. Freestanding mode builds an inner wall, outer wall, mouth rim, rear cap,
 and source cap.
@@ -162,10 +166,10 @@ Gmsh/OCC topology is not the final contract. After raw mesh generation,
 8. Reloads the final file and validates required physical tags.
 
 Orientation validation currently does not require watertightness or shared-edge
-consistency for all meshes. If a mesh is watertight, inconsistent shared edges
-are treated as an error, except coupled infinite-baffle meshes may carry the
-explicit +z aperture normal by breaking winding consistency only on shared
-wall-aperture tag `1`/`12` rim edges.
+consistency for all meshes. Coupled infinite-baffle meshes have a stricter
+runtime contract: full domains must be watertight, reduced-domain open edges
+must lie only on declared cut planes, tag `1`/`12` must share a welded rim, and
+the entire surface must keep a consistent negative-volume winding.
 
 ## Failure Policy
 

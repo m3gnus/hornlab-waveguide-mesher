@@ -21,6 +21,7 @@ from hornlab_mesher.config_builder import _mesh_report, _number_list
 from hornlab_mesher.cost import estimate_solve_cost, worst_valid_f_max_hz
 from hornlab_mesher.geometry import HornEnclosure, MeshDensity, PointGridHornGeometry
 from hornlab_mesher.mesher import build_mesh_with_info
+from hornlab_mesher.profile_common import _symmetry_planes_for_quadrants
 from hornlab_mesher.viewport import build_viewport_geometry_from_config
 
 HORNLAB_MESHER_AVAILABLE = True

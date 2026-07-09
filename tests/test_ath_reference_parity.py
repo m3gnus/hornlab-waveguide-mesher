@@ -314,6 +314,74 @@ def test_tritonia_scale_and_vertical_offset_match_ath_reference():
     assert abs(float(np.max(np.abs(mouth[:, 1]))) - 180.0 * 0.702) < 1.0e-6
 
 
+def test_tritonia_rounded_rect_angular_grid_matches_current_ath_nodes():
+    config = {
+        "formula": "OSSE",
+        "profile": {
+            "L": 129.874,
+            "r0": 12.7,
+            "a": "49.5128 - 14.8405*cos(p)^2 - 29.2180*sin(p)^8",
+            "a0": 8.0307,
+            "k": 1.0910,
+            "n": 6.04550,
+            "q": 0.98349,
+            "s": 0.9859,
+        },
+        "mesh": {
+            "angularSegments": 80,
+            "cornerSegments": 4,
+            "lengthSegments": 32,
+            "quadrants": 1,
+            "samplingMode": "ath-default-zmap",
+        },
+        "morph": {
+            "morphTarget": 1,
+            "morphCorner": 18.0,
+            "morphRate": 1.6002,
+            "morphWidth": 325.0,
+            "morphHeight": 325.0,
+            "morphAllowShrinkage": 1,
+        },
+    }
+    params, formula, _mode = build_geometry_params(config)
+    assert formula == "OSSE"
+    grid = build_point_grid(params)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        int(grid["grid_n_phi"]), int(grid["grid_n_length"]) + 1, 3
+    )
+    expected_ath_mouth_xy_mm = np.asarray(
+        [
+            [162.500, 0.000],
+            [162.500, 13.152],
+            [162.500, 26.477],
+            [162.500, 40.159],
+            [162.500, 54.399],
+            [162.500, 69.432],
+            [162.500, 85.542],
+            [162.500, 103.086],
+            [162.500, 122.530],
+            [162.500, 144.500],
+            [160.088, 153.500],
+            [153.500, 160.088],
+            [144.500, 162.500],
+            [119.976, 162.500],
+            [98.543, 162.500],
+            [79.354, 162.500],
+            [61.800, 162.500],
+            [45.422, 162.500],
+            [29.857, 162.500],
+            [14.805, 162.500],
+            [0.000, 162.500],
+        ],
+        dtype=np.float64,
+    )
+
+    assert int(grid["grid_n_phi"]) == 21
+    assert np.allclose(
+        inner[:, -1, :2], expected_ath_mouth_xy_mm, rtol=0.0, atol=6.0e-4
+    )
+
+
 def _read_geo_point_grid(path: Path, n_rings: int, n_phi: int) -> np.ndarray:
     import re
 

@@ -166,6 +166,38 @@ def test_aperture_density_coarsens_surface_not_rim_curves(monkeypatch):
     assert (aperture_restrict, "CurvesList") not in field.number_lists
 
 
+def test_frequency_ceiling_is_reapplied_after_aperture_coarsening(monkeypatch):
+    fake_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {
+                1: (-20.0, -20.0, -80.0, 20.0, 20.0, 0.0),
+                2: (-20.0, -20.0, 0.0, 20.0, 20.0, 0.0),
+            }
+        ),
+        option=types.SimpleNamespace(setNumber=lambda *_args: None),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
+    geometry = BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(-80.0, 0.0),
+        mesh_surface_groups={"inner": [1], "mouth_aperture": [2]},
+    )
+
+    configure_density(
+        geometry,
+        MeshDensity(
+            mouth_res_mm=30.0,
+            aperture_res_scale=3.0,
+            max_frequency_hz=10_000.0,
+            aperture_epw=10.0,
+        ),
+    )
+
+    ceiling_mm = 343_000.0 / (10.0 * 10_000.0)
+    assert float(_restriction_formulas(fake_gmsh)[(2,)]) == pytest.approx(ceiling_mm)
+    assert geometry.metadata["apertureMeshInteriorSizeMm"] == pytest.approx(ceiling_mm)
+
+
 def test_enclosure_density_refines_panels_and_roundover_without_global_box_fillet_size(monkeypatch):
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(

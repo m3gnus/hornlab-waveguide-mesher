@@ -226,6 +226,10 @@ class MeshDensity:
     mouth_epw: float = 6.0
     rear_epw: float = 2.5
     interface_epw: float = 6.0
+    # The Rayleigh aperture can be coarser than the mouth for geometry-driven
+    # builds, but frequency-aware builds must still honour an explicit acoustic
+    # wavelength ceiling on the aperture interior.
+    aperture_epw: float = 6.0
     speed_of_sound_m_s: float = 343.0
     # Gmsh Mesh.MeshSizeFromCurvature segments per 2*pi (0 disables).
     curvature_segments: int = 0
@@ -247,6 +251,7 @@ class MeshDensity:
             "mouth": self.mouth_epw,
             "rear": self.rear_epw,
             "interface": self.interface_epw,
+            "aperture": self.aperture_epw,
         }.get(role, self.elements_per_wavelength)
         return self._ceiling_mm(epw)
 
