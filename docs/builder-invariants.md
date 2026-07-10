@@ -56,6 +56,11 @@ The point-grid dispatcher selects topology from `PointGridHornGeometry.build_mod
   with zero/negative thickness fail instead of silently becoming `bare`.
 - `enclosure`: `enclosure is not None`.
 
+These topology selectors are mutually exclusive. Direct API calls that combine
+`infinite_baffle` with `enclosure` or `outer_points`, or combine an enclosure
+with a freestanding `outer_points` shell, fail at geometry construction instead
+of silently selecting one mode by precedence.
+
 Bare mode builds the inner horn surface and a source cap. Infinite-baffle
 mode (ABEC.SimType = 1, the ATH default for imported text configs) builds the
 coupled interior-BEM/Rayleigh-aperture mesh: source cap plus inner wall plus a
@@ -138,6 +143,12 @@ default after meshing; density is configured before that scaling.
 Global Gmsh size bounds come from the configured sizes unless explicitly set on
 `MeshDensity`: minimum defaults to half the smallest positive size, maximum to
 1.5 times the largest positive size.
+
+Large enclosure builds without `max_frequency_hz` retain a default full-domain
+triangle-cost guard. When `max_frequency_hz` is explicit, its per-role
+elements-per-wavelength ceilings are correctness constraints and are never
+coarsened to meet that cost guard; callers should expect meshes above the
+default 18,000-triangle budget when the requested band requires them.
 
 ## Enclosure Bounds
 

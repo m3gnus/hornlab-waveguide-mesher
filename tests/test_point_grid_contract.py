@@ -745,6 +745,32 @@ def test_point_grid_mesh_has_canonical_wall_and_source_tags(tmp_path):
     assert {1, 2}.issubset(set(tags))
 
 
+def test_point_grid_rejects_conflicting_topology_selectors():
+    inner = _make_point_grid()
+    enclosure = HornEnclosure(depth_mm=120.0)
+
+    with pytest.raises(ValueError, match="infinite_baffle and enclosure"):
+        PointGridHornGeometry(
+            inner_points=inner,
+            enclosure=enclosure,
+            infinite_baffle=True,
+        )
+
+    with pytest.raises(ValueError, match="infinite_baffle cannot be combined"):
+        PointGridHornGeometry(
+            inner_points=inner,
+            outer_points=_make_outer_point_grid(inner),
+            infinite_baffle=True,
+        )
+
+    with pytest.raises(ValueError, match="enclosure cannot be combined"):
+        PointGridHornGeometry(
+            inner_points=inner,
+            outer_points=_make_outer_point_grid(inner),
+            enclosure=enclosure,
+        )
+
+
 def test_point_grid_flat_source_shape_builds_disc_at_throat_plane(tmp_path):
     msh_path = build_mesh(
         PointGridHornGeometry(

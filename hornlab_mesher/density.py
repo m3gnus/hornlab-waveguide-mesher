@@ -452,7 +452,15 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             round(float(pre_cap_estimate_raw) * enclosure_domain_multiplier)
         )
         pre_cap_estimate_full_domain_raw = pre_cap_estimate_raw * enclosure_domain_multiplier
-        if pre_cap_estimate_full_domain_raw > _ENCLOSURE_TRIANGLE_CEILING:
+        # An explicit acoustic-band request is a correctness constraint, not a
+        # cost hint. Never coarsen its throat/source or wall role ceilings to
+        # satisfy the default enclosure triangle budget. Without an explicit
+        # max frequency the historical cost guard remains useful and may scale
+        # all enclosure-build roles to keep accidental meshes bounded.
+        if (
+            pre_cap_estimate_full_domain_raw > _ENCLOSURE_TRIANGLE_CEILING
+            and not freq_active
+        ):
             enclosure_cap_scale = math.sqrt(
                 float(pre_cap_estimate_full_domain_raw) / float(_ENCLOSURE_TRIANGLE_CEILING)
             )

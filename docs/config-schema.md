@@ -175,7 +175,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
 | `preserve_grid` | `preserveGrid` | `false` | Forces faceted point-grid wall surfaces instead of grouped OCC patches. Leave false for fast grouped-wall enclosure topology unless a config explicitly needs point-grid wall faces. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
-| `max_frequency_hz` | `maxFrequencyHz`, `maxFrequency`, `f_max_hz` | none | Frequency-aware sizing: clamps each resolution to `c / (epw_role * f)` so the band stays resolved. The mm knobs still apply where finer. |
+| `max_frequency_hz` | `maxFrequencyHz`, `maxFrequency`, `f_max_hz` | none | Frequency-aware sizing: clamps each resolution to `c / (epw_role * f)` so the band stays resolved. The mm knobs still apply where finer. An explicit band takes precedence over the default enclosure triangle-cost ceiling and may therefore produce more than 18,000 full-domain triangles. |
 | `elements_per_wavelength` | `elementsPerWavelength` | `6.0` | Generic target used for groups without a role override and for the `mesh_report` validity figures. |
 | `throat_epw` | `throatEpw` | `8.0` | Elements-per-wavelength at the throat (strongest, most detailed field). |
 | `mouth_epw` | `mouthEpw` | `6.0` | Elements-per-wavelength at the mouth; the inner wall grades from the throat value to this. |

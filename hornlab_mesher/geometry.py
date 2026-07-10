@@ -178,6 +178,22 @@ class PointGridHornGeometry:
     # so a y-cut (quadrants 1/12) reconstructs about y=0 -- matching ATH.
     vertical_offset_mm: float = 0.0
 
+    def __post_init__(self) -> None:
+        if self.infinite_baffle and self.enclosure is not None:
+            raise ValueError(
+                "infinite_baffle and enclosure are mutually exclusive point-grid topologies"
+            )
+        if self.infinite_baffle and self.outer_points is not None:
+            raise ValueError(
+                "infinite_baffle cannot be combined with outer_points; "
+                "the coupled aperture topology has no outer wall shell"
+            )
+        if self.enclosure is not None and self.outer_points is not None:
+            raise ValueError(
+                "enclosure cannot be combined with outer_points; choose either "
+                "the enclosure topology or the freestanding wall shell"
+            )
+
     @property
     def build_mode(self) -> PointGridBuildMode:
         if self.enclosure is not None:

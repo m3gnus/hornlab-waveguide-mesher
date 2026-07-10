@@ -253,7 +253,7 @@ def test_enclosure_density_refines_panels_and_roundover_without_global_box_fille
     assert geometry.metadata == {}
 
 
-def test_enclosure_density_caps_large_high_frequency_triangle_estimate(monkeypatch):
+def test_enclosure_density_caps_large_default_triangle_estimate(monkeypatch):
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(
             {
@@ -294,7 +294,6 @@ def test_enclosure_density_caps_large_high_frequency_triangle_estimate(monkeypat
             throat_res_mm=30.0,
             mouth_res_mm=30.0,
             rear_res_mm=30.0,
-            max_frequency_hz=20_000.0,
         ),
     )
 
@@ -327,12 +326,50 @@ def test_enclosure_density_caps_large_high_frequency_triangle_estimate(monkeypat
     assert float(formulas[(3,)]) == pytest.approx(expected_capped_target)
 
 
+def test_explicit_frequency_resolution_takes_priority_over_enclosure_cost_cap(
+    monkeypatch,
+):
+    fake_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {
+                1: (-150.0, -150.0, 100.0, 150.0, 150.0, 100.0),
+                2: (-150.0, -150.0, 0.0, 150.0, 150.0, 0.0),
+            },
+            masses={1: 90_000.0, 2: 90_000.0},
+        ),
+        option=types.SimpleNamespace(setNumber=lambda *_args: None),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
+    geometry = _fake_panel_enclosure_geometry()
+
+    configure_density(
+        geometry,
+        MeshDensity(
+            throat_res_mm=30.0,
+            mouth_res_mm=30.0,
+            rear_res_mm=30.0,
+            max_frequency_hz=20_000.0,
+        ),
+    )
+
+    target_mm = 343_000.0 / (6.0 * 20_000.0)
+    formulas = _restriction_formulas(fake_gmsh)
+    front_value = float(
+        eval(
+            formulas[(1,)],
+            {"__builtins__": {}},
+            {"x": 0.0, "y": 0.0, "z": 100.0},
+        )
+    )
+    assert front_value == pytest.approx(target_mm)
+    assert "enclosureMeshCapped" not in geometry.metadata
+
+
 def test_enclosure_triangle_cap_is_quadrant_consistent(monkeypatch):
     density = MeshDensity(
         throat_res_mm=30.0,
         mouth_res_mm=30.0,
         rear_res_mm=30.0,
-        max_frequency_hz=20_000.0,
     )
 
     full_gmsh = types.SimpleNamespace(
