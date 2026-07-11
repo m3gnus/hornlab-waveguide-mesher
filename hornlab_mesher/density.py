@@ -395,7 +395,6 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         if aperture_ceiling:
             aperture_res = min(aperture_res, aperture_ceiling)
 
-    enclosure_cap_scale = 1.0
     enclosure_resolution_values: list[float] = []
     front_panels: list[int] = []
     back_panels: list[int] = []
@@ -424,7 +423,6 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         )
         front_edge_size = _enclosure_edge_size_mm(front_q, density, bounds)
         back_edge_size = _enclosure_edge_size_mm(back_q, density, bounds)
-
         triangle_regions = _enclosure_triangle_regions(
             mesh_groups,
             throat_res=throat_res,
@@ -440,68 +438,67 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             front_panels=front_panels,
             back_panels=back_panels,
         )
-        pre_cap_estimate_raw = _estimate_triangle_count_float(triangle_regions)
-        pre_cap_estimate = int(round(pre_cap_estimate_raw))
-        enclosure_domain_multiplier = _enclosure_domain_multiplier(geometry)
-        enclosure_domain_fraction = 1.0 / enclosure_domain_multiplier
-        effective_triangle_ceiling = max(
-            1,
-            int(round(float(_ENCLOSURE_TRIANGLE_CEILING) * enclosure_domain_fraction)),
-        )
-        pre_cap_estimate_full_domain = int(
-            round(float(pre_cap_estimate_raw) * enclosure_domain_multiplier)
-        )
-        pre_cap_estimate_full_domain_raw = pre_cap_estimate_raw * enclosure_domain_multiplier
+
         # An explicit acoustic-band request is a correctness constraint, not a
         # cost hint. Never coarsen its throat/source or wall role ceilings to
         # satisfy the default enclosure triangle budget. Without an explicit
         # max frequency the historical cost guard remains useful and may scale
         # all enclosure-build roles to keep accidental meshes bounded.
-        if (
-            pre_cap_estimate_full_domain_raw > _ENCLOSURE_TRIANGLE_CEILING
-            and not freq_active
-        ):
-            enclosure_cap_scale = math.sqrt(
-                float(pre_cap_estimate_full_domain_raw) / float(_ENCLOSURE_TRIANGLE_CEILING)
+        if not freq_active:
+            pre_cap_estimate_raw = _estimate_triangle_count_float(triangle_regions)
+            pre_cap_estimate = int(round(pre_cap_estimate_raw))
+            enclosure_domain_multiplier = _enclosure_domain_multiplier(geometry)
+            enclosure_domain_fraction = 1.0 / enclosure_domain_multiplier
+            effective_triangle_ceiling = max(
+                1,
+                int(round(float(_ENCLOSURE_TRIANGLE_CEILING) * enclosure_domain_fraction)),
             )
-            throat_res *= enclosure_cap_scale
-            mouth_res *= enclosure_cap_scale
-            rear_res *= enclosure_cap_scale
-            interface_res *= enclosure_cap_scale
-            front_q = _scaled_values(front_q, enclosure_cap_scale)
-            back_q = _scaled_values(back_q, enclosure_cap_scale)
-            front_panel_q = _scaled_values(front_panel_q, enclosure_cap_scale)
-            back_panel_q = _scaled_values(back_panel_q, enclosure_cap_scale)
-            if front_edge_size is not None:
-                front_edge_size *= enclosure_cap_scale
-            if back_edge_size is not None:
-                back_edge_size *= enclosure_cap_scale
-            post_triangle_regions = [
-                (area, size * enclosure_cap_scale) for area, size in triangle_regions
-            ]
-            post_cap_estimate_raw = _estimate_triangle_count_float(post_triangle_regions)
-            post_cap_estimate = int(round(post_cap_estimate_raw))
-            post_cap_estimate_full_domain = int(
-                round(float(post_cap_estimate_raw) * enclosure_domain_multiplier)
+            pre_cap_estimate_full_domain = int(
+                round(float(pre_cap_estimate_raw) * enclosure_domain_multiplier)
             )
-            geometry.metadata.update(
-                {
-                    "enclosureMeshCapped": True,
-                    "enclosureMeshTriangleCeiling": int(_ENCLOSURE_TRIANGLE_CEILING),
-                    "enclosureMeshEffectiveTriangleCeiling": int(effective_triangle_ceiling),
-                    "enclosureMeshDomainFraction": float(enclosure_domain_fraction),
-                    "enclosureMeshDomainMultiplier": float(enclosure_domain_multiplier),
-                    "enclosureMeshTriangleEstimatePre": int(pre_cap_estimate),
-                    "enclosureMeshTriangleEstimatePreFullDomain": int(
-                        pre_cap_estimate_full_domain
-                    ),
-                    "enclosureMeshTriangleEstimatePost": int(post_cap_estimate),
-                    "enclosureMeshTriangleEstimatePostFullDomain": int(
-                        post_cap_estimate_full_domain
-                    ),
-                    "enclosureMeshCapScale": float(enclosure_cap_scale),
-                }
-            )
+            pre_cap_estimate_full_domain_raw = pre_cap_estimate_raw * enclosure_domain_multiplier
+            if pre_cap_estimate_full_domain_raw > _ENCLOSURE_TRIANGLE_CEILING:
+                enclosure_cap_scale = math.sqrt(
+                    float(pre_cap_estimate_full_domain_raw) / float(_ENCLOSURE_TRIANGLE_CEILING)
+                )
+                throat_res *= enclosure_cap_scale
+                mouth_res *= enclosure_cap_scale
+                rear_res *= enclosure_cap_scale
+                interface_res *= enclosure_cap_scale
+                front_q = _scaled_values(front_q, enclosure_cap_scale)
+                back_q = _scaled_values(back_q, enclosure_cap_scale)
+                front_panel_q = _scaled_values(front_panel_q, enclosure_cap_scale)
+                back_panel_q = _scaled_values(back_panel_q, enclosure_cap_scale)
+                if front_edge_size is not None:
+                    front_edge_size *= enclosure_cap_scale
+                if back_edge_size is not None:
+                    back_edge_size *= enclosure_cap_scale
+                post_triangle_regions = [
+                    (area, size * enclosure_cap_scale) for area, size in triangle_regions
+                ]
+                post_cap_estimate_raw = _estimate_triangle_count_float(post_triangle_regions)
+                post_cap_estimate = int(round(post_cap_estimate_raw))
+                post_cap_estimate_full_domain = int(
+                    round(float(post_cap_estimate_raw) * enclosure_domain_multiplier)
+                )
+                geometry.metadata.update(
+                    {
+                        "enclosureMeshCapped": True,
+                        "enclosureMeshTriangleCeiling": int(_ENCLOSURE_TRIANGLE_CEILING),
+                        "enclosureMeshEffectiveTriangleCeiling": int(effective_triangle_ceiling),
+                        "enclosureMeshDomainFraction": float(enclosure_domain_fraction),
+                        "enclosureMeshDomainMultiplier": float(enclosure_domain_multiplier),
+                        "enclosureMeshTriangleEstimatePre": int(pre_cap_estimate),
+                        "enclosureMeshTriangleEstimatePreFullDomain": int(
+                            pre_cap_estimate_full_domain
+                        ),
+                        "enclosureMeshTriangleEstimatePost": int(post_cap_estimate),
+                        "enclosureMeshTriangleEstimatePostFullDomain": int(
+                            post_cap_estimate_full_domain
+                        ),
+                        "enclosureMeshCapScale": float(enclosure_cap_scale),
+                    }
+                )
 
     _axis, coord = _axis_coordinate_expression(geometry.source_axis)
     a0, a1 = geometry.axial_bounds_mm
@@ -657,7 +654,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         sizes = [10.0]
     min_size = float(density.min_size_mm) if density.min_size_mm else min(sizes) * 0.5
     max_size = float(density.max_size_mm) if density.max_size_mm else max(sizes) * 1.5
-    if freq_active and enclosure_cap_scale <= 1.0:
+    if freq_active:
         # The global cap must honor the band too: surfaces outside every
         # Restrict field fall back to MeshSizeMax. Use the coarsest role
         # ceiling so the cap does not re-impose the strict target globally.

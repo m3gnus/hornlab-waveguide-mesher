@@ -302,15 +302,39 @@ def _rounded_rect_quadrant_angles(
     side_segments = max(2, points_per_quadrant - arc_segments)
     span1 = theta1
     span2 = math.pi / 2.0 - theta2
-    # ATH/C++ rounds an exact .5 upward; Python's bankers-rounding would put
-    # the extra span on the opposite side of a symmetric quadrant.
-    side1_share = side_segments * span1 / max(span1 + span2, 1.0e-12)
-    side1_segments = max(1, int(math.floor(side1_share + 0.5)))
-    side2_segments = max(1, side_segments - side1_segments)
+    # A corner equal to a half-dimension removes one straight span entirely.
+    # Do not force an interval onto that zero-length span: it would emit two
+    # identical azimuths. Keep the fixed angular budget by assigning its
+    # interval to the remaining span, or to the arc for a fully round target.
+    collapsed_side1 = corner_radius >= half_height
+    collapsed_side2 = corner_radius >= half_width
+    if collapsed_side1 and collapsed_side2:
+        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+    if (collapsed_side1 or collapsed_side2) and points_per_quadrant == 1:
+        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+    if collapsed_side1 or collapsed_side2:
+        # Keep the normal three arc intervals when the angular budget permits;
+        # low-resolution grids reserve one interval for the surviving wall.
+        arc_segments = min(arc_segments, points_per_quadrant - 1)
+    if collapsed_side1:
+        side1_segments = 0
+        side2_segments = points_per_quadrant - arc_segments
+    elif collapsed_side2:
+        side1_segments = points_per_quadrant - arc_segments
+        side2_segments = 0
+    else:
+        # ATH/C++ rounds an exact .5 upward; Python's bankers-rounding would put
+        # the extra span on the opposite side of a symmetric quadrant.
+        side1_share = side_segments * span1 / max(span1 + span2, 1.0e-12)
+        side1_segments = max(1, int(math.floor(side1_share + 0.5)))
+        side2_segments = max(1, side_segments - side1_segments)
 
     angles: list[float] = []
-    for i in range(side1_segments + 1):
-        angles.append(theta1 * i / side1_segments)
+    if side1_segments:
+        for i in range(side1_segments + 1):
+            angles.append(theta1 * i / side1_segments)
+    else:
+        angles.append(0.0)
     cx = half_width - corner_radius
     cy = half_height - corner_radius
     for i in range(1, arc_segments + 1):

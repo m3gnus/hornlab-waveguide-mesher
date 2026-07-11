@@ -19,7 +19,10 @@ from hornlab_mesher.builders import point_grid_surfaces as point_grid_surfaces_m
 from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
 from hornlab_mesher.builders.point_grid_dispatch import _shift_coupled_baffle_grid
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
-from hornlab_mesher.builders.point_grid_sources import _add_occ_source_cap_surfaces
+from hornlab_mesher.builders.point_grid_sources import (
+    _add_occ_source_cap_surfaces,
+    _add_source_surfaces,
+)
 from hornlab_mesher.builders.point_grid_surfaces import _SharedSurfaceBuilder, _rear_rim_points
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
 from hornlab_mesher.cli import build_from_config, build_geometry_params, parse_ath_config
@@ -1745,6 +1748,24 @@ def test_explicit_interface_can_still_target_mouth_slice():
     assert specs[0].slice_index == 10
 
 
+@pytest.mark.parametrize(
+    ("interface", "message"),
+    [
+        (HornInterface(slice_index=11, offset_mm=8.0), "outside the valid grid ring range"),
+        (HornInterface(slice_index=4, offset_mm=0.0), "offset_mm must be positive"),
+    ],
+)
+def test_invalid_explicit_interface_specs_fail_instead_of_being_dropped(interface, message):
+    geometry = PointGridHornGeometry(
+        inner_points=_make_point_grid(n_length=10),
+        closed=True,
+        interfaces=(interface,),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _normalise_interface_specs(geometry, geometry.inner_points.shape[1])
+
+
 def test_ath_default_zmap_osse_matches_m2_clone_reference_rings():
     # ATH m2-clone (OSSE, Length=150, 32 segments) ring z values from ATH's
     # own mesh.geo, normalized by length. The OSSE default z-map bezier must
@@ -2437,6 +2458,7 @@ class _FakeOcc:
     def __init__(self) -> None:
         self.next_tag = 1
         self.point_count = 0
+        self.point_coordinates: dict[int, np.ndarray] = {}
         self.bsplines: list[list[int]] = []
 
     def _tag(self) -> int:
@@ -2444,9 +2466,11 @@ class _FakeOcc:
         self.next_tag += 1
         return tag
 
-    def addPoint(self, *_args) -> int:
+    def addPoint(self, x, y, z, *_args) -> int:
         self.point_count += 1
-        return self._tag()
+        tag = self._tag()
+        self.point_coordinates[tag] = np.asarray((x, y, z), dtype=np.float64)
+        return tag
 
     def addLine(self, *_args) -> int:
         return self._tag()
@@ -2510,6 +2534,42 @@ def test_open_occ_source_cap_builds_only_endpoint_radials(monkeypatch):
     assert len(cap) == 1
     radial_splines = [points for points in fake.model.occ.bsplines if len(points) == 4]
     assert len(radial_splines) == 2
+
+
+def test_rounded_cap_radial_controls_match_occ_and_faceted_paths(monkeypatch):
+    n_phi = 9
+    angles = np.linspace(0.0, math.pi / 2.0, n_phi)
+    inner = np.empty((n_phi, 2, 3), dtype=np.float64)
+    for i, phi in enumerate(angles):
+        inner[i, 0] = (10.0 * math.cos(phi), 10.0 * math.sin(phi), 0.0)
+        inner[i, 1] = (30.0 * math.cos(phi), 30.0 * math.sin(phi), 80.0)
+    geometry = PointGridHornGeometry(
+        inner_points=inner,
+        closed=False,
+        source_shape=1,
+        source_radius_mm=30.0,
+    )
+
+    def radial_controls(add_cap):
+        fake = _FakeGmsh()
+        monkeypatch.setattr(point_grid_surfaces_mod, "require_gmsh", lambda: fake)
+        builder = _SharedSurfaceBuilder()
+        builder.add_grid("inner", inner)
+        add_cap(builder, inner, geometry)
+        radial_splines = [points for points in fake.model.occ.bsplines if len(points) == 4]
+        return np.asarray(
+            [
+                [fake.model.occ.point_coordinates[tag] for tag in spline[1:3]]
+                for spline in radial_splines
+            ],
+            dtype=np.float64,
+        )
+
+    occ_controls = radial_controls(_add_occ_source_cap_surfaces)
+    faceted_controls = radial_controls(_add_source_surfaces)
+
+    assert occ_controls.shape == (2, 2, 3)
+    np.testing.assert_array_equal(occ_controls, faceted_controls)
 
 
 def test_number_list_parsers_share_helper_without_contract_drift():

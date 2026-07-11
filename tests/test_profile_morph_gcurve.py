@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from hornlab_mesher.profiles import (
+    _angle_list,
     _apply_morphing,
     _guiding_curve_target_radius,
     _morph_target_radius_at_angle,
@@ -160,6 +161,28 @@ def test_rectangle_morph_mouth_reaches_directional_target():
     )
 
     assert np.allclose(mouth_radii, expected, rtol=0.0, atol=1.0e-9)
+
+
+def test_stadium_morph_corner_uses_distinct_azimuth_meridians():
+    for width, height in ((400.0, 240.0), (240.0, 400.0)):
+        params = {
+            **_base_osse_params(),
+            "angularSegments": 80,
+            "morphTarget": 1,
+            "morphWidth": width,
+            "morphHeight": height,
+            "morphCorner": 120.0,
+            "morphAllowShrinkage": 1,
+        }
+
+        angles, closed = _angle_list(params)
+
+        assert closed
+        assert len(angles) == 80
+        assert np.all(np.diff(angles) > 1.0e-12)
+
+        inner, _ = _inner_grid(params)
+        assert len(np.unique(inner[:, -1, :2], axis=0)) == len(angles)
 
 
 def test_rectangle_morph_uses_ceiled_implicit_extents_when_dimensions_omitted():

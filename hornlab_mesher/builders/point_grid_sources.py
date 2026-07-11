@@ -60,6 +60,32 @@ _CAP_CONSTRAINT_RING_FRACTIONS = (1.0 / 3.0, 2.0 / 3.0)
 _CAP_CONSTRAINT_AZIMUTHS = 12
 
 
+def _rounded_cap_radial_control_points(
+    ring_point: np.ndarray,
+    center: np.ndarray,
+    *,
+    throat_radius: float,
+    radius: float,
+    sign: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the two interior B-spline controls for a rounded cap radial."""
+
+    radial = ring_point - center
+    radial[2] = 0.0
+    radial_len = float(np.linalg.norm(radial[:2]))
+    unit = radial / max(radial_len, 1.0e-12)
+    sqrt_base = math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
+    controls: list[np.ndarray] = []
+    for frac in (2.0 / 3.0, 1.0 / 3.0):
+        rj = throat_radius * frac
+        hj = math.sqrt(max(0.0, radius * radius - rj * rj)) - sqrt_base
+        point = np.array(center, dtype=np.float64)
+        point[:2] += unit[:2] * rj
+        point[2] += sign * hj
+        controls.append(point)
+    return controls[0], controls[1]
+
+
 def _occ_rounded_cap_on_wall_rim(
     wall_dimtags: list[tuple[int, int]],
     geometry: PointGridHornGeometry,
@@ -296,19 +322,17 @@ def _add_occ_source_cap_surfaces(
             radial_lines[i] = builder.line_tags(builder.point("inner", i, 0), pole_tag)
             continue
         control_tags = [builder.point("inner", i, 0)]
-        radial = ring[i] - center
-        radial[2] = 0.0
-        radial_len = float(np.linalg.norm(radial[:2]))
-        unit = radial / max(radial_len, 1.0e-12)
         radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
-        sqrt_base = math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
-        for frac in (2.0 / 3.0, 1.0 / 3.0):
-            rj = throat_radius * frac
-            hj = math.sqrt(max(0.0, radius * radius - rj * rj)) - sqrt_base
-            p = np.array(center, dtype=np.float64)
-            p[:2] += unit[:2] * rj
-            p[2] += sign * hj
-            control_tags.append(builder.add_point(p))
+        control_tags.extend(
+            builder.add_point(point)
+            for point in _rounded_cap_radial_control_points(
+                ring[i],
+                center,
+                throat_radius=throat_radius,
+                radius=radius,
+                sign=sign,
+            )
+        )
         control_tags.append(pole_tag)
         radial_lines[i] = builder.bspline_tags(control_tags)
 
@@ -445,16 +469,17 @@ def _add_source_surfaces(
             radial_lines[i] = builder.line_tags(builder.point("inner", i, 0), pole_tag)
             continue
         control_tags = [builder.point("inner", i, 0)]
-        unit = radial[i] / max(radii[i], 1.0e-12)
         radius = max(_source_cap_radius(throat_radius, geometry), throat_radius * 1.001)
-        sqrt_base = math.sqrt(max(0.0, radius * radius - throat_radius * throat_radius))
-        for frac in (2.0 / 3.0, 1.0 / 3.0):
-            rj = throat_radius * frac
-            hj = math.sqrt(max(0.0, radius * radius - rj * rj)) - sqrt_base
-            p = np.array(center, dtype=np.float64)
-            p[:2] += unit[:2] * rj
-            p[2] += sign * hj
-            control_tags.append(builder.add_point(p))
+        control_tags.extend(
+            builder.add_point(point)
+            for point in _rounded_cap_radial_control_points(
+                ring[i],
+                center,
+                throat_radius=throat_radius,
+                radius=radius,
+                sign=sign,
+            )
+        )
         control_tags.append(pole_tag)
         radial_lines[i] = builder.bspline_tags(control_tags)
 

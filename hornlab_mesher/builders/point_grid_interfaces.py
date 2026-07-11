@@ -31,11 +31,22 @@ def _split_interface_group(indices: list[int]) -> list[list[int]]:
 
 def _normalise_interface_specs(geometry: PointGridHornGeometry, n_rings: int) -> tuple[HornInterface, ...]:
     if geometry.interfaces:
-        return tuple(
-            HornInterface(slice_index=int(spec.slice_index), offset_mm=float(spec.offset_mm))
-            for spec in geometry.interfaces
-            if float(spec.offset_mm) > 0.0 and 0 <= int(spec.slice_index) < n_rings
-        )
+        specs: list[HornInterface] = []
+        for spec in geometry.interfaces:
+            slice_index = int(spec.slice_index)
+            offset_mm = float(spec.offset_mm)
+            if offset_mm <= 0.0:
+                raise ValueError(
+                    f"HornInterface offset_mm must be positive, got {offset_mm:g} "
+                    f"at slice_index {slice_index}"
+                )
+            if not 0 <= slice_index < n_rings:
+                raise ValueError(
+                    f"HornInterface slice_index {slice_index} is outside the valid grid ring range "
+                    f"0..{n_rings - 1}"
+                )
+            specs.append(HornInterface(slice_index=slice_index, offset_mm=offset_mm))
+        return tuple(specs)
     if geometry.interface_offset_mm <= 0.0:
         return ()
     # Legacy single-offset interfaces sit at the mouth ring, matching ATH's

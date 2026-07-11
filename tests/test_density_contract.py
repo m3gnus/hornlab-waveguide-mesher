@@ -365,6 +365,41 @@ def test_explicit_frequency_resolution_takes_priority_over_enclosure_cost_cap(
     assert "enclosureMeshCapped" not in geometry.metadata
 
 
+def test_frequency_aware_enclosure_sets_global_max_without_cap_metadata(monkeypatch):
+    option_values: dict[str, float] = {}
+    fake_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {
+                1: (-150.0, -150.0, 100.0, 150.0, 150.0, 100.0),
+                2: (-150.0, -150.0, 0.0, 150.0, 150.0, 0.0),
+            },
+            masses={1: 90_000.0, 2: 90_000.0},
+        ),
+        option=types.SimpleNamespace(
+            setNumber=lambda name, value: option_values.__setitem__(str(name), float(value))
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
+    geometry = _fake_panel_enclosure_geometry()
+    geometry.metadata["callerMetadata"] = "preserve"
+
+    configure_density(
+        geometry,
+        MeshDensity(
+            throat_res_mm=30.0,
+            mouth_res_mm=30.0,
+            rear_res_mm=30.0,
+            max_frequency_hz=20_000.0,
+        ),
+    )
+
+    # A frequency-aware build must never take the default cost-cap branch, yet
+    # MeshSizeMax still limits otherwise-unrestricted elements to the coarsest
+    # role's wavelength ceiling (the rear role here).
+    assert geometry.metadata == {"callerMetadata": "preserve"}
+    assert option_values["Mesh.MeshSizeMax"] == pytest.approx(343_000.0 / (2.5 * 20_000.0))
+
+
 def test_enclosure_triangle_cap_is_quadrant_consistent(monkeypatch):
     density = MeshDensity(
         throat_res_mm=30.0,
