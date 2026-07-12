@@ -1620,6 +1620,64 @@ def test_reduced_enclosure_thin_roundover_seams_stay_watertight(tmp_path, edge_m
         assert cap_nodes[:, 1].max() <= points_mm[:, 1].max() - 0.4 * clamped_edge
 
 
+@pytest.mark.parametrize("edge_type", [1, 2])
+@pytest.mark.parametrize("edge_mm", [1.0, 5.0])
+def test_full_enclosure_mouth_seam_stays_watertight(
+    tmp_path, edge_mm, edge_type
+):
+    # Full domains have no legitimate boundary edges. The front-panel field
+    # used to claim the wall-shared mouth curves at its frequency-clamped size,
+    # around nine times finer than the wall target in this WG job family.
+    # Degenerate-triangle cleanup then tore the wall fan along the mouth rim.
+    cfg = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {
+            "r0": 12.7,
+            "a": "45 - 16*cos(1*p)^2 - 40*sin(p*1)^16",
+            "a0": 15.5,
+            "k": 2.0,
+            "q": 0.993,
+            "L": 310.0,
+            "n": 5.0,
+            "s": 0.8,
+            "h": 0.0,
+        },
+        "cross_section": {"exponent": 2.0, "aspectRatio": 1.0},
+        "morph": {"morphTarget": 1, "morphCorner": 18.0, "morphRate": 3.0},
+        "mesh": {
+            "quadrants": 1234,
+            "angularSegments": 80,
+            "lengthSegments": 20,
+            "cornerSegments": 4,
+            "throatResolution": 5.0,
+            "mouthResolution": 25.0,
+            "rearResolution": 40.0,
+            "encFrontResolution": 40.0,
+            "encBackResolution": 40.0,
+        },
+        "source": {"sourceShape": 0, "sourceRadius": -1.0, "sourceCurv": 0},
+        "enclosure": {
+            "depth": 500.0,
+            "space_l": 20.0,
+            "space_t": 20.0,
+            "space_r": 20.0,
+            "space_b": 20.0,
+            "edge": edge_mm,
+            "edgeType": edge_type,
+        },
+    }
+    result = build_from_config(
+        cfg, tmp_path / f"full-mouth-rim-{edge_type}-{edge_mm:g}.msh"
+    )
+    assert result.native_symmetry_plane is None
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    assert {1, 2, 3}.issubset({int(tag) for tag in tags})
+    assert not _boundary_edges(triangles)
+
+
 def test_reduced_enclosure_uses_requested_cut_plane_not_offset_minima(tmp_path):
     cfg = {
         "formula": "OSSE",

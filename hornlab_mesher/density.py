@@ -622,8 +622,53 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         )
 
         add_field(enclosure_formula, mesh_groups.get("enclosure", []), curve_groups.get("enclosure", []))
-        add_field(front_panel_formula, front_panels, _collect_boundary_curves(front_panels))
+        front_panel_curves = _collect_boundary_curves(front_panels)
+        add_field(front_panel_formula, front_panels, front_panel_curves)
         add_field(back_panel_formula, back_panels, _collect_boundary_curves(back_panels))
+
+        # The frequency-clamped baffle field makes the mouth-hole rim finer
+        # than the wall's axial target. With boundary-size extension disabled,
+        # grade that fine rim into the wall instead of forcing Gmsh to create a
+        # needle fan that degenerate cleanup can tear open. The restriction is
+        # wall-only; the panel keeps its ATH-compatible fine hole boundary.
+        wall_surfaces = mesh_groups.get("inner", [])
+        wall_curves = curve_groups.get("inner", [])
+        mouth_rim_size = min(front_panel_q, default=mouth_res)
+        if (
+            front_panel_curves
+            and wall_surfaces
+            and mouth_rim_size > 0.0
+            and mouth_res > mouth_rim_size
+        ):
+            distance = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(
+                distance, "CurvesList", [int(c) for c in front_panel_curves]
+            )
+            gmsh.model.mesh.field.setNumber(
+                distance, "Sampling", _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX
+            )
+            threshold = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(threshold, "InField", distance)
+            gmsh.model.mesh.field.setNumber(threshold, "SizeMin", mouth_rim_size)
+            gmsh.model.mesh.field.setNumber(threshold, "SizeMax", mouth_res)
+            gmsh.model.mesh.field.setNumber(threshold, "DistMin", mouth_rim_size)
+            gmsh.model.mesh.field.setNumber(
+                threshold,
+                "DistMax",
+                mouth_rim_size
+                + (mouth_res - mouth_rim_size) / _ENCLOSURE_SEAM_SIZE_GRADIENT,
+            )
+            restrict = gmsh.model.mesh.field.add("Restrict")
+            gmsh.model.mesh.field.setNumber(restrict, "InField", threshold)
+            gmsh.model.mesh.field.setNumber(restrict, "IncludeBoundary", 0)
+            gmsh.model.mesh.field.setNumbers(
+                restrict, "SurfacesList", [int(s) for s in wall_surfaces]
+            )
+            if wall_curves:
+                gmsh.model.mesh.field.setNumbers(
+                    restrict, "CurvesList", [int(c) for c in wall_curves]
+                )
+            fields.append(restrict)
         if front_edge_size is not None:
             enclosure_resolution_values.append(front_edge_size)
             front_panel_formula = f"{front_edge_size:.12g}"

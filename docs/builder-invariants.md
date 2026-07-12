@@ -151,6 +151,12 @@ sub-micrometre needle fans along the shared seam that postprocess then drops
 as degenerate, tearing the enclosure open. The Min field keeps the grading
 inert wherever the neighbourhood is already that fine.
 
+In enclosure builds the frequency-clamped front panel keeps the fine
+mouth-hole rim used by ATH/ABEC-style baffles. When that rim is finer than the
+wall's axial mouth target, a wall-only distance-threshold field grades from the
+rim size to `mouth_res_mm`. This prevents needle fans at the shared seam while
+leaving the panel and the rest of the waveguide density roles unchanged.
+
 Global Gmsh size bounds come from the configured sizes unless explicitly set on
 `MeshDensity`: minimum defaults to half the smallest positive size, maximum to
 1.5 times the largest positive size.
