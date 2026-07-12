@@ -177,12 +177,11 @@ Implementation rules:
   rather than a per-azimuth max of target and raw.
 - For rounded-rectangle targets the azimuth list places four profiles per
   quadrant on the corner arc (both wall tangency points plus two interior
-  points at 30/60 degrees of arc parameter). `Mesh.CornerSegments` selects
-  this placement policy but does not add profiles: `Mesh.AngularSegments` is
-  first rounded to ATH's admissible multiple-of-eight budget and that fixed
-  budget is distributed over the corner and wall spans. ATH V2025-12 emits 80
-  full-circle profiles, or 21 boundary-inclusive quadrant-1 points, for
-  `AngularSegments=80` and `CornerSegments=4`.
+  points at 30/60 degrees of arc parameter) regardless of
+  `Mesh.CornerSegments`, which grows the total angular point budget:
+  `AngularSegments + CornerSegments` is rounded up to a whole number per
+  quadrant (m2-clone: 100 + 4 -> 104; solana: 36 + 1 -> 40). Wall spans split
+  the remaining segments proportionally to their angular extents.
 
 ## Geometry Grid vs Mesh Density
 
