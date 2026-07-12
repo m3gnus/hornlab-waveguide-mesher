@@ -98,8 +98,14 @@ def _restriction_formulas(fake_gmsh):
         if kind != "Restrict":
             continue
         in_field = int(field.numbers[(tag, "InField")])
+        formula = field.strings.get((in_field, "F"))
+        if formula is None:
+            # Not a MathEval restriction (e.g. the roundover-seam distance
+            # grading wraps a Threshold field); formula assertions only
+            # target the MathEval size formulas.
+            continue
         surfaces = tuple(field.number_lists.get((tag, "SurfacesList"), ()))
-        out[surfaces] = field.strings[(in_field, "F")]
+        out[surfaces] = formula
     return out
 
 

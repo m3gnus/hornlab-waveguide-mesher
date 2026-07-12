@@ -1531,6 +1531,95 @@ def test_reduced_chamfer_enclosure_boundary_lies_on_cut_planes(tmp_path):
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
+@pytest.mark.parametrize("edge_mm", [0.0, 1.0, 5.0, 20.0])
+def test_reduced_enclosure_thin_roundover_seams_stay_watertight(tmp_path, edge_mm):
+    # Regression for WG job 00f9bab3 (2026-07-12): a quadrant OSSE morph-rect
+    # build with a thin enclosure roundover (enc_edge=1 vs enc_space=20) tore a
+    # ~69 mm slit along the back roundover inset seam. Two density defects
+    # compounded: OCC bbox slop (~1e-3 mm) against a 1e-6 classification eps
+    # meant the front/back panels never received their frequency-clamped
+    # bilinear field, and no size grading existed toward the seam curves, so
+    # the panels targeted their coarse size right against the ~1 mm seam
+    # discretization. The 2D mesher fanned sub-micrometre needles along the
+    # shared seam and postprocess dropped them as degenerate, leaving
+    # off-plane open edges the solver's open-edge guard rejects. Sweep sharp,
+    # thin, moderate, and margin-clamped roundovers: the only open edges of
+    # the quarter build must lie on the x=0 / y=0 cut planes.
+    cfg = {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {
+            "formula": "OSSE",
+            "r0": 12.7,
+            "a": "45 - 16*cos(1*p)^2 - 40*sin(p*1)^16",
+            "a0": 15.5,
+            "k": 2.0,
+            "q": 0.993,
+            "L": 310.0,
+            "n": 5.0,
+            "s": 0.8,
+            "h": 0.0,
+        },
+        "cross_section": {"exponent": 2.0, "aspectRatio": 1.0},
+        "morph": {"morphTarget": 1, "morphCorner": 18.0, "morphRate": 3.0},
+        "mesh": {
+            "quadrants": 1,
+            "angularSegments": 80,
+            "lengthSegments": 20,
+            "cornerSegments": 4,
+            "throatResolution": 5.0,
+            "mouthResolution": 25.0,
+            "rearResolution": 40.0,
+            "encFrontResolution": 40.0,
+            "encBackResolution": 40.0,
+        },
+        "source": {"sourceShape": 0, "sourceRadius": -1.0, "sourceCurv": 0},
+        "enclosure": {
+            "depth": 500.0,
+            "space_l": 20.0,
+            "space_t": 20.0,
+            "space_r": 20.0,
+            "space_b": 20.0,
+            "edge": edge_mm,
+            "edgeType": 1,
+        },
+    }
+    result = build_from_config(cfg, tmp_path / f"thin-roundover-{edge_mm:g}.msh")
+    assert result.native_symmetry_plane == "yz+xz"
+
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    points = np.asarray(mesh.points, dtype=np.float64)
+
+    assert {1, 2, 3}.issubset({int(t) for t in tags})
+
+    boundary = _boundary_edges(triangles)
+    assert boundary
+    for a, b in boundary:
+        on_x = abs(points[a][0]) < 1.0e-7 and abs(points[b][0]) < 1.0e-7
+        on_y = abs(points[a][1]) < 1.0e-7 and abs(points[b][1]) < 1.0e-7
+        assert on_x or on_y
+
+    edge_owners: dict[tuple[int, int], int] = {}
+    for tri in triangles:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            key = tuple(sorted((int(a), int(b))))
+            edge_owners[key] = edge_owners.get(key, 0) + 1
+    assert max(edge_owners.values()) <= 2
+
+    # The roundover must really be built (a silently sharp box would mask the
+    # seams this test guards): the back cap must stop the clamped roundover
+    # radius short of the outer wall. The 20 mm request clamps to 19 mm (the
+    # 20 mm margin keeps a >= 1 mm flat-baffle clearance).
+    scale_mm = 1000.0 if result.units == "m" else 1.0
+    points_mm = points * scale_mm
+    clamped_edge = min(float(edge_mm), 19.0)
+    if clamped_edge > 0.0:
+        z_back = points_mm[:, 2].min()
+        cap_nodes = points_mm[np.abs(points_mm[:, 2] - z_back) < 1.0e-3]
+        assert cap_nodes[:, 1].max() <= points_mm[:, 1].max() - 0.4 * clamped_edge
+
+
 def test_reduced_enclosure_uses_requested_cut_plane_not_offset_minima(tmp_path):
     cfg = {
         "formula": "OSSE",

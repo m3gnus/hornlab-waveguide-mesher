@@ -13,6 +13,12 @@ _ENCLOSURE_DEFAULT_MAX_FREQUENCY_HZ = 20_000.0
 _ENCLOSURE_PANEL_EPW = 6.0
 _ENCLOSURE_FILLET_ELEMENTS = 3.0
 _ENCLOSURE_TRIANGLE_CEILING = 18_000
+# Mesh-size growth per millimetre of distance from a roundover seam curve
+# (1.0 = size equals distance: each element row roughly doubles). Bounds the
+# boundary-to-interior size jump the 2D mesher sees at the seam.
+_ENCLOSURE_SEAM_SIZE_GRADIENT = 1.0
+_ENCLOSURE_SEAM_DISTANCE_SAMPLING_MIN = 64.0
+_ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX = 2000.0
 
 
 def _parse_quadrant_resolutions(value: float | str | None, fallback: float) -> list[float]:
@@ -176,7 +182,13 @@ def _split_enclosure_panel_surfaces(
     edge_tags = {int(tag) for tag in front_edge_tags}
     edge_tags.update(int(tag) for tag in back_edge_tags)
     z_span = max(abs(float(z_front) - float(z_back)), 1.0)
-    eps = max(1.0e-6, z_span * 1.0e-9)
+    # OCC face bounding boxes carry a finite gap (~1e-3 mm even for exact
+    # planes). The old 1e-6 tolerance silently declassified every real panel,
+    # so front/back panels never received their frequency-clamped bilinear
+    # field and were meshed at the much coarser z-graded enclosure size right
+    # up to the fine roundover seams. Stay far below any real front-to-back
+    # separation while tolerating the bbox slop.
+    eps = max(0.05, z_span * 1.0e-4)
     front: list[int] = []
     back: list[int] = []
     for tag in surface_tags:
@@ -628,6 +640,78 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             mesh_groups.get("enclosure_edges_back", []),
             curve_groups.get("enclosure_edges_back", []),
         )
+
+        # A thin roundover meshes its strip and seam curves at the edge size
+        # (~enc_edge/3 mm) while the adjacent panels and side walls target
+        # their own, much coarser sizes right up to that shared boundary
+        # (MeshSizeExtendFromBoundary is disabled below). An extreme jump
+        # (e.g. enc_edge=1 against 40 mm panels) makes the 2D mesher emit
+        # sub-micrometre needle fans along the seam; postprocess then drops
+        # the needles as degenerate, tearing the enclosure open along the
+        # roundover. Grade the enclosure sizes with a distance threshold from
+        # each seam ring so the jump at the boundary stays bounded; the Min
+        # background field keeps this inert wherever the neighbourhood is
+        # already as fine as the seam.
+        graded_surfaces = mesh_groups.get("enclosure", [])
+        graded_curves = curve_groups.get("enclosure", [])
+        seam_size_cap = max(
+            (
+                float(value)
+                for value in (*front_q, *back_q, *front_panel_q, *back_panel_q)
+                if math.isfinite(float(value)) and float(value) > 0.0
+            ),
+            default=0.0,
+        )
+        for edge_size, ring_curves in (
+            (front_edge_size, curve_groups.get("enclosure_edges_front", [])),
+            (back_edge_size, curve_groups.get("enclosure_edges_back", [])),
+        ):
+            if edge_size is None or float(edge_size) <= 0.0 or not ring_curves:
+                continue
+            if seam_size_cap <= float(edge_size):
+                continue
+            if not graded_surfaces and not graded_curves:
+                continue
+            # Distance fields sample each curve discretely; keep the sample
+            # spacing near the edge size so near-seam distances (and thus
+            # sizes) are accurate at the fine end. The ring perimeter bounds
+            # every seam curve's length, including single-wire closed rings.
+            ring_perimeter = 2.0 * (abs(bx1 - bx0) + abs(by1 - by0))
+            sampling = min(
+                _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX,
+                max(
+                    _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MIN,
+                    math.ceil(ring_perimeter / max(float(edge_size), 0.25)),
+                ),
+            )
+            distance = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(
+                distance, "CurvesList", [int(c) for c in ring_curves]
+            )
+            gmsh.model.mesh.field.setNumber(distance, "Sampling", sampling)
+            threshold = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(threshold, "InField", distance)
+            gmsh.model.mesh.field.setNumber(threshold, "SizeMin", float(edge_size))
+            gmsh.model.mesh.field.setNumber(threshold, "SizeMax", seam_size_cap)
+            gmsh.model.mesh.field.setNumber(threshold, "DistMin", float(edge_size))
+            gmsh.model.mesh.field.setNumber(
+                threshold,
+                "DistMax",
+                float(edge_size)
+                + (seam_size_cap - float(edge_size)) / _ENCLOSURE_SEAM_SIZE_GRADIENT,
+            )
+            restrict = gmsh.model.mesh.field.add("Restrict")
+            gmsh.model.mesh.field.setNumber(restrict, "InField", threshold)
+            gmsh.model.mesh.field.setNumber(restrict, "IncludeBoundary", 0)
+            if graded_surfaces:
+                gmsh.model.mesh.field.setNumbers(
+                    restrict, "SurfacesList", [int(s) for s in graded_surfaces]
+                )
+            if graded_curves:
+                gmsh.model.mesh.field.setNumbers(
+                    restrict, "CurvesList", [int(c) for c in graded_curves]
+                )
+            fields.append(restrict)
     else:
         fallback_formula = f"{mouth_res:.12g}"
         for group_key in (

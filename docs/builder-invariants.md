@@ -140,6 +140,17 @@ Recognized role names include:
 Density values are millimetres. Final mesh coordinates are scaled to metres by
 default after meshing; density is configured before that scaling.
 
+Enclosure roundover strips and their seam curves mesh at the fillet edge size
+(roughly `enc_edge / 3`, frequency-capped). Because surface interiors take
+sizes from the background field alone (`MeshSizeExtendFromBoundary` is
+disabled), the enclosure surfaces and curves also get distance-threshold
+grading fields from each roundover seam ring: sizes grow from the edge size at
+the seam toward the coarsest panel size at unit gradient. Without this, a thin
+fillet (small `enc_edge` against 20+ mm panels) makes the 2D mesher emit
+sub-micrometre needle fans along the shared seam that postprocess then drops
+as degenerate, tearing the enclosure open. The Min field keeps the grading
+inert wherever the neighbourhood is already that fine.
+
 Global Gmsh size bounds come from the configured sizes unless explicitly set on
 `MeshDensity`: minimum defaults to half the smallest positive size, maximum to
 1.5 times the largest positive size.
