@@ -140,32 +140,41 @@ Recognized role names include:
 Density values are millimetres. Final mesh coordinates are scaled to metres by
 default after meshing; density is configured before that scaling.
 
-Enclosure roundover strips and their seam curves mesh at the fillet edge size
-(roughly `enc_edge / 3`, frequency-capped). Because surface interiors take
-sizes from the background field alone (`MeshSizeExtendFromBoundary` is
-disabled), the enclosure surfaces and curves also get distance-threshold
-grading fields from each roundover seam ring: sizes grow from the edge size at
-the seam toward the coarsest panel size at unit gradient. Without this, a thin
-fillet (small `enc_edge` against 20+ mm panels) makes the 2D mesher emit
-sub-micrometre needle fans along the shared seam that postprocess then drops
-as degenerate, tearing the enclosure open. The Min field keeps the grading
-inert wherever the neighbourhood is already that fine.
+Acoustic enclosure geometry suppresses cosmetic fillets and chamfers whose
+across-feature length is smaller than the finest adjacent user target. A
+quarter-round uses `pi * clamped_edge / 2`; a chamfer uses its face width. The
+manufacturing request is retained in metadata, while the acoustic builder uses
+the sharp enclosure path. Source, aperture, interface, physical-group, and
+symmetry geometry is never suppressed.
 
-In enclosure builds the frequency-clamped front panel keeps the fine
-mouth-hole rim used by ATH/ABEC-style baffles. When that rim is finer than the
-wall's axial mouth target, a wall-only distance-threshold field grades from the
-rim size to `mouth_res_mm`. This prevents needle fans at the shared seam while
-leaving the panel and the rest of the waveguide density roles unchanged.
+Retained enclosure edge strips mesh at the finest touching front/back user
+resolution. No `edge / N`, curvature, wavelength, or other geometry-derived
+size is introduced. Distance-threshold grading remains at enclosure and mouth
+seams, but its endpoints are strictly the two adjacent user mm targets. This
+prevents needle-fan tears without refining below the user's finest value.
 
-Global Gmsh size bounds come from the configured sizes unless explicitly set on
-`MeshDensity`: minimum defaults to half the smallest positive size, maximum to
-1.5 times the largest positive size.
+Global Gmsh size bounds come from the configured sizes. `MeshSizeMin` is a
+defensive field floor at one quarter of the smallest target; it does not request
+that size and cannot prevent shorter geometry-conformity edges. `MeshSizeMax`
+is the largest user target. Point, curvature, and boundary-extension sizing are
+disabled.
 
-Large enclosure builds without `max_frequency_hz` retain a default full-domain
-triangle-cost guard. When `max_frequency_hz` is explicit, its per-role
-elements-per-wavelength ceilings are correctness constraints and are never
-coarsened to meet that cost guard; callers should expect meshes above the
-default 18,000-triangle budget when the requested band requires them.
+All builds use a full-domain-equivalent `max_triangles` guard (18,000 by
+default). A clearly excessive estimate fails before Gmsh and the realized
+triangle count is checked after generation. The guard never rewrites mesh
+sizes. `allow_large_mesh=true` is the explicit override for both checks.
+
+Ordinary `acoustic` topology uses profile samples to fit a small number of OCC
+patches; samples do not become mandatory BEM seams or vertices. `legacy`
+topology remains available for ATH parity/export, and `preserve_grid` is valid
+only in that explicit mode.
+
+Because OCC B-spline patches approximate their control points, the config
+builder raises internal angular/axial geometry sampling until chord and sagitta
+errors are comfortably below the requested local mm element size. This affects
+geometry fitting only, not final mesh density or triangle count. Very thin
+freestanding shells below the stable acoustic feature floor are rejected with a
+clear instruction to use bare mode or a resolvable wall thickness.
 
 ## Enclosure Bounds
 

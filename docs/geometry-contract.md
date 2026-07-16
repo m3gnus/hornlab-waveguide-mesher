@@ -262,8 +262,10 @@ rather than silently generating an approximate shape.
 The codebase should use explicit names for compatibility behavior:
 
 - `sampling_mode = "ath-default-zmap"` or similar for ATH axial sampling.
-- `topology_mode = "ath-compatible"` only when exact ATH surface grouping is
-  intentionally requested.
+- `topology_mode = "legacy"` only when ATH/parity surface grouping or faceted
+  point-grid topology is intentionally requested. Ordinary solve meshes use
+  `topology_mode = "acoustic"` so geometry sampling does not dictate BEM
+  topology.
 
 Names like `ath_*` are acceptable in tests and compatibility adapters. Generic
 geometry helpers should instead name the rule they implement.

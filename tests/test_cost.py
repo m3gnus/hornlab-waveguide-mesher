@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from hornlab_mesher import (
     cost,
     estimate_solve_cost,
     estimate_triangle_count,
-    worst_valid_f_max_hz,
 )
 from hornlab_mesher.config_builder import BuildResult
 
@@ -49,26 +46,15 @@ def test_estimate_solve_cost_serializes_and_scales_with_freq_count():
     assert payload["n_triangles"] == 8000
     assert payload["ram_gb"] == pytest.approx(1.024, rel=1e-3)
     assert payload["feasibility"] == "ok"
-    assert payload["solve_seconds_total"] == pytest.approx(payload["solve_seconds_per_freq"] * 60, rel=1e-3)
+    assert payload["solve_seconds_total"] == pytest.approx(
+        payload["solve_seconds_per_freq"] * 60, rel=1e-3
+    )
 
 
-def test_worst_valid_f_max_picks_lowest_finite_group():
+def test_build_result_carries_cost_and_raw_mesh_report():
     mesh_report = {
-        "SD1D1001": {"max_edge_mm": 3.6, "valid_f_max_hz": 15665.0},
-        "SD1G0": {"max_edge_mm": 13.8, "valid_f_max_hz": 4139.0},
-        "interface": {"max_edge_mm": 0.0, "valid_f_max_hz": float("inf")},
-    }
-    # conservative = lowest finite group
-    assert worst_valid_f_max_hz(mesh_report) == pytest.approx(4139.0)
-    # restricting to the source group gives the aperture limit
-    assert worst_valid_f_max_hz(mesh_report, only_groups={"SD1D1001"}) == pytest.approx(15665.0)
-    assert worst_valid_f_max_hz({}) is None
-
-
-def test_build_result_carries_cost_and_valid_band():
-    mesh_report = {
-        "SD1G0": {"max_edge_mm": 8.0, "valid_f_max_hz": 7150.0},
-        "SD1D1001": {"max_edge_mm": 3.6, "valid_f_max_hz": 15900.0},
+        "SD1G0": {"max_edge_mm": 8.0},
+        "SD1D1001": {"max_edge_mm": 3.6},
     }
     result = BuildResult(
         mesh_path="/tmp/x.msh",
@@ -79,10 +65,10 @@ def test_build_result_carries_cost_and_valid_band():
         units="m",
         physical_groups={1: "SD1G0", 2: "SD1D1001"},
         mesh_report=mesh_report,
-        valid_f_max_hz=worst_valid_f_max_hz(mesh_report),
         solve_cost=estimate_solve_cost(8000).to_dict(),
     )
     d = result.as_dict()
-    assert d["valid_f_max_hz"] == pytest.approx(7150.0)
+    assert "valid_f_max_hz" not in d
+    assert d["mesh_report"] == mesh_report
     assert d["solve_cost"]["feasibility"] == "ok"
     assert d["solve_cost"]["n_triangles"] == 8000

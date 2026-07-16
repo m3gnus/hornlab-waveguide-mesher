@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import tempfile
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import meshio
@@ -12,7 +14,11 @@ from .builders import (
     build_point_grid,
 )
 from .builders._occ import add_physical_groups
-from .density import configure_density
+from .density import (
+    _parse_quadrant_resolutions,
+    configure_density,
+    effective_triangle_limit,
+)
 from .geometry import (
     BuiltGeometry,
     HornGeometry,
@@ -20,6 +26,7 @@ from .geometry import (
     MeshInfo,
     OsseHornGeometry,
     PointGridHornGeometry,
+    validate_mesh_density,
 )
 from .normals import (
     MeshOrientationError,
@@ -35,6 +42,55 @@ _GMSH_LOCK = threading.RLock()
 
 class MesherError(Exception):
     pass
+
+
+def _acoustic_geometry(
+    geometry: HornGeometry,
+    density: MeshDensity,
+) -> tuple[HornGeometry, dict[str, object]]:
+    """Apply semantic acoustic LOD without changing manufacturing geometry."""
+
+    if not isinstance(geometry, PointGridHornGeometry) or geometry.enclosure is None:
+        return geometry, {}
+    if geometry.topology_mode == "legacy" or geometry.preserve_grid:
+        return geometry, {"meshTopologyMode": "legacy"}
+
+    from .builders.enclosure import enclosure_box_bounds
+
+    enclosure = geometry.enclosure
+    bounds = enclosure_box_bounds(
+        geometry.inner_points,
+        enclosure,
+        closed=geometry.closed,
+        symmetry_planes=tuple(geometry.symmetry_planes),
+    )
+    clamped_edge = float(bounds.get("clamped_edge", 0.0) or 0.0)
+    edge_depth = float(bounds.get("edge_depth", 0.0) or 0.0)
+    front = _parse_quadrant_resolutions(density.enc_front_res_mm, density.mouth_res_mm)
+    back = _parse_quadrant_resolutions(density.enc_back_res_mm, density.mouth_res_mm)
+    adjacent_h = min(*front, *back)
+    feature_length = (
+        0.5 * math.pi * clamped_edge
+        if int(enclosure.edge_type) == 1
+        else math.hypot(clamped_edge, edge_depth)
+    )
+    suppressed = clamped_edge > 0.0 and feature_length < adjacent_h
+    metadata: dict[str, object] = {
+        "meshTopologyMode": "acoustic",
+        "acousticEnclosureRequestedEdgeMm": float(enclosure.edge_mm),
+        "acousticEnclosureClampedEdgeMm": clamped_edge,
+        "acousticEnclosureFeatureLengthMm": feature_length,
+        "acousticEnclosureAdjacentResolutionMm": adjacent_h,
+        "acousticEnclosureEdgeSuppressed": suppressed,
+    }
+    if not suppressed:
+        return geometry, metadata
+    # The rounded-rectangle sharp path is the robust semantic representation
+    # for both suppressed fillets and suppressed chamfers.
+    return replace(
+        geometry,
+        enclosure=replace(enclosure, edge_mm=0.0, edge_type=1),
+    ), metadata
 
 
 def _dispatch_builder(geometry: HornGeometry) -> BuiltGeometry:
@@ -78,9 +134,12 @@ def build_mesh_with_info(
         output_path = density
         density = None
     mesh_density = density if isinstance(density, MeshDensity) else MeshDensity()
+    validate_mesh_density(mesh_density)
 
     if output_path is None:
-        handle = tempfile.NamedTemporaryFile(prefix="hornlab-mesher-", suffix=".msh", delete=False)
+        handle = tempfile.NamedTemporaryFile(
+            prefix="hornlab-mesher-", suffix=".msh", delete=False
+        )
         out_path = Path(handle.name)
         handle.close()
     else:
@@ -91,6 +150,8 @@ def build_mesh_with_info(
 
     with _GMSH_LOCK:
         initialized_here = False
+        raw_path: Path | None = None
+        staged_path: Path | None = None
         try:
             if not gmsh.isInitialized():
                 # interruptible=False skips gmsh's SIGINT handler, which only
@@ -103,7 +164,11 @@ def build_mesh_with_info(
             gmsh.clear()
             gmsh.model.add("HornLabMesher")
 
-            built = _dispatch_builder(geometry)
+            acoustic_geometry, acoustic_metadata = _acoustic_geometry(
+                geometry, mesh_density
+            )
+            built = _dispatch_builder(acoustic_geometry)
+            built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
 
             configure_density(built, mesh_density)
@@ -114,19 +179,31 @@ def build_mesh_with_info(
             gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
 
-            with tempfile.NamedTemporaryFile(prefix="hornlab-mesher-raw-", suffix=".msh", delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(
+                prefix="hornlab-mesher-raw-", suffix=".msh", delete=False
+            ) as tmp:
                 raw_path = Path(tmp.name)
             gmsh.write(str(raw_path))
+
+            with tempfile.NamedTemporaryFile(
+                dir=out_path.parent,
+                prefix=f".{out_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                staged_path = Path(tmp.name)
 
             is_infinite_baffle = bool(getattr(geometry, "infinite_baffle", False))
             info = _postprocess_mesh(
                 raw_path,
-                out_path,
+                staged_path,
                 built.source_axis,
                 scale_to_metres,
                 symmetry_snap_axes=built.symmetry_snap_axes,
                 symmetry_snap_tol_mm=built.symmetry_snap_tol_mm,
-                vertical_offset_mm=float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0),
+                vertical_offset_mm=float(
+                    getattr(geometry, "vertical_offset_mm", 0.0) or 0.0
+                ),
                 # Coupled infinite-baffle meshes are interior-domain BIE
                 # surfaces. Keep one consistent negative-volume winding:
                 # source/wall normals point into the cavity and aperture
@@ -135,14 +212,36 @@ def build_mesh_with_info(
                 require_positive_volume=not is_infinite_baffle,
                 infinite_baffle=is_infinite_baffle,
             )
+            limit = effective_triangle_limit(built, mesh_density)
+            if limit is not None:
+                built.metadata["meshTriangleCount"] = int(info.n_triangles)
+                built.metadata["meshTriangleLimitExceeded"] = bool(
+                    info.n_triangles > limit
+                )
+            if (
+                limit is not None
+                and not mesh_density.allow_large_mesh
+                and info.n_triangles > limit
+            ):
+                raise MesherError(
+                    f"generated mesh contains {info.n_triangles:,} triangles, exceeding "
+                    f"the effective limit {limit:,}; increase the relevant mm resolution, "
+                    "raise max_triangles, or set allow_large_mesh=true explicitly"
+                )
             if built.metadata:
                 info.metadata.update(built.metadata)
-            raw_path.unlink(missing_ok=True)
             _validate_physical_tags(set(info.physical_groups))
+            staged_path.replace(out_path)
+            staged_path = None
+            info = replace(info, path=out_path)
             return out_path, info
         except Exception as exc:
             raise MesherError(f"mesh build failed: {exc}") from exc
         finally:
+            if raw_path is not None:
+                raw_path.unlink(missing_ok=True)
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
             if initialized_here and gmsh.isInitialized():
                 gmsh.finalize()
 
@@ -193,8 +292,12 @@ def _postprocess_mesh(
     # (micrometres apart on fine grids); welding them prevents overlapping
     # elements whose near-identical rows make dense BEM solves singular.
     triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
-    triangles, phys = _remove_symmetry_plane_slivers(points, triangles, phys, symmetry_snap_axes)
-    triangles, phys, _ = remove_degenerate_triangles(points, triangles, phys, min_quality=1.0e-4)
+    triangles, phys = _remove_symmetry_plane_slivers(
+        points, triangles, phys, symmetry_snap_axes
+    )
+    triangles, phys, _ = remove_degenerate_triangles(
+        points, triangles, phys, min_quality=1.0e-4
+    )
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
     # Gmsh/OCC can emit an otherwise valid canonical surface with the whole
@@ -466,7 +569,9 @@ def _weld_near_duplicate_vertices(
                     if ri != rj:
                         parent[max(ri, rj)] = min(ri, rj)
 
-    roots = np.fromiter((find(i) for i in range(len(points))), dtype=np.int64, count=len(points))
+    roots = np.fromiter(
+        (find(i) for i in range(len(points))), dtype=np.int64, count=len(points)
+    )
     if np.array_equal(roots, np.arange(len(points))):
         return triangles
     return roots[triangles]
@@ -550,6 +655,8 @@ def _edge_stats_by_tag(
             ]
         )
         stats[int(tag)] = {
+            "min_edge_mm": float(np.min(edges)),
+            "p05_edge_mm": float(np.percentile(edges, 5)),
             "median_edge_mm": float(np.median(edges)),
             "p95_edge_mm": float(np.percentile(edges, 95)),
             "max_edge_mm": float(np.max(edges)),
@@ -557,7 +664,9 @@ def _edge_stats_by_tag(
     return stats
 
 
-def _snap_symmetry_planes(points: np.ndarray, axes: tuple[str, ...], tolerance: float) -> None:
+def _snap_symmetry_planes(
+    points: np.ndarray, axes: tuple[str, ...], tolerance: float
+) -> None:
     if not axes or tolerance <= 0.0:
         return
     axis_indices = {"x": 0, "y": 1, "z": 2}
@@ -572,7 +681,9 @@ def _snap_symmetry_planes(points: np.ndarray, axes: tuple[str, ...], tolerance: 
 def _triangles_and_physical_tags(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndarray]:
     triangles: list[np.ndarray] = []
     tags: list[np.ndarray] = []
-    physical_data = mesh.cell_data.get("gmsh:physical") or mesh.cell_data.get("physical")
+    physical_data = mesh.cell_data.get("gmsh:physical") or mesh.cell_data.get(
+        "physical"
+    )
     for idx, cell_block in enumerate(mesh.cells):
         if cell_block.type not in ("triangle", "triangle3"):
             continue
@@ -580,7 +691,11 @@ def _triangles_and_physical_tags(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndar
         if physical_data is not None and idx < len(physical_data):
             tags.append(np.asarray(physical_data[idx], dtype=np.int32))
         else:
-            tags.append(np.full(len(cell_block.data), int(PhysicalGroup.RIGID_WALL), dtype=np.int32))
+            tags.append(
+                np.full(
+                    len(cell_block.data), int(PhysicalGroup.RIGID_WALL), dtype=np.int32
+                )
+            )
     if not triangles:
         return np.empty((0, 3), dtype=np.int64), np.empty((0,), dtype=np.int32)
     return np.vstack(triangles), np.concatenate(tags)

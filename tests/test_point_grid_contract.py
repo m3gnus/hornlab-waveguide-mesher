@@ -16,16 +16,25 @@ from hornlab_mesher.builders.enclosure import (
     _reject_front_baffle_wall_intersections,
 )
 from hornlab_mesher.builders import point_grid_surfaces as point_grid_surfaces_mod
-from hornlab_mesher.builders.point_grid_dispatch import build_point_grid as build_point_grid_geometry
+from hornlab_mesher.builders.point_grid_dispatch import (
+    build_point_grid as build_point_grid_geometry,
+)
 from hornlab_mesher.builders.point_grid_dispatch import _shift_coupled_baffle_grid
 from hornlab_mesher.builders.point_grid_interfaces import _normalise_interface_specs
 from hornlab_mesher.builders.point_grid_sources import (
     _add_occ_source_cap_surfaces,
     _add_source_surfaces,
 )
-from hornlab_mesher.builders.point_grid_surfaces import _SharedSurfaceBuilder, _rear_rim_points
+from hornlab_mesher.builders.point_grid_surfaces import (
+    _SharedSurfaceBuilder,
+    _rear_rim_points,
+)
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
-from hornlab_mesher.cli import build_from_config, build_geometry_params, parse_ath_config
+from hornlab_mesher.cli import (
+    build_from_config,
+    build_geometry_params,
+    parse_ath_config,
+)
 from hornlab_mesher.config_builder import _number_list
 from hornlab_mesher.density import _parse_quadrant_resolutions
 from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
@@ -66,6 +75,7 @@ def test_infinite_baffle_rejects_nonplanar_mouth_instead_of_flattening_it():
 
     with pytest.raises(ValueError, match="requires a planar mouth ring"):
         _shift_coupled_baffle_grid(points)
+
 
 _ATH_ASRO2_T_VALUES = np.asarray(
     [
@@ -193,7 +203,9 @@ def _make_quarter_point_grid(
     return points
 
 
-def _make_outer_point_grid(inner_points: np.ndarray, *, wall_thickness: float = 6.0) -> np.ndarray:
+def _make_outer_point_grid(
+    inner_points: np.ndarray, *, wall_thickness: float = 6.0
+) -> np.ndarray:
     outer = np.array(inner_points, dtype=np.float64, copy=True)
     radial = np.linalg.norm(outer[:, :, :2], axis=2)
     scale = (radial + float(wall_thickness)) / np.maximum(radial, 1.0e-12)
@@ -294,7 +306,7 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
     adjacency = [set() for _ in tri_indices]
     for owners in edges.values():
         for i, lhs in enumerate(owners):
-            for rhs in owners[i + 1:]:
+            for rhs in owners[i + 1 :]:
                 if lhs in local and rhs in local:
                     adjacency[local[lhs]].add(local[rhs])
                     adjacency[local[rhs]].add(local[lhs])
@@ -328,7 +340,11 @@ def test_rear_rim_points_project_outer_throat_ring_straight_back():
         phi = math.tau * i / n_phi
         throat_radius = 20.0 + 3.0 * math.cos(2.0 * phi)
         next_radius = 30.0 + 6.0 * math.sin(phi)
-        outer[i, 0] = (throat_radius * math.cos(phi), throat_radius * math.sin(phi), 0.0)
+        outer[i, 0] = (
+            throat_radius * math.cos(phi),
+            throat_radius * math.sin(phi),
+            0.0,
+        )
         outer[i, 1] = (next_radius * math.cos(phi), next_radius * math.sin(phi), 10.0)
 
     rear = _rear_rim_points(outer, rear_z=-5.0)
@@ -366,19 +382,21 @@ def test_freestanding_quarter_rear_stays_inside_quadrant(tmp_path):
 
 
 def test_python_osse_point_grid_full_circle():
-    grid = build_point_grid({
-        "type": "OSSE",
-        "L": 120.0,
-        "r0": 12.7,
-        "a": 60.0,
-        "a0": 15.5,
-        "k": 1.0,
-        "n": 4.0,
-        "q": 0.995,
-        "angularSegments": 16,
-        "lengthSegments": 6,
-        "wallThickness": 5.0,
-    })
+    grid = build_point_grid(
+        {
+            "type": "OSSE",
+            "L": 120.0,
+            "r0": 12.7,
+            "a": 60.0,
+            "a0": 15.5,
+            "k": 1.0,
+            "n": 4.0,
+            "q": 0.995,
+            "angularSegments": 16,
+            "lengthSegments": 6,
+            "wallThickness": 5.0,
+        }
+    )
 
     assert grid["full_circle"] is True
     assert grid["grid_n_phi"] == 16
@@ -424,7 +442,9 @@ def test_viewport_geometry_from_config_returns_enclosure_rings():
     grid = geometry["grid"]
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )
     enclosure = geometry["enclosure"]
     assert enclosure is not None
 
@@ -520,18 +540,20 @@ def test_python_osse_point_grid_ignores_rosse_tmax_key():
 
 
 def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
-    grid = build_point_grid({
-        "type": "R-OSSE",
-        "R": "150 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)",
-        "r0": 12.7,
-        "a": "45 + 5*cos(p)",
-        "a0": 15.5,
-        "k": 1.0,
-        "q": 1.0,
-        "angularSegments": 16,
-        "lengthSegments": 5,
-        "quadrants": "1",
-    })
+    grid = build_point_grid(
+        {
+            "type": "R-OSSE",
+            "R": "150 * (abs(cos(p))^4 + abs(sin(p))^4)^(-1/4)",
+            "r0": 12.7,
+            "a": "45 + 5*cos(p)",
+            "a0": 15.5,
+            "k": 1.0,
+            "q": 1.0,
+            "angularSegments": 16,
+            "lengthSegments": 5,
+            "quadrants": "1",
+        }
+    )
 
     assert grid["full_circle"] is False
     assert grid["grid_n_phi"] == 5
@@ -544,19 +566,21 @@ def test_python_rosse_point_grid_supports_expressions_and_quarter_domain():
 
 def test_python_rosse_point_grid_rejects_guiding_curve():
     with pytest.raises(ValueError, match="guiding curves"):
-        build_point_grid({
-            "type": "R-OSSE",
-            "R": 150.0,
-            "r0": 12.7,
-            "a": 45.0,
-            "a0": 15.5,
-            "k": 1.0,
-            "q": 1.0,
-            "angularSegments": 16,
-            "lengthSegments": 5,
-            "gcurveType": 1,
-            "gcurveWidth": 100.0,
-        })
+        build_point_grid(
+            {
+                "type": "R-OSSE",
+                "R": 150.0,
+                "r0": 12.7,
+                "a": 45.0,
+                "a0": 15.5,
+                "k": 1.0,
+                "q": 1.0,
+                "angularSegments": 16,
+                "lengthSegments": 5,
+                "gcurveType": 1,
+                "gcurveWidth": 100.0,
+            }
+        )
 
 
 def test_sampling_modes_distinguish_uniform_and_ath_default_zmap():
@@ -632,7 +656,9 @@ def test_custom_zmap_sampling_interpolates_control_points():
     )
 
 
-def _asro2_ath_cfg_text(*, throat: float = 5.0, mouth: float = 8.0, rear: float = 25.0) -> str:
+def _asro2_ath_cfg_text(
+    *, throat: float = 5.0, mouth: float = 8.0, rear: float = 25.0
+) -> str:
     return f"""
 ABEC.SimType = 2
 R-OSSE = {{
@@ -681,10 +707,12 @@ def test_ath_config_tessellation_follows_resolution_inputs(tmp_path):
     coarse = build_from_config(
         parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0)),
         tmp_path / "coarse.msh",
+        allow_large_mesh=True,
     )
     fine = build_from_config(
         parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0)),
         tmp_path / "fine.msh",
+        allow_large_mesh=True,
     )
 
     assert fine.n_triangles > coarse.n_triangles
@@ -821,7 +849,9 @@ def test_point_grid_rounded_source_shape_builds_cap(tmp_path):
 
 @pytest.mark.parametrize("topology", ["bare-occ", "freestanding-geo"])
 @pytest.mark.parametrize("source_curv", [0, -1])
-def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, topology, source_curv):
+def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(
+    tmp_path, topology, source_curv
+):
     throat_radius = 12.7
     source_radius = 60.0
     n_phi = 32
@@ -832,6 +862,7 @@ def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, top
         PointGridHornGeometry(
             inner_points=inner,
             outer_points=outer,
+            topology_mode="legacy" if topology == "freestanding-geo" else "acoustic",
             closed=True,
             wall_thickness_mm=6.0 if outer is not None else 0.0,
             source_shape=1,
@@ -848,11 +879,17 @@ def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, top
     source_nodes = np.unique(triangles[tags == 2])
     assert source_nodes.size > 0
 
-    cap_height = source_radius - math.sqrt(source_radius * source_radius - throat_radius * throat_radius)
+    cap_height = source_radius - math.sqrt(
+        source_radius * source_radius - throat_radius * throat_radius
+    )
     sign = -1.0 if source_curv == -1 else 1.0
-    sphere_center = np.array([0.0, 0.0, sign * (cap_height - source_radius)], dtype=np.float64)
+    sphere_center = np.array(
+        [0.0, 0.0, sign * (cap_height - source_radius)], dtype=np.float64
+    )
     source_points = np.asarray(mesh.points, dtype=np.float64)[source_nodes]
-    residuals = np.abs(np.linalg.norm(source_points - sphere_center, axis=1) - source_radius)
+    residuals = np.abs(
+        np.linalg.norm(source_points - sphere_center, axis=1) - source_radius
+    )
 
     if topology == "freestanding-geo":
         # The geo cap meshes directly on the analytic sphere (spherical
@@ -886,7 +923,9 @@ def test_closed_rounded_source_cap_vertices_lie_on_analytic_sphere(tmp_path, top
     ],
 )
 @pytest.mark.parametrize("source_curv", [0, -1])
-def test_closed_rounded_source_cap_welds_watertight_to_throat(tmp_path, topology, source_curv):
+def test_closed_rounded_source_cap_welds_watertight_to_throat(
+    tmp_path, topology, source_curv
+):
     """The closed rounded cap must share the wall's throat rim discretization.
 
     Regression: every closed-grid rounded-cap path used to author its own rim
@@ -933,18 +972,14 @@ def test_closed_rounded_source_cap_welds_watertight_to_throat(tmp_path, topology
     free_edges = _boundary_edges(triangles)
     free_nodes = sorted({node for edge in free_edges for node in edge})
 
-    near_throat = [
-        node for node in free_nodes if abs(float(points[node, 2])) < 5.0
-    ]
+    near_throat = [node for node in free_nodes if abs(float(points[node, 2])) < 5.0]
     assert not near_throat, (
         f"{len(near_throat)} free-edge node(s) at the cap-throat seam; "
         "the rounded cap did not weld to the wall"
     )
     if topology in {"freestanding-geo", "freestanding-legacy-occ", "enclosure-occ"}:
         # Closed topologies have no legitimate opening at all.
-        assert not free_edges, (
-            f"{len(free_edges)} free edge(s) on a closed topology"
-        )
+        assert not free_edges, f"{len(free_edges)} free edge(s) on a closed topology"
     else:
         # A bare horn's only opening is its mouth rim.
         mouth_z = float(np.max(points[free_nodes, 2])) if free_nodes else 0.0
@@ -994,7 +1029,9 @@ def test_open_quarter_point_grid_mesh_has_source_sector(tmp_path):
     assert np.min(points[:, 1]) >= -1.0e-9
 
 
-def test_open_quarter_freestanding_point_grid_is_closed_except_symmetry_planes(tmp_path):
+def test_open_quarter_freestanding_point_grid_is_closed_except_symmetry_planes(
+    tmp_path,
+):
     inner = _make_quarter_point_grid(n_phi=9, n_length=8)
     outer = inner.copy()
     radial = np.linalg.norm(outer[:, :, :2], axis=2)
@@ -1037,7 +1074,9 @@ def test_open_quarter_freestanding_point_grid_is_closed_except_symmetry_planes(t
     ("quadrants", "cut_axis"),
     [("12", 1), ("14", 0)],  # 12 mirrors about xz (y=0); 14 about yz (x=0)
 )
-def test_freestanding_half_model_boundary_lies_on_single_cut_plane(tmp_path, quadrants, cut_axis):
+def test_freestanding_half_model_boundary_lies_on_single_cut_plane(
+    tmp_path, quadrants, cut_axis
+):
     # A freestanding half-model is a wall-shell horn cut on one mirror plane.
     # Unlike the quarter model (two cut planes), every open edge must lie on the
     # single cut plane; the wall, mouth rim and rear cap close every other edge.
@@ -1084,7 +1123,9 @@ def test_scale_does_not_scale_freestanding_wall_thickness(tmp_path):
     grid = build_point_grid(params)
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )
     throat_radii = np.hypot(inner[:, 0, 0], inner[:, 0, 1])
 
     assert np.allclose(throat_radii, 15.0, rtol=0.0, atol=1.0e-9)
@@ -1329,6 +1370,8 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
             "mouthResolution": 25,
             "rearResolution": 40,
             "preserveGrid": True,
+            "topology": "legacy",
+            "allowLargeMesh": True,
             "scaleToMetres": True,
         },
         "morph": {
@@ -1360,12 +1403,12 @@ def test_open_quarter_enclosure_preserves_inner_wall_grid_for_morphed_mouth(tmp_
     mesh = meshio.read(tmp_path / "superduper-small-5-open-enclosure.msh")
     triangles, tags = _triangles_and_tags(mesh)
 
-    assert result.metadata["enclosureMeshCapped"] is True
-    assert result.metadata["enclosureMeshTriangleCeiling"] == 18_000
-    assert result.metadata["enclosureMeshEffectiveTriangleCeiling"] == 4_500
-    assert result.metadata["enclosureMeshDomainMultiplier"] == 4.0
-    assert result.metadata["enclosureMeshTriangleEstimatePost"] == pytest.approx(4_500, abs=2)
-    assert result.metadata["enclosureMeshTriangleEstimatePostFullDomain"] == pytest.approx(18_000, abs=8)
+    assert "enclosureMeshCapped" not in result.metadata
+    assert result.metadata["meshTriangleLimit"] == 18_000
+    assert result.metadata["meshEffectiveTriangleLimit"] == 4_500
+    assert result.metadata["meshDomainMultiplier"] == 4.0
+    assert result.metadata["meshAllowLarge"] is True
+    assert result.metadata["meshTriangleCount"] == result.n_triangles
     assert int(np.count_nonzero(tags == 1)) >= 800
     assert int(np.count_nonzero(tags == 2)) > 0
     assert int(np.count_nonzero(tags == 3)) > 0
@@ -1387,7 +1430,9 @@ def test_clamp_edge_roundover_leaves_flat_baffle_clearance():
     margin = 1.0
     clamped = _clamp_edge_roundover(margin, margin, big, big)
     assert 0.0 < clamped < margin
-    expected_clearance = max(_MIN_BAFFLE_CLEARANCE_MM, margin * _BAFFLE_CLEARANCE_FRACTION)
+    expected_clearance = max(
+        _MIN_BAFFLE_CLEARANCE_MM, margin * _BAFFLE_CLEARANCE_FRACTION
+    )
     assert margin - clamped >= expected_clearance - 1e-9
 
     # edge above the margin is clamped below it with the same clearance.
@@ -1409,7 +1454,9 @@ def test_clamp_edge_roundover_leaves_flat_baffle_clearance():
         ("14", "yz", (0,)),  # half about yz: rim on x=0 only
     ],
 )
-def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_plane, cut_axes):
+def test_reduced_enclosure_boundary_lies_on_cut_planes(
+    tmp_path, quadrants, sym_plane, cut_axes
+):
     # Reduced-domain enclosures (quarter/half) must produce a mesh whose only
     # open edges lie on the symmetry cut plane(s) so the mirrored BEM solve sees
     # a clean reflection. Three distinct defects used to break this: the quarter
@@ -1420,7 +1467,14 @@ def test_reduced_enclosure_boundary_lies_on_cut_planes(tmp_path, quadrants, sym_
     cfg = {
         "formula": "ROSSE",
         "mode": "enclosure",
-        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "profile": {
+            "R_mm": 150.0,
+            "r0_mm": 12.7,
+            "a_deg": 60.0,
+            "a0_deg": 15.5,
+            "k": 1.0,
+            "q": 1.0,
+        },
         "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
         "mesh": {
             "angular_segments": 32,
@@ -1481,7 +1535,14 @@ def test_reduced_chamfer_enclosure_boundary_lies_on_cut_planes(tmp_path):
     cfg = {
         "formula": "ROSSE",
         "mode": "enclosure",
-        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "profile": {
+            "R_mm": 150.0,
+            "r0_mm": 12.7,
+            "a_deg": 60.0,
+            "a0_deg": 15.5,
+            "k": 1.0,
+            "q": 1.0,
+        },
         "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
         "mesh": {
             "angular_segments": 32,
@@ -1533,18 +1594,10 @@ def test_reduced_chamfer_enclosure_boundary_lies_on_cut_planes(tmp_path):
 
 @pytest.mark.parametrize("edge_mm", [0.0, 1.0, 5.0, 20.0])
 def test_reduced_enclosure_thin_roundover_seams_stay_watertight(tmp_path, edge_mm):
-    # Regression for WG job 00f9bab3 (2026-07-12): a quadrant OSSE morph-rect
-    # build with a thin enclosure roundover (enc_edge=1 vs enc_space=20) tore a
-    # ~69 mm slit along the back roundover inset seam. Two density defects
-    # compounded: OCC bbox slop (~1e-3 mm) against a 1e-6 classification eps
-    # meant the front/back panels never received their frequency-clamped
-    # bilinear field, and no size grading existed toward the seam curves, so
-    # the panels targeted their coarse size right against the ~1 mm seam
-    # discretization. The 2D mesher fanned sub-micrometre needles along the
-    # shared seam and postprocess dropped them as degenerate, leaving
-    # off-plane open edges the solver's open-edge guard rejects. Sweep sharp,
-    # thin, moderate, and margin-clamped roundovers: the only open edges of
-    # the quarter build must lie on the x=0 / y=0 cut planes.
+    # Regression for WG job 00f9bab3 (2026-07-12). Cosmetic roundovers whose
+    # quarter-arc is smaller than the adjacent 40 mm target are suppressed in
+    # acoustic geometry, avoiding a forced strip and its historical seam tear.
+    # The only open edges must remain on the declared cut planes.
     cfg = {
         "formula": "OSSE",
         "mode": "enclosure",
@@ -1607,24 +1660,22 @@ def test_reduced_enclosure_thin_roundover_seams_stay_watertight(tmp_path, edge_m
             edge_owners[key] = edge_owners.get(key, 0) + 1
     assert max(edge_owners.values()) <= 2
 
-    # The roundover must really be built (a silently sharp box would mask the
-    # seams this test guards): the back cap must stop the clamped roundover
-    # radius short of the outer wall. The 20 mm request clamps to 19 mm (the
-    # 20 mm margin keeps a >= 1 mm flat-baffle clearance).
+    # Every positive feature in this sweep is below the 40 mm adjacent target
+    # after the margin clamp, so acoustic geometry deliberately uses the sharp
+    # path and the back cap reaches the outer wall.
     scale_mm = 1000.0 if result.units == "m" else 1.0
     points_mm = points * scale_mm
     clamped_edge = min(float(edge_mm), 19.0)
     if clamped_edge > 0.0:
+        assert result.metadata["acousticEnclosureEdgeSuppressed"] is True
         z_back = points_mm[:, 2].min()
         cap_nodes = points_mm[np.abs(points_mm[:, 2] - z_back) < 1.0e-3]
-        assert cap_nodes[:, 1].max() <= points_mm[:, 1].max() - 0.4 * clamped_edge
+        assert cap_nodes[:, 1].max() == pytest.approx(points_mm[:, 1].max(), abs=1.0e-6)
 
 
 @pytest.mark.parametrize("edge_type", [1, 2])
 @pytest.mark.parametrize("edge_mm", [1.0, 5.0])
-def test_full_enclosure_mouth_seam_stays_watertight(
-    tmp_path, edge_mm, edge_type
-):
+def test_full_enclosure_mouth_seam_stays_watertight(tmp_path, edge_mm, edge_type):
     # Full domains have no legitimate boundary edges. The front-panel field
     # used to claim the wall-shared mouth curves at its frequency-clamped size,
     # around nine times finer than the wall target in this WG job family.
@@ -1771,7 +1822,14 @@ def test_reduced_enclosure_sharp_edge_boundary_lies_on_cut_planes(
     cfg = {
         "formula": "ROSSE",
         "mode": "enclosure",
-        "profile": {"R_mm": 150.0, "r0_mm": 12.7, "a_deg": 60.0, "a0_deg": 15.5, "k": 1.0, "q": 1.0},
+        "profile": {
+            "R_mm": 150.0,
+            "r0_mm": 12.7,
+            "a_deg": 60.0,
+            "a0_deg": 15.5,
+            "k": 1.0,
+            "q": 1.0,
+        },
         "cross_section": {"exponent": 2.0, "aspect_ratio": 1.0},
         "mesh": {
             "angular_segments": 32,
@@ -1794,7 +1852,9 @@ def test_reduced_enclosure_sharp_edge_boundary_lies_on_cut_planes(
         },
     }
     # The build itself must succeed -- it used to raise MesherError here.
-    result = build_from_config(cfg, tmp_path / f"reduced-enclosure-sharp-{quadrants}.msh")
+    result = build_from_config(
+        cfg, tmp_path / f"reduced-enclosure-sharp-{quadrants}.msh"
+    )
     assert result.native_symmetry_plane == sym_plane
 
     mesh = meshio.read(result.mesh_path)
@@ -1898,11 +1958,16 @@ def test_explicit_interface_can_still_target_mouth_slice():
 @pytest.mark.parametrize(
     ("interface", "message"),
     [
-        (HornInterface(slice_index=11, offset_mm=8.0), "outside the valid grid ring range"),
+        (
+            HornInterface(slice_index=11, offset_mm=8.0),
+            "outside the valid grid ring range",
+        ),
         (HornInterface(slice_index=4, offset_mm=0.0), "offset_mm must be positive"),
     ],
 )
-def test_invalid_explicit_interface_specs_fail_instead_of_being_dropped(interface, message):
+def test_invalid_explicit_interface_specs_fail_instead_of_being_dropped(
+    interface, message
+):
     geometry = PointGridHornGeometry(
         inner_points=_make_point_grid(n_length=10),
         closed=True,
@@ -1921,11 +1986,39 @@ def test_ath_default_zmap_osse_matches_m2_clone_reference_rings():
 
     ath_rings_mm = np.asarray(
         [
-            0.0, 1.151, 2.614, 4.460, 6.816, 9.513, 12.784, 16.682, 20.945,
-            26.031, 31.65, 38.153, 44.983, 52.676, 60.799, 69.276, 77.812,
-            86.517, 94.876, 102.809, 110.245, 116.775, 122.919, 128.154,
-            132.821, 136.663, 140.101, 142.909, 145.147, 147.014, 148.385,
-            149.371, 150.0,
+            0.0,
+            1.151,
+            2.614,
+            4.460,
+            6.816,
+            9.513,
+            12.784,
+            16.682,
+            20.945,
+            26.031,
+            31.65,
+            38.153,
+            44.983,
+            52.676,
+            60.799,
+            69.276,
+            77.812,
+            86.517,
+            94.876,
+            102.809,
+            110.245,
+            116.775,
+            122.919,
+            128.154,
+            132.821,
+            136.663,
+            140.101,
+            142.909,
+            145.147,
+            147.014,
+            148.385,
+            149.371,
+            150.0,
         ],
         dtype=np.float64,
     )
@@ -1965,17 +2058,23 @@ def test_symmetry_plane_slivers_are_removed_and_real_defects_raise():
     sliver_and_normal = np.asarray([[0, 1, 2], [3, 4, 5]], dtype=np.int64)
     phys = np.asarray([1, 1], dtype=np.int32)
 
-    kept, kept_phys = _remove_symmetry_plane_slivers(points, sliver_and_normal, phys, ("x", "y"))
+    kept, kept_phys = _remove_symmetry_plane_slivers(
+        points, sliver_and_normal, phys, ("x", "y")
+    )
     assert len(kept) == 1
     assert kept[0].tolist() == [3, 4, 5]
     assert kept_phys.tolist() == [1]
 
     with_defect = np.asarray([[3, 4, 5], [6, 7, 8]], dtype=np.int64)
     with pytest.raises(MesherError, match="symmetry plane"):
-        _remove_symmetry_plane_slivers(points, with_defect, np.asarray([1, 1], dtype=np.int32), ("x",))
+        _remove_symmetry_plane_slivers(
+            points, with_defect, np.asarray([1, 1], dtype=np.int32), ("x",)
+        )
 
     # no symmetry axes: untouched
-    same, _ = _remove_symmetry_plane_slivers(points, with_defect, np.asarray([1, 1], dtype=np.int32), ())
+    same, _ = _remove_symmetry_plane_slivers(
+        points, with_defect, np.asarray([1, 1], dtype=np.int32), ()
+    )
     assert len(same) == 2
 
 
@@ -1994,7 +2093,9 @@ def test_remove_degenerate_triangles_drops_needle_slivers():
     tris = np.asarray([[0, 1, 2], [0, 1, 3]], dtype=np.int64)
     tags = np.asarray([1, 1], dtype=np.int32)
 
-    kept, kept_tags, removed = remove_degenerate_triangles(points, tris, tags, min_quality=1.0e-4)
+    kept, kept_tags, removed = remove_degenerate_triangles(
+        points, tris, tags, min_quality=1.0e-4
+    )
     assert removed == 1
     assert kept.tolist() == [[0, 1, 3]]
 
@@ -2004,7 +2105,10 @@ def test_remove_degenerate_triangles_drops_needle_slivers():
 
 
 def test_weld_near_duplicate_vertices_merges_micrometre_pairs():
-    from hornlab_mesher.mesher import _compact_unused_vertices, _weld_near_duplicate_vertices
+    from hornlab_mesher.mesher import (
+        _compact_unused_vertices,
+        _weld_near_duplicate_vertices,
+    )
 
     points = np.asarray(
         [
@@ -2026,7 +2130,9 @@ def test_weld_near_duplicate_vertices_merges_micrometre_pairs():
     assert compact_triangles.max() == 3
 
     # well-separated vertices stay untouched
-    same = _weld_near_duplicate_vertices(points[:3], np.asarray([[0, 1, 2]]), tol_mm=5.0e-3)
+    same = _weld_near_duplicate_vertices(
+        points[:3], np.asarray([[0, 1, 2]]), tol_mm=5.0e-3
+    )
     assert same.tolist() == [[0, 1, 2]]
 
 
@@ -2053,7 +2159,9 @@ def test_lookup_point_grid_follows_pchip_profile():
     grid = build_point_grid(params)
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    pts = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    pts = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )
 
     radial = np.hypot(pts[..., 0], pts[..., 1])
     # Throat ring ~= r0, mouth ring ~= mouth radius from the profile.
@@ -2085,16 +2193,32 @@ def test_lookup_rejects_missing_profile():
         # Ath ground truth (ath.exe under Wine, asro2 R-OSSE sweep): Mesh.Quadrants
         # is read as a leading integer; only 1234/12/14 are special, everything else
         # (incl. permutations, trailing junk, empties) is a quarter model.
-        ("1", "1", ("x", "y")), ("2", "1", ("x", "y")), ("3", "1", ("x", "y")),
-        ("4", "1", ("x", "y")), ("0", "1", ("x", "y")),
-        ("12", "12", ("y",)), ("14", "14", ("x",)), ("1234", "1234", ()),
-        ("13", "1", ("x", "y")), ("23", "1", ("x", "y")), ("24", "1", ("x", "y")),
-        ("34", "1", ("x", "y")), ("123", "1", ("x", "y")), ("234", "1", ("x", "y")),
-        ("21", "1", ("x", "y")), ("41", "1", ("x", "y")),  # not reordered to 12/14
-        ("1234x", "1234", ()), (" 12 ", "12", ("y",)),     # trailing/leading trim
-        ("x1234", "1", ("x", "y")), ("1,2", "1", ("x", "y")),  # no leading digit / stops at comma
-        ("99", "1", ("x", "y")), ("foo", "1", ("x", "y")), ("", "1", ("x", "y")),
-        (None, "1", ("x", "y")), (12, "12", ("y",)), (1234, "1234", ()),
+        ("1", "1", ("x", "y")),
+        ("2", "1", ("x", "y")),
+        ("3", "1", ("x", "y")),
+        ("4", "1", ("x", "y")),
+        ("0", "1", ("x", "y")),
+        ("12", "12", ("y",)),
+        ("14", "14", ("x",)),
+        ("1234", "1234", ()),
+        ("13", "1", ("x", "y")),
+        ("23", "1", ("x", "y")),
+        ("24", "1", ("x", "y")),
+        ("34", "1", ("x", "y")),
+        ("123", "1", ("x", "y")),
+        ("234", "1", ("x", "y")),
+        ("21", "1", ("x", "y")),
+        ("41", "1", ("x", "y")),  # not reordered to 12/14
+        ("1234x", "1234", ()),
+        (" 12 ", "12", ("y",)),  # trailing/leading trim
+        ("x1234", "1", ("x", "y")),
+        ("1,2", "1", ("x", "y")),  # no leading digit / stops at comma
+        ("99", "1", ("x", "y")),
+        ("foo", "1", ("x", "y")),
+        ("", "1", ("x", "y")),
+        (None, "1", ("x", "y")),
+        (12, "12", ("y",)),
+        (1234, "1234", ()),
     ],
 )
 def test_normalise_quadrants_matches_ath_atoi_rule(value, canonical, planes):
@@ -2107,7 +2231,9 @@ def test_normalise_quadrants_matches_ath_atoi_rule(value, canonical, planes):
     assert _symmetry_planes_for_quadrants(value) == planes
 
 
-@pytest.mark.parametrize("quadrants", ["13", "foo", "5", "1x", "0", "23", "234", "1,2", ""])
+@pytest.mark.parametrize(
+    "quadrants", ["13", "foo", "5", "1x", "0", "23", "234", "1,2", ""]
+)
 def test_unrecognised_quadrants_default_to_quarter_like_ath(quadrants):
     from hornlab_mesher.config_builder import build_geometry_params
 
@@ -2131,7 +2257,13 @@ def test_quadrants_are_not_reordered_like_ath():
     # unrecognised value that meshes as a quarter -- NOT the digit set {1, 2} == "12".
     # Verified against ath.exe: Quadrants=21 emits a Sym=xy quarter mesh (1209 pts),
     # not the Sym=y half (2396 pts) that "12" produces. Only 12/14/1234 are special.
-    for value, expected in (("21", "1"), ("41", "1"), ("12", "12"), ("14", "14"), ("1234", "1234")):
+    for value, expected in (
+        ("21", "1"),
+        ("41", "1"),
+        ("12", "12"),
+        ("14", "14"),
+        ("1234", "1234"),
+    ):
         cfg = {
             "formula": "OSSE",
             "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
@@ -2184,7 +2316,9 @@ def test_vertical_offset_accepted_for_y_cut_reduced_domains(quadrants):
     assert "y" in grid["symmetry_planes"]
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )
     assert abs(float(inner[:, :, 1].min())) < 1.0e-9
 
 
@@ -2192,7 +2326,9 @@ def test_vertical_offset_accepted_for_y_cut_reduced_domains(quadrants):
     ("quadrants", "sym_plane"),
     [("1", "yz+xz"), ("12", "xz")],
 )
-def test_vertical_offset_y_cut_reproduces_ath_shifted_reduced_mesh(tmp_path, quadrants, sym_plane):
+def test_vertical_offset_y_cut_reproduces_ath_shifted_reduced_mesh(
+    tmp_path, quadrants, sym_plane
+):
     # ATH parity for a y-cut reduced enclosure with Mesh.VerticalOffset. ATH builds
     # the reduced model on the axes, translates it by the offset, and still declares
     # the y=0 (xz) mirror -- so the reconstruction mirrors about y=0, leaving the
@@ -2223,7 +2359,9 @@ def test_vertical_offset_y_cut_reproduces_ath_shifted_reduced_mesh(tmp_path, qua
         },
     }
 
-    result = build_from_config(cfg, tmp_path / f"shifted-{quadrants}-ycut-enclosure.msh")
+    result = build_from_config(
+        cfg, tmp_path / f"shifted-{quadrants}-ycut-enclosure.msh"
+    )
     # The y=0 (xz) mirror stays declared even though the mesh is shifted off it.
     assert result.native_symmetry_plane == sym_plane
 
@@ -2317,6 +2455,7 @@ def test_open_front_baffle_guard_catches_tangential_outside_reduced_mouth_contac
 def test_source_shape_zero_builds_flat_disc(tmp_path):
     """sourceShape=0 (flat disc) used to be silently coerced to 1 (cap) by an
     ``or``-default; the driven surface must actually be flat."""
+
     def _cfg(shape):
         return {
             "formula": "OSSE",
@@ -2376,13 +2515,15 @@ def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
             "rearResolution": 40,
             "scaleToMetres": False,
             "preserveGrid": preserve_grid,
+            "topology": "legacy" if preserve_grid else "acoustic",
         },
         "source": {"sourceShape": source_shape},
     }
 
     result = build_from_config(
         config,
-        tmp_path / (
+        tmp_path
+        / (
             f"coupled-infinite-baffle-source-{source_shape}-"
             f"preserve-{int(preserve_grid)}.msh"
         ),
@@ -2422,9 +2563,7 @@ def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
     edge_owners = _edge_owner_tags(triangles, tags)
     assert max(len(owners) for owners in edge_owners.values()) <= 2
     wall_aperture_edges = [
-        edge
-        for edge, owners in edge_owners.items()
-        if set(owners) == {1, 12}
+        edge for edge, owners in edge_owners.items() if set(owners) == {1, 12}
     ]
     assert wall_aperture_edges
     for edge in wall_aperture_edges:
@@ -2546,9 +2685,7 @@ def test_infinite_baffle_reduced_domains_open_only_on_cut_planes(
     edge_owners = _edge_owner_tags(triangles, tags)
     assert max(len(owners) for owners in edge_owners.values()) <= 2
     wall_aperture_edges = [
-        edge
-        for edge, owners in edge_owners.items()
-        if set(owners) == {1, 12}
+        edge for edge, owners in edge_owners.items() if set(owners) == {1, 12}
     ]
     assert wall_aperture_edges
     for edge in wall_aperture_edges:
@@ -2574,6 +2711,7 @@ def test_preserve_grid_quarter_enclosure_has_no_off_plane_open_edges(tmp_path):
             "throatResolution": 5,
             "mouthResolution": 12,
             "preserveGrid": True,
+            "topology": "legacy",
             "scaleToMetres": False,
         },
         "enclosure": {
@@ -2703,7 +2841,9 @@ def test_rounded_cap_radial_controls_match_occ_and_faceted_paths(monkeypatch):
         builder = _SharedSurfaceBuilder()
         builder.add_grid("inner", inner)
         add_cap(builder, inner, geometry)
-        radial_splines = [points for points in fake.model.occ.bsplines if len(points) == 4]
+        radial_splines = [
+            points for points in fake.model.occ.bsplines if len(points) == 4
+        ]
         return np.asarray(
             [
                 [fake.model.occ.point_coordinates[tag] for tag in spline[1:3]]
@@ -2762,7 +2902,9 @@ def test_number_list_parsers_share_helper_without_contract_drift():
         ),
     ],
 )
-def test_config_to_point_grid_preserves_profile_radius_at_uniform_slices(formula, profile):
+def test_config_to_point_grid_preserves_profile_radius_at_uniform_slices(
+    formula, profile
+):
     config = {
         "formula": formula,
         "mode": "bare",
@@ -2780,11 +2922,15 @@ def test_config_to_point_grid_preserves_profile_radius_at_uniform_slices(formula
     grid = viewport["grid"]
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )
     direct = profile_points(params, n_length + 1, phi=0.0)
 
     assert inner[0, :, 2] == pytest.approx(direct[:, 0], abs=1.0e-9)
-    assert np.linalg.norm(inner[0, :, :2], axis=1) == pytest.approx(direct[:, 1], abs=1.0e-9)
+    assert np.linalg.norm(inner[0, :, :2], axis=1) == pytest.approx(
+        direct[:, 1], abs=1.0e-9
+    )
 
 
 def test_enclosure_bounds_logs_edge_roundover_clamp(caplog):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 from .cost import TRIANGLES_PER_AREA_OVER_H2
 from .geometry import BuiltGeometry, MeshDensity
@@ -9,10 +8,7 @@ from .profile_common import _parse_number_list
 from .tags import PhysicalGroup, SOURCE_TAGS
 
 
-_ENCLOSURE_DEFAULT_MAX_FREQUENCY_HZ = 20_000.0
-_ENCLOSURE_PANEL_EPW = 6.0
-_ENCLOSURE_FILLET_ELEMENTS = 3.0
-_ENCLOSURE_TRIANGLE_CEILING = 18_000
+_PREMESH_TRIANGLE_LIMIT_SLACK = 1.5
 # Mesh-size growth per millimetre of distance from a roundover seam curve
 # (1.0 = size equals distance: each element row roughly doubles). Bounds the
 # boundary-to-interior size jump the 2D mesher sees at the seam.
@@ -21,7 +17,9 @@ _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MIN = 64.0
 _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX = 2000.0
 
 
-def _parse_quadrant_resolutions(value: float | str | None, fallback: float) -> list[float]:
+def _parse_quadrant_resolutions(
+    value: float | str | None, fallback: float
+) -> list[float]:
     """Parse WG-style per-quadrant resolution list q1..q4."""
 
     fallback = float(fallback)
@@ -131,37 +129,23 @@ def _collect_boundary_curves(surface_tags: list[int]) -> list[int]:
     return ordered
 
 
-def _enclosure_frequency_ceiling_mm(density: MeshDensity) -> float:
-    frequency = (
-        float(density.max_frequency_hz)
-        if density.max_frequency_hz and density.max_frequency_hz > 0.0
-        else _ENCLOSURE_DEFAULT_MAX_FREQUENCY_HZ
-    )
-    epw = max(_ENCLOSURE_PANEL_EPW, float(density.elements_per_wavelength), 1.0)
-    return (float(density.speed_of_sound_m_s) * 1000.0) / (epw * frequency)
-
-
-def _clamp_enclosure_panel_sizes(q_values: list[float], density: MeshDensity) -> list[float]:
-    ceiling = _enclosure_frequency_ceiling_mm(density)
-    return [min(float(value), ceiling) for value in q_values]
-
-
 def _enclosure_edge_size_mm(
     q_values: list[float],
-    density: MeshDensity,
-    bounds: dict[str, float],
 ) -> float | None:
-    edge_mm = float(bounds.get("clamped_edge", bounds.get("edge_depth", 0.0)) or 0.0)
-    if edge_mm <= 0.0:
-        return None
-    ceiling = min(
-        _enclosure_frequency_ceiling_mm(density),
-        edge_mm / _ENCLOSURE_FILLET_ELEMENTS,
-    )
-    positive_q = [float(value) for value in q_values if math.isfinite(float(value)) and float(value) > 0.0]
-    if positive_q:
-        ceiling = min(ceiling, min(positive_q))
-    return ceiling if math.isfinite(ceiling) and ceiling > 0.0 else None
+    """User-derived target for a retained cosmetic enclosure edge.
+
+    Geometry-level defeaturing removes strips narrower than the adjacent user
+    target before this function runs.  A retained strip therefore needs no
+    radius-derived ``edge / N`` refinement; the finest touching user target is
+    sufficient and keeps seam grading bounded by explicit mm values.
+    """
+
+    positive_q = [
+        float(value)
+        for value in q_values
+        if math.isfinite(float(value)) and float(value) > 0.0
+    ]
+    return min(positive_q) if positive_q else None
 
 
 def _split_enclosure_panel_surfaces(
@@ -184,9 +168,8 @@ def _split_enclosure_panel_surfaces(
     z_span = max(abs(float(z_front) - float(z_back)), 1.0)
     # OCC face bounding boxes carry a finite gap (~1e-3 mm even for exact
     # planes). The old 1e-6 tolerance silently declassified every real panel,
-    # so front/back panels never received their frequency-clamped bilinear
-    # field and were meshed at the much coarser z-graded enclosure size right
-    # up to the fine roundover seams. Stay far below any real front-to-back
+    # so front/back panels never received their bilinear user-size field and
+    # were meshed at the z-graded enclosure size. Stay far below any real front-to-back
     # separation while tolerating the bbox slop.
     eps = max(0.05, z_span * 1.0e-4)
     front: list[int] = []
@@ -196,22 +179,34 @@ def _split_enclosure_panel_surfaces(
         if tag_i in edge_tags:
             continue
         _x0, _y0, z0, _x1, _y1, z1 = gmsh.model.getBoundingBox(2, tag_i)
-        if abs(float(z0) - float(z_front)) <= eps and abs(float(z1) - float(z_front)) <= eps:
+        if (
+            abs(float(z0) - float(z_front)) <= eps
+            and abs(float(z1) - float(z_front)) <= eps
+        ):
             front.append(tag_i)
-        elif abs(float(z0) - float(z_back)) <= eps and abs(float(z1) - float(z_back)) <= eps:
+        elif (
+            abs(float(z0) - float(z_back)) <= eps
+            and abs(float(z1) - float(z_back)) <= eps
+        ):
             back.append(tag_i)
     return front, back
 
 
 def _effective_size_mm(values: list[float]) -> float | None:
-    sizes = [float(value) for value in values if math.isfinite(float(value)) and float(value) > 0.0]
+    sizes = [
+        float(value)
+        for value in values
+        if math.isfinite(float(value)) and float(value) > 0.0
+    ]
     if not sizes:
         return None
     inv_sq = sum(1.0 / (value * value) for value in sizes)
     return math.sqrt(float(len(sizes)) / inv_sq) if inv_sq > 0.0 else None
 
 
-def _bbox_surface_area_estimate_mm2(bbox: tuple[float, float, float, float, float, float]) -> float:
+def _bbox_surface_area_estimate_mm2(
+    bbox: tuple[float, float, float, float, float, float],
+) -> float:
     x0, y0, z0, x1, y1, z1 = (float(value) for value in bbox)
     dims = [abs(x1 - x0), abs(y1 - y0), abs(z1 - z0)]
     nonzero = [value for value in dims if value > 1.0e-9]
@@ -255,7 +250,9 @@ def _surface_area_mm2(surface_tags: list[int]) -> float:
                 break
         if area is None:
             try:
-                area = _bbox_surface_area_estimate_mm2(gmsh.model.getBoundingBox(2, tag))
+                area = _bbox_surface_area_estimate_mm2(
+                    gmsh.model.getBoundingBox(2, tag)
+                )
             except Exception:
                 area = 0.0
         if math.isfinite(area) and area > 0.0:
@@ -278,11 +275,11 @@ def _enclosure_triangle_regions(
     back_edge_size: float | None,
     front_panels: list[int],
     back_panels: list[int],
-) -> list[tuple[float, float]]:
-    regions: list[tuple[float, float]] = []
+) -> list[tuple[float, float, str]]:
+    regions: list[tuple[float, float, str]] = []
     consumed: set[int] = set()
 
-    def add(surface_tags: list[int], size: float | None) -> None:
+    def add(surface_tags: list[int], size: float | None, label: str) -> None:
         if size is None or not math.isfinite(float(size)) or float(size) <= 0.0:
             return
         tags: list[int] = []
@@ -294,31 +291,41 @@ def _enclosure_triangle_regions(
             tags.append(tag)
         area = _surface_area_mm2(tags)
         if area > 0.0:
-            regions.append((area, float(size)))
+            regions.append((area, float(size), label))
 
     axial_size = _effective_size_mm([throat_res, mouth_res])
-    add(mesh_groups.get("inner", []), axial_size)
-    add(mesh_groups.get("mouth", []), axial_size)
-    add(mesh_groups.get("outer", []), axial_size)
-    add(mesh_groups.get("throat_disc", []), throat_res)
-    add(mesh_groups.get("rear", []), rear_res)
-    add(mesh_groups.get("interface", []), interface_res)
+    add(mesh_groups.get("inner", []), axial_size, "waveguide wall")
+    add(mesh_groups.get("mouth", []), axial_size, "mouth")
+    add(mesh_groups.get("outer", []), axial_size, "outer wall")
+    add(mesh_groups.get("throat_disc", []), throat_res, "throat")
+    add(mesh_groups.get("rear", []), rear_res, "rear")
+    add(mesh_groups.get("interface", []), interface_res, "interface")
 
     front_edge_fallback = _effective_size_mm(front_panel_q)
     back_edge_fallback = _effective_size_mm(back_panel_q)
-    add(mesh_groups.get("enclosure_edges_front", []), front_edge_size or front_edge_fallback)
-    add(mesh_groups.get("enclosure_edges_back", []), back_edge_size or back_edge_fallback)
-    add(front_panels, _effective_size_mm(front_panel_q))
-    add(back_panels, _effective_size_mm(back_panel_q))
+    add(
+        mesh_groups.get("enclosure_edges_front", []),
+        front_edge_size or front_edge_fallback,
+        "front enclosure edge",
+    )
+    add(
+        mesh_groups.get("enclosure_edges_back", []),
+        back_edge_size or back_edge_fallback,
+        "back enclosure edge",
+    )
+    add(front_panels, _effective_size_mm(front_panel_q), "front enclosure panel")
+    add(back_panels, _effective_size_mm(back_panel_q), "back enclosure panel")
 
     enclosure_tags = mesh_groups.get("enclosure", [])
-    add(enclosure_tags, _effective_size_mm(front_q + back_q))
+    add(enclosure_tags, _effective_size_mm(front_q + back_q), "enclosure")
     return regions
 
 
-def _estimate_triangle_count_float(regions: list[tuple[float, float]]) -> float:
+def _estimate_triangle_count_float(
+    regions: list[tuple[float, float, str]],
+) -> float:
     total = 0.0
-    for area_mm2, size_mm in regions:
+    for area_mm2, size_mm, _label in regions:
         area_mm2 = float(area_mm2)
         size_mm = float(size_mm)
         if size_mm > 0.0 and area_mm2 > 0.0:
@@ -326,16 +333,116 @@ def _estimate_triangle_count_float(regions: list[tuple[float, float]]) -> float:
     return total
 
 
-def _scaled_values(values: list[float], scale: float) -> list[float]:
-    return [float(value) * float(scale) for value in values]
-
-
 def _enclosure_domain_multiplier(geometry: BuiltGeometry) -> float:
-    """Return the mirror multiplier from the meshed enclosure sector to full domain."""
+    """Return the mirror multiplier from the meshed sector to full domain."""
 
     axes = {str(axis).lower() for axis in geometry.symmetry_snap_axes}
     lateral_cut_count = len(axes.intersection({"x", "y"}))
     return float(2**lateral_cut_count)
+
+
+def effective_triangle_limit(
+    geometry: BuiltGeometry, density: MeshDensity
+) -> int | None:
+    """Actual-domain ceiling corresponding to ``density.max_triangles``.
+
+    ``max_triangles`` is a full-domain-equivalent budget so a quarter mesh and
+    its full counterpart are judged by the same geometric complexity.
+    """
+
+    if density.max_triangles is None:
+        return None
+    full_limit = int(density.max_triangles)
+    if full_limit <= 0:
+        raise ValueError("max_triangles must be > 0 or None")
+    return max(1, int(round(full_limit / _enclosure_domain_multiplier(geometry))))
+
+
+def _generic_triangle_regions(
+    mesh_groups: dict[str, list[int]],
+    *,
+    throat_res: float,
+    mouth_res: float,
+    rear_res: float,
+    interface_res: float,
+    aperture_res: float,
+) -> list[tuple[float, float, str]]:
+    """Area/size regions for non-enclosure pre-mesh cost prediction."""
+
+    regions: list[tuple[float, float, str]] = []
+    consumed: set[int] = set()
+
+    def add(surface_tags: list[int], size: float | None, label: str) -> None:
+        if size is None or not math.isfinite(float(size)) or float(size) <= 0.0:
+            return
+        tags = [int(tag) for tag in surface_tags if int(tag) not in consumed]
+        consumed.update(tags)
+        area = _surface_area_mm2(tags)
+        if area > 0.0:
+            regions.append((area, float(size), label))
+
+    # Specific semantic groups win over broad wall groups if a builder ever
+    # exposes the same surface through more than one role.
+    add(mesh_groups.get("throat_disc", []), throat_res, "throat")
+    add(mesh_groups.get("mouth_aperture", []), aperture_res, "mouth aperture")
+    add(mesh_groups.get("interface", []), interface_res, "interface")
+    add(mesh_groups.get("rear", []), rear_res, "rear")
+    add(mesh_groups.get("outer", []), rear_res, "outer wall")
+    add(mesh_groups.get("mouth", []), mouth_res, "mouth")
+    add(
+        mesh_groups.get("inner", []),
+        _effective_size_mm([throat_res, mouth_res]),
+        "waveguide wall",
+    )
+    return regions
+
+
+def _record_and_check_triangle_estimate(
+    geometry: BuiltGeometry,
+    density: MeshDensity,
+    regions: list[tuple[float, float, str]],
+) -> None:
+    estimate = int(round(_estimate_triangle_count_float(regions)))
+    multiplier = _enclosure_domain_multiplier(geometry)
+    full_estimate = int(round(float(estimate) * multiplier))
+    effective_limit = effective_triangle_limit(geometry, density)
+    dominant = max(
+        regions,
+        key=lambda region: (
+            TRIANGLES_PER_AREA_OVER_H2 * region[0] / (region[1] * region[1])
+        ),
+        default=(0.0, 0.0, "unknown region"),
+    )
+    geometry.metadata.update(
+        {
+            "meshTriangleEstimate": estimate,
+            "meshTriangleEstimateFullDomain": full_estimate,
+            "meshDomainMultiplier": multiplier,
+            "meshTriangleDominantRegion": dominant[2],
+            "meshTriangleDominantTargetMm": dominant[1],
+        }
+    )
+    if density.max_triangles is not None:
+        geometry.metadata.update(
+            {
+                "meshTriangleLimit": int(density.max_triangles),
+                "meshEffectiveTriangleLimit": int(effective_limit or 0),
+                "meshAllowLarge": bool(density.allow_large_mesh),
+            }
+        )
+    if (
+        effective_limit is not None
+        and not density.allow_large_mesh
+        and estimate > _PREMESH_TRIANGLE_LIMIT_SLACK * effective_limit
+    ):
+        raise ValueError(
+            "estimated mesh size "
+            f"{estimate:,} triangles exceeds the effective limit "
+            f"{effective_limit:,} by more than the {_PREMESH_TRIANGLE_LIMIT_SLACK:g}x "
+            "pre-mesh safety margin; the largest estimated contribution is "
+            f"{dominant[2]} at {dominant[1]:g} mm. Increase that mm resolution, "
+            "raise max_triangles, or set allow_large_mesh=true explicitly"
+        )
 
 
 def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]:
@@ -383,29 +490,29 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         if surfaces
     }
 
-    # Frequency-aware ceilings: clamp each resolution so the requested band
-    # stays resolved at that role's elements-per-wavelength target. The mm
-    # knobs still apply wherever they are finer. Roles grade the mesh from
-    # the throat (finest) toward the mouth and shadowed rear (coarsest).
-    freq_active = density.frequency_ceiling_mm() is not None
-
-    def _sz(value: float, role: str = "") -> float:
-        out = float(value)
-        ceiling = density.role_ceiling_mm(role) if freq_active else None
-        return min(out, ceiling) if ceiling else out
-
-    throat_res = _sz(density.throat_res_mm, "throat")
-    mouth_res = _sz(density.mouth_res_mm, "mouth")
-    rear_res = _sz(density.rear_res_mm, "rear")
-    interface_res = _sz(density.interface_res_mm or density.mouth_res_mm, "interface")
+    throat_res = float(density.throat_res_mm)
+    mouth_res = float(density.mouth_res_mm)
+    rear_res = float(density.rear_res_mm)
+    interface_res = float(density.interface_res_mm or density.mouth_res_mm)
+    named_sizes = {
+        "throat_res_mm": throat_res,
+        "mouth_res_mm": mouth_res,
+        "rear_res_mm": rear_res,
+        "interface_res_mm": interface_res,
+    }
+    invalid = [
+        name
+        for name, value in named_sizes.items()
+        if not math.isfinite(value) or value <= 0.0
+    ]
+    if invalid:
+        raise ValueError(
+            "mesh resolution values must be finite and > 0: " + ", ".join(invalid)
+        )
     aperture_res_scale = float(getattr(density, "aperture_res_scale", 1.0) or 1.0)
     if not math.isfinite(aperture_res_scale) or aperture_res_scale < 1.0:
         aperture_res_scale = 1.0
     aperture_res = mouth_res * aperture_res_scale
-    if freq_active:
-        aperture_ceiling = density.role_ceiling_mm("aperture")
-        if aperture_ceiling:
-            aperture_res = min(aperture_res, aperture_ceiling)
 
     enclosure_resolution_values: list[float] = []
     front_panels: list[int] = []
@@ -424,8 +531,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
 
         front_q = _parse_quadrant_resolutions(density.enc_front_res_mm, mouth_res)
         back_q = _parse_quadrant_resolutions(density.enc_back_res_mm, mouth_res)
-        front_panel_q = _clamp_enclosure_panel_sizes(front_q, density)
-        back_panel_q = _clamp_enclosure_panel_sizes(back_q, density)
+        front_panel_q = list(front_q)
+        back_panel_q = list(back_q)
         front_panels, back_panels = _split_enclosure_panel_surfaces(
             mesh_groups.get("enclosure", []),
             front_edge_tags=mesh_groups.get("enclosure_edges_front", []),
@@ -433,8 +540,9 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             z_front=z_front,
             z_back=z_back,
         )
-        front_edge_size = _enclosure_edge_size_mm(front_q, density, bounds)
-        back_edge_size = _enclosure_edge_size_mm(back_q, density, bounds)
+        edge_present = float(bounds.get("edge_depth", 0.0) or 0.0) > 0.0
+        front_edge_size = _enclosure_edge_size_mm(front_q) if edge_present else None
+        back_edge_size = _enclosure_edge_size_mm(back_q) if edge_present else None
         triangle_regions = _enclosure_triangle_regions(
             mesh_groups,
             throat_res=throat_res,
@@ -451,66 +559,20 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             back_panels=back_panels,
         )
 
-        # An explicit acoustic-band request is a correctness constraint, not a
-        # cost hint. Never coarsen its throat/source or wall role ceilings to
-        # satisfy the default enclosure triangle budget. Without an explicit
-        # max frequency the historical cost guard remains useful and may scale
-        # all enclosure-build roles to keep accidental meshes bounded.
-        if not freq_active:
-            pre_cap_estimate_raw = _estimate_triangle_count_float(triangle_regions)
-            pre_cap_estimate = int(round(pre_cap_estimate_raw))
-            enclosure_domain_multiplier = _enclosure_domain_multiplier(geometry)
-            enclosure_domain_fraction = 1.0 / enclosure_domain_multiplier
-            effective_triangle_ceiling = max(
-                1,
-                int(round(float(_ENCLOSURE_TRIANGLE_CEILING) * enclosure_domain_fraction)),
-            )
-            pre_cap_estimate_full_domain = int(
-                round(float(pre_cap_estimate_raw) * enclosure_domain_multiplier)
-            )
-            pre_cap_estimate_full_domain_raw = pre_cap_estimate_raw * enclosure_domain_multiplier
-            if pre_cap_estimate_full_domain_raw > _ENCLOSURE_TRIANGLE_CEILING:
-                enclosure_cap_scale = math.sqrt(
-                    float(pre_cap_estimate_full_domain_raw) / float(_ENCLOSURE_TRIANGLE_CEILING)
-                )
-                throat_res *= enclosure_cap_scale
-                mouth_res *= enclosure_cap_scale
-                rear_res *= enclosure_cap_scale
-                interface_res *= enclosure_cap_scale
-                front_q = _scaled_values(front_q, enclosure_cap_scale)
-                back_q = _scaled_values(back_q, enclosure_cap_scale)
-                front_panel_q = _scaled_values(front_panel_q, enclosure_cap_scale)
-                back_panel_q = _scaled_values(back_panel_q, enclosure_cap_scale)
-                if front_edge_size is not None:
-                    front_edge_size *= enclosure_cap_scale
-                if back_edge_size is not None:
-                    back_edge_size *= enclosure_cap_scale
-                post_triangle_regions = [
-                    (area, size * enclosure_cap_scale) for area, size in triangle_regions
-                ]
-                post_cap_estimate_raw = _estimate_triangle_count_float(post_triangle_regions)
-                post_cap_estimate = int(round(post_cap_estimate_raw))
-                post_cap_estimate_full_domain = int(
-                    round(float(post_cap_estimate_raw) * enclosure_domain_multiplier)
-                )
-                geometry.metadata.update(
-                    {
-                        "enclosureMeshCapped": True,
-                        "enclosureMeshTriangleCeiling": int(_ENCLOSURE_TRIANGLE_CEILING),
-                        "enclosureMeshEffectiveTriangleCeiling": int(effective_triangle_ceiling),
-                        "enclosureMeshDomainFraction": float(enclosure_domain_fraction),
-                        "enclosureMeshDomainMultiplier": float(enclosure_domain_multiplier),
-                        "enclosureMeshTriangleEstimatePre": int(pre_cap_estimate),
-                        "enclosureMeshTriangleEstimatePreFullDomain": int(
-                            pre_cap_estimate_full_domain
-                        ),
-                        "enclosureMeshTriangleEstimatePost": int(post_cap_estimate),
-                        "enclosureMeshTriangleEstimatePostFullDomain": int(
-                            post_cap_estimate_full_domain
-                        ),
-                        "enclosureMeshCapScale": float(enclosure_cap_scale),
-                    }
-                )
+        _record_and_check_triangle_estimate(geometry, density, triangle_regions)
+    else:
+        _record_and_check_triangle_estimate(
+            geometry,
+            density,
+            _generic_triangle_regions(
+                mesh_groups,
+                throat_res=throat_res,
+                mouth_res=mouth_res,
+                rear_res=rear_res,
+                interface_res=interface_res,
+                aperture_res=aperture_res,
+            ),
+        )
 
     _axis, coord = _axis_coordinate_expression(geometry.source_axis)
     a0, a1 = geometry.axial_bounds_mm
@@ -521,13 +583,13 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     # axial bounds (e.g. R-OSSE rollback) never extrapolates past either size.
     res_lo = min(throat_res, mouth_res)
     res_hi = max(throat_res, mouth_res)
-    axial_formula = (
-        f"min(max({intercept:.12g} + ({slope:.12g}) * {coord}, {res_lo:.12g}), {res_hi:.12g})"
-    )
+    axial_formula = f"min(max({intercept:.12g} + ({slope:.12g}) * {coord}, {res_lo:.12g}), {res_hi:.12g})"
 
     fields: list[int] = []
 
-    def add_field(formula: str, surfaces: list[int], curves: list[int] | None = None) -> None:
+    def add_field(
+        formula: str, surfaces: list[int], curves: list[int] | None = None
+    ) -> None:
         curves = curves or []
         if not surfaces and not curves:
             return
@@ -537,9 +599,13 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumber(restrict, "InField", base)
         gmsh.model.mesh.field.setNumber(restrict, "IncludeBoundary", 0)
         if surfaces:
-            gmsh.model.mesh.field.setNumbers(restrict, "SurfacesList", [int(s) for s in surfaces])
+            gmsh.model.mesh.field.setNumbers(
+                restrict, "SurfacesList", [int(s) for s in surfaces]
+            )
         if curves:
-            gmsh.model.mesh.field.setNumbers(restrict, "CurvesList", [int(c) for c in curves])
+            gmsh.model.mesh.field.setNumbers(
+                restrict, "CurvesList", [int(c) for c in curves]
+            )
         fields.append(restrict)
 
     for group_key in ("inner", "mouth"):
@@ -559,7 +625,9 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             }
         )
 
-    free_standing_wall_mode = bool(mesh_groups.get("outer")) and not bool(mesh_groups.get("enclosure"))
+    free_standing_wall_mode = bool(mesh_groups.get("outer")) and not bool(
+        mesh_groups.get("enclosure")
+    )
     outer_formula = f"{rear_res:.12g}" if free_standing_wall_mode else axial_formula
     add_field(
         outer_formula,
@@ -621,16 +689,19 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             z_back=z_back,
         )
 
-        add_field(enclosure_formula, mesh_groups.get("enclosure", []), curve_groups.get("enclosure", []))
+        add_field(
+            enclosure_formula,
+            mesh_groups.get("enclosure", []),
+            curve_groups.get("enclosure", []),
+        )
         front_panel_curves = _collect_boundary_curves(front_panels)
         add_field(front_panel_formula, front_panels, front_panel_curves)
-        add_field(back_panel_formula, back_panels, _collect_boundary_curves(back_panels))
+        add_field(
+            back_panel_formula, back_panels, _collect_boundary_curves(back_panels)
+        )
 
-        # The frequency-clamped baffle field makes the mouth-hole rim finer
-        # than the wall's axial target. With boundary-size extension disabled,
-        # grade that fine rim into the wall instead of forcing Gmsh to create a
-        # needle fan that degenerate cleanup can tear open. The restriction is
-        # wall-only; the panel keeps its ATH-compatible fine hole boundary.
+        # Grade a user-requested fine baffle rim into a coarser mouth wall.
+        # The threshold is bounded by the two explicit mm targets.
         wall_surfaces = mesh_groups.get("inner", [])
         wall_curves = curve_groups.get("inner", [])
         mouth_rim_size = min(front_panel_q, default=mouth_res)
@@ -686,17 +757,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             curve_groups.get("enclosure_edges_back", []),
         )
 
-        # A thin roundover meshes its strip and seam curves at the edge size
-        # (~enc_edge/3 mm) while the adjacent panels and side walls target
-        # their own, much coarser sizes right up to that shared boundary
-        # (MeshSizeExtendFromBoundary is disabled below). An extreme jump
-        # (e.g. enc_edge=1 against 40 mm panels) makes the 2D mesher emit
-        # sub-micrometre needle fans along the seam; postprocess then drops
-        # the needles as degenerate, tearing the enclosure open along the
-        # roundover. Grade the enclosure sizes with a distance threshold from
-        # each seam ring so the jump at the boundary stays bounded; the Min
-        # background field keeps this inert wherever the neighbourhood is
-        # already as fine as the seam.
+        # Retained enclosure edges are wide enough for the finest touching
+        # user target (narrower cosmetic edges are suppressed in mesher.py).
+        # Keep bounded grading for unequal adjacent user targets so a direct
+        # fine-to-coarse jump cannot recreate the historical needle-fan tear.
         graded_surfaces = mesh_groups.get("enclosure", [])
         graded_curves = curve_groups.get("enclosure", [])
         seam_size_cap = max(
@@ -781,21 +845,21 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     sizes = [v for v in sizes if math.isfinite(v) and v > 0.0]
     if not sizes:
         sizes = [10.0]
-    min_size = float(density.min_size_mm) if density.min_size_mm else min(sizes) * 0.5
-    max_size = float(density.max_size_mm) if density.max_size_mm else max(sizes) * 1.5
-    if freq_active:
-        # The global cap must honor the band too: surfaces outside every
-        # Restrict field fall back to MeshSizeMax. Use the coarsest role
-        # ceiling so the cap does not re-impose the strict target globally.
-        ceilings = [
-            density.role_ceiling_mm(role)
-            for role in ("throat", "mouth", "rear", "interface", "aperture")
-        ]
-        ceilings = [value for value in ceilings if value]
-        if ceilings:
-            max_size = min(max_size, max(ceilings))
+    # MeshSizeMin only clamps field evaluation; it cannot prevent a short CAD
+    # curve from requiring an element. Leave optimizer slack without creating
+    # any field below a user target, and report realized short edges instead.
+    requested_min = min(sizes)
+    requested_max = max(sizes)
+    min_size = min(
+        float(density.min_size_mm) if density.min_size_mm else requested_min * 0.25,
+        requested_min,
+    )
+    max_size = max(
+        float(density.max_size_mm) if density.max_size_mm else requested_max,
+        requested_max,
+    )
     gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
     gmsh.option.setNumber("Mesh.MeshSizeMax", max_size)
     gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", max(0, int(density.curvature_segments)))
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)

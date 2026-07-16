@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -152,6 +153,10 @@ class PointGridHornGeometry:
     """
 
     inner_points: NDArray[np.float64]
+    # ``acoustic`` keeps profile sampling separate from mesh topology.  The
+    # legacy mode exists only for ATH parity/export workflows whose reference
+    # meshes intentionally pin every sampled ring or grid cell.
+    topology_mode: Literal["acoustic", "legacy"] = "acoustic"
     preserve_grid: bool = False
     closed: bool = True
     outer_points: NDArray[np.float64] | None = None
@@ -179,6 +184,8 @@ class PointGridHornGeometry:
     vertical_offset_mm: float = 0.0
 
     def __post_init__(self) -> None:
+        if self.topology_mode not in {"acoustic", "legacy"}:
+            raise ValueError("topology_mode must be 'acoustic' or 'legacy'")
         if self.infinite_baffle and self.enclosure is not None:
             raise ValueError(
                 "infinite_baffle and enclosure are mutually exclusive point-grid topologies"
@@ -205,10 +212,7 @@ class PointGridHornGeometry:
         return PointGridBuildMode.BARE
 
 
-HornGeometry = (
-    OsseHornGeometry
-    | PointGridHornGeometry
-)
+HornGeometry = OsseHornGeometry | PointGridHornGeometry
 # Note: RosseHornGeometry is intentionally NOT in the buildable union - the
 # ROSSE curve is non-monotonic in z for typical parameter ranges, so
 # the internal axial loft helper cannot consume it. Use compute_rosse_profile_points
@@ -229,47 +233,53 @@ class MeshDensity:
     interface_res_mm: float | None = None
     min_size_mm: float | None = None
     max_size_mm: float | None = None
-    # Frequency-aware sizing: when max_frequency_hz is set, each resolution
-    # is clamped to c / (epw_role * f) so the mesh stays valid for the
-    # requested band; the mm knobs above still apply where finer. The
-    # per-role targets grade the mesh by acoustic importance: the throat
-    # carries the strongest, most detailed field, the inner wall interpolates
-    # toward the mouth, and shadowed outer/rear surfaces contribute little to
-    # the radiated field so they tolerate fewer elements per wavelength.
-    max_frequency_hz: float | None = None
-    elements_per_wavelength: float = 6.0
-    throat_epw: float = 8.0
-    mouth_epw: float = 6.0
-    rear_epw: float = 2.5
-    interface_epw: float = 6.0
-    # The Rayleigh aperture can be coarser than the mouth for geometry-driven
-    # builds, but frequency-aware builds must still honour an explicit acoustic
-    # wavelength ceiling on the aperture interior.
-    aperture_epw: float = 6.0
-    speed_of_sound_m_s: float = 343.0
-    # Gmsh Mesh.MeshSizeFromCurvature segments per 2*pi (0 disables).
-    curvature_segments: int = 0
+    # Full-domain-equivalent triangle budget.  Reduced symmetry models divide
+    # this ceiling by their mirror multiplier.  The mesher never changes the
+    # mm targets to meet it: a clearly excessive estimate fails before Gmsh,
+    # and the realized count is checked again after generation.
+    max_triangles: int | None = 18_000
+    allow_large_mesh: bool = False
 
-    def _ceiling_mm(self, epw: float) -> float | None:
-        if not self.max_frequency_hz or self.max_frequency_hz <= 0.0:
-            return None
-        epw = max(float(epw), 1.0)
-        return (float(self.speed_of_sound_m_s) * 1000.0) / (epw * float(self.max_frequency_hz))
 
-    def frequency_ceiling_mm(self) -> float | None:
-        """Global ceiling at the generic elements-per-wavelength target."""
+def validate_mesh_density(density: MeshDensity) -> None:
+    """Reject invalid mesh controls before any sizing or allocation work."""
 
-        return self._ceiling_mm(self.elements_per_wavelength)
-
-    def role_ceiling_mm(self, role: str) -> float | None:
-        epw = {
-            "throat": self.throat_epw,
-            "mouth": self.mouth_epw,
-            "rear": self.rear_epw,
-            "interface": self.interface_epw,
-            "aperture": self.aperture_epw,
-        }.get(role, self.elements_per_wavelength)
-        return self._ceiling_mm(epw)
+    required_positive = {
+        "throat_res_mm": density.throat_res_mm,
+        "mouth_res_mm": density.mouth_res_mm,
+        "rear_res_mm": density.rear_res_mm,
+        "aperture_res_scale": density.aperture_res_scale,
+    }
+    optional_positive = {
+        "interface_res_mm": density.interface_res_mm,
+        "min_size_mm": density.min_size_mm,
+        "max_size_mm": density.max_size_mm,
+    }
+    invalid = [
+        name
+        for name, value in required_positive.items()
+        if not math.isfinite(float(value)) or float(value) <= 0.0
+    ]
+    invalid.extend(
+        name
+        for name, value in optional_positive.items()
+        if value is not None
+        and (not math.isfinite(float(value)) or float(value) <= 0.0)
+    )
+    if invalid:
+        raise ValueError(
+            "mesh resolution values must be finite and > 0: " + ", ".join(invalid)
+        )
+    if float(density.aperture_res_scale) < 1.0:
+        raise ValueError("aperture_res_scale must be finite and >= 1")
+    if (
+        density.min_size_mm is not None
+        and density.max_size_mm is not None
+        and float(density.min_size_mm) > float(density.max_size_mm)
+    ):
+        raise ValueError("min_size_mm cannot exceed max_size_mm")
+    if density.max_triangles is not None and int(density.max_triangles) <= 0:
+        raise ValueError("max_triangles must be > 0 or None")
 
 
 @dataclass
@@ -296,6 +306,7 @@ class MeshInfo:
     bounding_box: tuple[NDArray[np.float64], NDArray[np.float64]]
     units: Literal["m", "mm"]
     # Per physical tag edge-length statistics in millimetres:
-    # {tag: {"median_edge_mm": ..., "p95_edge_mm": ..., "max_edge_mm": ...}}.
+    # {tag: {"min_edge_mm": ..., "p05_edge_mm": ..., "median_edge_mm": ...,
+    #        "p95_edge_mm": ..., "max_edge_mm": ...}}.
     edge_stats_mm: dict[int, dict[str, float]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

@@ -15,7 +15,10 @@ from ._occ import (
 )
 from .enclosure import build_enclosure_box
 from .point_grid_freestanding import _build_freestanding_point_grid
-from .point_grid_interfaces import _add_offset_interface_surfaces, _normalise_interface_specs
+from .point_grid_interfaces import (
+    _add_offset_interface_surfaces,
+    _normalise_interface_specs,
+)
 from .point_grid_sources import (
     SOURCE_SHAPE_FLAT_DISC,
     SOURCE_SHAPE_ROUNDED_CAP,
@@ -88,6 +91,8 @@ def _add_mouth_aperture_surfaces(
     n_len: int,
     closed: bool,
     preserve_grid: bool,
+    boundary_phi_groups: list[list[int]] | None = None,
+    reverse: bool = False,
 ) -> list[tuple[int, int]]:
     """Fill the mouth aperture on the wall's own rim curves.
 
@@ -101,11 +106,17 @@ def _add_mouth_aperture_surfaces(
     if preserve_grid:
         for i in _phi_segments(n_phi, closed=closed):
             ni = (i + 1) % n_phi
-            rim_curves.append(builder.line(("inner", i, mouth_j), ("inner", ni, mouth_j)))
+            rim_curves.append(
+                builder.line(("inner", i, mouth_j), ("inner", ni, mouth_j))
+            )
     else:
         rim_curves = [
             builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
-            for indices in _spline_span_phi_groups(n_phi, closed=closed)
+            for indices in (
+                boundary_phi_groups
+                if boundary_phi_groups is not None
+                else _spline_span_phi_groups(n_phi, closed=closed)
+            )
         ]
     if not rim_curves:
         return []
@@ -114,11 +125,16 @@ def _add_mouth_aperture_surfaces(
         return [builder.surface(rim_curves)]
 
     center_tag = builder.add_point((0.0, 0.0, 0.0))
-    end_to_center = builder.line_tags(builder.point("inner", n_phi - 1, mouth_j), center_tag)
+    end_to_center = builder.line_tags(
+        builder.point("inner", n_phi - 1, mouth_j), center_tag
+    )
     center_to_start = builder.line_tags(center_tag, builder.point("inner", 0, mouth_j))
     aperture: list[tuple[int, int]] = []
     if rim_curves:
-        aperture.append(builder.surface([*rim_curves, end_to_center, center_to_start]))
+        boundary = [*rim_curves, end_to_center, center_to_start]
+        if reverse:
+            boundary = [-curve for curve in reversed(boundary)]
+        aperture.append(builder.surface(boundary))
     return aperture
 
 
@@ -137,6 +153,9 @@ def _build_coupled_baffle_point_grid(
     n_phi, n_len, _ = inner_points.shape
     builder = _SharedSurfaceBuilder()
     builder.add_grid("inner", inner_points)
+    acoustic_topology = (
+        geometry.topology_mode == "acoustic" and not geometry.preserve_grid
+    )
     if geometry.preserve_grid:
         wall = _add_grid_wall_surfaces(
             builder,
@@ -146,7 +165,7 @@ def _build_coupled_baffle_point_grid(
             closed=geometry.closed,
         )
         cap_boundary_groups = None
-    else:
+    elif geometry.topology_mode == "legacy":
         cap_boundary_groups = _spline_span_phi_groups(n_phi, closed=geometry.closed)
         wall = _add_occ_spline_span_wall_surfaces(
             builder,
@@ -156,20 +175,56 @@ def _build_coupled_baffle_point_grid(
             closed=geometry.closed,
         )
 
-    aperture = _add_mouth_aperture_surfaces(
-        builder,
-        n_phi=n_phi,
-        n_len=n_len,
-        closed=geometry.closed,
-        preserve_grid=geometry.preserve_grid,
-    )
+    else:
+        if geometry.closed:
+            cap_boundary_groups = [list(range(n_phi)) + [0]]
+            wall = build_surface_from_points(
+                inner_points, closed=True, preserve_grid=False
+            )
+        else:
+            cap_boundary_groups = [list(range(n_phi))]
+            wall = _add_occ_bspline_patch_wall_surfaces(
+                inner_points,
+                closed=False,
+                phi_groups=cap_boundary_groups,
+            )
+        require_gmsh().model.occ.synchronize()
+
+    if acoustic_topology:
+        aperture = make_planar_fill_from_boundary(
+            wall,
+            source_axis="z",
+            use_min=False,
+            closed=geometry.closed,
+        )
+    else:
+        aperture = _add_mouth_aperture_surfaces(
+            builder,
+            n_phi=n_phi,
+            n_len=n_len,
+            closed=geometry.closed,
+            preserve_grid=geometry.preserve_grid,
+            boundary_phi_groups=cap_boundary_groups if acoustic_topology else None,
+            reverse=acoustic_topology,
+        )
     throat_radius = _throat_radius(inner_points, closed=geometry.closed)
     cap_height = (
         _source_cap_height(throat_radius, geometry)
         if source_shape == SOURCE_SHAPE_ROUNDED_CAP
         else 0.0
     )
-    if geometry.preserve_grid:
+    if (
+        acoustic_topology
+        and geometry.closed
+        and not (source_shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12)
+    ):
+        throat = make_planar_fill_from_boundary(
+            wall,
+            source_axis="z",
+            use_min=True,
+            closed=geometry.closed,
+        )
+    elif geometry.preserve_grid:
         throat = _add_source_surfaces(
             builder,
             inner_points,
@@ -241,7 +296,9 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
 
     if build_mode is PointGridBuildMode.ENCLOSURE:
         inner_points = _snap_open_symmetry_grid(
-            inner_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes
+            inner_points,
+            closed=geometry.closed,
+            symmetry_planes=geometry.symmetry_planes,
         )
         cap_builder = _SharedSurfaceBuilder()
         cap_builder.add_grid("inner", inner_points)

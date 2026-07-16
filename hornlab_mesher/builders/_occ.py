@@ -65,7 +65,9 @@ def rounded_rect_ring(
     return pts
 
 
-def build_bspline_surface_from_rings(points: NDArray[np.float64]) -> list[tuple[int, int]]:
+def build_bspline_surface_from_rings(
+    points: NDArray[np.float64],
+) -> list[tuple[int, int]]:
     gmsh = require_gmsh()
     if points.ndim != 3 or points.shape[2] != 3:
         raise ValueError("point grid must be shaped (n_phi, n_length, 3)")
@@ -107,7 +109,9 @@ def build_faceted_surface_from_points(
     for i in range(n_phi):
         for j in range(n_len):
             x, y, z = points[i, j]
-            point_tags[(i, j)] = int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
+            point_tags[(i, j)] = int(
+                gmsh.model.occ.addPoint(float(x), float(y), float(z))
+            )
 
     line_cache: dict[tuple[tuple[int, int], tuple[int, int]], int] = {}
 
@@ -167,12 +171,14 @@ def build_surface_from_points(
             for i in column_indices:
                 x, y, z = points[i, j]
                 point_tags.append(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
-        return int(gmsh.model.occ.addBSplineSurface(
-            point_tags,
-            n_u,
-            degreeU=degree_u,
-            degreeV=degree_v,
-        ))
+        return int(
+            gmsh.model.occ.addBSplineSurface(
+                point_tags,
+                n_u,
+                degreeU=degree_u,
+                degreeV=degree_v,
+            )
+        )
 
     if closed:
         return [(2, make_patch(list(range(n_phi)) + [0]))]
@@ -182,8 +188,7 @@ def build_surface_from_points(
 def make_ring_wire(points: NDArray[np.float64]) -> tuple[int, list[int]]:
     gmsh = require_gmsh()
     pt_tags = [
-        gmsh.model.occ.addPoint(float(x), float(y), float(z))
-        for x, y, z in points
+        gmsh.model.occ.addPoint(float(x), float(y), float(z)) for x, y, z in points
     ]
     pt_tags.append(pt_tags[0])
     curve = gmsh.model.occ.addBSpline(pt_tags)
@@ -223,8 +228,7 @@ def make_planar_sector_fill_from_ring(
         )
     )
     point_tags = [
-        int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
-        for x, y, z in arr
+        int(gmsh.model.occ.addPoint(float(x), float(y), float(z))) for x, y, z in arr
     ]
     ring_curve = int(gmsh.model.occ.addBSpline(point_tags))
     end_to_center = int(gmsh.model.occ.addLine(point_tags[-1], center_tag))
@@ -327,6 +331,7 @@ def _make_planar_fill_from_loop_curves(
     loop_curves: list[int],
     *,
     closed: bool = True,
+    source_axis: str = "z",
 ) -> list[tuple[int, int]]:
     gmsh = require_gmsh()
     if not loop_curves:
@@ -341,10 +346,27 @@ def _make_planar_fill_from_loop_curves(
                 oriented=False,
                 combined=True,
             )
-            point_tags = [int(abs(tag)) for dim, tag in boundary_points if int(dim) == 0]
+            point_tags = [
+                int(abs(tag)) for dim, tag in boundary_points if int(dim) == 0
+            ]
             if len(point_tags) >= 2:
-                line_tag = gmsh.model.occ.addLine(point_tags[0], point_tags[1])
-                loop = gmsh.model.occ.addCurveLoop(loop_curves + [int(line_tag)])
+                axis_idx = {"x": 0, "y": 1, "z": 2}.get(source_axis, 2)
+                endpoint = np.asarray(
+                    [gmsh.model.getValue(0, point_tags[0], [])],
+                    dtype=np.float64,
+                ).reshape(3)
+                center = np.zeros(3, dtype=np.float64)
+                center[axis_idx] = float(endpoint[axis_idx])
+                center_tag = int(
+                    gmsh.model.occ.addPoint(
+                        float(center[0]), float(center[1]), float(center[2])
+                    )
+                )
+                to_center = int(gmsh.model.occ.addLine(point_tags[0], center_tag))
+                from_center = int(gmsh.model.occ.addLine(center_tag, point_tags[1]))
+                loop = gmsh.model.occ.addCurveLoop(
+                    loop_curves + [to_center, from_center]
+                )
             else:
                 loop = gmsh.model.occ.addCurveLoop(loop_curves)
         except Exception:
@@ -369,7 +391,9 @@ def make_planar_fill_from_boundary(
     loop_curves = extreme_boundary_loop_curves(
         dimtags, source_axis=source_axis, use_min=use_min
     )
-    return _make_planar_fill_from_loop_curves(loop_curves, closed=closed)
+    return _make_planar_fill_from_loop_curves(
+        loop_curves, closed=closed, source_axis=source_axis
+    )
 
 
 def make_planar_fill_from_boundary_at_axis_value(
@@ -388,7 +412,9 @@ def make_planar_fill_from_boundary_at_axis_value(
         axis_value=axis_value,
         tolerance=tolerance,
     )
-    return _make_planar_fill_from_loop_curves(loop_curves, closed=closed)
+    return _make_planar_fill_from_loop_curves(
+        loop_curves, closed=closed, source_axis=source_axis
+    )
 
 
 def add_physical_groups(surface_groups: dict[int, list[int]]) -> None:
@@ -400,7 +426,9 @@ def add_physical_groups(surface_groups: dict[int, list[int]]) -> None:
         if not clean:
             continue
         gmsh.model.addPhysicalGroup(2, clean, tag=int(tag))
-        gmsh.model.setPhysicalName(2, int(tag), PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}"))
+        gmsh.model.setPhysicalName(
+            2, int(tag), PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}")
+        )
 
 
 def collect_wall_surfaces(excluding: Iterable[int] = ()) -> list[int]:

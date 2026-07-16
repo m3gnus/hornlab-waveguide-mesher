@@ -60,7 +60,9 @@ def _inner_grid_profile(params):
     grid = build_point_grid(params)
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(n_phi, n_length + 1, 3)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )
     radius = np.linalg.norm(inner[:, :, :2], axis=2)
     z = inner[:, :, 2]
     return np.column_stack((np.mean(z, axis=0), np.mean(radius, axis=0)))
@@ -76,17 +78,29 @@ def test_build_meridian_matches_round_3d_profile_and_source_cap_geometry():
     throat_radius_m = float(sampled_profile[0, 1]) * 0.001
     mouth_radius_m = float(sampled_profile[-1, 1]) * 0.001
 
-    assert meridian.metadata["throatRadiusM"] == pytest.approx(throat_radius_m, abs=1.0e-12)
-    assert meridian.metadata["mouthRadiusM"] == pytest.approx(mouth_radius_m, abs=1.0e-12)
-    assert grid_profile[0, 1] * 0.001 == pytest.approx(meridian.metadata["throatRadiusM"], abs=1.0e-12)
-    assert grid_profile[-1, 1] * 0.001 == pytest.approx(meridian.metadata["mouthRadiusM"], abs=1.0e-12)
+    assert meridian.metadata["throatRadiusM"] == pytest.approx(
+        throat_radius_m, abs=1.0e-12
+    )
+    assert meridian.metadata["mouthRadiusM"] == pytest.approx(
+        mouth_radius_m, abs=1.0e-12
+    )
+    assert grid_profile[0, 1] * 0.001 == pytest.approx(
+        meridian.metadata["throatRadiusM"], abs=1.0e-12
+    )
+    assert grid_profile[-1, 1] * 0.001 == pytest.approx(
+        meridian.metadata["mouthRadiusM"], abs=1.0e-12
+    )
 
     expected_cap_radius_m = 0.08
     expected_cap_height_m = (
         80.0 - math.sqrt(80.0 * 80.0 - float(sampled_profile[0, 1]) ** 2)
     ) * 0.001
-    assert meridian.metadata["sourceCapRadiusM"] == pytest.approx(expected_cap_radius_m, abs=1.0e-12)
-    assert meridian.metadata["sourceCapHeightM"] == pytest.approx(expected_cap_height_m, abs=1.0e-12)
+    assert meridian.metadata["sourceCapRadiusM"] == pytest.approx(
+        expected_cap_radius_m, abs=1.0e-12
+    )
+    assert meridian.metadata["sourceCapHeightM"] == pytest.approx(
+        expected_cap_height_m, abs=1.0e-12
+    )
 
     source_count = int(meridian.metadata["sourceSegmentCount"])
     source_nodes = meridian.nodes[: source_count + 1]
@@ -94,8 +108,19 @@ def test_build_meridian_matches_round_3d_profile_and_source_cap_geometry():
     cap_radius = meridian.metadata["sourceCapRadiusM"]
     assert source_nodes[0, 0] == pytest.approx(0.0, abs=1.0e-15)
     assert source_nodes[-1, 0] == pytest.approx(throat_radius_m, abs=1.0e-12)
-    assert source_nodes[-1, 1] == pytest.approx(float(sampled_profile[0, 0]) * 0.001, abs=1.0e-12)
-    assert np.max(np.abs(source_nodes[:, 0] ** 2 + (source_nodes[:, 1] - center_z) ** 2 - cap_radius**2)) < 1.0e-14
+    assert source_nodes[-1, 1] == pytest.approx(
+        float(sampled_profile[0, 0]) * 0.001, abs=1.0e-12
+    )
+    assert (
+        np.max(
+            np.abs(
+                source_nodes[:, 0] ** 2
+                + (source_nodes[:, 1] - center_z) ** 2
+                - cap_radius**2
+            )
+        )
+        < 1.0e-14
+    )
 
     assert set(meridian.physical_tags.tolist()) == {1, 2}
     assert np.all(meridian.physical_tags[:source_count] == 2)
@@ -127,10 +152,14 @@ def test_build_meridian_builds_infinite_baffle_channel_with_aperture_disc():
     assert meridian.baffle_z is None
     assert meridian.metadata["baffleZM"] is None
 
-    assert inner_nodes[-1, 0] == pytest.approx(meridian.metadata["mouthRadiusM"], abs=1.0e-12)
+    assert inner_nodes[-1, 0] == pytest.approx(
+        meridian.metadata["mouthRadiusM"], abs=1.0e-12
+    )
     assert inner_nodes[-1, 1] == pytest.approx(0.0, abs=1.0e-15)
     assert np.all(inner_nodes[:-1, 1] < -1.0e-9)
-    assert aperture_nodes[0, 0] == pytest.approx(meridian.metadata["mouthRadiusM"], abs=1.0e-12)
+    assert aperture_nodes[0, 0] == pytest.approx(
+        meridian.metadata["mouthRadiusM"], abs=1.0e-12
+    )
     assert aperture_nodes[0, 1] == pytest.approx(0.0, abs=1.0e-15)
     assert aperture_nodes[-1, 0] == pytest.approx(0.0, abs=1.0e-15)
     assert np.allclose(aperture_nodes[:, 1], 0.0, atol=1.0e-15)
@@ -138,30 +167,72 @@ def test_build_meridian_builds_infinite_baffle_channel_with_aperture_disc():
     assert np.all(meridian.normals[aperture_start:aperture_stop, 1] < 0.0)
 
 
-def test_build_meridian_adapts_resolution_to_frequency_and_splits_closures():
-    freq_max_hz = 20_000.0
-    meridian = build_meridian(_round_osse_config(), freq_max_hz=freq_max_hz)
+def test_build_meridian_uses_mm_resolution():
+    fine = build_meridian(_round_osse_config())
+    coarse = build_meridian(
+        _round_osse_config(
+            mesh={
+                "throatResolution": 12.0,
+                "mouthResolution": 24.0,
+                "rearResolution": 36.0,
+            }
+        )
+    )
     lengths = np.linalg.norm(
-        meridian.nodes[meridian.segments[:, 1]] - meridian.nodes[meridian.segments[:, 0]],
+        fine.nodes[fine.segments[:, 1]] - fine.nodes[fine.segments[:, 0]],
         axis=1,
     )
-    source_end = int(meridian.metadata["sourceSegmentCount"])
-    inner_end = source_end + int(meridian.metadata["innerSegmentCount"])
-    wavelength_m = 343.0 / freq_max_hz
+    assert fine.segments.shape[0] > 2 * coarse.segments.shape[0]
+    assert fine.metadata["throatTargetSegmentM"] == pytest.approx(0.003)
+    assert fine.metadata["mouthTargetSegmentM"] == pytest.approx(0.012)
+    assert fine.metadata["outerTargetSegmentM"] == pytest.approx(0.018)
+    assert "freqMaxHz" not in fine.metadata
+    assert "wavelengthM" not in fine.metadata
+    assert float(np.max(lengths)) <= 0.018 * 1.01
 
-    assert 120 <= meridian.segments.shape[0] <= 220
-    assert meridian.metadata["adaptiveLengthSegments"] == 77
-    assert meridian.metadata["freqMaxHz"] == pytest.approx(freq_max_hz)
-    assert float(np.max(lengths[:inner_end])) <= wavelength_m / 8.0 * (1.0 + 1.0e-12)
-    assert int(meridian.metadata["mouthRimSegmentCount"]) > 1
-    assert int(meridian.metadata["rearCapSegmentCount"]) > 1
-    assert float(np.max(lengths[inner_end:])) <= wavelength_m / 6.0 * (1.0 + 1.0e-12)
+
+def test_removed_circsym_frequency_kwarg_has_migration_error():
+    with pytest.raises(ConfigError, match="millimetre-only mesh contract"):
+        build_meridian(_round_osse_config(), freq_max_hz=20_000.0)
+    reasons = circsym_rejection_reasons(_round_osse_config(), freq_max_hz=20_000.0)
+    assert reasons and "millimetre-only mesh contract" in reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("throatResolution", 0.0),
+        ("mouthResolution", -1.0),
+        ("rearResolution", 0.0),
+        ("apertureResolutionScale", 0.0),
+        ("apertureResolutionScale", 0.5),
+    ),
+)
+def test_build_meridian_rejects_invalid_mm_controls_before_resampling(key, value):
+    config = _round_osse_config()
+    config["mesh"][key] = value
+
+    with pytest.raises(ConfigError, match="must be finite and"):
+        build_meridian(config)
+    assert circsym_rejection_reasons(config)
+
+
+def test_circsym_geometry_sampling_does_not_force_meridian_segments():
+    counts = {
+        build_meridian(
+            _round_osse_config(mesh={"lengthSegments": value})
+        ).segments.shape[0]
+        for value in (8, 16, 64, 256)
+    }
+    assert counts == {45}
 
 
 def test_build_meridian_rejects_non_circular_config():
     config = _round_osse_config(cross_section={"aspectRatio": 1.15})
 
-    with pytest.raises(ConfigError, match="CircSym requires a circular waveguide: .*aspectRatio"):
+    with pytest.raises(
+        ConfigError, match="CircSym requires a circular waveguide: .*aspectRatio"
+    ):
         build_meridian(config)
 
 
@@ -171,14 +242,18 @@ def test_circsym_rejection_reasons_empty_for_eligible_round_config():
 
 
 def test_circsym_rejection_reasons_flags_non_circular_cross_section():
-    reasons = circsym_rejection_reasons(_round_osse_config(cross_section={"aspectRatio": 1.15}))
+    reasons = circsym_rejection_reasons(
+        _round_osse_config(cross_section={"aspectRatio": 1.15})
+    )
     assert reasons
     assert any("aspectRatio" in reason for reason in reasons)
 
 
 def test_circsym_rejection_reasons_empty_for_infinite_baffle_channel_meridian():
     reasons = circsym_rejection_reasons(
-        _round_osse_config(mode="infinite-baffle", simType=1, mesh={"wallThickness": 0.0})
+        _round_osse_config(
+            mode="infinite-baffle", simType=1, mesh={"wallThickness": 0.0}
+        )
     )
     assert reasons == []
 
@@ -247,19 +322,23 @@ def test_rosse_freestanding_lip_closure_matches_ath_semicircle_nodes():
             "lengthSegments": 256,
             "wallThickness": 5.0,
             "samplingMode": "ath-default-zmap",
+            "topology": "legacy",
         },
         "source": {"sourceShape": 1, "sourceRadius": -1.0, "sourceCurv": 0},
     }
 
-    meridian = build_meridian(config, freq_max_hz=20_000.0)
+    meridian = build_meridian(config)
     source_count = int(meridian.metadata["sourceSegmentCount"])
     inner_count = int(meridian.metadata["innerSegmentCount"])
     rim_count = int(meridian.metadata["mouthRimSegmentCount"])
     rim_start = source_count + inner_count
-    actual_z_r_mm = meridian.nodes[
-        rim_start : rim_start + rim_count + 1,
-        [1, 0],
-    ] * 1000.0
+    actual_z_r_mm = (
+        meridian.nodes[
+            rim_start : rim_start + rim_count + 1,
+            [1, 0],
+        ]
+        * 1000.0
+    )
     # ATH V2025-12 nodes 257..262 from the supplied R-OSSE CircSym project.
     expected_z_r_mm = np.asarray(
         [

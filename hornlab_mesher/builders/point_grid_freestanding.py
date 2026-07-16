@@ -4,8 +4,9 @@ import numpy as np
 
 from ..geometry import BuiltGeometry, PointGridHornGeometry
 from ..tags import PhysicalGroup
-from ._occ import require_gmsh
+from ._occ import make_planar_fill_from_boundary, require_gmsh
 from .point_grid_sources import (
+    _add_occ_source_cap_surfaces,
     _add_geo_source_cap_surfaces,
     _add_source_surfaces,
 )
@@ -16,12 +17,15 @@ from .point_grid_surfaces import (
     _add_geo_spline_span_rear_cap,
     _add_geo_spline_span_wall_surfaces,
     _add_grid_wall_surfaces,
+    _add_occ_bspline_patch_wall_surfaces,
     _add_mouth_rim_surfaces,
     _add_rear_cap,
     _rear_rim_points,
+    _bspline_patch_phi_groups,
     _snap_open_symmetry_grid,
     _validated_grid,
 )
+
 
 def _restored_outer_throat_points(
     inner_points: np.ndarray,
@@ -54,9 +58,7 @@ def _outer_wall_axial_ring_indices(inner_points: np.ndarray) -> list[int]:
     max_z = float(np.max(z_by_ring))
     tol = max(1.0e-3, 1.0e-8 * max(1.0, abs(max_z)))
     return [
-        j
-        for j in range(1, inner_points.shape[1])
-        if float(z_by_ring[j]) < max_z - tol
+        j for j in range(1, inner_points.shape[1]) if float(z_by_ring[j]) < max_z - tol
     ]
 
 
@@ -70,6 +72,12 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         outer_points,
         wall_thickness_mm=float(geometry.wall_thickness_mm),
     )
+    if geometry.topology_mode == "acoustic" and not geometry.preserve_grid:
+        return _build_acoustic_freestanding_point_grid(
+            geometry,
+            inner_points,
+            outer_points,
+        )
     if geometry.wg_topology:
         return _build_wg_freestanding_point_grid(
             geometry,
@@ -150,6 +158,141 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
+    )
+
+
+def _build_acoustic_freestanding_point_grid(
+    geometry: PointGridHornGeometry,
+    inner_points: np.ndarray,
+    outer_points: np.ndarray,
+) -> BuiltGeometry:
+    """Freestanding shell with geometry samples decoupled from BEM topology."""
+
+    inner_points = _snap_open_symmetry_grid(
+        inner_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes
+    )
+    outer_points = _snap_open_symmetry_grid(
+        outer_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes
+    )
+    n_phi = inner_points.shape[0]
+    outer_indices = _outer_wall_axial_ring_indices(inner_points)
+    rear_z = float(np.mean(inner_points[:, 0, 2]) - float(geometry.wall_thickness_mm))
+    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+    outer_topology = np.empty((n_phi, len(outer_indices) + 2, 3), dtype=np.float64)
+    outer_topology[:, 0, :] = rear_points
+    outer_topology[:, 1, :] = outer_points[:, 0, :]
+    for out_j, src_j in enumerate(outer_indices, start=2):
+        outer_topology[:, out_j, :] = outer_points[:, src_j, :]
+
+    phi_groups = _bspline_patch_phi_groups(
+        n_phi,
+        closed=geometry.closed,
+        n_sectors=1,
+    )
+    inner_wall = _add_occ_bspline_patch_wall_surfaces(
+        inner_points,
+        closed=geometry.closed,
+        phi_groups=phi_groups,
+    )
+    outer_wall = _add_occ_bspline_patch_wall_surfaces(
+        outer_topology,
+        closed=geometry.closed,
+        phi_groups=phi_groups,
+    )
+    gmsh = require_gmsh()
+    gmsh.model.occ.synchronize()
+
+    def boundary_curve_nearest_points(
+        surface: tuple[int, int], target_points: np.ndarray
+    ) -> int:
+        target = np.asarray(target_points, dtype=np.float64)
+        target_box = np.concatenate((np.min(target, axis=0), np.max(target, axis=0)))
+        candidates = [
+            int(tag)
+            for dim, tag in gmsh.model.getBoundary(
+                [surface], oriented=False, combined=False
+            )
+            if int(dim) == 1
+        ]
+        if not candidates:
+            raise RuntimeError("freestanding wall patch has no boundary curves")
+        return min(
+            candidates,
+            key=lambda tag: float(
+                np.sum(
+                    np.abs(
+                        np.asarray(gmsh.model.getBoundingBox(1, tag), dtype=np.float64)
+                        - target_box
+                    )
+                )
+            ),
+        )
+
+    mouth: list[tuple[int, int]] = []
+    for indices, inner_surface, outer_surface in zip(
+        phi_groups, inner_wall, outer_wall, strict=True
+    ):
+        inner_curve = boundary_curve_nearest_points(
+            inner_surface, inner_points[np.asarray(indices), -1, :]
+        )
+        outer_curve = boundary_curve_nearest_points(
+            outer_surface, outer_topology[np.asarray(indices), -1, :]
+        )
+        inner_wire = int(gmsh.model.occ.addWire([inner_curve], checkClosed=False))
+        outer_wire = int(gmsh.model.occ.addWire([outer_curve], checkClosed=False))
+        mouth.extend(
+            (int(dim), int(tag))
+            for dim, tag in gmsh.model.occ.addThruSections(
+                [inner_wire, outer_wire],
+                makeSolid=False,
+                makeRuled=True,
+            )
+            if int(dim) == 2
+        )
+
+    rear_cap = make_planar_fill_from_boundary(
+        outer_wall,
+        source_axis="z",
+        use_min=True,
+        closed=geometry.closed,
+    )
+    cap_builder = _SharedSurfaceBuilder()
+    cap_builder.add_grid("inner", inner_points)
+    throat = _add_occ_source_cap_surfaces(
+        cap_builder,
+        inner_points,
+        geometry,
+        boundary_phi_groups=phi_groups,
+        wall_dimtags=inner_wall,
+    )
+    gmsh.model.occ.synchronize()
+
+    wall_tags = [int(tag) for _, tag in inner_wall]
+    outer_tags = [int(tag) for _, tag in outer_wall]
+    mouth_tags = [int(tag) for _, tag in mouth]
+    rear_tags = [int(tag) for _, tag in rear_cap]
+    throat_tags = [int(tag) for _, tag in throat]
+    rigid_wall_tags = [*wall_tags, *outer_tags, *mouth_tags, *rear_tags]
+    z0 = float(np.mean(inner_points[:, 0, 2]))
+    z1 = float(np.mean(inner_points[:, -1, 2]))
+    return BuiltGeometry(
+        surface_groups={
+            int(PhysicalGroup.RIGID_WALL): rigid_wall_tags,
+            int(PhysicalGroup.PRIMARY_SOURCE): throat_tags,
+        },
+        axial_bounds_mm=(z0, z1),
+        source_axis="z",
+        mesh_surface_groups={
+            "inner": wall_tags,
+            "throat_disc": throat_tags,
+            "outer": outer_tags,
+            "mouth": mouth_tags,
+            "rear": rear_tags,
+            "rear_cap": rear_tags,
+        },
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+        symmetry_snap_tol_mm=1.0,
+        metadata={"meshTopologyMode": "acoustic"},
     )
 
 

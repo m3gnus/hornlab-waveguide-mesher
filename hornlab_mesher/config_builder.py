@@ -18,7 +18,13 @@ import numpy as np
 
 from . import cost
 from .config_parser import ConfigError
-from .geometry import HornEnclosure, HornInterface, MeshDensity, PointGridHornGeometry
+from .geometry import (
+    HornEnclosure,
+    HornInterface,
+    MeshDensity,
+    PointGridHornGeometry,
+    validate_mesh_density,
+)
 from .mesher import build_mesh_with_info
 from .profile_common import (
     _normalise_quadrants as _normalise_quadrants_common,
@@ -60,13 +66,9 @@ class BuildResult:
     # SolveConfig.native_check_open_edges=False). Closed/coupled modes cap the
     # mouth and keep the strict check.
     native_check_open_edges: bool = True
-    # Per physical-group mesh validity: edge stats in mm plus the highest
-    # frequency the group resolves at the configured elements-per-wavelength.
+    # Realized per-group geometric edge statistics in millimetres.
     mesh_report: dict[str, dict[str, float]] = field(default_factory=dict)
-    # Conservative fully-resolved frequency (lowest valid_f_max_hz across
-    # groups) and the dense-BEM solve cost (RAM, per-freq time, feasibility)
-    # for the built triangle count. See hornlab_mesher.cost.
-    valid_f_max_hz: float | None = None
+    # Dense-BEM cost for the realized triangle count. See hornlab_mesher.cost.
     solve_cost: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -83,7 +85,6 @@ class BuildResult:
             "native_symmetry_plane": self.native_symmetry_plane,
             "native_check_open_edges": self.native_check_open_edges,
             "mesh_report": self.mesh_report,
-            "valid_f_max_hz": self.valid_f_max_hz,
             "solve_cost": self.solve_cost,
             "metadata": self.metadata,
         }
@@ -136,7 +137,9 @@ def _number_list(value: Any) -> list[float]:
     )
 
 
-def _first_number(*sources: Mapping[str, Any], names: tuple[str, ...], default: float) -> float:
+def _first_number(
+    *sources: Mapping[str, Any], names: tuple[str, ...], default: float
+) -> float:
     value = _pick(*sources, names=names, default=default)
     numbers = _number_list(value)
     return float(numbers[0]) if numbers else float(default)
@@ -150,7 +153,9 @@ def _section(config: Mapping[str, Any], *names: str) -> Mapping[str, Any]:
     return {}
 
 
-def _pick(*sources: Mapping[str, Any], names: tuple[str, ...], default: Any = None) -> Any:
+def _pick(
+    *sources: Mapping[str, Any], names: tuple[str, ...], default: Any = None
+) -> Any:
     for source in sources:
         for name in names:
             if name in source and source[name] is not None:
@@ -158,7 +163,9 @@ def _pick(*sources: Mapping[str, Any], names: tuple[str, ...], default: Any = No
     return default
 
 
-def _float(*sources: Mapping[str, Any], names: tuple[str, ...], default: float) -> float:
+def _float(
+    *sources: Mapping[str, Any], names: tuple[str, ...], default: float
+) -> float:
     value = _pick(*sources, names=names, default=default)
     try:
         out = float(value)
@@ -169,7 +176,9 @@ def _float(*sources: Mapping[str, Any], names: tuple[str, ...], default: float) 
     return out
 
 
-def _optional_float(*sources: Mapping[str, Any], names: tuple[str, ...]) -> float | None:
+def _optional_float(
+    *sources: Mapping[str, Any], names: tuple[str, ...]
+) -> float | None:
     value = _pick(*sources, names=names, default=None)
     if value is None:
         return None
@@ -186,13 +195,17 @@ def _numeric_param(value: Any, *, name: str) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{name} must be numeric when deriving a driver adapter, got {value!r}") from exc
+        raise ConfigError(
+            f"{name} must be numeric when deriving a driver adapter, got {value!r}"
+        ) from exc
     if not np.isfinite(out):
         raise ConfigError(f"{name} must be finite, got {value!r}")
     return out
 
 
-def _scalar_or_expr(*sources: Mapping[str, Any], names: tuple[str, ...], default: Any) -> Any:
+def _scalar_or_expr(
+    *sources: Mapping[str, Any], names: tuple[str, ...], default: Any
+) -> Any:
     value = _pick(*sources, names=names, default=default)
     if isinstance(value, str):
         stripped = value.strip()
@@ -255,13 +268,28 @@ def _validate_formula_specific_keys(
     if formula == "OSSE":
         names = ("R_mm", "R", "tmax", "m", "r", "b")
         if _has_any(profile, config, names=names):
-            raise ConfigError("R-OSSE-only profile keys are not valid with formula OSSE")
+            raise ConfigError(
+                "R-OSSE-only profile keys are not valid with formula OSSE"
+            )
         return
 
     if formula == "LOOKUP":
         # LOOKUP carries only a precomputed profile; analytic coefficients of
         # either formula family are out of place.
-        names = ("L_mm", "L", "n", "s", "rot_deg", "rot", "R_mm", "R", "tmax", "m", "r", "b")
+        names = (
+            "L_mm",
+            "L",
+            "n",
+            "s",
+            "rot_deg",
+            "rot",
+            "R_mm",
+            "R",
+            "tmax",
+            "m",
+            "r",
+            "b",
+        )
         if _has_any(profile, config, names=names):
             raise ConfigError("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
         return
@@ -298,9 +326,13 @@ def _static_float_or_none(value: Any) -> float | None:
     return out
 
 
-def _gcurve_type_width(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> tuple[int | None, float | None]:
+def _gcurve_type_width(
+    gcurve: Mapping[str, Any], config: Mapping[str, Any]
+) -> tuple[int | None, float | None]:
     raw_type = _pick(gcurve, config, names=("gcurve_type", "gcurveType"), default=0)
-    raw_width = _pick(gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0)
+    raw_width = _pick(
+        gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0
+    )
     type_value = _static_float_or_none(raw_type)
     width = _static_float_or_none(raw_width)
     curve_type = int(round(type_value)) if type_value is not None else None
@@ -342,14 +374,18 @@ def _has_gcurve_keys(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> bo
     return _has_any(gcurve, config, names=names)
 
 
-def _gcurve_could_be_active(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> bool:
+def _gcurve_could_be_active(
+    gcurve: Mapping[str, Any], config: Mapping[str, Any]
+) -> bool:
     curve_type, width = _gcurve_type_width(gcurve, config)
     if curve_type is None or width is None:
         return _has_gcurve_keys(gcurve, config)
     return curve_type in {1, 2} and width > 0.0
 
 
-def _validate_static_gcurve_type(gcurve: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+def _validate_static_gcurve_type(
+    gcurve: Mapping[str, Any], config: Mapping[str, Any]
+) -> None:
     curve_type, _width = _gcurve_type_width(gcurve, config)
     if curve_type is not None and curve_type not in {0, 1, 2}:
         raise ConfigError(f"unsupported GCurve type {curve_type}")
@@ -380,10 +416,16 @@ def _enc_depth_mm(
     therefore name the depth explicitly (``encDepth`` / ``depth_mm``) or nest it under the
     ``enclosure`` section; other formulas keep the historical top-level bare-``depth`` fallback.
     """
-    sectioned = _optional_float(enclosure, mesh, names=("depth_mm", "depth", "encDepth"))
+    sectioned = _optional_float(
+        enclosure, mesh, names=("depth_mm", "depth", "encDepth")
+    )
     if sectioned is not None:
         return sectioned
-    top_names = ("depth_mm", "encDepth") if formula == "ICW" else ("depth_mm", "depth", "encDepth")
+    top_names = (
+        ("depth_mm", "encDepth")
+        if formula == "ICW"
+        else ("depth_mm", "depth", "encDepth")
+    )
     return _float(config, names=top_names, default=0.0)
 
 
@@ -393,7 +435,12 @@ def _normalise_mode(
     enclosure: Mapping[str, Any],
     formula: str = "OSSE",
 ) -> str:
-    raw = str(_pick(config, mesh, names=("mode",), default="")).strip().lower().replace("_", "-")
+    raw = (
+        str(_pick(config, mesh, names=("mode",), default=""))
+        .strip()
+        .lower()
+        .replace("_", "-")
+    )
     enc_depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if raw in {"enclosure", "enclosed"}:
         return "enclosure"
@@ -426,7 +473,9 @@ def _normalise_mode(
         return "freestanding"
     if raw in {"free-standing", "freestanding", "free"}:
         return "freestanding"
-    raise ConfigError(f"mode must be freestanding, enclosure, bare, or infinite-baffle, got {raw!r}")
+    raise ConfigError(
+        f"mode must be freestanding, enclosure, bare, or infinite-baffle, got {raw!r}"
+    )
 
 
 def _enclosure_from_config(
@@ -440,23 +489,49 @@ def _enclosure_from_config(
         return None
     return HornEnclosure(
         depth_mm=depth,
-        space_l_mm=_float(enclosure, names=("space_l_mm", "space_l", "left_margin_mm"), default=25.0),
-        space_t_mm=_float(enclosure, names=("space_t_mm", "space_t", "top_margin_mm"), default=25.0),
-        space_r_mm=_float(enclosure, names=("space_r_mm", "space_r", "right_margin_mm"), default=25.0),
-        space_b_mm=_float(enclosure, names=("space_b_mm", "space_b", "bottom_margin_mm"), default=25.0),
+        space_l_mm=_float(
+            enclosure, names=("space_l_mm", "space_l", "left_margin_mm"), default=25.0
+        ),
+        space_t_mm=_float(
+            enclosure, names=("space_t_mm", "space_t", "top_margin_mm"), default=25.0
+        ),
+        space_r_mm=_float(
+            enclosure, names=("space_r_mm", "space_r", "right_margin_mm"), default=25.0
+        ),
+        space_b_mm=_float(
+            enclosure, names=("space_b_mm", "space_b", "bottom_margin_mm"), default=25.0
+        ),
         edge_mm=_float(enclosure, names=("edge_mm", "edge", "encEdge"), default=18.0),
-        edge_type=_int(enclosure, names=("edge_type", "edgeType", "encEdgeType"), default=1),
-        plan_type=_int(enclosure, names=("plan_type", "planType", "encPlanType"), default=1),
+        edge_type=_int(
+            enclosure, names=("edge_type", "edgeType", "encEdgeType"), default=1
+        ),
+        plan_type=_int(
+            enclosure, names=("plan_type", "planType", "encPlanType"), default=1
+        ),
         plan_n=_float(enclosure, names=("plan_n", "planN", "encPlanN"), default=2.0),
-        depth_margin_mm=_float(enclosure, names=("depth_margin_mm", "depth_margin", "encDepthMargin"), default=1.0),
+        depth_margin_mm=_float(
+            enclosure,
+            names=("depth_margin_mm", "depth_margin", "encDepthMargin"),
+            default=1.0,
+        ),
         front_mesh_size_mm=_first_number(
             enclosure,
-            names=("front_mesh_size_mm", "frontMeshSize", "enc_front_resolution", "encFrontResolution"),
+            names=(
+                "front_mesh_size_mm",
+                "frontMeshSize",
+                "enc_front_resolution",
+                "encFrontResolution",
+            ),
             default=0.0,
         ),
         back_mesh_size_mm=_first_number(
             enclosure,
-            names=("back_mesh_size_mm", "backMeshSize", "enc_back_resolution", "encBackResolution"),
+            names=(
+                "back_mesh_size_mm",
+                "backMeshSize",
+                "enc_back_resolution",
+                "encBackResolution",
+            ),
             default=0.0,
         ),
     )
@@ -506,11 +581,15 @@ def _apply_driver_adapter(
     if driver_radius is None and waveguide_radius is None:
         return
     if driver_radius is None or waveguide_radius is None:
-        raise ConfigError("driver adapter requires both driver and waveguide throat diameters")
+        raise ConfigError(
+            "driver adapter requires both driver and waveguide throat diameters"
+        )
     if driver_radius <= 0.0 or waveguide_radius <= 0.0:
         raise ConfigError("driver and waveguide throat diameters must be > 0")
     if waveguide_radius < driver_radius:
-        raise ConfigError("driver adapter cannot shrink from waveguide throat to driver throat")
+        raise ConfigError(
+            "driver adapter cannot shrink from waveguide throat to driver throat"
+        )
 
     delta_radius = waveguide_radius - driver_radius
     # Both formulas anchor r0 (Throat.Diameter) at the MAIN waveguide throat
@@ -525,13 +604,17 @@ def _apply_driver_adapter(
         return
 
     ext_len = _numeric_param(common.get("throatExtLength", 0.0), name="throatExtLength")
-    ext_angle_deg = _numeric_param(common.get("throatExtAngle", 0.0), name="throatExtAngle")
+    ext_angle_deg = _numeric_param(
+        common.get("throatExtAngle", 0.0), name="throatExtAngle"
+    )
     if ext_len <= 0.0 and abs(ext_angle_deg) <= 1.0e-12:
         raise ConfigError("driver adapter requires throatExtLength or throatExtAngle")
     if ext_len <= 0.0:
         tan_angle = np.tan(np.deg2rad(ext_angle_deg))
         if tan_angle <= 1.0e-12:
-            raise ConfigError("throatExtAngle must be > 0 when deriving driver adapter length")
+            raise ConfigError(
+                "throatExtAngle must be > 0 when deriving driver adapter length"
+            )
         common["throatExtLength"] = delta_radius / tan_angle
         return
     if abs(ext_angle_deg) <= 1.0e-12:
@@ -579,7 +662,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     gcurve = _section(config, "gcurve", "GCurve", "GCURVE")
     source = _section(config, "source", "Source")
 
-    formula = _normalise_formula(_pick(config, profile, names=("formula", "type"), default="OSSE"))
+    formula = _normalise_formula(
+        _pick(config, profile, names=("formula", "type"), default="OSSE")
+    )
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure, formula)
@@ -599,7 +684,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     )
     if mode in {"bare", "enclosure", "infinite-baffle"}:
         wall_thickness = 0.0
-    z_map_points = _pick(mesh, config, names=("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints"), default=None)
+    z_map_points = _pick(
+        mesh,
+        config,
+        names=("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints"),
+        default=None,
+    )
     default_sampling_mode = "zmap" if z_map_points is not None else "uniform"
 
     common: dict[str, Any] = {
@@ -611,17 +701,33 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "a": _scalar_or_expr(profile, config, names=("a_deg", "a"), default=60.0),
         "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=15.5),
         "k": _scalar_or_expr(profile, config, names=("k",), default=1.0),
-        "q": _scalar_or_expr(profile, config, names=("q",), default=1.0 if formula == "R-OSSE" else 0.995),
+        "q": _scalar_or_expr(
+            profile, config, names=("q",), default=1.0 if formula == "R-OSSE" else 0.995
+        ),
         "throatExtLength": _scalar_or_expr(
-            profile, config, names=("throat_ext_length_mm", "throatExtLength"), default=0.0
+            profile,
+            config,
+            names=("throat_ext_length_mm", "throatExtLength"),
+            default=0.0,
         ),
         "throatExtAngle": _scalar_or_expr(
-            profile, config, names=("throat_ext_angle_deg", "throatExtAngle"), default=0.0
+            profile,
+            config,
+            names=("throat_ext_angle_deg", "throatExtAngle"),
+            default=0.0,
         ),
-        "slotLength": _scalar_or_expr(profile, config, names=("slot_length_mm", "slotLength"), default=0.0),
-        "angularSegments": _int(mesh, config, names=("angular_segments", "angularSegments"), default=64),
-        "cornerSegments": _int(mesh, config, names=("corner_segments", "cornerSegments"), default=0),
-        "lengthSegments": _int(mesh, config, names=("length_segments", "lengthSegments"), default=32),
+        "slotLength": _scalar_or_expr(
+            profile, config, names=("slot_length_mm", "slotLength"), default=0.0
+        ),
+        "angularSegments": _int(
+            mesh, config, names=("angular_segments", "angularSegments"), default=64
+        ),
+        "cornerSegments": _int(
+            mesh, config, names=("corner_segments", "cornerSegments"), default=0
+        ),
+        "lengthSegments": _int(
+            mesh, config, names=("length_segments", "lengthSegments"), default=32
+        ),
         "samplingMode": _pick(
             mesh,
             config,
@@ -637,56 +743,132 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "zMapPoints": z_map_points,
         "wallThickness": wall_thickness,
         "encDepth": enc_depth,
-        "morphTarget": _scalar_or_expr(morph, config, names=("morph_target", "morphTarget"), default=0),
-        "morphWidth": _scalar_or_expr(morph, config, names=("morph_width_mm", "morphWidth"), default=0),
-        "morphHeight": _scalar_or_expr(morph, config, names=("morph_height_mm", "morphHeight"), default=0),
-        "morphCorner": _scalar_or_expr(morph, config, names=("morph_corner_mm", "morphCorner"), default=0),
-        "morphRate": _scalar_or_expr(morph, config, names=("morph_rate", "morphRate"), default=3.0),
-        "morphFixed": _scalar_or_expr(morph, config, names=("morph_fixed", "morphFixed"), default=0),
+        "morphTarget": _scalar_or_expr(
+            morph, config, names=("morph_target", "morphTarget"), default=0
+        ),
+        "morphWidth": _scalar_or_expr(
+            morph, config, names=("morph_width_mm", "morphWidth"), default=0
+        ),
+        "morphHeight": _scalar_or_expr(
+            morph, config, names=("morph_height_mm", "morphHeight"), default=0
+        ),
+        "morphCorner": _scalar_or_expr(
+            morph, config, names=("morph_corner_mm", "morphCorner"), default=0
+        ),
+        "morphRate": _scalar_or_expr(
+            morph, config, names=("morph_rate", "morphRate"), default=3.0
+        ),
+        "morphFixed": _scalar_or_expr(
+            morph, config, names=("morph_fixed", "morphFixed"), default=0
+        ),
         "morphAllowShrinkage": _scalar_or_expr(
-            morph, config, names=("morph_allow_shrinkage", "morphAllowShrinkage"), default=0
+            morph,
+            config,
+            names=("morph_allow_shrinkage", "morphAllowShrinkage"),
+            default=0,
         ),
-        "gcurveType": _scalar_or_expr(gcurve, config, names=("gcurve_type", "gcurveType"), default=0),
-        "gcurveWidth": _scalar_or_expr(gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0),
+        "gcurveType": _scalar_or_expr(
+            gcurve, config, names=("gcurve_type", "gcurveType"), default=0
+        ),
+        "gcurveWidth": _scalar_or_expr(
+            gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0
+        ),
         "gcurveAspectRatio": _scalar_or_expr(
-            gcurve, config, names=("gcurve_aspect_ratio", "gcurveAspectRatio"), default=1
+            gcurve,
+            config,
+            names=("gcurve_aspect_ratio", "gcurveAspectRatio"),
+            default=1,
         ),
-        "gcurveDist": _scalar_or_expr(gcurve, config, names=("gcurve_dist", "gcurveDist"), default=0),
-        "gcurveRot": _scalar_or_expr(gcurve, config, names=("gcurve_rot_deg", "gcurveRot"), default=0),
-        "gcurveSF": _pick(gcurve, config, names=("gcurve_sf", "gcurveSf", "gcurveSF"), default=""),
-        "gcurveSf": _pick(gcurve, config, names=("gcurve_sf", "gcurveSf", "gcurveSF"), default=""),
-        "gcurveSeN": _scalar_or_expr(gcurve, config, names=("gcurve_se_n", "gcurveSeN"), default=3),
-        "gcurveSfA": _scalar_or_expr(gcurve, config, names=("gcurve_sf_a", "gcurveSfA"), default=1),
-        "gcurveSfB": _scalar_or_expr(gcurve, config, names=("gcurve_sf_b", "gcurveSfB"), default=1),
-        "gcurveSfM1": _scalar_or_expr(gcurve, config, names=("gcurve_sf_m1", "gcurveSfM1"), default=4),
-        "gcurveSfM2": _scalar_or_expr(gcurve, config, names=("gcurve_sf_m2", "gcurveSfM2"), default=None),
-        "gcurveSfN1": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n1", "gcurveSfN1"), default=2),
-        "gcurveSfN2": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n2", "gcurveSfN2"), default=2),
-        "gcurveSfN3": _scalar_or_expr(gcurve, config, names=("gcurve_sf_n3", "gcurveSfN3"), default=2),
-        "quadrants": _normalised_quadrants(_pick(mesh, config, names=("quadrants",), default="1234")),
+        "gcurveDist": _scalar_or_expr(
+            gcurve, config, names=("gcurve_dist", "gcurveDist"), default=0
+        ),
+        "gcurveRot": _scalar_or_expr(
+            gcurve, config, names=("gcurve_rot_deg", "gcurveRot"), default=0
+        ),
+        "gcurveSF": _pick(
+            gcurve, config, names=("gcurve_sf", "gcurveSf", "gcurveSF"), default=""
+        ),
+        "gcurveSf": _pick(
+            gcurve, config, names=("gcurve_sf", "gcurveSf", "gcurveSF"), default=""
+        ),
+        "gcurveSeN": _scalar_or_expr(
+            gcurve, config, names=("gcurve_se_n", "gcurveSeN"), default=3
+        ),
+        "gcurveSfA": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_a", "gcurveSfA"), default=1
+        ),
+        "gcurveSfB": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_b", "gcurveSfB"), default=1
+        ),
+        "gcurveSfM1": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_m1", "gcurveSfM1"), default=4
+        ),
+        "gcurveSfM2": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_m2", "gcurveSfM2"), default=None
+        ),
+        "gcurveSfN1": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_n1", "gcurveSfN1"), default=2
+        ),
+        "gcurveSfN2": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_n2", "gcurveSfN2"), default=2
+        ),
+        "gcurveSfN3": _scalar_or_expr(
+            gcurve, config, names=("gcurve_sf_n3", "gcurveSfN3"), default=2
+        ),
+        "quadrants": _normalised_quadrants(
+            _pick(mesh, config, names=("quadrants",), default="1234")
+        ),
         "scale": _float(config, profile, names=("scale", "Scale"), default=1.0),
         "verticalOffset": _float(
             mesh, config, names=("vertical_offset_mm", "verticalOffset"), default=0.0
         ),
-        "throatResolution": _float(mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0),
-        "mouthResolution": _float(mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0),
-        "rearResolution": _float(mesh, config, names=("rear_res_mm", "rearResolution"), default=15.0),
-        "subdomainSlices": _scalar_or_expr(mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""),
+        "throatResolution": _float(
+            mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0
+        ),
+        "mouthResolution": _float(
+            mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0
+        ),
+        "rearResolution": _float(
+            mesh, config, names=("rear_res_mm", "rearResolution"), default=15.0
+        ),
+        "subdomainSlices": _scalar_or_expr(
+            mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""
+        ),
         # None (not 0.0) when omitted: an omitted offset with SubdomainSlices
         # set takes ATH's 5 mm default, while an explicit 0 disables interfaces.
-        "interfaceOffset": _scalar_or_expr(mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=None),
+        "interfaceOffset": _scalar_or_expr(
+            mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=None
+        ),
         "interfaceResolution": _optional_float(
             mesh,
             config,
             names=("interface_res_mm", "interfaceResolution"),
         ),
-        "sourceShape": _scalar_or_expr(source, config, names=("source_shape", "sourceShape"), default=1),
-        "sourceRadius": _scalar_or_expr(source, config, names=("source_radius_mm", "sourceRadius"), default=-1),
-        "sourceCurv": _scalar_or_expr(source, config, names=("source_curv", "sourceCurv"), default=0),
+        "sourceShape": _scalar_or_expr(
+            source, config, names=("source_shape", "sourceShape"), default=1
+        ),
+        "sourceRadius": _scalar_or_expr(
+            source, config, names=("source_radius_mm", "sourceRadius"), default=-1
+        ),
+        "sourceCurv": _scalar_or_expr(
+            source, config, names=("source_curv", "sourceCurv"), default=0
+        ),
         "profileSystem": {
             "crossSection": {
-                "exponent": _float(cross, profile, config, names=("exponent", "cross_section_exponent"), default=2.0),
-                "aspectRatio": _float(cross, profile, config, names=("aspect_ratio", "aspectRatio"), default=1.0),
+                "exponent": _float(
+                    cross,
+                    profile,
+                    config,
+                    names=("exponent", "cross_section_exponent"),
+                    default=2.0,
+                ),
+                "aspectRatio": _float(
+                    cross,
+                    profile,
+                    config,
+                    names=("aspect_ratio", "aspectRatio"),
+                    default=1.0,
+                ),
             },
         },
     }
@@ -705,10 +887,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     if formula == "OSSE":
         common.update(
             {
-                "L": _scalar_or_expr(profile, config, names=("L_mm", "L"), default=120.0),
+                "L": _scalar_or_expr(
+                    profile, config, names=("L_mm", "L"), default=120.0
+                ),
                 "n": _scalar_or_expr(profile, config, names=("n",), default=4.0),
                 "s": _scalar_or_expr(profile, config, names=("s",), default=0.0),
-                "rot": _scalar_or_expr(profile, config, names=("rot_deg", "rot"), default=0.0),
+                "rot": _scalar_or_expr(
+                    profile, config, names=("rot_deg", "rot"), default=0.0
+                ),
             }
         )
     elif formula == "LOOKUP":
@@ -725,15 +911,21 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         )
         termination = str(common["termination"] or "flat_baffle").strip().lower()
         if termination == "flat_baffle":
-            common["L"] = _scalar_or_expr(profile, config, names=("L_mm", "L"), default=120.0)
-            common["R"] = _scalar_or_expr(profile, config, names=("R_mm", "R"), default=150.0)
+            common["L"] = _scalar_or_expr(
+                profile, config, names=("L_mm", "L"), default=120.0
+            )
+            common["R"] = _scalar_or_expr(
+                profile, config, names=("R_mm", "R"), default=150.0
+            )
         else:
             # Rollback reads R with r_aperture as a fallback; materialising the
             # flat-baffle defaults here would silently override an explicit
             # r_aperture with R=150. Thread L/R only when actually configured.
             for key, src_names in (("L", ("L_mm", "L")), ("R", ("R_mm", "R"))):
                 if _pick(profile, config, names=src_names, default=None) is not None:
-                    common[key] = _scalar_or_expr(profile, config, names=src_names, default=None)
+                    common[key] = _scalar_or_expr(
+                        profile, config, names=src_names, default=None
+                    )
         for key, src_names in (
             ("kappa0", ("kappa0",)),
             ("r_aperture", ("r_aperture",)),
@@ -752,13 +944,18 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         ):
             value = _pick(profile, config, names=src_names, default=None)
             if value is not None:
-                common[key] = _scalar_or_expr(profile, config, names=src_names, default=None)
+                common[key] = _scalar_or_expr(
+                    profile, config, names=src_names, default=None
+                )
         pin_mouth_radius = _pick(
             profile, config, names=("pin_mouth_radius", "pinMouthRadius"), default=None
         )
         if pin_mouth_radius is not None:
             common["pin_mouth_radius"] = _bool(
-                profile, config, names=("pin_mouth_radius", "pinMouthRadius"), default=False
+                profile,
+                config,
+                names=("pin_mouth_radius", "pinMouthRadius"),
+                default=False,
             )
         # Seed / direct-coefficient inputs are passed through verbatim (nested
         # dict / list), not coerced to scalars.
@@ -771,14 +968,18 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     else:
         common.update(
             {
-                "R": _scalar_or_expr(profile, config, names=("R_mm", "R"), default=150.0),
+                "R": _scalar_or_expr(
+                    profile, config, names=("R_mm", "R"), default=150.0
+                ),
                 "tmax": _scalar_or_expr(profile, config, names=("tmax",), default=1.0),
             }
         )
         for key in ("m", "r", "b"):
             value = _pick(profile, config, names=(key,), default=None)
             if value is not None:
-                common[key] = _scalar_or_expr(profile, config, names=(key,), default=None)
+                common[key] = _scalar_or_expr(
+                    profile, config, names=(key,), default=None
+                )
 
     return common, formula, mode
 
@@ -842,18 +1043,142 @@ def _native_check_open_edges_for_mode(mode: str) -> bool:
 def _mesh_report(
     info_physical_groups: Mapping[int, str],
     edge_stats_mm: Mapping[int, Mapping[str, float]],
-    density: MeshDensity,
 ) -> dict[str, dict[str, float]]:
-    epw = max(float(density.elements_per_wavelength), 1.0)
-    c_mm_s = float(density.speed_of_sound_m_s) * 1000.0
     report: dict[str, dict[str, float]] = {}
     for tag, stats in edge_stats_mm.items():
         name = info_physical_groups.get(int(tag), str(tag))
-        max_edge = float(stats.get("max_edge_mm", 0.0))
         entry = {key: float(value) for key, value in stats.items()}
-        entry["valid_f_max_hz"] = c_mm_s / (epw * max_edge) if max_edge > 0.0 else float("inf")
         report[name] = entry
     return report
+
+
+_REMOVED_MESH_KEYS: dict[str, str] = {
+    "max_frequency_hz": "use throat_res_mm, mouth_res_mm, and rear_res_mm",
+    "maxFrequencyHz": "use throat_res_mm, mouth_res_mm, and rear_res_mm",
+    "maxFrequency": "use throat_res_mm, mouth_res_mm, and rear_res_mm",
+    "f_max_hz": "use throat_res_mm, mouth_res_mm, and rear_res_mm",
+    "fMaxHz": "use throat_res_mm, mouth_res_mm, and rear_res_mm",
+    "elements_per_wavelength": "use the semantic *_res_mm values",
+    "elementsPerWavelength": "use the semantic *_res_mm values",
+    "throat_epw": "use throat_res_mm",
+    "throatEpw": "use throat_res_mm",
+    "mouth_epw": "use mouth_res_mm",
+    "mouthEpw": "use mouth_res_mm",
+    "rear_epw": "use rear_res_mm",
+    "rearEpw": "use rear_res_mm",
+    "interface_epw": "use interface_res_mm",
+    "interfaceEpw": "use interface_res_mm",
+    "aperture_epw": "use aperture_res_scale and mouth_res_mm",
+    "apertureEpw": "use aperture_res_scale and mouth_res_mm",
+    "speed_of_sound_m_s": "mesh sizing is millimetre-only",
+    "speedOfSound": "mesh sizing is millimetre-only",
+    "curvature_segments": "curvature sizing is disabled; use the local *_res_mm values",
+    "curvatureSegments": "curvature sizing is disabled; use the local *_res_mm values",
+}
+
+
+def _reject_removed_mesh_keys(
+    config: Mapping[str, Any], mesh: Mapping[str, Any]
+) -> None:
+    for mapping in (mesh, config):
+        for key, migration in _REMOVED_MESH_KEYS.items():
+            if key in mapping:
+                raise ConfigError(
+                    f"mesh key {key!r} was removed by the millimetre-only mesh contract; "
+                    f"{migration}"
+                )
+
+
+def _mesh_topology_mode(mesh: Mapping[str, Any]) -> str:
+    raw = _pick(
+        mesh, names=("topology", "topology_mode", "topologyMode"), default="acoustic"
+    )
+    mode = str(raw or "acoustic").strip().lower()
+    if mode not in {"acoustic", "legacy"}:
+        raise ConfigError("mesh topology must be 'acoustic' or 'legacy'")
+    preserve = _bool(mesh, names=("preserve_grid", "preserveGrid"), default=False)
+    if preserve and mode != "legacy":
+        raise ConfigError(
+            "preserve_grid pins sampled CAD faces and is only available with mesh.topology='legacy'"
+        )
+    return mode
+
+
+def _mesh_density_from_config(
+    config: Mapping[str, Any],
+    *,
+    allow_large_mesh: bool | None = None,
+) -> MeshDensity:
+    mesh = _section(config, "mesh")
+    enclosure = _section(config, "enclosure")
+    _reject_removed_mesh_keys(config, mesh)
+    configured_allow_large = _bool(
+        mesh,
+        names=("allow_large_mesh", "allowLargeMesh"),
+        default=False,
+    )
+    density = MeshDensity(
+        throat_res_mm=_float(
+            mesh,
+            config,
+            names=("throat_res_mm", "throat_res", "throatResolution"),
+            default=4.0,
+        ),
+        mouth_res_mm=_float(
+            mesh,
+            config,
+            names=("mouth_res_mm", "mouth_res", "mouthResolution"),
+            default=26.0,
+        ),
+        rear_res_mm=_float(
+            mesh,
+            config,
+            names=("rear_res_mm", "rear_res", "rearResolution"),
+            default=15.0,
+        ),
+        aperture_res_scale=_float(
+            mesh,
+            config,
+            names=(
+                "aperture_res_scale",
+                "apertureResolutionScale",
+                "aperture_cap_coarsening",
+                "apertureCapCoarsening",
+            ),
+            default=1.5,
+        ),
+        enc_front_res_mm=_pick(
+            mesh,
+            enclosure,
+            names=("enc_front_res_mm", "enc_front_resolution", "encFrontResolution"),
+            default=None,
+        ),
+        enc_back_res_mm=_pick(
+            mesh,
+            enclosure,
+            names=("enc_back_res_mm", "enc_back_resolution", "encBackResolution"),
+            default=None,
+        ),
+        interface_res_mm=_optional_float(
+            mesh,
+            names=("interface_res_mm", "interface_res", "interfaceResolution"),
+        ),
+        max_triangles=_int(
+            mesh,
+            names=("max_triangles", "maxTriangles"),
+            default=18_000,
+        ),
+        allow_large_mesh=(
+            configured_allow_large
+            if allow_large_mesh is None
+            else bool(allow_large_mesh)
+        ),
+    )
+    try:
+        validate_mesh_density(density)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    return density
 
 
 def _num_or_default(value: Any, default: float) -> float:
@@ -867,8 +1192,12 @@ def _num_or_default(value: Any, default: float) -> float:
     return float(value)
 
 
-def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[HornInterface, ...]:
-    slices = [int(round(value)) for value in _number_list(params.get("subdomainSlices"))]
+def _interfaces_from_params(
+    params: Mapping[str, Any], n_length: int
+) -> tuple[HornInterface, ...]:
+    slices = [
+        int(round(value)) for value in _number_list(params.get("subdomainSlices"))
+    ]
     if not slices:
         return ()
 
@@ -893,11 +1222,15 @@ def _interfaces_from_params(params: Mapping[str, Any], n_length: int) -> tuple[H
         # Imported text configs address grid slices; keep valid indices and ignore
         # out-of-range declarations rather than guessing a different topology.
         if 0 <= int(slice_index) <= last_ring:
-            interfaces.append(HornInterface(slice_index=int(slice_index), offset_mm=float(offset)))
+            interfaces.append(
+                HornInterface(slice_index=int(slice_index), offset_mm=float(offset))
+            )
         else:
             logger.warning(
                 "[hornlab-mesher] ignoring out-of-range Mesh.SubdomainSlices index %d "
-                "(grid has rings 0..%d)", int(slice_index), last_ring,
+                "(grid has rings 0..%d)",
+                int(slice_index),
+                last_ring,
             )
     return tuple(interfaces)
 
@@ -931,7 +1264,9 @@ def _axisymmetric_rejection_reasons(
         reasons.append(f"CrossSection aspectRatio is {aspect:g}, not 1")
 
     morph_target = _static_float_or_none(params.get("morphTarget", 0))
-    if morph_target is None or not math.isclose(morph_target, 0.0, rel_tol=0.0, abs_tol=1.0e-9):
+    if morph_target is None or not math.isclose(
+        morph_target, 0.0, rel_tol=0.0, abs_tol=1.0e-9
+    ):
         reasons.append(f"morphTarget is {params.get('morphTarget')!r}, not 0")
 
     if enclosure_obj is not None or mode == "enclosure":
@@ -987,9 +1322,9 @@ def _append_meridian_points(
             nodes.append(point)
             continue
         prev = nodes[-1]
-        if math.isclose(prev[0], point[0], rel_tol=0.0, abs_tol=1.0e-9) and math.isclose(
-            prev[1], point[1], rel_tol=0.0, abs_tol=1.0e-9
-        ):
+        if math.isclose(
+            prev[0], point[0], rel_tol=0.0, abs_tol=1.0e-9
+        ) and math.isclose(prev[1], point[1], rel_tol=0.0, abs_tol=1.0e-9):
             continue
         nodes.append(point)
         tags.append(int(tag))
@@ -1002,7 +1337,9 @@ def _subdivision_count_between(
     end: tuple[float, float],
     target_segment_mm: float,
 ) -> int:
-    distance = math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
+    distance = math.hypot(
+        float(end[0]) - float(start[0]), float(end[1]) - float(start[1])
+    )
     if distance <= 1.0e-9:
         return 0
     return max(1, int(math.ceil(distance / max(float(target_segment_mm), 1.0e-9))))
@@ -1033,9 +1370,9 @@ def _append_subdivided_meridian_points(
                 float(start[1] + alpha * (point[1] - start[1])),
             )
             prev = nodes[-1]
-            if math.isclose(prev[0], interp[0], rel_tol=0.0, abs_tol=1.0e-9) and math.isclose(
-                prev[1], interp[1], rel_tol=0.0, abs_tol=1.0e-9
-            ):
+            if math.isclose(
+                prev[0], interp[0], rel_tol=0.0, abs_tol=1.0e-9
+            ) and math.isclose(prev[1], interp[1], rel_tol=0.0, abs_tol=1.0e-9):
                 continue
             nodes.append(interp)
             tags.append(int(tag))
@@ -1049,6 +1386,7 @@ def _semicircular_meridian_join_points(
     *,
     incoming_tangent: tuple[float, float],
     target_segment_mm: float,
+    minimum_segments: int = 2,
 ) -> np.ndarray:
     """ATH-compatible rounded closure between inner and outer mouth points.
 
@@ -1077,7 +1415,7 @@ def _semicircular_meridian_join_points(
 
     arc_length = math.pi * radius
     segment_count = max(
-        5,
+        int(minimum_segments),
         int(math.ceil(arc_length / max(float(target_segment_mm), 1.0e-9))),
     )
     angles = np.linspace(0.0, math.pi, segment_count + 1, dtype=np.float64)
@@ -1094,7 +1432,9 @@ def _semicircular_meridian_join_points(
 def _profile_arc_length_mm(params: Mapping[str, Any]) -> float:
     base_segments = max(64, int(params.get("lengthSegments") or 32))
     sample_count = max(513, min(4097, 8 * base_segments + 1))
-    profile = np.asarray(profile_points(params, sample_count, phi=0.0), dtype=np.float64)
+    profile = np.asarray(
+        profile_points(params, sample_count, phi=0.0), dtype=np.float64
+    )
     if profile.ndim != 2 or profile.shape[0] < 2:
         return 0.0
     return float(np.sum(np.linalg.norm(np.diff(profile, axis=0), axis=1)))
@@ -1119,32 +1459,57 @@ def _resample_polyline_by_arc(points: np.ndarray, segment_count: int) -> np.ndar
     return out
 
 
+def _resample_polyline_by_local_size(
+    points: np.ndarray,
+    start_size_mm: float,
+    end_size_mm: float,
+) -> np.ndarray:
+    """Arc-length resample a polyline using a linearly graded mm target."""
+
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[0] < 2:
+        return pts.copy()
+    lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    total = float(np.sum(lengths))
+    if total <= 1.0e-12:
+        return np.vstack([pts[0], pts[-1]])
+    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+    t = cumulative / total
+    sizes = float(start_size_mm) + (float(end_size_mm) - float(start_size_mm)) * t
+    sizes = np.maximum(sizes, 1.0e-9)
+    density_coordinate = np.concatenate(
+        [[0.0], np.cumsum(lengths * 0.5 * (1.0 / sizes[:-1] + 1.0 / sizes[1:]))]
+    )
+    segment_count = max(1, int(math.ceil(float(density_coordinate[-1]))))
+    samples = np.linspace(0.0, float(density_coordinate[-1]), segment_count + 1)
+    arc_samples = np.interp(samples, density_coordinate, cumulative)
+    out = np.empty((segment_count + 1, pts.shape[1]), dtype=np.float64)
+    for axis in range(pts.shape[1]):
+        out[:, axis] = np.interp(arc_samples, cumulative, pts[:, axis])
+    out[0] = pts[0]
+    out[-1] = pts[-1]
+    return out
+
+
 def _circsym_resolution_budget(
     params: Mapping[str, Any],
-    freq_max_hz: float | None,
+    density: MeshDensity,
 ) -> dict[str, float | int]:
-    if freq_max_hz is None:
-        frequency = 20_000.0
-    else:
-        try:
-            frequency = float(freq_max_hz)
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(f"freq_max_hz must be numeric, got {freq_max_hz!r}") from exc
-    if not math.isfinite(frequency) or frequency <= 0.0:
-        raise ConfigError(f"freq_max_hz must be finite and > 0, got {freq_max_hz!r}")
-
-    wavelength_mm = 343.0 / frequency * 1000.0
-    inner_target_mm = wavelength_mm / 8.0
-    outer_target_mm = wavelength_mm / 6.0
     arc_length_mm = _profile_arc_length_mm(params)
-    length_segments = max(64, int(math.ceil(arc_length_mm / max(inner_target_mm, 1.0e-9))))
+    finest = min(float(density.throat_res_mm), float(density.mouth_res_mm))
+    # Internal geometry sampling is deliberately denser than the requested
+    # final meridian. It improves profile fitting without creating BEM nodes.
+    geometry_segments = max(
+        64,
+        min(4096, int(math.ceil(4.0 * arc_length_mm / max(finest, 1.0e-9)))),
+    )
     return {
-        "freq_max_hz": float(frequency),
-        "wavelength_mm": float(wavelength_mm),
-        "inner_target_mm": float(inner_target_mm),
-        "outer_target_mm": float(outer_target_mm),
+        "throat_target_mm": float(density.throat_res_mm),
+        "mouth_target_mm": float(density.mouth_res_mm),
+        "outer_target_mm": float(density.rear_res_mm),
+        "aperture_target_mm": float(density.mouth_res_mm * density.aperture_res_scale),
         "profile_arc_length_mm": float(arc_length_mm),
-        "length_segments": int(length_segments),
+        "geometry_segments": int(geometry_segments),
     }
 
 
@@ -1157,7 +1522,9 @@ def _source_cap_polyline(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     shape = int(geometry.source_shape)
     if shape != SOURCE_SHAPE_ROUNDED_CAP or throat_radius_mm <= 1.0e-9:
-        n_segments = max(1, int(math.ceil(throat_radius_mm / max(target_segment_mm, 1.0e-9))))
+        n_segments = max(
+            1, int(math.ceil(throat_radius_mm / max(target_segment_mm, 1.0e-9)))
+        )
         rho = np.linspace(0.0, throat_radius_mm, n_segments + 1, dtype=np.float64)
         z = np.full_like(rho, float(throat_z_mm))
         return np.column_stack((rho, z)), {
@@ -1169,7 +1536,9 @@ def _source_cap_polyline(
 
     cap_height = _source_cap_height(throat_radius_mm, geometry)
     if cap_height <= 1.0e-12:
-        n_segments = max(1, int(math.ceil(throat_radius_mm / max(target_segment_mm, 1.0e-9))))
+        n_segments = max(
+            1, int(math.ceil(throat_radius_mm / max(target_segment_mm, 1.0e-9)))
+        )
         rho = np.linspace(0.0, throat_radius_mm, n_segments + 1, dtype=np.float64)
         z = np.full_like(rho, float(throat_z_mm))
         return np.column_stack((rho, z)), {
@@ -1179,12 +1548,14 @@ def _source_cap_polyline(
             "source_cap_segments": int(n_segments),
         }
 
-    radius = max(_source_cap_radius(throat_radius_mm, geometry), throat_radius_mm * 1.001)
+    radius = max(
+        _source_cap_radius(throat_radius_mm, geometry), throat_radius_mm * 1.001
+    )
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
     center_z = float(throat_z_mm) + sign * (cap_height - radius)
     rim_angle = math.asin(max(-1.0, min(1.0, throat_radius_mm / radius)))
     arc_length = abs(radius * rim_angle)
-    n_segments = max(8, int(math.ceil(arc_length / max(target_segment_mm, 1.0e-9))))
+    n_segments = max(1, int(math.ceil(arc_length / max(target_segment_mm, 1.0e-9))))
     rho = np.linspace(0.0, throat_radius_mm, n_segments + 1, dtype=np.float64)
     z = center_z + sign * np.sqrt(np.maximum(0.0, radius * radius - rho * rho))
     z[-1] = float(throat_z_mm)
@@ -1236,11 +1607,23 @@ def build_meridian(
     *,
     freq_max_hz: float | None = None,
 ) -> MeridianBuildResult:
-    """Build a tagged CircSym body-of-revolution meridian from public config."""
+    """Build a tagged CircSym body-of-revolution meridian from public config.
+
+    CircSym resolution is controlled only by the mesh section's millimetre
+    values.
+    """
+
+    if freq_max_hz is not None:
+        raise ConfigError(
+            "freq_max_hz was removed by the millimetre-only mesh contract; "
+            "use throat_res_mm, mouth_res_mm, and rear_res_mm"
+        )
 
     params, formula, mode = build_geometry_params(config)
     _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
+    topology_mode = _mesh_topology_mode(mesh)
+    density = _mesh_density_from_config(config)
     enclosure = _section(config, "enclosure")
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
 
@@ -1250,38 +1633,46 @@ def build_meridian(
         enclosure_obj=enclosure_obj,
     )
     if reasons:
-        raise ConfigError("CircSym requires a circular waveguide: " + "; ".join(reasons))
+        raise ConfigError(
+            "CircSym requires a circular waveguide: " + "; ".join(reasons)
+        )
 
-    resolution = _circsym_resolution_budget(params, freq_max_hz)
+    resolution = _circsym_resolution_budget(params, density)
     params = dict(params)
-    params["lengthSegments"] = max(
-        int(params.get("lengthSegments") or 32),
-        int(resolution["length_segments"]),
-    )
-    target_inner_mm = float(resolution["inner_target_mm"])
+    params["lengthSegments"] = int(resolution["geometry_segments"])
+    target_throat_mm = float(resolution["throat_target_mm"])
+    target_mouth_mm = float(resolution["mouth_target_mm"])
     target_outer_mm = float(resolution["outer_target_mm"])
+    target_aperture_mm = float(resolution["aperture_target_mm"])
 
     grid = build_point_grid(params)
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
     inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
     inner_profile = _radial_profile_from_grid(inner_points, name="inner profile")
-    inner_profile = _resample_polyline_by_arc(
+    inner_profile = _resample_polyline_by_local_size(
         inner_profile,
-        int(params["lengthSegments"]),
+        target_throat_mm,
+        target_mouth_mm,
     )
 
     outer_profile: np.ndarray | None = None
     rear_profile: np.ndarray | None = None
     if grid.get("outer_points") is not None and mode != "infinite-baffle":
-        outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
+        outer_points = _reshape_grid(
+            grid["outer_points"], n_phi, n_length, "outer_points"
+        )
         outer_points = _restored_outer_throat_points(
             inner_points,
             outer_points,
             wall_thickness_mm=float(params["wallThickness"] or 0.0),
         )
-        outer_profile_grid = _radial_profile_from_grid(outer_points, name="outer profile")
-        rear_z = float(np.mean(inner_points[:, 0, 2]) - float(params["wallThickness"] or 0.0))
+        outer_profile_grid = _radial_profile_from_grid(
+            outer_points, name="outer profile"
+        )
+        rear_z = float(
+            np.mean(inner_points[:, 0, 2]) - float(params["wallThickness"] or 0.0)
+        )
         rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
         rear_profile = _radial_profile_from_grid(
             rear_points[:, np.newaxis, :],
@@ -1290,7 +1681,11 @@ def build_meridian(
         outer_indices = _outer_wall_axial_ring_indices(inner_points)
         topology_rows = [rear_profile[0], outer_profile_grid[0]]
         topology_rows.extend(outer_profile_grid[index] for index in outer_indices)
-        outer_profile = np.asarray(topology_rows, dtype=np.float64)
+        outer_profile = _resample_polyline_by_local_size(
+            np.asarray(topology_rows, dtype=np.float64),
+            target_outer_mm,
+            target_outer_mm,
+        )
 
     baffle_z_mm: float | None = None
     if mode == "infinite-baffle":
@@ -1325,7 +1720,7 @@ def build_meridian(
         throat_radius_mm=throat_radius,
         throat_z_mm=throat_z,
         geometry=source_geometry,
-        target_segment_mm=target_inner_mm,
+        target_segment_mm=target_throat_mm,
     )
 
     nodes_mm: list[tuple[float, float]] = []
@@ -1335,14 +1730,14 @@ def build_meridian(
         tags,
         cap_points,
         tag=int(PhysicalGroup.PRIMARY_SOURCE),
-        target_segment_mm=target_inner_mm,
+        target_segment_mm=target_throat_mm,
     )
     inner_segment_count = _append_subdivided_meridian_points(
         nodes_mm,
         tags,
         inner_profile,
         tag=int(PhysicalGroup.RIGID_WALL),
-        target_segment_mm=target_inner_mm,
+        target_segment_mm=max(target_throat_mm, target_mouth_mm),
     )
     aperture_segment_count = 0
     if mode == "infinite-baffle":
@@ -1355,7 +1750,7 @@ def build_meridian(
             tags,
             disc_points,
             tag=int(PhysicalGroup.MOUTH_APERTURE),
-            target_segment_mm=target_inner_mm,
+            target_segment_mm=target_aperture_mm,
         )
 
     mouth_rim_segment_count = 0
@@ -1372,21 +1767,25 @@ def build_meridian(
                 nodes_mm[-1],
                 (float(outer_reversed[0, 0]), float(outer_reversed[0, 1])),
                 incoming_tangent=incoming,
-                target_segment_mm=target_outer_mm,
+                target_segment_mm=min(target_mouth_mm, target_outer_mm),
+                minimum_segments=5 if topology_mode == "legacy" else 2,
             )
             mouth_rim_segment_count = _append_subdivided_meridian_points(
                 nodes_mm,
                 tags,
                 rounded_mouth,
                 tag=int(PhysicalGroup.RIGID_WALL),
+                target_segment_mm=min(target_mouth_mm, target_outer_mm),
+            )
+        outer_segment_count = (
+            mouth_rim_segment_count
+            + _append_subdivided_meridian_points(
+                nodes_mm,
+                tags,
+                outer_reversed,
+                tag=int(PhysicalGroup.RIGID_WALL),
                 target_segment_mm=target_outer_mm,
             )
-        outer_segment_count = mouth_rim_segment_count + _append_subdivided_meridian_points(
-            nodes_mm,
-            tags,
-            outer_reversed,
-            tag=int(PhysicalGroup.RIGID_WALL),
-            target_segment_mm=target_outer_mm,
         )
         rear_axis = np.asarray([[0.0, float(rear_profile[0, 1])]], dtype=np.float64)
         if nodes_mm:
@@ -1435,12 +1834,12 @@ def build_meridian(
         "mode": mode,
         "segmentCount": int(segments.shape[0]),
         "nodeCount": int(nodes.shape[0]),
-        "freqMaxHz": float(resolution["freq_max_hz"]),
-        "wavelengthM": float(resolution["wavelength_mm"]) * 0.001,
-        "innerTargetSegmentM": target_inner_mm * 0.001,
+        "throatTargetSegmentM": target_throat_mm * 0.001,
+        "mouthTargetSegmentM": target_mouth_mm * 0.001,
         "outerTargetSegmentM": target_outer_mm * 0.001,
+        "apertureTargetSegmentM": target_aperture_mm * 0.001,
         "profileArcLengthM": float(resolution["profile_arc_length_mm"]) * 0.001,
-        "adaptiveLengthSegments": int(params["lengthSegments"]),
+        "geometrySampleSegments": int(params["lengthSegments"]),
         "sourceSegmentCount": int(source_segment_count),
         "sourceSweptAreaM2": source_swept_area_mm2 * 1.0e-6,
         "innerSegmentCount": int(inner_segment_count),
@@ -1451,7 +1850,9 @@ def build_meridian(
             int(PhysicalGroup.MOUTH_APERTURE) if mode == "infinite-baffle" else None
         ),
         "apertureSegmentCount": int(aperture_segment_count),
-        "wallSegmentCount": int(np.count_nonzero(tags_arr == int(PhysicalGroup.RIGID_WALL))),
+        "wallSegmentCount": int(
+            np.count_nonzero(tags_arr == int(PhysicalGroup.RIGID_WALL))
+        ),
         "throatRadiusM": throat_radius * 0.001,
         "mouthRadiusM": mouth_radius * 0.001,
         "sourceCapHeightM": float(cap_meta["source_cap_height_mm"]) * 0.001,
@@ -1480,24 +1881,190 @@ def build_meridian(
     )
 
 
+def _build_acoustic_sampling_grid(
+    params: Mapping[str, Any],
+    density: MeshDensity,
+    *,
+    topology_mode: str,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Fit geometry from a control grid finer than the requested final mesh.
+
+    OCC B-spline surfaces approximate their control points; they do not
+    interpolate every sample. Keep angular chords within twice the local mesh
+    target, angular sagitta within 5% of it, and axial chords within half the
+    target. Coarse viewport/export sampling therefore cannot visibly shrink the
+    acoustic geometry.
+    """
+
+    working = dict(params)
+    if topology_mode != "acoustic":
+        grid = build_point_grid(working)
+        return grid, {
+            "geometrySampleAngularSegments": int(working["angularSegments"]),
+            "geometrySampleLengthSegments": int(working["lengthSegments"]),
+        }
+
+    if not working.get("zMapPoints"):
+        working["samplingMode"] = "ath-default-zmap"
+    enforce_angular_sagitta = (
+        _static_float_or_none(working.get("morphTarget", 0)) == 0.0
+        and _static_float_or_none(working.get("gcurveType", 0)) == 0.0
+    )
+
+    max_segments = 2048
+    for _attempt in range(10):
+        grid = build_point_grid(working)
+        n_phi = int(grid["grid_n_phi"])
+        n_length = int(grid["grid_n_length"])
+        # The outer freestanding grid is derived from the inner fit and can
+        # contain intentional closure transitions. The inner acoustic boundary
+        # is the fidelity authority; both surfaces receive the same sampling.
+        surfaces = [
+            _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+        ]
+
+        ring_t = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
+        ring_h = (
+            float(density.throat_res_mm)
+            + (float(density.mouth_res_mm) - float(density.throat_res_mm)) * ring_t
+        )
+        angular_ratio = 0.0
+        axial_ratio = 0.0
+        for points in surfaces:
+            angular_delta = np.diff(points, axis=0)
+            if bool(grid.get("full_circle", True)):
+                angular_delta = np.concatenate(
+                    (angular_delta, points[:1, :, :] - points[-1:, :, :]), axis=0
+                )
+            if angular_delta.size:
+                angular_lengths = np.linalg.norm(angular_delta, axis=2)
+                angular_ratio = max(
+                    angular_ratio,
+                    float(np.max(angular_lengths / (2.0 * ring_h[None, :]))),
+                )
+                angular_points = points
+                if bool(grid.get("full_circle", True)):
+                    angular_points = np.concatenate(
+                        (points[-1:, :, :], points, points[:1, :, :]), axis=0
+                    )
+                if enforce_angular_sagitta and angular_points.shape[0] >= 3:
+                    previous = angular_points[:-2, :, :]
+                    current = angular_points[1:-1, :, :]
+                    following = angular_points[2:, :, :]
+                    chord = following - previous
+                    chord_sq = np.sum(chord * chord, axis=2)
+                    alpha = np.divide(
+                        np.sum((current - previous) * chord, axis=2),
+                        chord_sq,
+                        out=np.zeros_like(chord_sq),
+                        where=chord_sq > 1.0e-18,
+                    )
+                    projection = previous + alpha[:, :, None] * chord
+                    sagitta = np.linalg.norm(current - projection, axis=2)
+                    angular_ratio = max(
+                        angular_ratio,
+                        float(np.max(sagitta / (0.05 * ring_h[None, :]))),
+                    )
+
+            axial_delta = np.diff(points, axis=1)
+            if axial_delta.size:
+                axial_lengths = np.linalg.norm(axial_delta, axis=2)
+                axial_h = 0.5 * (ring_h[:-1] + ring_h[1:])
+                axial_ratio = max(
+                    axial_ratio,
+                    float(np.max(axial_lengths / (0.5 * axial_h[None, :]))),
+                )
+
+        if angular_ratio <= 1.0 and axial_ratio <= 1.0:
+            return grid, {
+                "geometrySampleAngularSegments": int(working["angularSegments"]),
+                "geometrySampleLengthSegments": int(working["lengthSegments"]),
+            }
+
+        current_angular = int(working["angularSegments"])
+        current_length = int(working["lengthSegments"])
+        current_corner = int(working.get("cornerSegments") or 1)
+        if angular_ratio > 1.0:
+            working["angularSegments"] = min(
+                max_segments,
+                max(
+                    current_angular + 1,
+                    int(math.ceil(current_angular * angular_ratio * 1.05)),
+                ),
+            )
+            working["cornerSegments"] = min(
+                max_segments,
+                max(
+                    current_corner + 1,
+                    int(math.ceil(current_corner * angular_ratio * 1.05)),
+                ),
+            )
+        if axial_ratio > 1.0:
+            working["lengthSegments"] = min(
+                max_segments,
+                max(
+                    current_length + 1,
+                    int(math.ceil(current_length * axial_ratio * 1.05)),
+                ),
+            )
+        if (
+            int(working["angularSegments"]) == current_angular
+            and int(working["lengthSegments"]) == current_length
+            and int(working["cornerSegments"]) == current_corner
+        ):
+            break
+
+    raise ConfigError(
+        "requested mm resolution needs more than 2048 internal geometry samples; "
+        "use a coarser throat/mouth resolution"
+    )
+
+
 def build_from_config(
     config: Mapping[str, Any],
     output_path: str | Path,
+    *,
+    allow_large_mesh: bool | None = None,
 ) -> BuildResult:
     params, formula, mode = build_geometry_params(config)
     _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
+    topology_mode = _mesh_topology_mode(mesh)
+    density = _mesh_density_from_config(config, allow_large_mesh=allow_large_mesh)
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
 
-    grid = build_point_grid(params)
+    wall_thickness_mm = float(params.get("wallThickness") or 0.0)
+    acoustic_wall_floor_mm = 0.025 * min(
+        float(density.throat_res_mm),
+        float(density.mouth_res_mm),
+        float(density.rear_res_mm),
+    )
+    if (
+        topology_mode == "acoustic"
+        and mode == "freestanding"
+        and 0.0 < wall_thickness_mm < acoustic_wall_floor_mm
+    ):
+        raise ConfigError(
+            f"wall_thickness_mm={wall_thickness_mm:g} is below the stable acoustic "
+            f"feature floor {acoustic_wall_floor_mm:g} mm for the requested mesh; "
+            "set wall thickness to 0 for bare mode or use a resolvable thickness"
+        )
+
+    grid, geometry_sampling_metadata = _build_acoustic_sampling_grid(
+        params,
+        density,
+        topology_mode=topology_mode,
+    )
 
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
     inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
     outer_points = None
     if grid.get("outer_points") is not None and enclosure_obj is None:
-        outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
+        outer_points = _reshape_grid(
+            grid["outer_points"], n_phi, n_length, "outer_points"
+        )
 
     interface_offsets = _number_list(params.get("interfaceOffset"))
     interfaces = _interfaces_from_params(params, n_length)
@@ -1518,10 +2085,14 @@ def build_from_config(
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
+        topology_mode=topology_mode,
         # ATH does not scale Mesh.WallThickness by global Scale; the rear-cap
         # depth follows the unscaled wall offset.
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
-        preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
+        preserve_grid=(
+            topology_mode == "legacy"
+            and _bool(mesh, names=("preserve_grid", "preserveGrid"), default=False)
+        ),
         closed=bool(grid.get("full_circle", True)),
         symmetry_planes=_symmetry_planes_for_quadrants(quadrants),
         vertical_offset_mm=float(grid.get("vertical_offset_mm", 0.0) or 0.0),
@@ -1534,62 +2105,13 @@ def build_from_config(
         enclosure=enclosure_obj,
         infinite_baffle=(mode == "infinite-baffle"),
     )
-    density = MeshDensity(
-        # Read (mesh, config) with the same aliases build_geometry_params uses:
-        # top-level resolution values used to be accepted there and then
-        # silently ignored here.
-        throat_res_mm=_float(mesh, config, names=("throat_res_mm", "throat_res", "throatResolution"), default=4.0),
-        mouth_res_mm=_float(mesh, config, names=("mouth_res_mm", "mouth_res", "mouthResolution"), default=26.0),
-        rear_res_mm=_float(mesh, config, names=("rear_res_mm", "rear_res", "rearResolution"), default=15.0),
-        aperture_res_scale=_float(
-            mesh,
-            config,
-            names=(
-                "aperture_res_scale",
-                "apertureResolutionScale",
-                "aperture_cap_coarsening",
-                "apertureCapCoarsening",
-            ),
-            default=1.5,
-        ),
-        enc_front_res_mm=_pick(
-            mesh,
-            enclosure,
-            names=("enc_front_res_mm", "enc_front_resolution", "encFrontResolution"),
-            default=None,
-        ),
-        enc_back_res_mm=_pick(
-            mesh,
-            enclosure,
-            names=("enc_back_res_mm", "enc_back_resolution", "encBackResolution"),
-            default=None,
-        ),
-        # No default: density falls back to mouth_res_mm, matching ATH where
-        # Mesh.InterfaceResolution is obsolete and interfaces use the mouth size.
-        interface_res_mm=_optional_float(mesh, names=("interface_res_mm", "interface_res", "interfaceResolution")),
-        max_frequency_hz=_optional_float(
-            mesh,
-            config,
-            names=("max_frequency_hz", "maxFrequencyHz", "maxFrequency", "f_max_hz", "fMaxHz"),
-        ),
-        elements_per_wavelength=_float(
-            mesh, names=("elements_per_wavelength", "elementsPerWavelength"), default=6.0
-        ),
-        throat_epw=_float(mesh, names=("throat_epw", "throatEpw"), default=8.0),
-        mouth_epw=_float(mesh, names=("mouth_epw", "mouthEpw"), default=6.0),
-        rear_epw=_float(mesh, names=("rear_epw", "rearEpw"), default=2.5),
-        interface_epw=_float(mesh, names=("interface_epw", "interfaceEpw"), default=6.0),
-        aperture_epw=_float(mesh, names=("aperture_epw", "apertureEpw"), default=6.0),
-        speed_of_sound_m_s=_float(
-            mesh, names=("speed_of_sound_m_s", "speedOfSound"), default=343.0
-        ),
-        curvature_segments=_int(mesh, names=("curvature_segments", "curvatureSegments"), default=0),
+    scale_to_metres = _bool(
+        mesh, names=("scale_to_metres", "scaleToMetres"), default=True
     )
-    scale_to_metres = _bool(mesh, names=("scale_to_metres", "scaleToMetres"), default=True)
     mesh_path, info = build_mesh_with_info(
         geometry, density, output_path, scale_to_metres=scale_to_metres
     )
-    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm, density)
+    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     return BuildResult(
         mesh_path=mesh_path,
         formula=formula,
@@ -1602,9 +2124,8 @@ def build_from_config(
         native_symmetry_plane=native_plane,
         native_check_open_edges=_native_check_open_edges_for_mode(mode),
         mesh_report=mesh_report,
-        valid_f_max_hz=cost.worst_valid_f_max_hz(mesh_report),
         solve_cost=cost.estimate_solve_cost(info.n_triangles).to_dict(),
-        metadata=dict(info.metadata),
+        metadata={**info.metadata, **geometry_sampling_metadata},
     )
 
 

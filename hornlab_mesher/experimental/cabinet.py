@@ -18,7 +18,7 @@ import meshio
 import numpy as np
 
 from hornlab_mesher.config_builder import _mesh_report, _number_list
-from hornlab_mesher.cost import estimate_solve_cost, worst_valid_f_max_hz
+from hornlab_mesher.cost import estimate_solve_cost
 from hornlab_mesher.geometry import HornEnclosure, MeshDensity, PointGridHornGeometry
 from hornlab_mesher.mesher import build_mesh_with_info
 from hornlab_mesher.profile_common import _symmetry_planes_for_quadrants
@@ -157,7 +157,9 @@ def waveguide_payload_to_mesher_config(payload: Mapping[str, Any]) -> dict[str, 
                 "throatResolution": payload.get("throat_res"),
                 "mouthResolution": payload.get("mouth_res"),
                 "rearResolution": payload.get("rear_res"),
-                "encFrontResolution": _first_number(payload.get("enc_front_resolution")),
+                "encFrontResolution": _first_number(
+                    payload.get("enc_front_resolution")
+                ),
                 "encBackResolution": _first_number(payload.get("enc_back_resolution")),
             }
         ),
@@ -264,6 +266,8 @@ def _density_from_payload(payload: Mapping[str, Any]) -> MeshDensity:
         rear_res_mm=_number(payload.get("rear_res"), 25.0),
         enc_front_res_mm=payload.get("enc_front_resolution"),
         enc_back_res_mm=payload.get("enc_back_resolution"),
+        max_triangles=int(_number(payload.get("max_triangles"), 18_000.0)),
+        allow_large_mesh=bool(payload.get("allow_large_mesh", False)),
     )
 
 
@@ -295,7 +299,9 @@ def _apply_mouth_scaling(
         out[..., 1] *= 1.0 + t * (scale_v - 1.0)
         return out
 
-    return scale(inner_points), scale(outer_points) if outer_points is not None else None
+    return scale(inner_points), scale(
+        outer_points
+    ) if outer_points is not None else None
 
 
 def _grid_from_payload(
@@ -310,10 +316,14 @@ def _grid_from_payload(
     if _payload_has_point_grid(payload):
         n_phi = int(payload["grid_n_phi"])
         n_length = int(payload["grid_n_length"])
-        inner_points = _reshape_grid(payload["inner_points"], n_phi, n_length, "inner_points")
+        inner_points = _reshape_grid(
+            payload["inner_points"], n_phi, n_length, "inner_points"
+        )
         outer_points = None
         if payload.get("outer_points") is not None:
-            outer_points = _reshape_grid(payload["outer_points"], n_phi, n_length, "outer_points")
+            outer_points = _reshape_grid(
+                payload["outer_points"], n_phi, n_length, "outer_points"
+            )
         closed = bool(payload.get("full_circle", payload.get("grid_closed", True)))
         raw_planes = payload.get("symmetry_planes")
         if raw_planes is not None:
@@ -330,17 +340,29 @@ def _grid_from_payload(
     grid = viewport.get("grid") or {}
     n_phi = int(grid.get("grid_n_phi") or 0)
     n_length = int(grid.get("grid_n_length") or 0)
-    inner_points = _reshape_grid(grid.get("inner_points"), n_phi, n_length, "inner_points")
+    inner_points = _reshape_grid(
+        grid.get("inner_points"), n_phi, n_length, "inner_points"
+    )
     outer_points = None
     if grid.get("outer_points") is not None:
-        outer_points = _reshape_grid(grid.get("outer_points"), n_phi, n_length, "outer_points")
+        outer_points = _reshape_grid(
+            grid.get("outer_points"), n_phi, n_length, "outer_points"
+        )
     planes = tuple(str(p) for p in (grid.get("symmetry_planes") or ()))
     offset = _number(grid.get("vertical_offset_mm"), 0.0)
-    return inner_points, outer_points, bool(grid.get("full_circle", True)), planes, offset
+    return (
+        inner_points,
+        outer_points,
+        bool(grid.get("full_circle", True)),
+        planes,
+        offset,
+    )
 
 
 def _geometry_from_payload(payload: Mapping[str, Any]) -> PointGridHornGeometry:
-    inner_points, outer_points, closed, symmetry_planes, vertical_offset_mm = _grid_from_payload(payload)
+    inner_points, outer_points, closed, symmetry_planes, vertical_offset_mm = (
+        _grid_from_payload(payload)
+    )
     inner_points, outer_points = _apply_mouth_scaling(
         inner_points,
         outer_points,
@@ -350,15 +372,19 @@ def _geometry_from_payload(payload: Mapping[str, Any]) -> PointGridHornGeometry:
     enclosure = _enclosure_from_payload(payload)
     if enclosure is not None:
         outer_points = None
+    preserve_grid = bool(payload.get("grid_preserve_rings", False))
     return PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
         wall_thickness_mm=_number(payload.get("wall_thickness"), 6.0),
-        source_shape=int(_number(_normalize_source_shape(payload.get("source_shape")), 1.0)),
+        source_shape=int(
+            _number(_normalize_source_shape(payload.get("source_shape")), 1.0)
+        ),
         source_radius_mm=_number(payload.get("source_radius"), -1.0),
         source_curv=int(_number(payload.get("source_curv"), 0.0)),
         source_auto_angle_deg=_finite_float_or_none(payload.get("a0")),
-        preserve_grid=bool(payload.get("grid_preserve_rings", False)),
+        topology_mode="legacy" if preserve_grid else "acoustic",
+        preserve_grid=preserve_grid,
         closed=closed,
         symmetry_planes=symmetry_planes,
         vertical_offset_mm=vertical_offset_mm,
@@ -377,7 +403,9 @@ def _finite_float_or_none(value: Any) -> float | None:
 def _triangles_and_tags(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndarray]:
     triangles: list[np.ndarray] = []
     tags: list[np.ndarray] = []
-    physical_data = mesh.cell_data.get("gmsh:physical") or mesh.cell_data.get("physical")
+    physical_data = mesh.cell_data.get("gmsh:physical") or mesh.cell_data.get(
+        "physical"
+    )
     for idx, cell_block in enumerate(mesh.cells):
         if cell_block.type not in ("triangle", "triangle3"):
             continue
@@ -403,8 +431,12 @@ def _canonical_mesh_from_msh(path: Path) -> dict[str, Any]:
         "indices": triangles.reshape(-1).astype(int).tolist(),
         "surfaceTags": tags.astype(int).tolist(),
         "metadata": {
-            "units": "m" if _looks_like_metres(np.asarray(mesh.points, dtype=np.float64)) else "mm",
-            "unitScaleToMeter": 1.0 if _looks_like_metres(np.asarray(mesh.points, dtype=np.float64)) else 0.001,
+            "units": "m"
+            if _looks_like_metres(np.asarray(mesh.points, dtype=np.float64))
+            else "mm",
+            "unitScaleToMeter": 1.0
+            if _looks_like_metres(np.asarray(mesh.points, dtype=np.float64))
+            else 0.001,
             "tagCounts": tag_counts,
             "generatedBy": "hornlab-waveguide-mesher",
         },
@@ -467,7 +499,7 @@ def build_mesh_via_hornlab(
         msh_text = out_path.read_text(encoding="utf-8", errors="replace")
         canonical = _canonical_mesh_from_msh(out_path)
 
-    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm, density)
+    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     stats = {
         "nodeCount": int(info.n_vertices),
         "elementCount": int(info.n_triangles),
@@ -475,10 +507,8 @@ def build_mesh_via_hornlab(
         "units": info.units,
         "source": "hornlab_waveguide_mesher_experimental_cabinet",
         "generatedBy": "hornlab-waveguide-mesher",
-        # Mesh validity + dense-BEM solve cost, so downstream callers get the
-        # same size/cost/trustworthy-band forecast as the build_from_config path.
+        # Realized geometry statistics and dense-BEM solve cost.
         "meshReport": mesh_report,
-        "validFreqMaxHz": worst_valid_f_max_hz(mesh_report),
         "solveCost": estimate_solve_cost(info.n_triangles).to_dict(),
     }
     if info.metadata:

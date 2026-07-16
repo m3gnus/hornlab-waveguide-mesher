@@ -157,9 +157,9 @@ Use `[cross_section]` or `[crossSection]`.
 
 | Canonical TOML/JSON key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `angular_segments` | `angularSegments` | `64` | Normalized to an ATH-compatible multiple by the profile sampler. |
+| `angular_segments` | `angularSegments` | `64` | Geometry sampling for the fitted acoustic surface; it does not directly set BEM element count. |
 | `corner_segments` | `cornerSegments` | `0` | Grows the angular point budget for rounded-rectangle morphs; the corner arc itself always carries four profiles per quadrant. |
-| `length_segments` | `lengthSegments` | `32` | Produces `length_segments + 1` axial rings. |
+| `length_segments` | `lengthSegments` | `32` | Geometry sampling for the fitted acoustic surface; it does not directly set BEM element count. |
 | `sampling_mode` | `samplingMode` | `uniform` or `zmap` | Defaults to `zmap` when `z_map_points` is set. Text imports default to `ath-default-zmap`. |
 | `vertical_offset_mm` | `verticalOffset` | `0.0` | Rigid +y translation applied after `scale`. |
 | `ath_parity_sampling` | `athParitySampling` | `false` | Forces `ath-default-zmap`. |
@@ -168,34 +168,26 @@ Use `[cross_section]` or `[crossSection]`.
 | `quadrants` | none | `1234` | `1`, `12`, `14`, and `1234` are supported by the sampler. |
 | `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |
 | `mouth_res_mm` | `mouth_res`, `mouthResolution` | `26.0` (`8.0` for text imports) | Mesh density, not grid shape. |
-| `rear_res_mm` | `rear_res`, `rearResolution` | `25.0` (`15.0` for text imports) | Mesh density, not grid shape. |
+| `rear_res_mm` | `rear_res`, `rearResolution` | `15.0` | Mesh density, not grid shape. Direct `MeshDensity` construction defaults to `25.0`. |
 | `aperture_res_scale` | `apertureResolutionScale`, `aperture_cap_coarsening`, `apertureCapCoarsening` | `1.5` | Infinite-baffle aperture-cap interior size multiplier relative to `mouth_res_mm`; the welded rim keeps mouth density. |
 | `subdomain_slices` | `subdomainSlices` | empty | Comma/list of point-grid ring indices for interfaces. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
 | `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
-| `preserve_grid` | `preserveGrid` | `false` | Forces faceted point-grid wall surfaces instead of grouped OCC patches. Leave false for fast grouped-wall enclosure topology unless a config explicitly needs point-grid wall faces. |
+| `topology` | `topology_mode`, `topologyMode` | `acoustic` | `acoustic` separates geometry samples from BEM topology. `legacy` retains ATH/parity patch and grid semantics. |
+| `preserve_grid` | `preserveGrid` | `false` | Legacy faceted point-grid topology. Requires `topology = "legacy"`; rejected in ordinary acoustic mode. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
-| `max_frequency_hz` | `maxFrequencyHz`, `maxFrequency`, `f_max_hz` | none | Frequency-aware sizing: clamps each resolution to `c / (epw_role * f)` so the band stays resolved. The mm knobs still apply where finer. An explicit band takes precedence over the default enclosure triangle-cost ceiling and may therefore produce more than 18,000 full-domain triangles. |
-| `elements_per_wavelength` | `elementsPerWavelength` | `6.0` | Generic target used for groups without a role override and for the `mesh_report` validity figures. |
-| `throat_epw` | `throatEpw` | `8.0` | Elements-per-wavelength at the throat (strongest, most detailed field). |
-| `mouth_epw` | `mouthEpw` | `6.0` | Elements-per-wavelength at the mouth; the inner wall grades from the throat value to this. |
-| `rear_epw` | `rearEpw` | `2.5` | Elements-per-wavelength on shadowed rear/outer surfaces, which contribute little to the radiated field. |
-| `interface_epw` | `interfaceEpw` | `6.0` | Elements-per-wavelength on subdomain interfaces. |
-| `aperture_epw` | `apertureEpw` | `6.0` | Elements-per-wavelength ceiling for the infinite-baffle aperture interior. Applied after `aperture_res_scale`, so coarsening cannot violate a requested frequency limit. |
-| `speed_of_sound_m_s` | `speedOfSound` | `343.0` | Speed of sound for frequency-aware sizing. |
-| `curvature_segments` | `curvatureSegments` | `0` | Gmsh `MeshSizeFromCurvature` segments per full circle; `0` disables curvature-adaptive refinement. |
+| `max_triangles` | `maxTriangles` | `18000` | Full-domain-equivalent triangle ceiling. Estimated gross overruns fail before meshing and realized overruns fail before return. Sizes are never rewritten. |
+| `allow_large_mesh` | `allowLargeMesh` | `false` | Explicitly bypasses both triangle-limit checks without changing any mm target. The CLI equivalent is `--allow-large-mesh`. |
 
 `BuildResult` reports `quadrants`, the matching `native_symmetry_plane` solver
 flag for reduced grids (`1` -> `yz+xz`, `12` -> `xz`, `14` -> `yz`; full
-grids -> `None`), and a `mesh_report` with per-group edge statistics plus
-`valid_f_max_hz` -- the highest frequency each surface group resolves at the
-configured elements-per-wavelength. Downstream solves should clamp or warn from
-it. Infinite-baffle supports `1`, `12`, `14`, and `1234`; its reduced-domain
+grids -> `None`), and a `mesh_report` with realized per-group edge statistics.
+The mesher does not derive or report frequency validity. Infinite-baffle
+supports `1`, `12`, `14`, and `1234`; its reduced-domain
 open edges are expected to lie only on the matching native cut plane(s), so
 `native_check_open_edges` remains true.
-Note the report applies the generic target to every group: on freestanding
-horns the rigid-wall tag mixes the inner wall with the deliberately coarser
-rear/outer surfaces, so its strict figure is conservative.
+Removed frequency/EPW and curvature-sizing keys raise `ConfigError` with a
+migration hint; they are never silently ignored.
 
 Sampling modes accepted by the profile layer:
 

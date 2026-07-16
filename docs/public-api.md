@@ -30,7 +30,6 @@ Gmsh `.msh` file. It returns `BuildResult` from `hornlab_mesher.cli`, with:
 - `native_symmetry_plane`
 - `native_check_open_edges`
 - `mesh_report`
-- `valid_f_max_hz`
 - `solve_cost`
 
 Use this path when accepting TOML, JSON, or imported ATH/WG-style text configs.
@@ -38,6 +37,11 @@ Use this path when accepting TOML, JSON, or imported ATH/WG-style text configs.
 physical-group keys converted to strings.
 Experimental LOOKUP profiles are accepted as TOML/JSON compatibility input,
 not as stable public API.
+
+Config-driven builds enforce `mesh.max_triangles` as a full-domain-equivalent
+ceiling (18,000 by default). Set `mesh.allow_large_mesh=true`, pass
+`allow_large_mesh=True` to `build_from_config`, or use the CLI's
+`--allow-large-mesh` flag only after reviewing the expected dense-BEM cost.
 
 ### Direct Mesh Builds
 
@@ -53,6 +57,9 @@ path = build_mesh(
 
 `build_mesh(geometry, density=None, output_path=None, scale_to_metres=True)`
 writes a tagged, validated Gmsh `.msh` file and returns its path.
+
+`MeshDensity.max_triangles` applies the same full-domain-equivalent guard to
+direct builds; `MeshDensity.allow_large_mesh=True` is the explicit override.
 
 `build_mesh_with_info(...)` takes the same arguments and returns
 `(path, MeshInfo)`; the info is collected at write time so the file is not
@@ -132,6 +139,7 @@ Useful options:
 - `-o`, `--output`: output `.msh` path.
 - `--summary`: write JSON build summary.
 - `--print-summary`: print JSON build summary.
+- `--allow-large-mesh`: explicitly permit output above `mesh.max_triangles`.
 
 The CLI accepts `.toml`, `.tml`, `.json`, `.cfg`, and `.txt` configs.
 

@@ -10,7 +10,7 @@ from hornlab_mesher.density import (
     _enclosure_resolution_formula,
     _parse_quadrant_resolutions,
 )
-from hornlab_mesher.geometry import BuiltGeometry, MeshDensity
+from hornlab_mesher.geometry import BuiltGeometry, MeshDensity, validate_mesh_density
 
 
 def test_quadrant_resolution_parsing_matches_wg_contract():
@@ -18,6 +18,21 @@ def test_quadrant_resolution_parsing_matches_wg_contract():
     assert _parse_quadrant_resolutions("6,7,8,9", 9.0) == [6.0, 7.0, 8.0, 9.0]
     assert _parse_quadrant_resolutions("6,7", 9.0) == [6.0, 7.0, 9.0, 9.0]
     assert _parse_quadrant_resolutions("", 9.0) == [9.0, 9.0, 9.0, 9.0]
+
+
+@pytest.mark.parametrize(
+    "density",
+    (
+        MeshDensity(throat_res_mm=0.0),
+        MeshDensity(mouth_res_mm=float("nan")),
+        MeshDensity(rear_res_mm=-1.0),
+        MeshDensity(aperture_res_scale=0.5),
+        MeshDensity(max_triangles=0),
+    ),
+)
+def test_mesh_density_validation_rejects_invalid_controls(density):
+    with pytest.raises(ValueError):
+        validate_mesh_density(density)
 
 
 def test_enclosure_resolution_formula_hits_wg_corner_targets():
@@ -167,44 +182,13 @@ def test_aperture_density_coarsens_surface_not_rim_curves(monkeypatch):
     aperture_restrict = next(
         tag
         for tag, kind in field.kinds.items()
-        if kind == "Restrict" and tuple(field.number_lists.get((tag, "SurfacesList"), ())) == (2,)
+        if kind == "Restrict"
+        and tuple(field.number_lists.get((tag, "SurfacesList"), ())) == (2,)
     )
     assert (aperture_restrict, "CurvesList") not in field.number_lists
 
 
-def test_frequency_ceiling_is_reapplied_after_aperture_coarsening(monkeypatch):
-    fake_gmsh = types.SimpleNamespace(
-        model=_FakeModel(
-            {
-                1: (-20.0, -20.0, -80.0, 20.0, 20.0, 0.0),
-                2: (-20.0, -20.0, 0.0, 20.0, 20.0, 0.0),
-            }
-        ),
-        option=types.SimpleNamespace(setNumber=lambda *_args: None),
-    )
-    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
-    geometry = BuiltGeometry(
-        surface_groups={},
-        axial_bounds_mm=(-80.0, 0.0),
-        mesh_surface_groups={"inner": [1], "mouth_aperture": [2]},
-    )
-
-    configure_density(
-        geometry,
-        MeshDensity(
-            mouth_res_mm=30.0,
-            aperture_res_scale=3.0,
-            max_frequency_hz=10_000.0,
-            aperture_epw=10.0,
-        ),
-    )
-
-    ceiling_mm = 343_000.0 / (10.0 * 10_000.0)
-    assert float(_restriction_formulas(fake_gmsh)[(2,)]) == pytest.approx(ceiling_mm)
-    assert geometry.metadata["apertureMeshInteriorSizeMm"] == pytest.approx(ceiling_mm)
-
-
-def test_enclosure_density_refines_panels_and_roundover_without_global_box_fillet_size(monkeypatch):
+def test_enclosure_density_uses_only_user_mm_targets(monkeypatch):
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(
             {
@@ -245,21 +229,27 @@ def test_enclosure_density_refines_panels_and_roundover_without_global_box_fille
             throat_res_mm=8.0,
             mouth_res_mm=26.0,
             rear_res_mm=30.0,
-            max_frequency_hz=5_000.0,
+            enc_front_res_mm=40.0,
+            enc_back_res_mm=50.0,
+            allow_large_mesh=True,
         ),
     )
 
     formulas = _restriction_formulas(fake_gmsh)
 
-    assert "11.4333333333" in formulas[(1,)]
-    assert "11.4333333333" in formulas[(2,)]
-    assert formulas[(3,)] == "6"
-    assert formulas[(4,)] == "6"
-    assert formulas[(1, 2, 3, 4, 5)] != "6"
-    assert geometry.metadata == {}
+    assert float(
+        eval(formulas[(1,)], {"__builtins__": {}}, {"x": 0, "y": 0, "z": 100})
+    ) == pytest.approx(40.0)
+    assert float(
+        eval(formulas[(2,)], {"__builtins__": {}}, {"x": 0, "y": 0, "z": 40})
+    ) == pytest.approx(50.0)
+    assert formulas[(3,)] == "40"
+    assert formulas[(4,)] == "50"
+    assert formulas[(1, 2, 3, 4, 5)] not in {"40", "50"}
+    assert geometry.metadata["meshTriangleEstimate"] > 0
 
 
-def test_enclosure_density_caps_large_default_triangle_estimate(monkeypatch):
+def test_large_triangle_estimate_refuses_instead_of_rewriting_sizes(monkeypatch):
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(
             {
@@ -294,84 +284,52 @@ def test_enclosure_density_caps_large_default_triangle_estimate(monkeypatch):
         },
     )
 
-    configure_density(
-        geometry,
-        MeshDensity(
-            throat_res_mm=30.0,
-            mouth_res_mm=30.0,
-            rear_res_mm=30.0,
-        ),
+    density = MeshDensity(
+        throat_res_mm=2.0,
+        mouth_res_mm=2.0,
+        rear_res_mm=2.0,
+        enc_front_res_mm=2.0,
+        enc_back_res_mm=2.0,
     )
-
-    metadata = geometry.metadata
-    assert metadata["enclosureMeshCapped"] is True
-    assert metadata["enclosureMeshTriangleCeiling"] == 18_000
-    assert metadata["enclosureMeshEffectiveTriangleCeiling"] == 18_000
-    assert metadata["enclosureMeshDomainFraction"] == 1.0
-    assert metadata["enclosureMeshDomainMultiplier"] == 1.0
-    assert metadata["enclosureMeshTriangleEstimatePre"] > 18_000
-    assert metadata["enclosureMeshTriangleEstimatePreFullDomain"] == metadata[
-        "enclosureMeshTriangleEstimatePre"
-    ]
-    assert metadata["enclosureMeshTriangleEstimatePost"] == pytest.approx(18_000, abs=2)
-    assert metadata["enclosureMeshTriangleEstimatePostFullDomain"] == pytest.approx(18_000, abs=2)
-    assert metadata["enclosureMeshCapScale"] > 1.0
-
-    raw_panel_target = 343_000.0 / (6.0 * 20_000.0)
-    expected_capped_target = raw_panel_target * metadata["enclosureMeshCapScale"]
-    formulas = _restriction_formulas(fake_gmsh)
-
-    front_panel_value = float(
-        eval(
-            formulas[(1,)],
-            {"__builtins__": {}},
-            {"x": 0.0, "y": 0.0, "z": 100.0},
-        )
-    )
-    assert front_panel_value == pytest.approx(expected_capped_target)
-    assert float(formulas[(3,)]) == pytest.approx(expected_capped_target)
-
-
-def test_explicit_frequency_resolution_takes_priority_over_enclosure_cost_cap(
-    monkeypatch,
-):
-    fake_gmsh = types.SimpleNamespace(
-        model=_FakeModel(
-            {
-                1: (-150.0, -150.0, 100.0, 150.0, 150.0, 100.0),
-                2: (-150.0, -150.0, 0.0, 150.0, 150.0, 0.0),
-            },
-            masses={1: 90_000.0, 2: 90_000.0},
-        ),
-        option=types.SimpleNamespace(setNumber=lambda *_args: None),
-    )
-    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
-    geometry = _fake_panel_enclosure_geometry()
-
-    configure_density(
-        geometry,
-        MeshDensity(
-            throat_res_mm=30.0,
-            mouth_res_mm=30.0,
-            rear_res_mm=30.0,
-            max_frequency_hz=20_000.0,
-        ),
-    )
-
-    target_mm = 343_000.0 / (6.0 * 20_000.0)
-    formulas = _restriction_formulas(fake_gmsh)
-    front_value = float(
-        eval(
-            formulas[(1,)],
-            {"__builtins__": {}},
-            {"x": 0.0, "y": 0.0, "z": 100.0},
-        )
-    )
-    assert front_value == pytest.approx(target_mm)
+    with pytest.raises(
+        ValueError, match=r"estimated mesh size .*largest estimated contribution is"
+    ):
+        configure_density(geometry, density)
+    assert geometry.metadata["meshTriangleEstimate"] > 27_000
+    assert geometry.metadata["meshTriangleDominantRegion"] == "front enclosure panel"
+    assert geometry.metadata["meshTriangleDominantTargetMm"] == pytest.approx(2.0)
     assert "enclosureMeshCapped" not in geometry.metadata
 
+    allowed_geometry = BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=geometry.axial_bounds_mm,
+        mesh_surface_groups=geometry.mesh_surface_groups,
+        enclosure_bounds=geometry.enclosure_bounds,
+    )
+    configure_density(
+        allowed_geometry,
+        MeshDensity(
+            throat_res_mm=2.0,
+            mouth_res_mm=2.0,
+            rear_res_mm=2.0,
+            enc_front_res_mm=2.0,
+            enc_back_res_mm=2.0,
+            allow_large_mesh=True,
+        ),
+    )
+    formulas = _restriction_formulas(fake_gmsh)
+    assert float(formulas[(3,)]) == pytest.approx(2.0)
+    assert float(
+        eval(
+            formulas[(1,)],
+            {"__builtins__": {}},
+            {"x": 0.0, "y": 0.0, "z": 100.0},
+        )
+    ) == pytest.approx(2.0)
+    assert "enclosureMeshCapped" not in allowed_geometry.metadata
 
-def test_frequency_aware_enclosure_sets_global_max_without_cap_metadata(monkeypatch):
+
+def test_global_gmsh_options_are_defensive_not_hidden_refinement(monkeypatch):
     option_values: dict[str, float] = {}
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(
@@ -382,35 +340,40 @@ def test_frequency_aware_enclosure_sets_global_max_without_cap_metadata(monkeypa
             masses={1: 90_000.0, 2: 90_000.0},
         ),
         option=types.SimpleNamespace(
-            setNumber=lambda name, value: option_values.__setitem__(str(name), float(value))
+            setNumber=lambda name, value: option_values.__setitem__(
+                str(name), float(value)
+            )
         ),
     )
     monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
-    geometry = _fake_panel_enclosure_geometry()
-    geometry.metadata["callerMetadata"] = "preserve"
+    geometry = BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(0.0, 100.0),
+        mesh_surface_groups={"inner": [1], "throat_disc": [2]},
+    )
 
     configure_density(
         geometry,
         MeshDensity(
-            throat_res_mm=30.0,
-            mouth_res_mm=30.0,
+            throat_res_mm=5.0,
+            mouth_res_mm=20.0,
             rear_res_mm=30.0,
-            max_frequency_hz=20_000.0,
+            allow_large_mesh=True,
         ),
     )
+    assert option_values["Mesh.MeshSizeMin"] == pytest.approx(1.25)
+    assert option_values["Mesh.MeshSizeMax"] == pytest.approx(30.0)
+    assert option_values["Mesh.MeshSizeFromPoints"] == 0.0
+    assert option_values["Mesh.MeshSizeFromCurvature"] == 0.0
+    assert option_values["Mesh.MeshSizeExtendFromBoundary"] == 0.0
 
-    # A frequency-aware build must never take the default cost-cap branch, yet
-    # MeshSizeMax still limits otherwise-unrestricted elements to the coarsest
-    # role's wavelength ceiling (the rear role here).
-    assert geometry.metadata == {"callerMetadata": "preserve"}
-    assert option_values["Mesh.MeshSizeMax"] == pytest.approx(343_000.0 / (2.5 * 20_000.0))
 
-
-def test_enclosure_triangle_cap_is_quadrant_consistent(monkeypatch):
+def test_triangle_estimate_and_limit_are_quadrant_consistent(monkeypatch):
     density = MeshDensity(
         throat_res_mm=30.0,
         mouth_res_mm=30.0,
         rear_res_mm=30.0,
+        allow_large_mesh=True,
     )
 
     full_gmsh = types.SimpleNamespace(
@@ -443,15 +406,10 @@ def test_enclosure_triangle_cap_is_quadrant_consistent(monkeypatch):
 
     full = full_geometry.metadata
     quarter = quarter_geometry.metadata
-    assert full["enclosureMeshCapped"] is True
-    assert quarter["enclosureMeshCapped"] is True
-    assert full["enclosureMeshCapScale"] == pytest.approx(quarter["enclosureMeshCapScale"])
-    assert full["enclosureMeshEffectiveTriangleCeiling"] == 18_000
-    assert quarter["enclosureMeshEffectiveTriangleCeiling"] == 4_500
-    assert full["enclosureMeshTriangleEstimatePost"] == pytest.approx(18_000, abs=2)
-    assert quarter["enclosureMeshTriangleEstimatePost"] == pytest.approx(4_500, abs=2)
-    assert quarter["enclosureMeshTriangleEstimatePostFullDomain"] == pytest.approx(
-        full["enclosureMeshTriangleEstimatePostFullDomain"],
+    assert full["meshEffectiveTriangleLimit"] == 18_000
+    assert quarter["meshEffectiveTriangleLimit"] == 4_500
+    assert quarter["meshTriangleEstimateFullDomain"] == pytest.approx(
+        full["meshTriangleEstimateFullDomain"],
         abs=4,
     )
 

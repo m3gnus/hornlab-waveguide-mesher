@@ -128,17 +128,19 @@ def test_formula_only_osse_horn_in_box_builds(tmp_path):
     assert result["stats"]["units"] == "mm"
     assert _node_z_extent(result["msh_text"]) > 50.0
     assert {"1", "2"}.issubset(result["stats"]["tagCounts"])
-    # Size/cost/trustworthy-band forecast carried for the optimizer/BIGMEH.
+    # Realized size statistics and solve-cost forecast carried downstream.
     solve_cost = result["stats"]["solveCost"]
     assert solve_cost["n_triangles"] == result["stats"]["elementCount"]
     assert solve_cost["ram_bytes"] > 0
     assert solve_cost["feasibility"] in {"ok", "caution", "warn", "infeasible"}
-    assert result["stats"]["validFreqMaxHz"] is None or result["stats"]["validFreqMaxHz"] > 0
+    assert "validFreqMaxHz" not in result["stats"]
     assert result["stats"]["meshReport"]
 
 
 def test_raw_point_grid_payload_builds(tmp_path):
-    output = build_horn_in_box_mesh(_raw_point_grid_payload(enc_depth=0.0), tmp_path / "raw.msh", verbose=False)
+    output = build_horn_in_box_mesh(
+        _raw_point_grid_payload(enc_depth=0.0), tmp_path / "raw.msh", verbose=False
+    )
     tags = set(_triangle_tags(output))
 
     assert output.is_file()
@@ -202,12 +204,16 @@ def test_raw_point_grid_grid_closed_legacy_key_controls_closure():
     payload.pop("full_circle")
     payload["grid_closed"] = False
 
-    _inner_points, _outer_points, closed, _planes, _voffset = _grid_from_payload(payload)
+    _inner_points, _outer_points, closed, _planes, _voffset = _grid_from_payload(
+        payload
+    )
 
     assert closed is False
 
     payload.pop("grid_closed")
-    _inner_points, _outer_points, closed, _planes, _voffset = _grid_from_payload(payload)
+    _inner_points, _outer_points, closed, _planes, _voffset = _grid_from_payload(
+        payload
+    )
 
     assert closed is True
 
@@ -221,7 +227,9 @@ def test_bigmeh_extension_tags_are_available_without_reassigning_wg_tags():
     assert int(PhysicalGroup.MID_PORT_EXIT_RIGHT) == 11
 
 
-def _cone_grid(angles: np.ndarray, *, n_length: int = 5, mouth_z: float = 120.0) -> np.ndarray:
+def _cone_grid(
+    angles: np.ndarray, *, n_length: int = 5, mouth_z: float = 120.0
+) -> np.ndarray:
     points = np.empty((len(angles), n_length + 1, 3), dtype=float)
     for i, phi in enumerate(angles):
         for j in range(n_length + 1):
@@ -271,7 +279,9 @@ def _side_wall_roundover(msh_path, *, z_front: float = 120.0) -> float:
     return z_front - float(at_wall[:, 2].max())
 
 
-def _front_x_chamfer_plane_error(msh_path, *, edge_depth: float, z_front: float = 120.0) -> float:
+def _front_x_chamfer_plane_error(
+    msh_path, *, edge_depth: float, z_front: float = 120.0
+) -> float:
     mesh = meshio.read(msh_path)
     pts = np.asarray(mesh.points, dtype=float)
     bx1 = float(pts[:, 0].max())
@@ -288,7 +298,15 @@ def _front_x_chamfer_plane_error(msh_path, *, edge_depth: float, z_front: float 
     ]
     if on_front_x_bevel.size == 0:
         return math.inf
-    return float(np.max(np.abs(on_front_x_bevel[:, 0] + on_front_x_bevel[:, 2] - (bx1 + z_front - edge_depth))))
+    return float(
+        np.max(
+            np.abs(
+                on_front_x_bevel[:, 0]
+                + on_front_x_bevel[:, 2]
+                - (bx1 + z_front - edge_depth)
+            )
+        )
+    )
 
 
 def test_enclosure_rejects_wall_crossing_baffle_outside_mouth(tmp_path):
@@ -304,14 +322,18 @@ def test_enclosure_rejects_wall_crossing_baffle_outside_mouth(tmp_path):
     for i, phi in enumerate(angles):
         for j, (radius, z) in enumerate(zip(radii, zs)):
             points[i, j] = (radius * math.cos(phi), radius * math.sin(phi), z)
-    payload = _box_payload(points, full_circle=True, spaces=(20.0, 20.0, 20.0, 20.0), enc_edge=0.0)
+    payload = _box_payload(
+        points, full_circle=True, spaces=(20.0, 20.0, 20.0, 20.0), enc_edge=0.0
+    )
     with pytest.raises(Exception, match="front-baffle"):
         build_horn_in_box_mesh(payload, tmp_path / "curl-in.msh", verbose=False)
 
 
 def test_cabinet_payload_zero_edge_remains_sharp():
     points = _cone_grid(np.array([math.tau * i / 16 for i in range(16)]))
-    payload = _box_payload(points, full_circle=True, spaces=(20.0, 20.0, 20.0, 20.0), enc_edge=0.0)
+    payload = _box_payload(
+        points, full_circle=True, spaces=(20.0, 20.0, 20.0, 20.0), enc_edge=0.0
+    )
 
     enclosure = _enclosure_from_payload(payload)
 
@@ -328,11 +350,15 @@ def test_quarter_roundover_matches_full_build(tmp_path):
     quarter_angles = np.array([(math.pi / 2.0) * i / 16 for i in range(17)])
     spaces = (100.0, 100.0, 100.0, 100.0)
 
-    full_payload = _box_payload(_cone_grid(full_angles), full_circle=True, spaces=spaces, enc_edge=80.0)
+    full_payload = _box_payload(
+        _cone_grid(full_angles), full_circle=True, spaces=spaces, enc_edge=80.0
+    )
     build_horn_in_box_mesh(full_payload, tmp_path / "full.msh", verbose=False)
     r_full = _side_wall_roundover(tmp_path / "full.msh")
 
-    quarter_payload = _box_payload(_cone_grid(quarter_angles), full_circle=False, spaces=spaces, enc_edge=80.0)
+    quarter_payload = _box_payload(
+        _cone_grid(quarter_angles), full_circle=False, spaces=spaces, enc_edge=80.0
+    )
     build_horn_in_box_mesh(quarter_payload, tmp_path / "quarter.msh", verbose=False)
     r_quarter = _side_wall_roundover(tmp_path / "quarter.msh")
 
@@ -362,12 +388,19 @@ def test_quarter_chamfer_matches_full_build(tmp_path):
         enc_edge=80.0,
         edge_type=2,
     )
-    build_horn_in_box_mesh(quarter_payload, tmp_path / "quarter-chamfer.msh", verbose=False)
+    build_horn_in_box_mesh(
+        quarter_payload, tmp_path / "quarter-chamfer.msh", verbose=False
+    )
     r_quarter = _side_wall_roundover(tmp_path / "quarter-chamfer.msh")
 
     assert abs(r_full - 80.0) < 1.0e-3
     assert abs(r_quarter - r_full) < 1.0e-6
-    assert _front_x_chamfer_plane_error(tmp_path / "quarter-chamfer.msh", edge_depth=r_full) < 1.0e-6
+    assert (
+        _front_x_chamfer_plane_error(
+            tmp_path / "quarter-chamfer.msh", edge_depth=r_full
+        )
+        < 1.0e-6
+    )
 
 
 def test_quarter_unused_cut_side_spacing_keeps_roundover(tmp_path):

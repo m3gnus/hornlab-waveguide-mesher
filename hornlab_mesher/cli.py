@@ -23,7 +23,13 @@ from .config_builder import (
     build_from_config,
     build_geometry_params,
 )
-from .config_parser import ConfigError, load_config, parse_ath_config, parse_legacy_config, parse_text_config
+from .config_parser import (
+    ConfigError,
+    load_config,
+    parse_ath_config,
+    parse_legacy_config,
+    parse_text_config,
+)
 
 __all__ = [
     "BuildResult",
@@ -57,9 +63,18 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Build an OSSE or R-OSSE waveguide mesh from a TOML/JSON config or imported ATH-style .cfg/.txt.",
     )
     parser.add_argument("config", help="Input .toml, .json, .cfg, or .txt config file")
-    parser.add_argument("-o", "--output", help="Output .msh path; overrides output.path in config")
+    parser.add_argument(
+        "-o", "--output", help="Output .msh path; overrides output.path in config"
+    )
     parser.add_argument("--summary", help="Optional JSON summary output path")
-    parser.add_argument("--print-summary", action="store_true", help="Print build summary as JSON")
+    parser.add_argument(
+        "--print-summary", action="store_true", help="Print build summary as JSON"
+    )
+    parser.add_argument(
+        "--allow-large-mesh",
+        action="store_true",
+        help="Explicitly allow the generated mesh to exceed mesh.max_triangles",
+    )
     return parser
 
 
@@ -68,14 +83,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
-        output = args.output or _pick(_section(config, "output"), config, names=("path", "output_path"), default=None)
+        output = args.output or _pick(
+            _section(config, "output"),
+            config,
+            names=("path", "output_path"),
+            default=None,
+        )
         if not output:
-            raise ConfigError("output path required; set output.path or pass -o/--output")
-        result = build_from_config(config, output)
+            raise ConfigError(
+                "output path required; set output.path or pass -o/--output"
+            )
+        result = build_from_config(
+            config,
+            output,
+            allow_large_mesh=True if args.allow_large_mesh else None,
+        )
         summary = result.as_dict()
         if args.summary:
             Path(args.summary).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.summary).write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+            Path(args.summary).write_text(
+                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+            )
         if args.print_summary:
             print(json.dumps(summary, indent=2))
         else:

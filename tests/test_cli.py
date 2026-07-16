@@ -505,7 +505,9 @@ def test_multi_source_ath_configs_are_rejected(tmp_path):
         "Source.Velocity = 2\n",
     ):
         cfg_path = tmp_path / "multi-source.cfg"
-        cfg_path.write_text(ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n" + snippet, encoding="utf-8")
+        cfg_path.write_text(
+            ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n" + snippet, encoding="utf-8"
+        )
         with pytest.raises(ConfigError, match="multi-source"):
             load_config(cfg_path)
 
@@ -568,7 +570,9 @@ def test_toml_dict_configs_keep_package_defaults():
 
 def test_ath_text_import_maps_term_k_alias(tmp_path):
     cfg_path = tmp_path / "term-k.cfg"
-    cfg_path.write_text(ATH_FLAT_OSSE_CFG.replace("OS.k = 0.9", "Term.k = 0.7"), encoding="utf-8")
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG.replace("OS.k = 0.9", "Term.k = 0.7"), encoding="utf-8"
+    )
 
     params, _formula, _mode = build_geometry_params(load_config(cfg_path))
 
@@ -577,7 +581,9 @@ def test_ath_text_import_maps_term_k_alias(tmp_path):
 
 def test_ath_text_import_requires_length(tmp_path):
     cfg_path = tmp_path / "no-length.cfg"
-    cfg_path.write_text(ATH_FLAT_OSSE_CFG.replace("Length = 150\n", ""), encoding="utf-8")
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG.replace("Length = 150\n", ""), encoding="utf-8"
+    )
 
     with pytest.raises(ValueError, match="Length"):
         load_config(cfg_path)
@@ -633,7 +639,9 @@ def test_ath_text_import_rejects_unsupported_geometry_keys(tmp_path):
             load_config(cfg_path)
 
     ok_path = tmp_path / "supported.cfg"
-    ok_path.write_text(ATH_FLAT_OSSE_CFG + "Throat.Profile = 1\nMesh.RearShape = 1\n", encoding="utf-8")
+    ok_path.write_text(
+        ATH_FLAT_OSSE_CFG + "Throat.Profile = 1\nMesh.RearShape = 1\n", encoding="utf-8"
+    )
     params, _formula, _mode = build_geometry_params(load_config(ok_path))
     assert params["a0"] == 0
 
@@ -699,7 +707,9 @@ def test_infinite_baffle_build_emits_coupled_aperture_contract(tmp_path):
         for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
             key = tuple(sorted((int(a), int(b))))
             edge_counts[key] = edge_counts.get(key, 0) + 1
-    open_edges = np.asarray([edge for edge, count in edge_counts.items() if count == 1], dtype=np.int64)
+    open_edges = np.asarray(
+        [edge for edge, count in edge_counts.items() if count == 1], dtype=np.int64
+    )
     assert len(open_edges) == 0
     referenced = points[np.unique(triangles)]
     assert float(referenced[:, 2].max()) <= 1.0e-9
@@ -730,7 +740,9 @@ def test_infinite_baffle_supports_quadrant_native_symmetry(
         encoding="utf-8",
     )
 
-    result = build_from_config(load_config(cfg_path), tmp_path / f"ib-quarter-{quadrants}.msh")
+    result = build_from_config(
+        load_config(cfg_path), tmp_path / f"ib-quarter-{quadrants}.msh"
+    )
 
     assert result.mode == "infinite-baffle"
     assert result.native_symmetry_plane == native_symmetry_plane
@@ -753,7 +765,9 @@ def test_auto_source_cap_is_flat_at_zero_throat_angle(tmp_path):
     import numpy as np
 
     mesh = meshio.read(result.mesh_path)
-    source_tag = next(tag for tag, name in result.physical_groups.items() if name == "SD1D1001")
+    source_tag = next(
+        tag for tag, name in result.physical_groups.items() if name == "SD1D1001"
+    )
     source_vertex_ids = set()
     for block, data in zip(mesh.cells, mesh.cell_data.get("gmsh:physical", [])):
         if block.type != "triangle":
@@ -770,7 +784,12 @@ def test_build_result_reports_symmetry_hint_for_quadrant_grids(tmp_path):
     base = {
         "formula": "OSSE",
         "profile": {"L_mm": 80.0, "r0_mm": 10.0, "a_deg": 40.0, "a0_deg": 0.0},
-        "mesh": {"angular_segments": 16, "length_segments": 4, "wall_thickness_mm": 0.0, "mode": "bare"},
+        "mesh": {
+            "angular_segments": 16,
+            "length_segments": 4,
+            "wall_thickness_mm": 0.0,
+            "mode": "bare",
+        },
     }
 
     full = build_from_config(base, tmp_path / "full.msh")
@@ -784,7 +803,7 @@ def test_build_result_reports_symmetry_hint_for_quadrant_grids(tmp_path):
     assert quarter.as_dict()["native_symmetry_plane"] == "yz+xz"
 
 
-def test_build_result_mesh_report_carries_validity_frequencies(tmp_path):
+def test_build_result_mesh_report_carries_raw_edge_statistics(tmp_path):
     result = build_from_config(
         {
             "formula": "OSSE",
@@ -796,17 +815,21 @@ def test_build_result_mesh_report_carries_validity_frequencies(tmp_path):
 
     assert set(result.mesh_report) == set(result.physical_groups.values())
     for stats in result.mesh_report.values():
+        assert stats["min_edge_mm"] > 0.0
+        assert stats["min_edge_mm"] <= stats["p05_edge_mm"]
+        assert stats["p05_edge_mm"] <= stats["median_edge_mm"]
         assert stats["median_edge_mm"] > 0.0
         assert stats["max_edge_mm"] >= stats["median_edge_mm"]
-        # valid f = c / (epw * max_edge) with the 6 e/w, 343 m/s defaults
-        assert math.isclose(
-            stats["valid_f_max_hz"], 343000.0 / (6.0 * stats["max_edge_mm"]), rel_tol=1.0e-9
-        )
+        assert "valid_f_max_hz" not in stats
 
 
-def test_frequency_aware_sizing_clamps_coarse_mm_resolutions(tmp_path):
-    # Bare mode keeps SD1G0 to the inner wall so the throat/mouth roles are
-    # observable without the deliberately coarser rear/outer grading.
+@pytest.mark.parametrize(
+    "removed_key",
+    ("max_frequency_hz", "elements_per_wavelength", "throat_epw", "curvature_segments"),
+)
+def test_removed_frequency_and_curvature_mesh_keys_fail_with_migration_error(
+    tmp_path, removed_key
+):
     base = {
         "formula": "OSSE",
         "mode": "bare",
@@ -820,40 +843,9 @@ def test_frequency_aware_sizing_clamps_coarse_mm_resolutions(tmp_path):
         },
     }
 
-    coarse = build_from_config(base, tmp_path / "coarse.msh")
-    banded_cfg = {**base, "mesh": {**base["mesh"], "max_frequency_hz": 10000.0}}
-    banded = build_from_config(banded_cfg, tmp_path / "banded.msh")
-
-    # Mouth-role ceiling at 10 kHz / 6 e/w is 5.717 mm; the 30 mm wall must
-    # refine. Throat role (8 e/w -> 4.29 mm) clamps the 5 mm throat too.
-    assert banded.n_triangles > 2.0 * coarse.n_triangles
-    wall = banded.mesh_report["SD1G0"]
-    assert wall["median_edge_mm"] < 7.0
-    assert wall["valid_f_max_hz"] > 0.5 * 10000.0
-    assert banded.mesh_report["SD1D1001"]["median_edge_mm"] < 4.5
-
-
-def test_frequency_aware_rear_grading_keeps_freestanding_meshes_small(tmp_path):
-    base = {
-        "formula": "OSSE",
-        "profile": {"L_mm": 100.0, "r0_mm": 12.7, "a_deg": 45.0, "a0_deg": 0.0},
-        "mesh": {
-            "angular_segments": 32,
-            "length_segments": 8,
-            "throat_res_mm": 5.0,
-            "mouth_res_mm": 30.0,
-            "rear_res_mm": 30.0,
-            "max_frequency_hz": 10000.0,
-        },
-    }
-
-    graded = build_from_config(base, tmp_path / "graded.msh")
-    flat_cfg = {**base, "mesh": {**base["mesh"], "rear_epw": 6.0}}
-    flat = build_from_config(flat_cfg, tmp_path / "flat.msh")
-
-    # The shadowed rear/outer surfaces at 2.5 e/w (22.9 mm ceiling) must cost
-    # markedly fewer elements than forcing the strict 6 e/w target there.
-    assert graded.n_triangles < 0.75 * flat.n_triangles
+    cfg = {**base, "mesh": {**base["mesh"], removed_key: 10_000.0}}
+    with pytest.raises(ConfigError, match="millimetre-only"):
+        build_from_config(cfg, tmp_path / "removed.msh")
 
 
 def test_freestanding_half_models_build_with_single_cut_plane(tmp_path):
@@ -882,7 +874,11 @@ def test_freestanding_half_models_build_with_single_cut_plane(tmp_path):
 
     # A half spans one mirror; its count sits between the quarter and the full
     # model and the two halves match each other.
-    assert results["1"].n_triangles < results["12"].n_triangles < results["1234"].n_triangles
+    assert (
+        results["1"].n_triangles
+        < results["12"].n_triangles
+        < results["1234"].n_triangles
+    )
     assert results["12"].n_triangles == results["14"].n_triangles
 
 
@@ -939,4 +935,6 @@ def test_subdomain_slices_get_ath_default_interface_offset():
     assert [i.offset_mm for i in interfaces] == [5.0, 5.0]
 
     with pytest.raises(ConfigError, match="offsets"):
-        _interfaces_from_params({"subdomainSlices": "5, 10, 15", "interfaceOffset": "3, 4"}, 20)
+        _interfaces_from_params(
+            {"subdomainSlices": "5, 10, 15", "interfaceOffset": "3, 4"}, 20
+        )

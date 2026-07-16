@@ -1,8 +1,7 @@
 """Pre-mesh size and BEM solve-cost prediction for canonical meshes.
 
 This is the canonical home for the triangle-count / dense-BEM-cost math so
-every consumer of ``build_from_config`` gets the same forecast a
-``BuildResult`` already carries the per-group ``valid_f_max_hz`` from. It is the twin of the Fusion STEP pipeline's
+every consumer of ``build_from_config`` gets the same forecast. It is the twin of the Fusion STEP pipeline's
 ``HornLab/scripts/wg_mesh_sizing.py``; the constants and formulas are kept
 identical on purpose (the two mesh generators are separate codebases but must
 agree). Pure stdlib so any consumer can import it.
@@ -15,9 +14,9 @@ agree). Pure stdlib so any consumer can import it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Sequence
 
 # Triangle-count constant: a near-equilateral triangle of edge h covers
 # ~0.433 h^2, so area A holds ~A / 0.433 h^2 = 2.31 A / h^2 triangles.
@@ -64,7 +63,7 @@ def matrix_ram_bytes(n_triangles: int) -> int:
 def _solve_power_law() -> tuple[float, float]:
     (n0, t0), (n1, t1) = SOLVE_CALIBRATION_SEC_PER_FREQ
     p = math.log(t1 / t0) / math.log(n1 / n0)
-    return t0 / (n0 ** p), p
+    return t0 / (n0**p), p
 
 
 def solve_seconds_per_freq(n_triangles: int) -> float:
@@ -72,7 +71,7 @@ def solve_seconds_per_freq(n_triangles: int) -> float:
     if n_triangles <= 0:
         return 0.0
     c, p = _solve_power_law()
-    return float(c * (n_triangles ** p))
+    return float(c * (n_triangles**p))
 
 
 def solve_seconds_cubic_upper(n_triangles: int) -> float:
@@ -80,7 +79,7 @@ def solve_seconds_cubic_upper(n_triangles: int) -> float:
     if n_triangles <= 0:
         return 0.0
     n_anchor, t_anchor = _CUBIC_ANCHOR
-    return float((t_anchor / (n_anchor ** 3)) * (n_triangles ** 3))
+    return float((t_anchor / (n_anchor**3)) * (n_triangles**3))
 
 
 def feasibility_from_ram_gb(ram_gb: float) -> str:
@@ -140,23 +139,3 @@ def estimate_solve_cost(n_triangles: int, *, freq_count: int = 1) -> SolveCostEs
         freq_count=max(int(freq_count), 1),
         feasibility=feasibility_from_ram_gb(ram_gb),
     )
-
-
-def worst_valid_f_max_hz(
-    mesh_report: Mapping[str, Mapping[str, float]],
-    *,
-    only_groups: Iterable[str] | None = None,
-) -> float | None:
-    """Lowest ``valid_f_max_hz`` across mesh-report groups (the conservative
-    fully-resolved frequency). Restrict to ``only_groups`` for a subset (e.g.
-    the source/aperture groups). Ignores non-finite group limits.
-    """
-    selected = set(only_groups) if only_groups is not None else None
-    limits = [
-        float(entry["valid_f_max_hz"])
-        for name, entry in mesh_report.items()
-        if "valid_f_max_hz" in entry
-        and (selected is None or name in selected)
-        and math.isfinite(float(entry["valid_f_max_hz"]))
-    ]
-    return min(limits) if limits else None
