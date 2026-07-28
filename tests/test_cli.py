@@ -87,6 +87,27 @@ def test_build_geometry_params_accepts_rosse_alias():
     assert params["wallThickness"] == 6.0
 
 
+def test_build_geometry_params_accepts_integral_segment_values():
+    params, _formula, _mode = build_geometry_params(
+        {"mesh": {"angular_segments": 16.0, "length_segments": "8"}}
+    )
+
+    assert params["angularSegments"] == 16
+    assert params["lengthSegments"] == 8
+
+
+@pytest.mark.parametrize("value", [12.5, float("nan"), float("inf"), True])
+def test_build_geometry_params_rejects_non_integer_segment_values(value):
+    with pytest.raises(ConfigError, match="angular_segments must be an integer"):
+        build_geometry_params({"mesh": {"angular_segments": value}})
+
+
+@pytest.mark.parametrize("value", [1.5, float("nan"), float("inf"), True])
+def test_build_geometry_params_rejects_non_integer_sim_type(value):
+    with pytest.raises(ConfigError, match="simType must be 1 or 2"):
+        build_geometry_params({"simType": value})
+
+
 def test_build_geometry_params_rejects_wrong_formula_profile_keys():
     with pytest.raises(ValueError, match="R-OSSE-only"):
         build_geometry_params({"formula": "OSSE", "profile": {"R_mm": 130.0}})

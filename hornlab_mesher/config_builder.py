@@ -219,13 +219,22 @@ def _scalar_or_expr(
     return value
 
 
-def _int(*sources: Mapping[str, Any], names: tuple[str, ...], default: int) -> int:
-    value = _pick(*sources, names=names, default=default)
+def _integer(value: Any, *, name: str) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise ConfigError(f"{name} must be an integer, got {value!r}")
     try:
         out = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{names[0]} must be an integer, got {value!r}") from exc
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConfigError(f"{name} must be an integer, got {value!r}") from exc
+    if not np.isfinite(numeric) or numeric != out:
+        raise ConfigError(f"{name} must be an integer, got {value!r}")
     return out
+
+
+def _int(*sources: Mapping[str, Any], names: tuple[str, ...], default: int) -> int:
+    value = _pick(*sources, names=names, default=default)
+    return _integer(value, name=names[0])
 
 
 def _bool(*sources: Mapping[str, Any], names: tuple[str, ...], default: bool) -> bool:
@@ -462,8 +471,8 @@ def _normalise_mode(
         sim_type = _pick(config, mesh, names=("simType", "sim_type"), default=None)
         if sim_type is not None:
             try:
-                sim_int = int(float(sim_type))
-            except (TypeError, ValueError) as exc:
+                sim_int = _integer(sim_type, name="simType")
+            except ConfigError as exc:
                 raise ConfigError(f"simType must be 1 or 2, got {sim_type!r}") from exc
             if sim_int == 1:
                 return "infinite-baffle"
