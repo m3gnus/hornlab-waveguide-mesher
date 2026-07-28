@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 
-from ..geometry import _AxiHornGeometry, BuiltGeometry
+from ..geometry import BuiltGeometry, CrossSection
 from ..tags import PhysicalGroup
 from ._occ import (
     build_bspline_surface_from_rings,
@@ -11,8 +12,13 @@ from ._occ import (
 )
 
 
-def _validated_profile(geometry: _AxiHornGeometry) -> np.ndarray:
-    points = np.asarray(geometry.profile_points, dtype=np.float64)
+def _build_axisymmetric(
+    profile_points: NDArray[np.float64],
+    *,
+    cross_section: CrossSection,
+    n_phi: int,
+) -> BuiltGeometry:
+    points = np.asarray(profile_points, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 2 or len(points) < 2:
         raise ValueError("profile_points must be an (N, 2) array with at least two points")
     if not np.all(np.isfinite(points)):
@@ -21,20 +27,16 @@ def _validated_profile(geometry: _AxiHornGeometry) -> np.ndarray:
         raise ValueError("profile_points z coordinates must be strictly increasing")
     if np.any(points[:, 1] <= 0):
         raise ValueError("profile_points radii must be > 0")
-    return points
 
-
-def _build_axisymmetric(geometry: _AxiHornGeometry) -> BuiltGeometry:
-    profile = _validated_profile(geometry)
     rings = [
         superellipse_ring(
             z=float(z),
             radius=float(r),
-            exponent=geometry.cross_section.exponent,
-            aspect_ratio=geometry.cross_section.aspect_ratio,
-            n_phi=geometry.n_phi,
+            exponent=cross_section.exponent,
+            aspect_ratio=cross_section.aspect_ratio,
+            n_phi=n_phi,
         )
-        for z, r in profile
+        for z, r in points
     ]
     grid = np.stack(rings, axis=1)
 
@@ -46,7 +48,7 @@ def _build_axisymmetric(geometry: _AxiHornGeometry) -> BuiltGeometry:
             int(PhysicalGroup.RIGID_WALL): [tag for _, tag in wall],
             int(PhysicalGroup.PRIMARY_SOURCE): [tag for _, tag in throat],
         },
-        axial_bounds_mm=(float(profile[0, 0]), float(profile[-1, 0])),
+        axial_bounds_mm=(float(points[0, 0]), float(points[-1, 0])),
         source_axis="z",
         mesh_surface_groups={
             "inner": [tag for _, tag in wall],

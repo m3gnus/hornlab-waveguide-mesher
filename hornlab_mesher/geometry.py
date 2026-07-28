@@ -27,17 +27,6 @@ class Enclosure:
 
 
 @dataclass(frozen=True)
-class _AxiHornGeometry:
-    """Internal axial loft input used by the OSSE builder."""
-
-    profile_points: NDArray[np.float64]
-    throat_radius_mm: float
-    cross_section: CrossSection = field(default_factory=CrossSection)
-    enclosure: Enclosure = field(default_factory=Enclosure)
-    n_phi: int = 64
-
-
-@dataclass(frozen=True)
 class RosseHornGeometry:
     """R-OSSE waveguide profile parameters.
 

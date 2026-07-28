@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from ..geometry import _AxiHornGeometry, BuiltGeometry, OsseHornGeometry
+from ..geometry import BuiltGeometry, OsseHornGeometry
 from ..profiles import build_point_grid, profile_points
 from .axisymmetric import _build_axisymmetric
 
@@ -27,14 +27,11 @@ def build_osse_waveguide(
 ) -> BuiltGeometry:
     """Build an OSSE waveguide horn surface via the canonical evaluator."""
     profile = compute_osse_profile_points(geometry)
-    axi = _AxiHornGeometry(
-        profile_points=profile,
-        throat_radius_mm=float(profile[0, 1]),
+    return _build_axisymmetric(
+        profile,
         cross_section=geometry.cross_section,
-        enclosure=geometry.enclosure,
         n_phi=geometry.n_phi,
     )
-    return _build_axisymmetric(axi)
 
 
 def compute_osse_inner_points(
