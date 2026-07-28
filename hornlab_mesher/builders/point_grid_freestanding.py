@@ -15,11 +15,11 @@ from .point_grid_surfaces import (
     _SharedSurfaceBuilder,
     _add_geo_spline_span_mouth_rim_surfaces,
     _add_geo_spline_span_rear_cap,
-    _add_geo_spline_span_wall_surfaces,
     _add_grid_wall_surfaces,
     _add_occ_bspline_patch_wall_surfaces,
     _add_mouth_rim_surfaces,
     _add_rear_cap,
+    _add_spline_span_wall_surfaces,
     _rear_rim_points,
     _bspline_patch_phi_groups,
     _snap_open_symmetry_grid,
@@ -326,14 +326,14 @@ def _build_wg_freestanding_point_grid(
     builder.add_grid("inner", inner_points, mesh_size=inner_mesh_sizes)
     builder.add_grid("outer", outer_topology, mesh_size=25.0)
 
-    wall = _add_geo_spline_span_wall_surfaces(
+    wall = _add_spline_span_wall_surfaces(
         builder,
         "inner",
         n_phi=n_phi,
         n_len=inner_len,
         closed=geometry.closed,
     )
-    outer_wall = _add_geo_spline_span_wall_surfaces(
+    outer_wall = _add_spline_span_wall_surfaces(
         builder,
         "outer",
         n_phi=n_phi,

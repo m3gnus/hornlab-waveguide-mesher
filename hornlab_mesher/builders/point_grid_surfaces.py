@@ -45,13 +45,12 @@ class _SharedSurfaceBuilder:
         if a == b:
             raise ValueError("cannot build a line with identical endpoints")
         key = (int(a), int(b))
-        if key in self.line_cache:
-            return self.line_cache[key]
-        rev = (int(b), int(a))
-        if rev in self.line_cache:
-            return -self.line_cache[rev]
+        cached = self.line_cache.get(key)
+        if cached is not None:
+            return cached
         tag = int(self.gmsh.model.occ.addLine(int(a), int(b)))
         self.line_cache[key] = tag
+        self.line_cache[(key[1], key[0])] = -tag
         return tag
 
     def line(self, a: tuple[str, int, int], b: tuple[str, int, int]) -> int:
@@ -59,14 +58,18 @@ class _SharedSurfaceBuilder:
 
     def bspline_tags(self, point_tags: list[int]) -> int:
         key = tuple(int(p) for p in point_tags)
-        if key in self.spline_cache:
-            return self.spline_cache[key]
-        rev = tuple(reversed(key))
-        if rev in self.spline_cache:
-            return -self.spline_cache[rev]
+        cached = self.spline_cache.get(key)
+        if cached is not None:
+            return cached
         tag = int(self.gmsh.model.occ.addBSpline(list(key)))
         self.spline_cache[key] = tag
+        reverse = tuple(reversed(key))
+        if reverse != key:
+            self.spline_cache[reverse] = -tag
         return tag
+
+    def spline(self, points: list[tuple[str, int, int]]) -> int:
+        return self.bspline_tags([self.point(*point) for point in points])
 
     def circle_arc(self, start: int, center: int, end: int) -> int:
         return int(self.gmsh.model.occ.addCircleArc(int(start), int(center), int(end), center=True))
@@ -122,13 +125,12 @@ class _GeoSurfaceBuilder:
         if a == b:
             raise ValueError("cannot build a line with identical endpoints")
         key = (int(a), int(b))
-        if key in self.line_cache:
-            return self.line_cache[key]
-        rev = (int(b), int(a))
-        if rev in self.line_cache:
-            return -self.line_cache[rev]
+        cached = self.line_cache.get(key)
+        if cached is not None:
+            return cached
         tag = int(self.geo.addLine(int(a), int(b)))
         self.line_cache[key] = tag
+        self.line_cache[(key[1], key[0])] = -tag
         return tag
 
     def line(self, a: tuple[str, int, int], b: tuple[str, int, int]) -> int:
@@ -136,13 +138,14 @@ class _GeoSurfaceBuilder:
 
     def spline(self, points: list[tuple[str, int, int]]) -> int:
         key = tuple(self.point(*p) for p in points)
-        if key in self.spline_cache:
-            return self.spline_cache[key]
-        rev = tuple(reversed(key))
-        if rev in self.spline_cache:
-            return -self.spline_cache[rev]
+        cached = self.spline_cache.get(key)
+        if cached is not None:
+            return cached
         tag = int(self.geo.addSpline(list(key)))
         self.spline_cache[key] = tag
+        reverse = tuple(reversed(key))
+        if reverse != key:
+            self.spline_cache[reverse] = -tag
         return tag
 
     def circle_arc(self, start: int, center: int, end: int) -> int:
@@ -359,8 +362,8 @@ def _add_rear_cap(
     return cap
 
 
-def _add_geo_spline_span_wall_surfaces(
-    builder: _GeoSurfaceBuilder,
+def _add_spline_span_wall_surfaces(
+    builder: _SharedSurfaceBuilder | _GeoSurfaceBuilder,
     name: str,
     *,
     n_phi: int,
@@ -375,34 +378,6 @@ def _add_geo_spline_span_wall_surfaces(
         prev_phi = builder.spline([(name, i, 0) for i in indices])
         for j in range(n_len - 1):
             next_phi = builder.spline([(name, i, j + 1) for i in indices])
-            left = builder.line((name, start, j), (name, start, j + 1))
-            right = builder.line((name, end, j), (name, end, j + 1))
-            curves = (
-                [prev_phi, right, -next_phi, -left]
-                if reverse
-                else [next_phi, -right, -prev_phi, left]
-            )
-            surfaces.append(builder.surface(curves))
-            prev_phi = next_phi
-    return surfaces
-
-
-def _add_occ_spline_span_wall_surfaces(
-    builder: _SharedSurfaceBuilder,
-    name: str,
-    *,
-    n_phi: int,
-    n_len: int,
-    closed: bool,
-    reverse: bool = False,
-) -> list[tuple[int, int]]:
-    surfaces: list[tuple[int, int]] = []
-    for indices in _spline_span_phi_groups(n_phi, closed=closed):
-        start = indices[0]
-        end = indices[-1]
-        prev_phi = builder.bspline_tags([builder.point(name, i, 0) for i in indices])
-        for j in range(n_len - 1):
-            next_phi = builder.bspline_tags([builder.point(name, i, j + 1) for i in indices])
             left = builder.line((name, start, j), (name, start, j + 1))
             right = builder.line((name, end, j), (name, end, j + 1))
             curves = (

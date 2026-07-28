@@ -32,7 +32,7 @@ from .point_grid_surfaces import (
     _SharedSurfaceBuilder,
     _add_grid_wall_surfaces,
     _add_occ_bspline_patch_wall_surfaces,
-    _add_occ_spline_span_wall_surfaces,
+    _add_spline_span_wall_surfaces,
     _bspline_patch_phi_groups,
     _phi_segments,
     _snap_open_symmetry_grid,
@@ -167,7 +167,7 @@ def _build_coupled_baffle_point_grid(
         cap_boundary_groups = None
     elif geometry.topology_mode == "legacy":
         cap_boundary_groups = _spline_span_phi_groups(n_phi, closed=geometry.closed)
-        wall = _add_occ_spline_span_wall_surfaces(
+        wall = _add_spline_span_wall_surfaces(
             builder,
             "inner",
             n_phi=n_phi,
