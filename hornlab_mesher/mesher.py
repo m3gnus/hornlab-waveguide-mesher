@@ -321,7 +321,7 @@ def _postprocess_mesh(
         phys,
         source_axis=source_axis,
         require_watertight=False,
-        require_edge_consistency=False,
+        require_edge_consistency=True,
         require_positive_volume=require_positive_volume,
         require_source_normal=True,
     )
@@ -333,10 +333,6 @@ def _postprocess_mesh(
             report=report,
             symmetry_snap_axes=symmetry_snap_axes,
             symmetry_snap_tol_mm=symmetry_snap_tol_mm,
-        )
-    if not report.edge_consistent and report.watertight:
-        raise MeshOrientationError(
-            f"watertight mesh has {report.inconsistent_edges} inconsistent shared edges"
         )
     points, triangles = _compact_unused_vertices(points, triangles)
     if vertical_offset_mm:

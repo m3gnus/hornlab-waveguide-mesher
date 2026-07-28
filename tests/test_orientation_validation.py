@@ -200,3 +200,67 @@ def test_postprocess_normalizes_generated_inward_winding(tmp_path):
         require_source_normal=False,
     )
     assert report.signed_volume > 0.0
+
+
+def test_postprocess_rejects_inconsistent_open_mesh(tmp_path):
+    """Boundary edges must not mask an unrepairable winding contradiction."""
+
+    radius = 2.0
+    half_width = 0.35
+    points = np.asarray(
+        [
+            (
+                (radius + u * np.cos(t / 2.0)) * np.cos(t),
+                (radius + u * np.cos(t / 2.0)) * np.sin(t),
+                u * np.sin(t / 2.0),
+            )
+            for t in (0.0, 2.0 * np.pi / 3.0, 4.0 * np.pi / 3.0)
+            for u in (half_width, -half_width)
+        ],
+        dtype=np.float64,
+    )
+    # Three strips with the final endpoints identified in reverse form a
+    # Möbius band: it is open, but its shared edges cannot all be consistently
+    # wound. The repair pass necessarily leaves one contradictory edge.
+    triangles = np.asarray(
+        [
+            [0, 2, 3],
+            [0, 3, 1],
+            [2, 4, 5],
+            [2, 5, 3],
+            [4, 1, 0],
+            [4, 0, 5],
+        ],
+        dtype=np.int64,
+    )
+    tags = np.full(len(triangles), int(PhysicalGroup.RIGID_WALL), dtype=np.int32)
+    raw_path = tmp_path / "raw-mobius.msh"
+    out_path = tmp_path / "processed-mobius.msh"
+    meshio.write(
+        raw_path,
+        meshio.Mesh(
+            points=points,
+            cells=[("triangle", triangles)],
+            cell_data={
+                "gmsh:physical": [tags],
+                "gmsh:geometrical": [tags],
+            },
+            field_data={
+                "SD1G0": np.array(
+                    [int(PhysicalGroup.RIGID_WALL), 2], dtype=np.int32
+                ),
+            },
+        ),
+        file_format="gmsh22",
+        binary=False,
+    )
+
+    with pytest.raises(MeshOrientationError, match="inconsistent shared edges"):
+        _postprocess_mesh(
+            raw_path,
+            out_path,
+            source_axis="z",
+            scale_to_metres=False,
+        )
+
+    assert not out_path.exists()
