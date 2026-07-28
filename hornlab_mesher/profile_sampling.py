@@ -459,8 +459,14 @@ def _raw_radial_grid(
     icw_meridian = (
         icw_meridian_points(icw_curve, t_values) if icw_curve is not None else None
     )
+    osse_bulge_profile = (
+        tuple(math.sin(float(t_unit) * math.pi) for t_unit in t_unit_values)
+        if formula == "OSSE"
+        else ()
+    )
     for i, phi in enumerate(angles):
-        scale = _superellipse_scale(float(phi), exponent, aspect_ratio)
+        phi_value = float(phi)
+        scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
         if formula == "LOOKUP":
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
             # cross-section (superellipse scale) and morph are layered on top
@@ -469,24 +475,24 @@ def _raw_radial_grid(
         elif formula == "ICW":
             curve = list(zip(icw_meridian[:, 0], icw_meridian[:, 1]))
         elif formula == "OSSE":
-            _main_len, total, ext_len, slot_len = osse_length_config(params, float(phi))
+            _main_len, total, ext_len, slot_len = osse_length_config(params, phi_value)
             max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
             max_total_len = max(max_total_len, float(total))
-            h_bulge = eval_param(params.get("h"), float(phi), 0.0)
+            h_bulge = eval_param(params.get("h"), phi_value, 0.0)
             # The guiding-curve inversion depends only on phi; hoist it out of
             # the per-z loop (a 24-step bisection per grid point otherwise).
-            coverage_angle = osse_coverage_angle(params, float(phi))
+            coverage_angle = osse_coverage_angle(params, phi_value)
             curve = [
                 (
                     z,
-                    radius + h_bulge * math.sin(float(t_unit) * math.pi),
+                    radius + h_bulge * bulge_factor,
                 )
-                for t_unit, (z, radius) in zip(
-                    t_unit_values,
+                for bulge_factor, (z, radius) in zip(
+                    osse_bulge_profile,
                     (
                         calculate_osse(
                             float(t) * total,
-                            float(phi),
+                            phi_value,
                             params,
                             coverage_angle=coverage_angle,
                         )
@@ -495,7 +501,7 @@ def _raw_radial_grid(
                 )
             ]
         else:
-            curve = [calculate_rosse(float(t), float(phi), params) for t in t_values]
+            curve = [calculate_rosse(float(t), phi_value, params) for t in t_values]
         for j, (z, radius) in enumerate(curve):
             raw_radials[i, j] = float(radius) * scale
             z_values[i, j] = float(z)
@@ -596,6 +602,9 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
 
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     for i, phi in enumerate(angles):
+        phi_value = float(phi)
+        cos_phi = math.cos(phi_value)
+        sin_phi = math.sin(phi_value)
         mouth_radial = float(raw_radials[i, -1])
         for j in range(n_length + 1):
             radial = float(raw_radials[i, j])
@@ -608,15 +617,15 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
                     radial,
                     mouth_radial,
                     morph_t,
-                    float(phi),
+                    phi_value,
                     params,
                     morph_start=snapped_morph_start,
                     implicit_half_width=resolved_half_width,
                     implicit_half_height=resolved_half_height,
                 )
             inner[i, j] = (
-                radial * math.cos(float(phi)),
-                radial * math.sin(float(phi)),
+                radial * cos_phi,
+                radial * sin_phi,
                 float(z_values[i, j]),
             )
 
