@@ -2113,9 +2113,9 @@ def test_weld_near_duplicate_vertices_merges_micrometre_pairs():
     points = np.asarray(
         [
             [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
+            [10.0, 0.0049, 0.0],
             [0.0, 10.0, 0.0],
-            [10.0, 0.0023, 0.0],  # 2.3 um from vertex 1
+            [10.0, 0.0051, 0.0],  # neighboring hash cell, 0.2 um from vertex 1
             [10.0, 10.0, 0.0],
         ],
         dtype=np.float64,
@@ -2134,6 +2134,14 @@ def test_weld_near_duplicate_vertices_merges_micrometre_pairs():
         points[:3], np.asarray([[0, 1, 2]]), tol_mm=5.0e-3
     )
     assert same.tolist() == [[0, 1, 2]]
+
+    # A connected chain still collapses to its lowest vertex index even when
+    # its endpoints are farther apart than the weld tolerance.
+    chain = np.asarray([[0.0, 0.0, 0.0], [0.004, 0.0, 0.0], [0.008, 0.0, 0.0]])
+    chained = _weld_near_duplicate_vertices(
+        chain, np.asarray([[0, 1, 2]]), tol_mm=5.0e-3
+    )
+    assert chained.tolist() == [[0, 0, 0]]
 
 
 def test_lookup_point_grid_follows_pchip_profile():

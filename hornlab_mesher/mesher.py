@@ -523,6 +523,15 @@ def _validate_infinite_baffle_contract(
             )
 
 
+_WELD_FORWARD_NEIGHBOR_OFFSETS = tuple(
+    (dx, dy, dz)
+    for dx in (-1, 0, 1)
+    for dy in (-1, 0, 1)
+    for dz in (-1, 0, 1)
+    if (dx, dy, dz) > (0, 0, 0)
+)
+
+
 def _weld_near_duplicate_vertices(
     points: np.ndarray,
     triangles: np.ndarray,
@@ -552,23 +561,29 @@ def _weld_near_duplicate_vertices(
         return a
 
     tol_sq = tol_mm * tol_mm
-    neighbor_offsets = [
-        (dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
-    ]
+
+    def merge_if_close(i: int, j: int) -> None:
+        delta = points[j] - points[i]
+        if float(delta @ delta) > tol_sq:
+            return
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
     for key, indices in buckets.items():
-        candidates: list[int] = []
-        for dx, dy, dz in neighbor_offsets:
-            candidates.extend(buckets.get((key[0] + dx, key[1] + dy, key[2] + dz), ()))
-        for i in indices:
-            pi = points[i]
-            for j in candidates:
-                if j <= i:
-                    continue
-                delta = points[j] - pi
-                if float(delta @ delta) <= tol_sq:
-                    ri, rj = find(i), find(j)
-                    if ri != rj:
-                        parent[max(ri, rj)] = min(ri, rj)
+        for position, i in enumerate(indices):
+            for j in indices[position + 1 :]:
+                merge_if_close(i, j)
+        # Visit each pair of neighboring cells once. The old all-neighbor
+        # traversal visited every pair from both cells and discarded half of
+        # the candidates by vertex index.
+        for dx, dy, dz in _WELD_FORWARD_NEIGHBOR_OFFSETS:
+            others = buckets.get((key[0] + dx, key[1] + dy, key[2] + dz))
+            if others is None:
+                continue
+            for i in indices:
+                for j in others:
+                    merge_if_close(i, j)
 
     roots = np.fromiter(
         (find(i) for i in range(len(points))), dtype=np.int64, count=len(points)
