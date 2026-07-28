@@ -1317,30 +1317,6 @@ def _radial_profile_from_grid(points: np.ndarray, *, name: str) -> np.ndarray:
     return np.column_stack((np.mean(radial, axis=0), np.mean(z_values, axis=0)))
 
 
-def _append_meridian_points(
-    nodes: list[tuple[float, float]],
-    tags: list[int],
-    points: np.ndarray,
-    *,
-    tag: int,
-) -> int:
-    added = 0
-    for raw_point in np.asarray(points, dtype=np.float64):
-        point = (float(raw_point[0]), float(raw_point[1]))
-        if not nodes:
-            nodes.append(point)
-            continue
-        prev = nodes[-1]
-        if math.isclose(
-            prev[0], point[0], rel_tol=0.0, abs_tol=1.0e-9
-        ) and math.isclose(prev[1], point[1], rel_tol=0.0, abs_tol=1.0e-9):
-            continue
-        nodes.append(point)
-        tags.append(int(tag))
-        added += 1
-    return added
-
-
 def _subdivision_count_between(
     start: tuple[float, float],
     end: tuple[float, float],
@@ -1447,25 +1423,6 @@ def _profile_arc_length_mm(params: Mapping[str, Any]) -> float:
     if profile.ndim != 2 or profile.shape[0] < 2:
         return 0.0
     return float(np.sum(np.linalg.norm(np.diff(profile, axis=0), axis=1)))
-
-
-def _resample_polyline_by_arc(points: np.ndarray, segment_count: int) -> np.ndarray:
-    pts = np.asarray(points, dtype=np.float64)
-    if pts.ndim != 2 or pts.shape[0] < 2:
-        return pts.copy()
-    count = max(1, int(segment_count))
-    lengths = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-    total = float(np.sum(lengths))
-    if total <= 1.0e-12:
-        return np.vstack([pts[0], pts[-1]])
-    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
-    samples = np.linspace(0.0, total, count + 1, dtype=np.float64)
-    out = np.empty((count + 1, pts.shape[1]), dtype=np.float64)
-    for axis in range(pts.shape[1]):
-        out[:, axis] = np.interp(samples, cumulative, pts[:, axis])
-    out[0] = pts[0]
-    out[-1] = pts[-1]
-    return out
 
 
 def _resample_polyline_by_local_size(
