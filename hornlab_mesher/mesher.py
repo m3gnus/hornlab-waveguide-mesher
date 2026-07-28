@@ -136,6 +136,9 @@ def build_mesh_with_info(
     mesh_density = density if isinstance(density, MeshDensity) else MeshDensity()
     validate_mesh_density(mesh_density)
 
+    import gmsh
+
+    owns_out_path = output_path is None
     if output_path is None:
         handle = tempfile.NamedTemporaryFile(
             prefix="hornlab-mesher-", suffix=".msh", delete=False
@@ -146,10 +149,9 @@ def build_mesh_with_info(
         out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    import gmsh
-
     with _GMSH_LOCK:
         initialized_here = False
+        build_succeeded = False
         raw_path: Path | None = None
         staged_path: Path | None = None
         try:
@@ -234,6 +236,7 @@ def build_mesh_with_info(
             staged_path.replace(out_path)
             staged_path = None
             info = replace(info, path=out_path)
+            build_succeeded = True
             return out_path, info
         except Exception as exc:
             raise MesherError(f"mesh build failed: {exc}") from exc
@@ -242,6 +245,8 @@ def build_mesh_with_info(
                 raw_path.unlink(missing_ok=True)
             if staged_path is not None:
                 staged_path.unlink(missing_ok=True)
+            if owns_out_path and not build_succeeded:
+                out_path.unlink(missing_ok=True)
             if initialized_here and gmsh.isInitialized():
                 gmsh.finalize()
 

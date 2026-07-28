@@ -6,7 +6,7 @@ import meshio
 import numpy as np
 import pytest
 
-from hornlab_mesher import MesherError, build_from_config
+from hornlab_mesher import MesherError, OsseHornGeometry, build_from_config, build_mesh
 from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.profiles import build_point_grid
 
@@ -229,6 +229,21 @@ def test_failed_triangle_limit_preserves_existing_output(tmp_path):
 
     assert output.read_bytes() == original
     assert not list(Path(tmp_path).glob(".existing.msh.*.tmp"))
+
+
+def test_failed_build_removes_auto_created_output(tmp_path, monkeypatch):
+    import hornlab_mesher.mesher as mesher_module
+
+    def fail_builder(_geometry):
+        raise RuntimeError("synthetic builder failure")
+
+    monkeypatch.setattr(mesher_module.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(mesher_module, "_dispatch_builder", fail_builder)
+
+    with pytest.raises(MesherError, match="synthetic builder failure"):
+        build_mesh(OsseHornGeometry())
+
+    assert not list(tmp_path.glob("hornlab-mesher-*.msh"))
 
 
 def test_sub_resolution_freestanding_wall_fails_before_invalid_shell_build(tmp_path):
