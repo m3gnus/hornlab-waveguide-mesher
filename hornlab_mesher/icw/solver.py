@@ -590,11 +590,8 @@ class _LinSys:
     sigma: np.ndarray  # fine quadrature grid (S-independent)
     knots: np.ndarray
     degree: int
-    hold_start: float | None = None
-    hold_end: float | None = None
-    coverage_angle: float | None = None
-    design_matrix: np.ndarray | None = None
-    coverage_pinv_A: np.ndarray | None = None
+    coverage_baseline_const: np.ndarray | None = None
+    coverage_baseline_inv_s: np.ndarray | None = None
     anti_design_matrix: np.ndarray | None = None
     kappa_design_matrix: np.ndarray | None = None
     dkappa_design_matrix: np.ndarray | None = None
@@ -610,48 +607,17 @@ class _LinSys:
         mode starts from that same feasible point, then projects a two-bump turn-density target
         into the nullspace so the zero-gene curve has a real constant-directivity plateau.
         """
+        if (
+            self.coverage_baseline_const is not None
+            and self.coverage_baseline_inv_s is not None
+        ):
+            return self.coverage_baseline_const + self.coverage_baseline_inv_s / S
+
         d = self.rhs_const.copy()
         for row, theta_target in self.angle_rows:
             target = theta1 if theta_target is None else theta_target
             d[row] = (target - theta0) / S
-        a_ln = self.pinv_C @ d
-        if self.coverage_angle is None:
-            return a_ln
-        return self._designed_coverage_baseline(a_ln, theta0, theta1, S)
-
-    def _designed_coverage_baseline(
-        self, a_ln: np.ndarray, theta0: float, theta1: float, S: float
-    ) -> np.ndarray:
-        """Project the raised-cosine coverage design into ``a_ln + ker(C)``."""
-        if (
-            self.design_matrix is None
-            or self.coverage_pinv_A is None
-            or self.hold_start is None
-            or self.hold_end is None
-        ):
-            return a_ln
-        if self.Phi.shape[1] == 0:
-            return a_ln
-
-        hs = self.hold_start
-        he = self.hold_end
-        theta_c = float(self.coverage_angle)
-        sig = self.sigma
-        k_turn = np.zeros_like(sig)
-
-        m_in = sig <= hs
-        k_turn[m_in] = (theta_c - theta0) * (1.0 - np.cos(2.0 * np.pi * sig[m_in] / hs)) / hs
-        m_out = sig >= he
-        k_turn[m_out] = (
-            (theta1 - theta_c)
-            * (1.0 - np.cos(2.0 * np.pi * (sig[m_out] - he) / (1.0 - he)))
-            / (1.0 - he)
-        )
-        kappa_target = k_turn / S
-
-        y = kappa_target - self.design_matrix @ a_ln
-        b_fit = self.coverage_pinv_A @ y
-        return a_ln + self.Phi @ b_fit
+        return self.pinv_C @ d
 
 
 def _build_linsys(
@@ -683,12 +649,53 @@ def _build_linsys(
     for row, _theta_target in angle_rows:
         rhs_const[row] = 0.0  # refilled per-S in _LinSys.a0
     sigma = np.linspace(0.0, 1.0, n_quad)
+    coverage_baseline_const = None
+    coverage_baseline_inv_s = None
     design_matrix = None
-    coverage_pinv_A = None
     if targets.coverage_angle_deg is not None:
         design_matrix = BSpline.design_matrix(sigma, knots, degree, extrapolate=True).toarray()
+
+        # Both the least-norm baseline and the raised-cosine curvature target are affine in 1/S:
+        #
+        #   a_ln(S)       = a_const + a_inv_s / S
+        #   kappa_target  = k_turn / S
+        #
+        # The nullspace projection is linear too, so collapse the whole coverage baseline to two
+        # coefficient vectors once. This removes the 2,001-sample target allocation/trigonometry
+        # and both dense projection matvecs from every nonlinear residual evaluation.
+        rhs_inv_s = np.zeros_like(rhs_const)
+        for row, theta_target in angle_rows:
+            target = targets.theta1 if theta_target is None else theta_target
+            rhs_inv_s[row] = target - targets.theta0
+        a_ln_const = pinv_C @ rhs_const
+        a_ln_inv_s = pinv_C @ rhs_inv_s
+
         if Phi.shape[1]:
+            hs = float(targets.hold_start)
+            he = float(targets.hold_end)
+            theta_c = float(targets.coverage_angle)
+            k_turn = np.zeros_like(sigma)
+            m_in = sigma <= hs
+            k_turn[m_in] = (
+                (theta_c - targets.theta0)
+                * (1.0 - np.cos(2.0 * np.pi * sigma[m_in] / hs))
+                / hs
+            )
+            m_out = sigma >= he
+            k_turn[m_out] = (
+                (targets.theta1 - theta_c)
+                * (1.0 - np.cos(2.0 * np.pi * (sigma[m_out] - he) / (1.0 - he)))
+                / (1.0 - he)
+            )
+
             coverage_pinv_A = np.linalg.pinv(design_matrix @ Phi)
+            b_const = coverage_pinv_A @ (-design_matrix @ a_ln_const)
+            b_inv_s = coverage_pinv_A @ (k_turn - design_matrix @ a_ln_inv_s)
+            coverage_baseline_const = a_ln_const + Phi @ b_const
+            coverage_baseline_inv_s = a_ln_inv_s + Phi @ b_inv_s
+        else:
+            coverage_baseline_const = a_ln_const
+            coverage_baseline_inv_s = a_ln_inv_s
     anti_design_matrix = _antiderivative_design_matrix(knots, degree, n_coeff, sigma)
     kappa_design_matrix = design_matrix
     if kappa_design_matrix is None and targets.kappa_abs_max is not None:
@@ -707,11 +714,8 @@ def _build_linsys(
         sigma=sigma,
         knots=knots,
         degree=degree,
-        hold_start=targets.hold_start if targets.coverage_angle_deg is not None else None,
-        hold_end=targets.hold_end if targets.coverage_angle_deg is not None else None,
-        coverage_angle=targets.coverage_angle,
-        design_matrix=design_matrix,
-        coverage_pinv_A=coverage_pinv_A,
+        coverage_baseline_const=coverage_baseline_const,
+        coverage_baseline_inv_s=coverage_baseline_inv_s,
         anti_design_matrix=anti_design_matrix,
         kappa_design_matrix=kappa_design_matrix,
         dkappa_design_matrix=dkappa_design_matrix,

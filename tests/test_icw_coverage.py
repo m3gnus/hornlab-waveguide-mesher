@@ -18,11 +18,17 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.icw import (
+    DEFAULT_DEGREE,
     ICWTargets,
     TerminationMode,
     curve_from_shape_modes,
     n_shape_modes,
     solve_icw,
+)
+from hornlab_mesher.icw.solver import (
+    _build_linsys,
+    _knots_for_targets,
+    build_linear_constraints,
 )
 
 
@@ -36,6 +42,47 @@ def _coverage_targets(theta_c: float, hs: float = 0.30, he: float = 0.70) -> ICW
         hold_start=hs,
         hold_end=he,
     )
+
+
+def test_cached_coverage_baseline_matches_direct_projection() -> None:
+    """The affine-in-1/S cache preserves the original nullspace projection."""
+    targets = _coverage_targets(50.0)
+    n_coeff = 16
+    knots = _knots_for_targets(targets, n_coeff, DEFAULT_DEGREE)
+    lin = _build_linsys(targets, knots, n_coeff, DEFAULT_DEGREE)
+    design = lin.kappa_design_matrix
+    assert design is not None
+
+    sigma = lin.sigma
+    hs = targets.hold_start
+    he = targets.hold_end
+    theta_c = targets.coverage_angle
+    assert theta_c is not None
+    k_turn = np.zeros_like(sigma)
+    m_in = sigma <= hs
+    k_turn[m_in] = (
+        (theta_c - targets.theta0)
+        * (1.0 - np.cos(2.0 * np.pi * sigma[m_in] / hs))
+        / hs
+    )
+    m_out = sigma >= he
+    k_turn[m_out] = (
+        (targets.theta1 - theta_c)
+        * (1.0 - np.cos(2.0 * np.pi * (sigma[m_out] - he) / (1.0 - he)))
+        / (1.0 - he)
+    )
+    projection = np.linalg.pinv(design @ lin.Phi)
+
+    for S in (100.0, 220.0, 500.0):
+        _C, d = build_linear_constraints(targets, S, knots, n_coeff, DEFAULT_DEGREE)
+        a_ln = lin.pinv_C @ d
+        expected = a_ln + lin.Phi @ (projection @ (k_turn / S - design @ a_ln))
+        np.testing.assert_allclose(
+            lin.a0(targets.theta0, targets.theta1, S),
+            expected,
+            rtol=1e-12,
+            atol=1e-14,
+        )
 
 
 @pytest.mark.parametrize("theta_c", [40.0, 50.0, 60.0])
