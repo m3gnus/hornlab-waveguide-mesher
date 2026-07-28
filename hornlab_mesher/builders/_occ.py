@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
 
 import numpy as np
 from numpy.typing import NDArray
-
-from ..tags import PhysicalGroup
 
 
 def require_gmsh():
@@ -39,28 +36,6 @@ def superellipse_ring(
         s = math.sin(theta)
         x = a * math.copysign(abs(c) ** (2.0 / p), c)
         y = b * math.copysign(abs(s) ** (2.0 / p), s)
-        pts[i] = (x, y, z)
-    return pts
-
-
-def rounded_rect_ring(
-    *,
-    z: float,
-    half_width: float,
-    half_height: float,
-    exponent: float,
-    n_phi: int,
-) -> NDArray[np.float64]:
-    if half_width <= 0 or half_height <= 0:
-        raise ValueError("rectangular horn half-width and half-height must be > 0")
-    p = max(float(exponent), 2.0)
-    pts = np.empty((n_phi, 3), dtype=np.float64)
-    for i in range(n_phi):
-        theta = 2.0 * math.pi * i / n_phi
-        c = math.cos(theta)
-        s = math.sin(theta)
-        x = half_width * math.copysign(abs(c) ** (2.0 / p), c)
-        y = half_height * math.copysign(abs(s) ** (2.0 / p), s)
         pts[i] = (x, y, z)
     return pts
 
@@ -290,43 +265,6 @@ def extreme_boundary_loop_curves(
     ]
 
 
-def boundary_loop_curves_at_axis_value(
-    dimtags: list[tuple[int, int]],
-    *,
-    source_axis: str = "z",
-    axis_value: float,
-    tolerance: float = 1.0e-6,
-) -> list[int]:
-    """Boundary curves of ``dimtags`` lying entirely on an axis-aligned plane."""
-
-    gmsh = require_gmsh()
-    boundary = gmsh.model.getBoundary(dimtags, oriented=False, combined=False)
-    curve_tags: list[int] = []
-    seen: set[int] = set()
-    for dim, tag in boundary:
-        if int(dim) != 1:
-            continue
-        curve_tag = int(tag)
-        if curve_tag in seen:
-            continue
-        seen.add(curve_tag)
-        curve_tags.append(curve_tag)
-    if not curve_tags:
-        return []
-
-    axis_idx = {"x": 0, "y": 1, "z": 2}.get(source_axis, 2)
-    target = float(axis_value)
-    eps = max(float(tolerance), abs(target) * 1.0e-9)
-    loop_curves: list[int] = []
-    for curve_tag in curve_tags:
-        box = gmsh.model.getBoundingBox(1, curve_tag)
-        lo = float(min(box[axis_idx], box[axis_idx + 3]))
-        hi = float(max(box[axis_idx], box[axis_idx + 3]))
-        if abs(lo - target) <= eps and abs(hi - target) <= eps:
-            loop_curves.append(curve_tag)
-    return loop_curves
-
-
 def _make_planar_fill_from_loop_curves(
     loop_curves: list[int],
     *,
@@ -396,27 +334,6 @@ def make_planar_fill_from_boundary(
     )
 
 
-def make_planar_fill_from_boundary_at_axis_value(
-    dimtags: list[tuple[int, int]],
-    *,
-    source_axis: str = "z",
-    axis_value: float,
-    closed: bool = True,
-    tolerance: float = 1.0e-6,
-) -> list[tuple[int, int]]:
-    """Fill a boundary loop using existing curves on a specific axis plane."""
-
-    loop_curves = boundary_loop_curves_at_axis_value(
-        dimtags,
-        source_axis=source_axis,
-        axis_value=axis_value,
-        tolerance=tolerance,
-    )
-    return _make_planar_fill_from_loop_curves(
-        loop_curves, closed=closed, source_axis=source_axis
-    )
-
-
 def add_physical_groups(surface_groups: dict[int, list[int]]) -> None:
     gmsh = require_gmsh()
     from ..tags import PHYSICAL_NAMES
@@ -429,20 +346,3 @@ def add_physical_groups(surface_groups: dict[int, list[int]]) -> None:
         gmsh.model.setPhysicalName(
             2, int(tag), PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}")
         )
-
-
-def collect_wall_surfaces(excluding: Iterable[int] = ()) -> list[int]:
-    gmsh = require_gmsh()
-    skip = {int(v) for v in excluding}
-    return [
-        int(tag)
-        for dim, tag in gmsh.model.getEntities(2)
-        if int(dim) == 2 and int(tag) not in skip
-    ]
-
-
-def validate_source_tag(tag: int) -> None:
-    if int(tag) == int(PhysicalGroup.RIGID_WALL):
-        raise ValueError("driver/source tag 1 is reserved for rigid walls")
-    if int(tag) < int(PhysicalGroup.PRIMARY_SOURCE):
-        raise ValueError("driver/source tags must be >= 2")
