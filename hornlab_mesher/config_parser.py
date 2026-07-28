@@ -113,7 +113,9 @@ def _reject_unsupported_ath_keys(
             f"Throat.Profile = {throat_profile} is not supported; only the OS-SE profile (1) is implemented"
         )
     rollback_keys = sorted(
-        key for key in (*flat, *profile_items) if key == "Rollback" or key.startswith("Rollback.")
+        key
+        for key in {*flat, *profile_items, *blocks}
+        if key == "Rollback" or key.startswith("Rollback.")
     )
     if rollback_keys:
         raise ConfigError(f"Rollback is not supported by this mesher (saw {', '.join(rollback_keys)})")

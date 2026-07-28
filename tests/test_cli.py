@@ -630,6 +630,7 @@ def test_ath_text_import_rejects_unsupported_geometry_keys(tmp_path):
         ("Throat.Profile = 3\n", "Throat.Profile"),
         ("Rollback = 1\n", "Rollback"),
         ("Rollback.StartAt = 0.5\n", "Rollback"),
+        ("Rollback = {\nStartAt = 0.5\n}\n", "Rollback"),
         ("Mesh.RearShape = 2\n", "RearShape"),
         ("Mesh.ThroatSegments = 8\n", "ThroatSegments"),
     ):
