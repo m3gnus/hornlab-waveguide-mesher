@@ -206,6 +206,8 @@ def build_mesh_with_info(
                 vertical_offset_mm=float(
                     getattr(geometry, "vertical_offset_mm", 0.0) or 0.0
                 ),
+                open_shell_wall_points_mm=built.open_shell_wall_points_mm,
+                open_shell_wall_normals=built.open_shell_wall_normals,
                 # Coupled infinite-baffle meshes are interior-domain BIE
                 # surfaces. Keep one consistent negative-volume winding:
                 # source/wall normals point into the cavity and aperture
@@ -279,6 +281,8 @@ def _postprocess_mesh(
     symmetry_snap_axes: tuple[str, ...] = (),
     symmetry_snap_tol_mm: float = 1.0e-6,
     vertical_offset_mm: float = 0.0,
+    open_shell_wall_points_mm: np.ndarray | None = None,
+    open_shell_wall_normals: np.ndarray | None = None,
     require_positive_volume: bool = True,
     infinite_baffle: bool = False,
 ) -> MeshInfo:
@@ -314,6 +318,8 @@ def _postprocess_mesh(
         triangles,
         phys,
         source_axis=source_axis,
+        open_shell_wall_points_mm=open_shell_wall_points_mm,
+        open_shell_wall_normals=open_shell_wall_normals,
     )
     report = validate_orientation(
         points,

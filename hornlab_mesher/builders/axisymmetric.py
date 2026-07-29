@@ -4,6 +4,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..geometry import BuiltGeometry, CrossSection
+from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
     build_bspline_surface_from_rings,
@@ -42,6 +43,9 @@ def _build_axisymmetric(
 
     wall = build_bspline_surface_from_rings(grid)
     throat = make_planar_fill_from_ring(grid[:, 0, :])
+    wall_points, wall_normals = open_shell_wall_orientation_references(
+        grid, closed=True
+    )
 
     return BuiltGeometry(
         surface_groups={
@@ -54,4 +58,6 @@ def _build_axisymmetric(
             "inner": [tag for _, tag in wall],
             "throat_disc": [tag for _, tag in throat],
         },
+        open_shell_wall_points_mm=wall_points,
+        open_shell_wall_normals=wall_normals,
     )

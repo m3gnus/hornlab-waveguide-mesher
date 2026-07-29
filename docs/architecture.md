@@ -105,6 +105,8 @@ Related reference docs:
 - Removes degenerate triangles.
 - Validates signed volume, shared-edge consistency, and source normal direction.
 - Repairs generated triangle winding before the final validation boundary.
+- Uses builder-supplied wall-parameterisation samples for bare open shells,
+  whose winding cannot be selected from a signed-volume indicator.
 
 `hornlab_mesher.tags`
 

@@ -283,6 +283,12 @@ class BuiltGeometry:
     symmetry_snap_axes: tuple[Literal["x", "y", "z"], ...] = ()
     symmetry_snap_tol_mm: float = 1.0e-6
     mesh_algorithm: int | None = None
+    # Bare open shells cannot use signed volume to select a winding. Builders
+    # instead provide sparse point/normal samples from the inner wall's own
+    # parameterisation. Postprocess uses them to orient every disconnected wall
+    # component toward the acoustic bore while the source cap anchors +axis.
+    open_shell_wall_points_mm: NDArray[np.float64] | None = None
+    open_shell_wall_normals: NDArray[np.float64] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

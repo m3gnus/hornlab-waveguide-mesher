@@ -75,6 +75,11 @@ and source cap.
 Enclosure mode builds the inner horn, source cap, optional interfaces, and
 enclosure surfaces around the mouth.
 
+Bare-shell winding is an acoustic-boundary contract, not a closed-solid
+contract: source normals point from the throat into the horn, and inner-wall
+normals point out of the wall material into the acoustic bore. Because the
+mouth is open, its signed-volume indicator does not define either side.
+
 Supported point-grid source shapes are explicit: `source_shape = 0` builds a
 flat throat disc/sector, and `source_shape = 1` builds a rounded throat cap.
 Unsupported source shapes must raise instead of silently omitting physical tag
@@ -198,17 +203,23 @@ Gmsh/OCC topology is not the final contract. After raw mesh generation,
 1. Reads the raw Gmsh mesh with meshio.
 2. Snaps requested symmetry planes.
 3. Removes degenerate triangles.
-4. Repairs global triangle winding.
-5. Validates positive volume and source normal direction.
-6. Scales coordinates to metres when requested.
-7. Writes Gmsh 2.2 triangles with physical and geometrical tags.
-8. Reloads the final file and validates required physical tags.
+4. Repairs shared-edge consistency.
+5. Orients closed surfaces by signed volume, but orients bare open walls from
+   sparse normal references supplied by the builder's own axial/azimuthal
+   parameterisation. The source cap remains anchored to `source_axis`.
+6. Validates the applicable volume, edge, and source-normal contracts.
+7. Scales coordinates to metres when requested.
+8. Writes Gmsh 2.2 triangles with physical and geometrical tags.
+9. Reloads the final file and validates required physical tags.
 
-Orientation validation currently does not require watertightness or shared-edge
-consistency for all meshes. Coupled infinite-baffle meshes have a stricter
-runtime contract: full domains must be watertight, reduced-domain open edges
-must lie only on declared cut planes, tag `1`/`12` must share a welded rim, and
-the entire surface must keep a consistent negative-volume winding.
+All generated meshes require consistent shared-edge winding. Bare source and
+wall sheets may remain separate edge-connected components when Gmsh gives
+their coincident throat rims different 1D discretisations; their semantic
+orientations remain deterministic in either case. Coupled infinite-baffle
+meshes have a stricter runtime contract: full domains must be watertight,
+reduced-domain open edges must lie only on declared cut planes, tag `1`/`12`
+must share a welded rim, and the entire surface must keep a consistent
+negative-volume winding.
 
 ## Failure Policy
 

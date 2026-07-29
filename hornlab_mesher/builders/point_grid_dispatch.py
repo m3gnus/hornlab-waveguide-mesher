@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..geometry import BuiltGeometry, PointGridBuildMode, PointGridHornGeometry
+from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
     build_surface_from_points,
@@ -445,6 +446,14 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         surface_groups[int(PhysicalGroup.ENCLOSURE_WALL)] = enclosure_tags
     if interface_tags:
         surface_groups[int(PhysicalGroup.INTERFACE)] = interface_tags
+    open_shell_points: np.ndarray | None = None
+    open_shell_normals: np.ndarray | None = None
+    if build_mode is PointGridBuildMode.BARE:
+        open_shell_points, open_shell_normals = (
+            open_shell_wall_orientation_references(
+                inner_points, closed=geometry.closed
+            )
+        )
     return BuiltGeometry(
         surface_groups=surface_groups,
         axial_bounds_mm=(z0, z1),
@@ -452,4 +461,6 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         mesh_surface_groups=mesh_surface_groups,
         enclosure_bounds=enclosure_bounds,
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+        open_shell_wall_points_mm=open_shell_points,
+        open_shell_wall_normals=open_shell_normals,
     )

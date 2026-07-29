@@ -164,6 +164,81 @@ def test_repair_orientation_restores_shared_edge_consistency():
     assert report.signed_volume > 0.0
 
 
+@pytest.mark.parametrize("reverse_wall", [False, True])
+def test_repair_orientation_anchors_detached_open_wall_to_parameterisation(
+    reverse_wall,
+):
+    """A detached cap must not leave an open wall at signed-volume mercy."""
+
+    angles = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
+    throat = np.column_stack(
+        (np.cos(angles), np.sin(angles), np.zeros_like(angles))
+    )
+    mouth = np.column_stack(
+        (2.0 * np.cos(angles), 2.0 * np.sin(angles), np.ones_like(angles))
+    )
+    # Deliberately duplicate the source rim so source and wall are separate
+    # edge-connected components, matching the failing Gmsh cap-weld branch.
+    source_rim = throat.copy()
+    source_center = np.array([[0.0, 0.0, 0.0]])
+    points = np.vstack((throat, mouth, source_rim, source_center))
+
+    wall: list[list[int]] = []
+    references: list[np.ndarray] = []
+    expected_normals: list[np.ndarray] = []
+    for i in range(len(angles)):
+        ni = (i + 1) % len(angles)
+        wall.extend(
+            (
+                [i, ni + len(angles), ni],
+                [i, i + len(angles), ni + len(angles)],
+            )
+        )
+        references.append(
+            np.mean(points[[i, ni, i + len(angles), ni + len(angles)]], axis=0)
+        )
+        phi = angles[i] + np.pi / len(angles)
+        expected_normals.append(np.array([-np.cos(phi), -np.sin(phi), 1.0]))
+
+    center_index = len(points) - 1
+    source = [
+        [center_index, 2 * len(angles) + i, 2 * len(angles) + (i + 1) % len(angles)]
+        for i in range(len(angles))
+    ]
+    triangles = np.asarray([*wall, *source], dtype=np.int64)
+    tags = np.asarray(
+        [int(PhysicalGroup.RIGID_WALL)] * len(wall)
+        + [int(PhysicalGroup.PRIMARY_SOURCE)] * len(source),
+        dtype=np.int32,
+    )
+    if reverse_wall:
+        triangles[: len(wall)] = triangles[: len(wall), [0, 2, 1]]
+
+    repaired, _stats = repair_orientation(
+        points,
+        triangles,
+        tags,
+        open_shell_wall_points_mm=np.asarray(references),
+        open_shell_wall_normals=np.asarray(expected_normals),
+    )
+
+    wall_triangles = repaired[tags == int(PhysicalGroup.RIGID_WALL)]
+    corners = points[wall_triangles]
+    normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    centroids = np.mean(corners, axis=1)
+    assert np.all(np.sum(normals[:, :2] * -centroids[:, :2], axis=1) > 0.0)
+
+    source_triangles = repaired[tags == int(PhysicalGroup.PRIMARY_SOURCE)]
+    source_corners = points[source_triangles]
+    source_projection = np.sum(
+        np.cross(
+            source_corners[:, 1] - source_corners[:, 0],
+            source_corners[:, 2] - source_corners[:, 0],
+        )[:, 2]
+    )
+    assert source_projection > 0.0
+
+
 def test_postprocess_normalizes_generated_inward_winding(tmp_path):
     points, triangles, tags = _tetrahedron()
     flipped = triangles[:, [0, 2, 1]]
