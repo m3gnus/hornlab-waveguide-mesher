@@ -960,3 +960,18 @@ def test_subdomain_slices_get_ath_default_interface_offset():
         _interfaces_from_params(
             {"subdomainSlices": "5, 10, 15", "interfaceOffset": "3, 4"}, 20
         )
+
+
+def test_subdomain_slices_keep_their_requested_axial_position_after_grid_fit():
+    from hornlab_mesher.config_builder import _interfaces_from_params
+
+    # The slice indices address the requested sampling grid, not whatever
+    # refined/trimmed grid the acoustic resolution fit ultimately produces.
+    params = {
+        "lengthSegments": 20,
+        "subdomainSlices": "5, 10, 20",
+        "interfaceOffset": 5.0,
+    }
+    interfaces = _interfaces_from_params(params, 144)
+    assert [i.slice_index for i in interfaces] == [36, 72, 144]
+    assert [i.slice_index / 144 for i in interfaces] == [0.25, 0.5, 1.0]

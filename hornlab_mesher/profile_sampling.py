@@ -28,7 +28,13 @@ from .profile_morph import (
     _morph_active,
     _morph_target_shape,
     _rounded_rect_quadrant_angles,
+    rounded_rect_corner_arc_span,
 )
+
+# Private params key: acoustic-only corner-arc subdivision (see
+# ``_morph_corner_arc_subdivision``). Never set by user configs.
+ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY = "_acousticCornerArcSubdivision"
+
 
 def _normalise_ath_angular_segments(raw_count: int) -> int:
     count = max(4, int(round(float(raw_count))))
@@ -75,6 +81,30 @@ def _mirror_quadrant_angles(q1: np.ndarray) -> np.ndarray:
     return np.asarray(full, dtype=np.float64)
 
 
+def _morph_corner_arc_subdivision(params: Mapping[str, Any]) -> int:
+    """Private acoustic-only override; 1 keeps ATH's fixed three arc intervals.
+
+    Only ``config_builder._build_acoustic_sampling_grid`` sets this, so the
+    public grid, the viewport preview and the ATH reference path are unaffected.
+    """
+
+    try:
+        value = int(params.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, value)
+
+
+def _morph_quadrant_budget(
+    params: Mapping[str, Any], angular_segments: int
+) -> int:
+    # ATH adds CornerSegments to the angular point budget and rounds the
+    # total up to a whole number of points per quadrant (m2-clone: 100 + 4 ->
+    # 104; solana: 36 + 1 -> 40).
+    corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
+    return max(1, int(math.ceil((angular_segments + corner_segments) / 4.0)))
+
+
 def _morph_angle_list(
     params: Mapping[str, Any],
     angular_segments: int,
@@ -97,10 +127,7 @@ def _morph_angle_list(
         return None
     corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
     corner_segments = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
-    # ATH adds CornerSegments to the angular point budget and rounds the
-    # total up to a whole number of points per quadrant (m2-clone: 100 + 4 ->
-    # 104; solana: 36 + 1 -> 40).
-    points_per_quadrant = max(1, int(math.ceil((angular_segments + corner_segments) / 4.0)))
+    points_per_quadrant = _morph_quadrant_budget(params, angular_segments)
     return _mirror_quadrant_angles(
         _rounded_rect_quadrant_angles(
             points_per_quadrant,
@@ -108,7 +135,46 @@ def _morph_angle_list(
             half_height,
             corner,
             corner_segments,
+            arc_subdivision=_morph_corner_arc_subdivision(params),
         )
+    )
+
+
+def _is_static_number(value: Any) -> bool:
+    """True when a param is a plain number, not an azimuth-dependent expression."""
+
+    return value is None or isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _morph_corner_arc_span(
+    params: Mapping[str, Any],
+    half_width: float | None,
+    half_height: float | None,
+) -> tuple[float, float] | None:
+    """First-quadrant azimuth span of the fixed corner arc, or ``None``.
+
+    The morph target radius is evaluated at every azimuth, so an expression-valued
+    morph parameter can make the corner differ ring by ring and quadrant by
+    quadrant. A single span cannot describe that, and a wrong span would route a
+    refinement to the wrong channel -- so only claim one when the rounded-rectangle
+    structure is statically fixed.
+    """
+
+    if not all(
+        _is_static_number(params.get(key))
+        for key in ("morphTarget", "morphCorner", "morphWidth", "morphHeight")
+    ):
+        return None
+    if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
+        return None
+    if not half_width or not half_height or half_width <= 0.0 or half_height <= 0.0:
+        return None
+    angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
+    return rounded_rect_corner_arc_span(
+        _morph_quadrant_budget(params, angular_segments),
+        half_width,
+        half_height,
+        eval_param(params.get("morphCorner"), 0.0, 0.0),
     )
 
 
@@ -574,6 +640,10 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
                     params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
                 )
 
+    morph_corner_arc_span = _morph_corner_arc_span(
+        params, resolved_half_width, resolved_half_height
+    )
+
     configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
     morph_start_idx = int(np.searchsorted(t_values, configured_morph_start, side="left"))
     if morph_start_idx >= len(t_values):
@@ -666,4 +736,11 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         "angle_list": angles.tolist(),
         "slice_map": t_values.tolist(),
         "sampling_mode": sampling_mode,
+        # Azimuth span of the fixed-structure morph corner arc (first quadrant),
+        # so the acoustic fit can tell corner intervals from wall intervals.
+        "morph_corner_arc_span": (
+            None
+            if morph_corner_arc_span is None
+            else [float(morph_corner_arc_span[0]), float(morph_corner_arc_span[1])]
+        ),
     }

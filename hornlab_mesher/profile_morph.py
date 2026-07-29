@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple
 
 import numpy as np
 
@@ -273,28 +273,34 @@ def _apply_morphing(
     return current_radius + (target_radius - mouth_radius) * factor
 
 
-def _rounded_rect_quadrant_angles(
+class _RoundedRectQuadrantLayout(NamedTuple):
+    """Interval budget for one quadrant of a rounded-rectangle morph target."""
+
+    theta1: float
+    theta2: float
+    corner_radius: float
+    arc_segments: int
+    side1_segments: int
+    side2_segments: int
+
+
+def _rounded_rect_quadrant_layout(
     points_per_quadrant: int,
     half_width: float,
     half_height: float,
     corner_radius: float,
-    corner_segments: int,
-) -> np.ndarray:
-    """First-quadrant azimuth samples for a rounded-rectangle morph target.
+) -> _RoundedRectQuadrantLayout | None:
+    """Resolve the quadrant interval budget, or ``None`` for a uniform quadrant.
 
-    ATH always samples the corner arc with four profiles per quadrant (both
-    wall-tangency endpoints plus two interior points at 30/60 degrees of arc
-    parameter) regardless of ``Mesh.CornerSegments``, which grows the total
-    angular point budget. The remaining segments are uniform in azimuth on the
-    two wall spans, split proportionally to their angular extents. Verified
-    against the ATH m2-clone (CornerSegments 4) and solana (CornerSegments 1)
-    reference grids.
+    ``None`` means the sampler degenerates to a plain azimuth ``linspace`` (no
+    corner radius, or a fully round target): there is no fixed-structure arc,
+    so those quadrants refine normally with the angular budget.
     """
+
     points_per_quadrant = max(1, int(points_per_quadrant))
     corner_radius = min(max(float(corner_radius), 0.0), half_width, half_height)
-    del corner_segments  # budget-only in ATH; the arc structure is fixed
     if corner_radius <= 1.0e-9:
-        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+        return None
 
     theta1 = math.atan2(half_height - corner_radius, half_width)
     theta2 = math.atan2(half_height, half_width - corner_radius)
@@ -309,9 +315,9 @@ def _rounded_rect_quadrant_angles(
     collapsed_side1 = corner_radius >= half_height
     collapsed_side2 = corner_radius >= half_width
     if collapsed_side1 and collapsed_side2:
-        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+        return None
     if (collapsed_side1 or collapsed_side2) and points_per_quadrant == 1:
-        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+        return None
     if collapsed_side1 or collapsed_side2:
         # Keep the normal three arc intervals when the angular budget permits;
         # low-resolution grids reserve one interval for the surviving wall.
@@ -328,6 +334,78 @@ def _rounded_rect_quadrant_angles(
             int(round(side_segments * span1 / max(span1 + span2, 1.0e-12))),
         )
         side2_segments = max(1, side_segments - side1_segments)
+    return _RoundedRectQuadrantLayout(
+        theta1=theta1,
+        theta2=theta2,
+        corner_radius=corner_radius,
+        arc_segments=arc_segments,
+        side1_segments=side1_segments,
+        side2_segments=side2_segments,
+    )
+
+
+def rounded_rect_corner_arc_span(
+    points_per_quadrant: int,
+    half_width: float,
+    half_height: float,
+    corner_radius: float,
+) -> tuple[float, float] | None:
+    """Azimuth span ``[theta1, theta2]`` covered by the fixed corner arc.
+
+    ``None`` when this target has no fixed-structure arc. The acoustic sampling
+    loop uses the span to tell corner intervals (whose chord only shrinks when
+    the arc itself is subdivided) apart from ordinary wall intervals.
+    """
+
+    layout = _rounded_rect_quadrant_layout(
+        points_per_quadrant, half_width, half_height, corner_radius
+    )
+    if layout is None:
+        return None
+    return (layout.theta1, layout.theta2)
+
+
+def _rounded_rect_quadrant_angles(
+    points_per_quadrant: int,
+    half_width: float,
+    half_height: float,
+    corner_radius: float,
+    corner_segments: int,
+    *,
+    arc_subdivision: int = 1,
+) -> np.ndarray:
+    """First-quadrant azimuth samples for a rounded-rectangle morph target.
+
+    ATH always samples the corner arc with four profiles per quadrant (both
+    wall-tangency endpoints plus two interior points at 30/60 degrees of arc
+    parameter) regardless of ``Mesh.CornerSegments``, which grows the total
+    angular point budget. The remaining segments are uniform in azimuth on the
+    two wall spans, split proportionally to their angular extents. Verified
+    against the ATH m2-clone (CornerSegments 4) and solana (CornerSegments 1)
+    reference grids.
+
+    ``arc_subdivision`` splits every arc interval into that many equal
+    sub-intervals, leaving the wall budget untouched. It defaults to 1, so the
+    public/ATH sampling is unchanged; only the acoustic control-grid fit raises
+    it, because ATH's fixed three intervals pin the corner chord at
+    ``2*R*sin(15 deg)`` no matter how large the angular budget grows. Splitting
+    into ``3k`` equal intervals keeps ATH's four canonical profiles as an exact
+    subset (indices ``k``, ``2k``, ``3k`` reproduce the same arc parameters).
+    """
+    points_per_quadrant = max(1, int(points_per_quadrant))
+    corner_radius = min(max(float(corner_radius), 0.0), half_width, half_height)
+    del corner_segments  # budget-only in ATH; the arc structure is fixed
+    layout = _rounded_rect_quadrant_layout(
+        points_per_quadrant, half_width, half_height, corner_radius
+    )
+    if layout is None:
+        return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)
+
+    theta1 = layout.theta1
+    theta2 = layout.theta2
+    side1_segments = layout.side1_segments
+    side2_segments = layout.side2_segments
+    arc_segments = layout.arc_segments * max(1, int(arc_subdivision))
 
     angles: list[float] = []
     if side1_segments:

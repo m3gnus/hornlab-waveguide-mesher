@@ -31,6 +31,7 @@ from .profile_common import (
     _parse_number_list,
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
+from .profile_sampling import ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY
 from .profiles import build_point_grid, eval_param, profile_points
 from .builders.point_grid_freestanding import (
     _outer_wall_axial_ring_indices,
@@ -1224,22 +1225,36 @@ def _interfaces_from_params(
         )
 
     interfaces: list[HornInterface] = []
-    last_ring = int(n_length)
+    fitted_last_ring = int(n_length)
+    # SubdomainSlices belong to the caller's requested control grid. The
+    # acoustic fit is allowed to refine or trim that grid, so applying the raw
+    # indices to the fitted grid silently moves every interface (for example,
+    # requested slice 10 of 20 became slice 10 of 144). Preserve the requested
+    # normalized axial position and relocate it onto the fitted grid instead.
+    requested_last_ring = max(
+        1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
+    )
     for slice_index, offset in zip(slices, offsets):
         if offset <= 0.0:
             continue
         # Imported text configs address grid slices; keep valid indices and ignore
         # out-of-range declarations rather than guessing a different topology.
-        if 0 <= int(slice_index) <= last_ring:
+        if 0 <= int(slice_index) <= requested_last_ring:
+            fitted_slice_index = int(
+                round(int(slice_index) * fitted_last_ring / requested_last_ring)
+            )
             interfaces.append(
-                HornInterface(slice_index=int(slice_index), offset_mm=float(offset))
+                HornInterface(
+                    slice_index=fitted_slice_index,
+                    offset_mm=float(offset),
+                )
             )
         else:
             logger.warning(
                 "[hornlab-mesher] ignoring out-of-range Mesh.SubdomainSlices index %d "
-                "(grid has rings 0..%d)",
+                "(requested grid has rings 0..%d)",
                 int(slice_index),
-                last_ring,
+                requested_last_ring,
             )
     return tuple(interfaces)
 
@@ -1847,6 +1862,143 @@ def build_meridian(
     )
 
 
+# Bounds on the control grid the acoustic fit is actually allowed to produce.
+MAX_EFFECTIVE_PHI_PROFILES = 4096
+MAX_EFFECTIVE_AXIAL_RINGS = 4097
+MAX_EFFECTIVE_CONTROL_POINTS = 1_000_000
+# A converged direction with more slack than this is over-resolved and gets
+# trimmed back toward its requirement.
+TRIM_SLACK = 0.95
+
+
+def _corner_arc_edge_mask(grid: Mapping[str, Any]) -> np.ndarray | None:
+    """Flag the azimuth intervals that lie inside a fixed morph corner arc.
+
+    The full-circle angle list is built by mirroring one quadrant, so folding an
+    azimuth onto ``[0, pi/2]`` with ``atan2(|sin|, |cos|)`` recovers exactly the
+    quadrant sample it came from -- no tolerance games, and it survives the
+    symmetry-reduced angle subsets unchanged. An interval counts as a corner
+    interval only when *both* endpoints sit on the arc, so the wall interval
+    that ends at the tangency point still refines with the angular budget.
+    """
+
+    span = grid.get("morph_corner_arc_span")
+    if not span:
+        return None
+    theta1, theta2 = float(span[0]), float(span[1])
+    angles = np.asarray(grid.get("angle_list") or (), dtype=np.float64)
+    if angles.size < 2:
+        return None
+    folded = np.arctan2(np.abs(np.sin(angles)), np.abs(np.cos(angles)))
+    on_arc = (folded >= theta1 - 1.0e-12) & (folded <= theta2 + 1.0e-12)
+    edges = on_arc[:-1] & on_arc[1:]
+    if bool(grid.get("full_circle", True)):
+        edges = np.concatenate((edges, [bool(on_arc[-1] and on_arc[0])]))
+    return edges
+
+
+def _sampling_metadata(working: Mapping[str, Any], grid: Mapping[str, Any]) -> dict[str, int]:
+    """Report both the nominal segment counts and the grid they actually produced."""
+
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    return {
+        "geometrySampleAngularSegments": int(working["angularSegments"]),
+        "geometrySampleLengthSegments": int(working["lengthSegments"]),
+        "geometrySamplePhiProfiles": n_phi,
+        "geometrySampleAxialRings": n_length + 1,
+        "geometrySampleControlPoints": n_phi * (n_length + 1),
+        "geometrySampleCornerArcSubdivision": int(
+            working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1
+        ),
+    }
+
+
+def _saturated_reason(
+    working: Mapping[str, Any],
+    max_segments: int,
+    max_arc_subdivision: int,
+    ordinary_factor: float,
+    corner_factor: float,
+    axial_factor: float,
+) -> str:
+    """Which cap actually stopped refinement (they are not interchangeable)."""
+
+    hit: list[str] = []
+    if ordinary_factor > 1.0 and int(working["angularSegments"]) >= max_segments:
+        hit.append(f"the {max_segments}-segment azimuth limit")
+    if axial_factor > 1.0 and int(working["lengthSegments"]) >= max_segments:
+        hit.append(f"the {max_segments}-segment axial limit")
+    if corner_factor > 1.0 and (
+        int(working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1) >= max_arc_subdivision
+    ):
+        hit.append(f"the {max_arc_subdivision}x corner-arc subdivision limit")
+    return " and ".join(hit) if hit else "a refinement step that made no progress"
+
+
+def _check_effective_grid_caps(grid: Mapping[str, Any], density: MeshDensity) -> None:
+    """Bound the grid that was actually produced, not the inputs that seeded it.
+
+    ``points_per_quadrant = ceil((angularSegments + cornerSegments)/4)`` is
+    mirrored over four quadrants and then grows again with the corner arc, so
+    capping the two inputs never bounded the real control net.
+    """
+
+    n_phi = int(grid["grid_n_phi"])
+    rings = int(grid["grid_n_length"]) + 1
+    for value, limit, what in (
+        (n_phi, MAX_EFFECTIVE_PHI_PROFILES, f"{n_phi} azimuth profiles"),
+        (rings, MAX_EFFECTIVE_AXIAL_RINGS, f"{rings} axial rings"),
+        (
+            n_phi * rings,
+            MAX_EFFECTIVE_CONTROL_POINTS,
+            f"{n_phi * rings:,} control points",
+        ),
+    ):
+        if value > limit:
+            raise ConfigError(
+                "the acoustic control grid needed for the requested mm resolution "
+                f"(throat {density.throat_res_mm:g} mm, mouth "
+                f"{density.mouth_res_mm:g} mm) is too large: {what} exceeds the "
+                f"limit of {limit:,}. Use a coarser throat/mouth resolution."
+            )
+
+
+def _sampling_failure_message(
+    *,
+    angular_ratio: float,
+    corner_angular_ratio: float,
+    sagitta_ratio: float,
+    axial_ratio: float,
+    density: MeshDensity,
+    n_phi: int,
+    n_length: int,
+    arc_subdivision: int,
+    stop_reason: str,
+) -> str:
+    """Name the feature that actually blocked the fit, not just the cap."""
+
+    candidates = (
+        (corner_angular_ratio, "corner-arc chord",
+         "reduce Morph Corner Radius or raise the mouth resolution"),
+        (angular_ratio, "azimuth chord",
+         "raise the throat/mouth resolution, or simplify a discontinuous phi expression"),
+        (sagitta_ratio, "azimuth curvature",
+         "raise the throat/mouth resolution, or simplify a high-curvature phi expression"),
+        (axial_ratio, "axial chord",
+         "raise the throat/mouth resolution"),
+    )
+    worst_ratio, worst_name, remedy = max(candidates, key=lambda item: item[0])
+    return (
+        "cannot fit the acoustic geometry to the requested mm resolution "
+        f"(throat {density.throat_res_mm:g} mm, mouth {density.mouth_res_mm:g} mm): "
+        f"the {worst_name} is still {worst_ratio:.2f}x its limit; {remedy}. "
+        f"Refinement stopped at {stop_reason} with a control grid of "
+        f"{n_phi} x {n_length + 1} samples "
+        f"(corner-arc subdivision {arc_subdivision}x)."
+    )
+
+
 def _build_acoustic_sampling_grid(
     params: Mapping[str, Any],
     density: MeshDensity,
@@ -1872,14 +2024,28 @@ def _build_acoustic_sampling_grid(
 
     if not working.get("zMapPoints"):
         working["samplingMode"] = "ath-default-zmap"
+
+    # The sagitta limit is a smooth-curvature heuristic, so it is only applied
+    # where the target is smooth. A morph target can carry a genuine vertex (a
+    # sharp rectangle is the default WG corner setting) whose sagitta decays as
+    # 1/n rather than 1/n^2; enforcing it there stalls against the segment cap
+    # instead of converging. See docs/builder-invariants.md.
     enforce_angular_sagitta = (
         _static_float_or_none(working.get("morphTarget", 0)) == 0.0
         and _static_float_or_none(working.get("gcurveType", 0)) == 0.0
     )
 
     max_segments = 2048
-    for _attempt in range(10):
+    # 3*k intervals per corner quadrant; the cap only exists to keep a genuinely
+    # non-convergent geometry from looping, not as a practical ceiling.
+    max_arc_subdivision = 256
+    attempts = 12
+    stop_reason = f"the {attempts}-attempt refinement limit"
+    best: tuple[dict[str, Any], dict[str, Any]] | None = None
+    trims_left = 6
+    for attempt in range(attempts):
         grid = build_point_grid(working)
+        _check_effective_grid_caps(grid, density)
         n_phi = int(grid["grid_n_phi"])
         n_length = int(grid["grid_n_length"])
         # The outer freestanding grid is derived from the inner fit and can
@@ -1894,7 +2060,16 @@ def _build_acoustic_sampling_grid(
             float(density.throat_res_mm)
             + (float(density.mouth_res_mm) - float(density.throat_res_mm)) * ring_t
         )
+        # A rounded-rectangle morph samples its corner arc with a fixed number
+        # of intervals (ATH parity), so those chords do not shrink when the
+        # angular budget grows -- only subdividing the arc itself moves them.
+        # Classify each azimuth interval so a corner violation refines the arc
+        # and an ordinary violation refines the angular budget.
+        corner_edge = _corner_arc_edge_mask(grid)
+        full_circle = bool(grid.get("full_circle", True))
         angular_ratio = 0.0
+        corner_angular_ratio = 0.0
+        sagitta_ratio = 0.0
         axial_ratio = 0.0
         for points in surfaces:
             angular_delta = np.diff(points, axis=0)
@@ -1904,12 +2079,21 @@ def _build_acoustic_sampling_grid(
                 )
             if angular_delta.size:
                 angular_lengths = np.linalg.norm(angular_delta, axis=2)
-                angular_ratio = max(
-                    angular_ratio,
-                    float(np.max(angular_lengths / (2.0 * ring_h[None, :]))),
-                )
+                angular_ratios = angular_lengths / (2.0 * ring_h[None, :])
+                if corner_edge is not None and corner_edge.shape[0] == angular_ratios.shape[0]:
+                    ordinary_ratios = angular_ratios[~corner_edge, :]
+                    corner_ratios = angular_ratios[corner_edge, :]
+                else:
+                    ordinary_ratios = angular_ratios
+                    corner_ratios = angular_ratios[:0, :]
+                if ordinary_ratios.size:
+                    angular_ratio = max(angular_ratio, float(np.max(ordinary_ratios)))
+                if corner_ratios.size:
+                    corner_angular_ratio = max(
+                        corner_angular_ratio, float(np.max(corner_ratios))
+                    )
                 angular_points = points
-                if bool(grid.get("full_circle", True)):
+                if full_circle:
                     angular_points = np.concatenate(
                         (points[-1:, :, :], points, points[:1, :, :]), axis=0
                     )
@@ -1927,8 +2111,8 @@ def _build_acoustic_sampling_grid(
                     )
                     projection = previous + alpha[:, :, None] * chord
                     sagitta = np.linalg.norm(current - projection, axis=2)
-                    angular_ratio = max(
-                        angular_ratio,
+                    sagitta_ratio = max(
+                        sagitta_ratio,
                         float(np.max(sagitta / (0.05 * ring_h[None, :]))),
                     )
 
@@ -1941,48 +2125,98 @@ def _build_acoustic_sampling_grid(
                     float(np.max(axial_lengths / (0.5 * axial_h[None, :]))),
                 )
 
-        if angular_ratio <= 1.0 and axial_ratio <= 1.0:
-            return grid, {
-                "geometrySampleAngularSegments": int(working["angularSegments"]),
-                "geometrySampleLengthSegments": int(working["lengthSegments"]),
-            }
+        # Chord error falls as 1/n; sagitta error falls as 1/n^2. Extrapolating a
+        # sagitta violation linearly (as this loop used to) overshoots by sqrt of
+        # the ratio, which is why the fitted grid used to depend so strongly on
+        # the caller's starting segment counts.
+        ordinary_factor = max(angular_ratio, math.sqrt(sagitta_ratio))
+        corner_factor = corner_angular_ratio
+        axial_factor = axial_ratio
+
+        converged = (
+            ordinary_factor <= 1.0 and corner_factor <= 1.0 and axial_factor <= 1.0
+        )
+        # Each direction is trimmed on its own slack. Sharing one gate let an
+        # axial term sitting at its limit pin a wildly over-resolved azimuth.
+        has_corner = corner_edge is not None
+        slack = {
+            "angular": ordinary_factor < TRIM_SLACK,
+            "axial": axial_factor < TRIM_SLACK,
+            "corner": has_corner and corner_factor < TRIM_SLACK,
+        }
+        if converged:
+            best = (grid, dict(working))
+            # A grid that clears every limit with room to spare is oversized --
+            # usually because the caller asked for far more segments than the mm
+            # targets need. Trim toward the requirement, keeping this fit as the
+            # fallback if the smaller grid turns out to violate something.
+            if trims_left > 0 and any(slack.values()):
+                trims_left -= 1
+            else:
+                return grid, _sampling_metadata(working, grid)
+        elif best is not None:
+            # The trim overshot; the last fit that met every limit stands.
+            good_grid, good_working = best
+            return good_grid, _sampling_metadata(good_working, good_grid)
 
         current_angular = int(working["angularSegments"])
         current_length = int(working["lengthSegments"])
-        current_corner = int(working.get("cornerSegments") or 1)
-        if angular_ratio > 1.0:
-            working["angularSegments"] = min(
-                max_segments,
-                max(
-                    current_angular + 1,
-                    int(math.ceil(current_angular * angular_ratio * 1.05)),
-                ),
+        current_arc = int(working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1)
+        # The caller's own segment counts are the probe density for the first
+        # measurement, so a feature they resolved is visible to the guards. From
+        # that measurement the requirement is extrapolated in either direction.
+        # Outside the first probe and the trim passes refinement only increases,
+        # so it cannot oscillate.
+        def _retarget(
+            current: int, factor: float, cap: int, *, floor: int, may_shrink: bool
+        ) -> int:
+            if factor > 1.0:
+                return min(cap, max(current + 1, int(math.ceil(current * factor * 1.05))))
+            if not may_shrink:
+                return current
+            return max(floor, min(cap, int(math.ceil(current * factor * 1.05))))
+
+        first_probe = attempt == 0
+        working["angularSegments"] = _retarget(
+            current_angular, ordinary_factor, max_segments,
+            floor=4, may_shrink=first_probe or slack["angular"],
+        )
+        working["lengthSegments"] = _retarget(
+            current_length, axial_factor, max_segments,
+            floor=4, may_shrink=first_probe or slack["axial"],
+        )
+        if has_corner:
+            working[ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY] = _retarget(
+                current_arc, corner_factor, max_arc_subdivision,
+                floor=1, may_shrink=first_probe or slack["corner"],
             )
-            working["cornerSegments"] = min(
-                max_segments,
-                max(
-                    current_corner + 1,
-                    int(math.ceil(current_corner * angular_ratio * 1.05)),
-                ),
-            )
-        if axial_ratio > 1.0:
-            working["lengthSegments"] = min(
-                max_segments,
-                max(
-                    current_length + 1,
-                    int(math.ceil(current_length * axial_ratio * 1.05)),
-                ),
-            )
+
         if (
             int(working["angularSegments"]) == current_angular
             and int(working["lengthSegments"]) == current_length
-            and int(working["cornerSegments"]) == current_corner
+            and int(working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1) == current_arc
         ):
+            if best is not None:
+                good_grid, good_working = best
+                return good_grid, _sampling_metadata(good_working, good_grid)
+            stop_reason = _saturated_reason(
+                working, max_segments, max_arc_subdivision, ordinary_factor,
+                corner_factor, axial_factor,
+            )
             break
 
     raise ConfigError(
-        "requested mm resolution needs more than 2048 internal geometry samples; "
-        "use a coarser throat/mouth resolution"
+        _sampling_failure_message(
+            angular_ratio=angular_ratio,
+            corner_angular_ratio=corner_angular_ratio,
+            sagitta_ratio=sagitta_ratio,
+            axial_ratio=axial_ratio,
+            density=density,
+            n_phi=n_phi,
+            n_length=n_length,
+            arc_subdivision=int(working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1),
+            stop_reason=stop_reason,
+        )
     )
 
 

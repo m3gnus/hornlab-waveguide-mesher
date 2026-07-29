@@ -226,7 +226,9 @@ should describe the topology rule rather than ATH.
 ATH subdomain interfaces are virtual boundaries between acoustic subdomains.
 They are configured by:
 
-- `Mesh.SubdomainSlices`: grid slice indices where interfaces are placed.
+- `Mesh.SubdomainSlices`: requested-grid slice indices where interfaces are
+  placed. When acoustic sampling refines or trims the axial grid, each slice is
+  relocated to preserve its normalized axial position.
 - `Mesh.InterfaceOffset`: forward protrusion per interface.
 
 Canonical rule:
