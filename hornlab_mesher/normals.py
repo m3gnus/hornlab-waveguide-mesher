@@ -22,6 +22,7 @@ class MeshOrientationReport:
     inconsistent_edges: int
     signed_volume: float
     source_normal_projection: float
+    open_shell_bore_alignment: float | None = None
 
     @property
     def watertight(self) -> bool:
@@ -132,6 +133,81 @@ def open_shell_wall_orientation_references(
     )
 
 
+def open_shell_bore_alignment(
+    points: NDArray[np.float64],
+    triangles: NDArray[np.int64],
+    tags: NDArray[np.int32],
+    *,
+    band_fraction: float = 0.2,
+) -> float | None:
+    """Return the near-throat wall area fraction whose normal faces the bore.
+
+    Signed volume cannot express this contract. It is not translation
+    invariant on an open surface, and even about a fixed material point it
+    reports the *wrong* sign for correctly wound rollback profiles, whose wall
+    curls back past the mouth plane (measured: R-OSSE and ICW rollbacks both
+    come out positive while every wall normal faces the bore). Symmetry-reduced
+    bare shells flip it too, depending on which point the sum is taken about.
+
+    What is well defined without a closed interior is the throat collar. There
+    the wall is a monotonically flaring tube around the source cap, so an
+    inward normal is exactly a normal with a negative radial component about
+    the cap's own axis. Both references come from the mesh itself -- the cap's
+    area-weighted centroid and its net area vector -- so the measure survives
+    translation, rotation, vertical offsets and reduced domains. The band is
+    kept near the throat because a rollback deliberately reverses the
+    bore-facing normal's radial component further out.
+
+    Returns ``None`` when the mesh carries no primary source, no rigid wall, a
+    cap whose area vectors cancel, or no nondegenerate axial wall collar --
+    cases this measure cannot judge.
+    """
+
+    wall_mask = tags == int(PhysicalGroup.RIGID_WALL)
+    source_mask = tags == int(PhysicalGroup.PRIMARY_SOURCE)
+    if not np.any(wall_mask) or not np.any(source_mask):
+        return None
+
+    s0 = points[triangles[source_mask, 0]]
+    s1 = points[triangles[source_mask, 1]]
+    s2 = points[triangles[source_mask, 2]]
+    source_area_vectors = np.cross(s1 - s0, s2 - s0)
+    source_areas = 0.5 * np.linalg.norm(source_area_vectors, axis=1)
+    if not np.any(source_areas > 0.0):
+        return None
+    cap_centroid = np.average(
+        (s0 + s1 + s2) / 3.0, weights=source_areas, axis=0
+    )
+    axis = source_area_vectors.sum(axis=0)
+    axis_length = float(np.linalg.norm(axis))
+    if axis_length <= 1.0e-12:
+        return None
+    axis = axis / axis_length
+
+    w0 = points[triangles[wall_mask, 0]]
+    w1 = points[triangles[wall_mask, 1]]
+    w2 = points[triangles[wall_mask, 2]]
+    wall_area_vectors = np.cross(w1 - w0, w2 - w0)
+    wall_areas = 0.5 * np.linalg.norm(wall_area_vectors, axis=1)
+    offsets = (w0 + w1 + w2) / 3.0 - cap_centroid
+    axial = offsets @ axis
+    radial = offsets - np.outer(axial, axis)
+    radial_lengths = np.linalg.norm(radial, axis=1)
+
+    span = float(axial.max() - axial.min())
+    if span <= 0.0:
+        return None
+    band = axial <= axial.min() + float(band_fraction) * span
+    band &= (radial_lengths > 1.0e-12) & (wall_areas > 0.0)
+    if not np.any(band):
+        return None
+
+    inward = -radial[band] / radial_lengths[band, None]
+    facing_bore = np.sum(wall_area_vectors[band] * inward, axis=1) > 0.0
+    banded_areas = wall_areas[band]
+    return float(np.sum(banded_areas[facing_bore]) / np.sum(banded_areas))
+
+
 def validate_orientation(
     points: NDArray[np.float64],
     triangles: NDArray[np.int64],
@@ -142,6 +218,8 @@ def validate_orientation(
     require_edge_consistency: bool = False,
     require_positive_volume: bool = True,
     require_source_normal: bool = True,
+    require_open_shell_bore_normal: bool = False,
+    open_shell_bore_tolerance: float = 0.9,
     eps: float = 1e-12,
 ) -> MeshOrientationReport:
     """Validate triangle winding without mutating the mesh.
@@ -204,6 +282,9 @@ def validate_orientation(
         inconsistent_edges=int(inconsistent_edges),
         signed_volume=signed_volume,
         source_normal_projection=source_projection,
+        open_shell_bore_alignment=open_shell_bore_alignment(
+            points, triangles, tags
+        ),
     )
 
     failures: list[str] = []
@@ -223,6 +304,19 @@ def validate_orientation(
             "primary source normals point opposite "
             f"{axis_label}-axis ({report.source_normal_projection:.6g})"
         )
+    if require_open_shell_bore_normal:
+        alignment = report.open_shell_bore_alignment
+        if alignment is None:
+            failures.append(
+                "bare open shell has no measurable throat collar to orient "
+                "(missing or degenerate primary source or rigid wall)"
+            )
+        elif alignment < float(open_shell_bore_tolerance):
+            failures.append(
+                "bare open-shell wall normals do not face the bore: only "
+                f"{alignment:.3f} of near-throat wall area points inward "
+                f"(need >= {float(open_shell_bore_tolerance):.3f})"
+            )
     if failures:
         raise MeshOrientationError("; ".join(failures))
     return report

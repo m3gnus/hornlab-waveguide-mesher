@@ -330,6 +330,12 @@ def _postprocess_mesh(
         require_edge_consistency=True,
         require_positive_volume=require_positive_volume,
         require_source_normal=True,
+        # Bare open shells are the one mode whose winding no closed-surface
+        # indicator can check, and the mode whose repair depends on
+        # builder-supplied references. Re-derive the contract from the emitted
+        # triangles alone so a lost or wrong reference fails the build instead
+        # of shipping a horn that solves as an acoustically invisible sheet.
+        require_open_shell_bore_normal=open_shell_wall_points_mm is not None,
     )
     if infinite_baffle:
         _validate_infinite_baffle_contract(

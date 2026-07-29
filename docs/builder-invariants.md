@@ -207,7 +207,8 @@ Gmsh/OCC topology is not the final contract. After raw mesh generation,
 5. Orients closed surfaces by signed volume, but orients bare open walls from
    sparse normal references supplied by the builder's own axial/azimuthal
    parameterisation. The source cap remains anchored to `source_axis`.
-6. Validates the applicable volume, edge, and source-normal contracts.
+6. Validates the applicable volume, edge, and source-normal contracts, and
+   re-derives the bare-shell contract from the emitted triangles alone.
 7. Scales coordinates to metres when requested.
 8. Writes Gmsh 2.2 triangles with physical and geometrical tags.
 9. Reloads the final file and validates required physical tags.
@@ -215,7 +216,19 @@ Gmsh/OCC topology is not the final contract. After raw mesh generation,
 All generated meshes require consistent shared-edge winding. Bare source and
 wall sheets may remain separate edge-connected components when Gmsh gives
 their coincident throat rims different 1D discretisations; their semantic
-orientations remain deterministic in either case. Coupled infinite-baffle
+orientations remain deterministic in either case.
+
+Bare shells are also checked independently of the repair that produced them,
+because that repair depends on builder-supplied references and a lost or wrong
+reference would otherwise ship silently. The check is the near-throat wall
+area fraction whose normal faces the bore, measured about the source cap's own
+centroid and net area vector; the build fails below `0.9`. Note that signed
+volume cannot serve here even about a fixed material point: rollback profiles
+(R-OSSE, ICW) hold the wall contract with a *positive* signed volume because
+their wall curls back past the mouth plane, and symmetry-reduced bare shells
+change its sign with the point it is taken about. The measured alignment is
+`1.0` on every correctly wound bare shell and `0.0` on an inverted one, so the
+threshold is not a tuned quantity. Coupled infinite-baffle
 meshes have a stricter runtime contract: full domains must be watertight,
 reduced-domain open edges must lie only on declared cut planes, tag `1`/`12`
 must share a welded rim, and the entire surface must keep a consistent
