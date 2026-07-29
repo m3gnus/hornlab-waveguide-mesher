@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -110,7 +111,11 @@ def _assert_counts_close(actual: dict[int, int], expected: dict[int, int], *, rt
         )
 
 
-def _built_geometry_from_ath_case(case: str):
+def _built_geometry_from_ath_case(
+    case: str,
+    *,
+    topology_mode: Literal["acoustic", "legacy"],
+):
     config = load_config(ATH_REFERENCE_ROOT / case / "config.txt")
     params, _formula, _mode = build_geometry_params(config)
     mesh = _section(config, "mesh")
@@ -126,6 +131,7 @@ def _built_geometry_from_ath_case(case: str):
     geometry = PointGridHornGeometry(
         inner_points=inner,
         outer_points=outer,
+        topology_mode=topology_mode,
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
         closed=bool(grid.get("full_circle", True)),
@@ -192,8 +198,51 @@ def test_rosse_freestanding_surface_topology_matches_ath_geo(case: str, expected
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear()
         gmsh.model.add(case)
-        built = _built_geometry_from_ath_case(case)
+        built = _built_geometry_from_ath_case(case, topology_mode="legacy")
         actual_groups = {name: len(tags) for name, tags in built.mesh_surface_groups.items()}
+    finally:
+        gmsh.clear()
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()
+
+    assert actual_groups == expected_groups
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+@pytest.mark.parametrize(
+    ("case", "expected_groups"),
+    [
+        (
+            "asro2",
+            {"inner": 1, "outer": 1, "mouth": 1, "rear": 1, "rear_cap": 1, "throat_disc": 1},
+        ),
+        (
+            "250917asro68",
+            {"inner": 4, "outer": 4, "mouth": 4, "rear": 1, "rear_cap": 1, "throat_disc": 1},
+        ),
+        (
+            "250917asro68q",
+            {"inner": 1, "outer": 1, "mouth": 1, "rear": 1, "rear_cap": 1, "throat_disc": 1},
+        ),
+    ],
+)
+def test_rosse_freestanding_acoustic_topology_collapses_patches(
+    case: str,
+    expected_groups: dict[str, int],
+):
+    gmsh = _import_gmsh()
+    initialized_here = False
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+        initialized_here = True
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add(case)
+        built = _built_geometry_from_ath_case(case, topology_mode="acoustic")
+        actual_groups = {
+            name: len(tags) for name, tags in built.mesh_surface_groups.items()
+        }
     finally:
         gmsh.clear()
         if initialized_here and gmsh.isInitialized():
@@ -262,7 +311,7 @@ def test_solana_enclosure_topology_uses_fast_wall_groups(case: str, expected_gro
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.clear()
         gmsh.model.add(case)
-        built = _built_geometry_from_ath_case(case)
+        built = _built_geometry_from_ath_case(case, topology_mode="acoustic")
         actual_groups = {name: len(tags) for name, tags in built.mesh_surface_groups.items()}
     finally:
         gmsh.clear()
