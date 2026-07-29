@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -17,7 +20,28 @@ from hornlab_mesher.builders.point_grid import build_point_grid as build_point_g
 
 _ATH_REFERENCE_ROOT_TEXT = os.environ.get("ATH_REFERENCE_ROOT")
 ATH_REFERENCE_ROOT = Path(_ATH_REFERENCE_ROOT_TEXT) if _ATH_REFERENCE_ROOT_TEXT else Path()
-HAS_ATH_REFERENCE_ROOT = bool(_ATH_REFERENCE_ROOT_TEXT) and ATH_REFERENCE_ROOT.exists()
+_ATH_PARITY_REQUIRED = os.environ.get("HORNLAB_ATH_PARITY") == "required"
+if _ATH_REFERENCE_ROOT_TEXT and not ATH_REFERENCE_ROOT.is_dir():
+    raise RuntimeError(
+        f"ATH_REFERENCE_ROOT is not a directory: {ATH_REFERENCE_ROOT}"
+    )
+if _ATH_PARITY_REQUIRED and not _ATH_REFERENCE_ROOT_TEXT:
+    raise RuntimeError(
+        "HORNLAB_ATH_PARITY=required requires ATH_REFERENCE_ROOT to be set"
+    )
+HAS_ATH_REFERENCE_ROOT = bool(_ATH_REFERENCE_ROOT_TEXT)
+
+
+def _import_gmsh():
+    try:
+        return importlib.import_module("gmsh")
+    except ImportError:
+        if _ATH_PARITY_REQUIRED:
+            pytest.fail(
+                "gmsh is required when HORNLAB_ATH_PARITY=required",
+                pytrace=False,
+            )
+        pytest.skip("could not import 'gmsh'")
 
 
 def _read_grid_export_blocks(path: Path) -> list[np.ndarray]:
@@ -159,7 +183,7 @@ def test_rosse_point_grid_matches_ath_reference_exports(case: str):
     ],
 )
 def test_rosse_freestanding_surface_topology_matches_ath_geo(case: str, expected_groups: dict[str, int]):
-    gmsh = pytest.importorskip("gmsh")
+    gmsh = _import_gmsh()
     initialized_here = False
     if not gmsh.isInitialized():
         gmsh.initialize()
@@ -229,7 +253,7 @@ def test_solana_point_grid_matches_ath_reference_exports(case: str):
     ],
 )
 def test_solana_enclosure_topology_uses_fast_wall_groups(case: str, expected_groups: dict[str, int]):
-    gmsh = pytest.importorskip("gmsh")
+    gmsh = _import_gmsh()
     initialized_here = False
     if not gmsh.isInitialized():
         gmsh.initialize()
@@ -458,3 +482,44 @@ def test_m2_clone_infinite_baffle_build_matches_coupled_aperture_contract(tmp_pa
     aperture_z_projections = np.cross(p1 - p0, p2 - p0)[:, 2]
     assert np.all(aperture_z_projections < 0.0)
     assert float(np.sum(aperture_z_projections)) < 0.0
+
+
+def test_required_ath_parity_rejects_a_missing_reference_root(tmp_path: Path):
+    missing_root = tmp_path / "missing-ath-reference"
+    env = os.environ.copy()
+    env["HORNLAB_ATH_PARITY"] = "required"
+    env["ATH_REFERENCE_ROOT"] = str(missing_root)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            str(Path(__file__).resolve()),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    output = completed.stdout + completed.stderr
+    assert f"ATH_REFERENCE_ROOT is not a directory: {missing_root}" in output
+
+
+def test_required_ath_parity_fails_when_gmsh_is_unavailable(monkeypatch):
+    original_import_module = importlib.import_module
+
+    def import_without_gmsh(name: str, package: str | None = None):
+        if name == "gmsh":
+            raise ModuleNotFoundError("No module named 'gmsh'")
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", import_without_gmsh)
+    monkeypatch.setattr(sys.modules[__name__], "_ATH_PARITY_REQUIRED", True)
+
+    with pytest.raises(pytest.fail.Exception, match="gmsh is required"):
+        _import_gmsh()
