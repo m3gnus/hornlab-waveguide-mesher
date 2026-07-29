@@ -8,7 +8,7 @@ from .profile_common import _parse_number_list
 from .tags import PhysicalGroup, SOURCE_TAGS
 
 
-_PREMESH_TRIANGLE_LIMIT_SLACK = 1.5
+_PREMESH_TRIANGLE_LIMIT_SLACK = 2.0
 # Mesh-size growth per millimetre of distance from a roundover seam curve
 # (1.0 = size equals distance: each element row roughly doubles). Bounds the
 # boundary-to-interior size jump the 2D mesher sees at the seam.
@@ -204,6 +204,27 @@ def _effective_size_mm(values: list[float]) -> float | None:
     return math.sqrt(float(len(sizes)) / inv_sq) if inv_sq > 0.0 else None
 
 
+def _axial_ramp_effective_size_mm(
+    start: float, end: float
+) -> float | None:
+    """Effective size for the linear part of the clamped axial size field.
+
+    For ``h(t) = start + (end - start) * t``, integrating ``1 / h(t)^2``
+    over the unit interval gives ``1 / (start * end)`` exactly.
+    """
+
+    start = float(start)
+    end = float(end)
+    if (
+        not math.isfinite(start)
+        or not math.isfinite(end)
+        or start <= 0.0
+        or end <= 0.0
+    ):
+        return None
+    return math.sqrt(start * end)
+
+
 def _bbox_surface_area_estimate_mm2(
     bbox: tuple[float, float, float, float, float, float],
 ) -> float:
@@ -293,7 +314,7 @@ def _enclosure_triangle_regions(
         if area > 0.0:
             regions.append((area, float(size), label))
 
-    axial_size = _effective_size_mm([throat_res, mouth_res])
+    axial_size = _axial_ramp_effective_size_mm(throat_res, mouth_res)
     add(mesh_groups.get("inner", []), axial_size, "waveguide wall")
     add(mesh_groups.get("mouth", []), axial_size, "mouth")
     add(mesh_groups.get("outer", []), axial_size, "outer wall")
@@ -391,7 +412,7 @@ def _generic_triangle_regions(
     add(mesh_groups.get("mouth", []), mouth_res, "mouth")
     add(
         mesh_groups.get("inner", []),
-        _effective_size_mm([throat_res, mouth_res]),
+        _axial_ramp_effective_size_mm(throat_res, mouth_res),
         "waveguide wall",
     )
     return regions

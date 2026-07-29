@@ -160,9 +160,11 @@ is the largest user target. Point, curvature, and boundary-extension sizing are
 disabled.
 
 All builds use a full-domain-equivalent `max_triangles` guard (18,000 by
-default). A clearly excessive estimate fails before Gmsh and the realized
-triangle count is checked after generation. The guard never rewrites mesh
-sizes. `allow_large_mesh=true` is the explicit override for both checks.
+default). A fast-fail estimate rejects requests above twice the effective
+limit before Gmsh; it is deliberately approximate and is not the budget
+guarantee. The realized triangle count is checked authoritatively after
+generation. The guard never rewrites mesh sizes. `allow_large_mesh=true` is
+the explicit override for both checks.
 
 Ordinary `acoustic` topology uses profile samples to fit a small number of OCC
 patches; samples do not become mandatory BEM seams or vertices. `legacy`

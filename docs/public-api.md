@@ -38,10 +38,13 @@ physical-group keys converted to strings.
 Experimental LOOKUP profiles are accepted as TOML/JSON compatibility input,
 not as stable public API.
 
-Config-driven builds enforce `mesh.max_triangles` as a full-domain-equivalent
-ceiling (18,000 by default). Set `mesh.allow_large_mesh=true`, pass
-`allow_large_mesh=True` to `build_from_config`, or use the CLI's
-`--allow-large-mesh` flag only after reviewing the expected dense-BEM cost.
+Config-driven builds enforce `mesh.max_triangles` as a realized
+full-domain-equivalent ceiling (18,000 by default). Before Gmsh runs, an
+approximate fast-fail check rejects estimates above twice the effective
+limit; the post-generation triangle count is the authoritative budget check.
+Set `mesh.allow_large_mesh=true`, pass `allow_large_mesh=True` to
+`build_from_config`, or use the CLI's `--allow-large-mesh` flag only after
+reviewing the expected dense-BEM cost.
 
 ### Direct Mesh Builds
 

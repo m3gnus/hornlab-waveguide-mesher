@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import math
 import sys
 import types
 
 import pytest
 
+from hornlab_mesher.cost import TRIANGLES_PER_AREA_OVER_H2
 from hornlab_mesher.density import (
+    _axial_ramp_effective_size_mm,
     configure_density,
     _enclosure_resolution_formula,
     _parse_quadrant_resolutions,
@@ -18,6 +21,14 @@ def test_quadrant_resolution_parsing_matches_wg_contract():
     assert _parse_quadrant_resolutions("6,7,8,9", 9.0) == [6.0, 7.0, 8.0, 9.0]
     assert _parse_quadrant_resolutions("6,7", 9.0) == [6.0, 7.0, 9.0, 9.0]
     assert _parse_quadrant_resolutions("", 9.0) == [9.0, 9.0, 9.0, 9.0]
+
+
+def test_axial_ramp_effective_size_is_geometric_mean():
+    assert _axial_ramp_effective_size_mm(3.0, 10.0) == pytest.approx(
+        math.sqrt(30.0)
+    )
+    assert _axial_ramp_effective_size_mm(0.0, 10.0) is None
+    assert _axial_ramp_effective_size_mm(3.0, math.inf) is None
 
 
 @pytest.mark.parametrize(
@@ -188,6 +199,41 @@ def test_aperture_density_coarsens_surface_not_rim_curves(monkeypatch):
     assert (aperture_restrict, "CurvesList") not in field.number_lists
 
 
+def test_graded_wall_estimate_integrates_the_axial_size_ramp(monkeypatch):
+    wall_area_mm2 = 30_000.0
+    fake_gmsh = types.SimpleNamespace(
+        model=_FakeModel(
+            {1: (-20.0, -20.0, -80.0, 20.0, 20.0, 0.0)},
+            masses={1: wall_area_mm2},
+        ),
+        option=types.SimpleNamespace(setNumber=lambda *_args: None),
+    )
+    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
+    geometry = BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(-80.0, 0.0),
+        mesh_surface_groups={"inner": [1]},
+    )
+
+    configure_density(
+        geometry,
+        MeshDensity(
+            throat_res_mm=3.0,
+            mouth_res_mm=10.0,
+            rear_res_mm=15.0,
+            max_triangles=None,
+        ),
+    )
+
+    expected = round(
+        TRIANGLES_PER_AREA_OVER_H2 * wall_area_mm2 / (3.0 * 10.0)
+    )
+    assert geometry.metadata["meshTriangleEstimate"] == expected
+    assert geometry.metadata["meshTriangleDominantTargetMm"] == pytest.approx(
+        math.sqrt(30.0)
+    )
+
+
 def test_enclosure_density_uses_only_user_mm_targets(monkeypatch):
     fake_gmsh = types.SimpleNamespace(
         model=_FakeModel(
@@ -292,7 +338,8 @@ def test_large_triangle_estimate_refuses_instead_of_rewriting_sizes(monkeypatch)
         enc_back_res_mm=2.0,
     )
     with pytest.raises(
-        ValueError, match=r"estimated mesh size .*largest estimated contribution is"
+        ValueError,
+        match=r"estimated mesh size .*2x pre-mesh safety margin.*largest estimated contribution is",
     ):
         configure_density(geometry, density)
     assert geometry.metadata["meshTriangleEstimate"] > 27_000
