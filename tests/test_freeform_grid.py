@@ -207,3 +207,36 @@ def test_low_level_grid_reuses_shared_freeform_feature_validation() -> None:
         build_point_grid({**params, "morphTarget": 1})
     with pytest.raises(ValueError, match="FREEFORM.*guiding curves"):
         build_point_grid({**params, "gcurveType": 1, "gcurveWidth": 100.0})
+
+
+def test_merged_axial_map_collapses_float_noise_duplicate_stations() -> None:
+    """An anchor within float noise of a base sample must not duplicate a ring.
+
+    Regression: an anchor at t = 1/3 + 1 ulp next to the uniform base station
+    at t = 1/3 produced two coincident axial rings, which made the outer
+    offset shell locally degenerate and tripped the normal-flip guard.
+    """
+    from hornlab_mesher.freeform import build_freeform_geometry
+    from hornlab_mesher.profile_sampling import _freeform_merged_axial_map
+
+    profile = {
+        "profileH": {
+            "points": [[0.0, 12.7], [40.0 + 7.0e-15, 60.0], [120.0, 140.0]],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 60.0,
+        },
+        "profileV": {
+            "points": [[0.0, 12.7], [40.0 + 7.0e-15, 60.0], [120.0, 140.0]],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 60.0,
+        },
+        "crossSections": [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "ellipse"},
+        ],
+    }
+    geometry = build_freeform_geometry(profile)
+    t_values, _mode = _freeform_merged_axial_map(profile, geometry, 3)
+    assert t_values[0] == 0.0
+    assert t_values[-1] == 1.0
+    assert np.all(np.diff(t_values) > 1.0e-7)

@@ -665,6 +665,14 @@ def _freeform_merged_axial_map(
     merged = np.unique(
         np.concatenate((np.asarray(base_t, dtype=np.float64), np.asarray(feature_t)))
     )
+    # A base sample can land within float noise of a feature station (e.g. an
+    # anchor at t=1/3 vs a uniform station at 35/105): np.unique keeps both and
+    # the duplicated ring makes the outer offset shell locally degenerate.
+    # Collapse clusters tighter than eps, keeping the first member.
+    eps = 1.0e-7
+    keep = np.ones(merged.size, dtype=bool)
+    keep[1:] = np.diff(merged) > eps
+    merged = merged[keep]
     merged[0] = 0.0
     merged[-1] = 1.0
     if np.any(np.diff(merged) <= 0.0):
