@@ -679,10 +679,10 @@ def profile_points(
         return icw_meridian_points(curve, t_values)
     if formula == "FREEFORM":
         geometry = build_freeform_geometry(params)
-        profile_h = np.asarray(params["profileH"]["points"], dtype=np.float64)
+        profile_h = params["profileH"]["points"]
         z = np.linspace(
-            float(profile_h[0, 0]),
-            float(profile_h[-1, 0]),
+            float(profile_h[0][0]),
+            float(profile_h[-1][0]),
             int(n_axial),
             dtype=np.float64,
         )

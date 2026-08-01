@@ -383,6 +383,144 @@ def test_identical_param_dicts_return_same_memoized_object() -> None:
     assert build_freeform_geometry(first) is build_freeform_geometry(second)
 
 
+def test_per_anchor_angle_matches_dense_sampled_tangent_direction() -> None:
+    points = [[0.0, 12.7], [50.0, 30.0, 35.0], [100.0, 50.0]]
+    params = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+    params["overshootPolicy"] = "allow"
+    geometry = build_freeform_geometry(params)
+
+    anchor_u = float(geometry._profile_h.anchor_u[1])
+    dense_u = anchor_u + np.linspace(-1.0e-8, 1.0e-8, 201)
+    dense_points = np.asarray(geometry._profile_h.spline(dense_u), dtype=float)
+    sampled_direction = dense_points[-1] - dense_points[0]
+    sampled_angle = math.degrees(
+        math.atan2(float(sampled_direction[1]), float(sampled_direction[0]))
+    )
+
+    assert sampled_angle == pytest.approx(35.0, abs=1.0e-6)
+
+
+def test_per_anchor_strength_monotonically_changes_curvature() -> None:
+    deviations = []
+    for strength in (0.5, 1.0, 2.0):
+        points = [[0.0, 12.7], [50.0, 30.0, 0.0, strength], [100.0, 50.0]]
+        params = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+        params["overshootPolicy"] = "allow"
+        deviations.append(
+            build_freeform_geometry(params).report()["maxNormalDeviationMm"]["H"]
+        )
+
+    assert deviations[0] < deviations[1] < deviations[2]
+
+
+def test_two_element_anchor_rows_preserve_exact_legacy_radii() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [40.0, 25.0], [100.0, 50.0]],
+        [[0.0, 12.7], [40.0, 25.0], [100.0, 50.0]],
+    )
+    z = np.linspace(0.0, 100.0, 17)
+    radius_h, radius_v = build_freeform_geometry(params).evaluate_radii(z)
+    expected_bytes = bytes.fromhex(
+        "6666666666662940e23d8d6da0e72c40ba1244b91a40304030d23b1bf81a3240"
+        "298ccee46707344089b6bcae8a0836400eab0bcfa92138402eeb589d4c583a40"
+        "dee3c6e789b43c40a96fb52c9e313f40eafaaf9a98e44040fc7260b2483a4240"
+        "0e7cfd986596434003896f9e61f54440595fe8fba853464085693adcafad4740"
+        "0100000000004940"
+    )
+
+    assert radius_h.tobytes() == expected_bytes
+    assert radius_v.tobytes() == expected_bytes
+
+
+def test_endpoint_row_tangent_overrides_block_angle_and_scale() -> None:
+    explicit_points = [
+        [0.0, 12.7],
+        [50.0, 30.0],
+        [100.0, 50.0, 25.0, 0.5],
+    ]
+    params = _profiles(copy.deepcopy(explicit_points), copy.deepcopy(explicit_points))
+    for profile in (params["profileH"], params["profileV"]):
+        profile.update(mouthAngleDeg=-45.0, mouthTangentScale=3.0)
+    explicit = build_freeform_geometry(params)
+
+    reference_points = [row[:2] for row in explicit_points]
+    reference_params = _profiles(
+        copy.deepcopy(reference_points), copy.deepcopy(reference_points)
+    )
+    for profile in (reference_params["profileH"], reference_params["profileV"]):
+        profile.update(mouthAngleDeg=25.0, mouthTangentScale=1.0)
+    reference = build_freeform_geometry(reference_params)
+
+    explicit_derivative = np.asarray(
+        explicit._profile_h.spline.derivative()(1.0), dtype=float
+    )
+    reference_derivative = np.asarray(
+        reference._profile_h.spline.derivative()(1.0), dtype=float
+    )
+    explicit_angle = math.degrees(
+        math.atan2(float(explicit_derivative[1]), float(explicit_derivative[0]))
+    )
+    assert explicit_angle == pytest.approx(25.0, abs=1.0e-12)
+    assert np.linalg.norm(explicit_derivative) == pytest.approx(
+        0.5 * np.linalg.norm(reference_derivative), rel=1.0e-12
+    )
+    assert explicit.report()["tangentAnglesDeg"]["H"]["mouth"] == 25.0
+
+
+def test_interior_vertical_tangent_rejected_during_anchor_parsing() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [50.0, 30.0, 90.0], [100.0, 50.0]],
+        [[0.0, 12.7], [50.0, 30.0], [100.0, 50.0]],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"profileH\.points\[1\]\.angleDeg.*\(-90, 90\).*interior anchor",
+    ):
+        build_freeform_geometry(params)
+
+
+def test_anchor_strength_without_angle_rejected_with_row_name() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [50.0, 30.0, None, 1.0], [100.0, 50.0]],
+        [[0.0, 12.7], [50.0, 30.0], [100.0, 50.0]],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"profileH\.points\[1\].*strength requires angleDeg",
+    ):
+        build_freeform_geometry(params)
+
+
+def test_cache_distinguishes_anchor_tangent_rows() -> None:
+    automatic = _profiles(
+        [[0.0, 12.7], [50.0, 30.0], [100.0, 50.0]],
+        [[0.0, 12.7], [50.0, 30.0], [100.0, 50.0]],
+    )
+    explicit = copy.deepcopy(automatic)
+    explicit["profileH"]["points"][1].append(20.0)
+    explicit["profileV"]["points"][1].append(20.0)
+    automatic["overshootPolicy"] = "allow"
+    explicit["overshootPolicy"] = "allow"
+
+    automatic_geometry = build_freeform_geometry(automatic)
+    explicit_geometry = build_freeform_geometry(explicit)
+    assert automatic_geometry is not explicit_geometry
+
+
+def test_report_includes_authoritative_per_anchor_tangent_rows() -> None:
+    points = [[0.0, 12.7, 10.0], [50.0, 30.0], [100.0, 50.0, 25.0, 0.5]]
+    params = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+    report = build_freeform_geometry(params).report()
+
+    assert report["anchorTangents"]["H"] == [
+        {"z": 0.0, "r": 12.7, "angleDeg": 10.0, "strength": None},
+        {"z": 50.0, "r": 30.0, "angleDeg": None, "strength": None},
+        {"z": 100.0, "r": 50.0, "angleDeg": 25.0, "strength": 0.5},
+    ]
+
+
 def test_report_deviation_is_zero_for_line_and_positive_for_curved_spline() -> None:
     z = np.asarray([0.0, 18.0, 47.0, 83.0, 120.0])
     throat_radius = 12.7

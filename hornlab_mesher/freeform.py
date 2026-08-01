@@ -6,6 +6,10 @@ C2), and both meridians share one axial ``z`` span.  The implementation follows
 ``/Users/magnus/Code/hornlab-workspace/Waveguide Generator/docs/plans/260801-freeform-hv-spline-profiles.md``
 (especially sections 2.1, 2.2, 2.3, and 2.5).
 
+Profile anchors accept ``[z, r]``, ``[z, r, angleDeg]``, or
+``[z, r, angleDeg, strength]``.  A per-anchor tangent takes precedence over the
+corresponding block-level endpoint angle and tangent scale.
+
 SciPy is deliberately imported only while constructing a profile.  Importing
 this module therefore remains cheap and does not load SciPy.
 """
@@ -46,6 +50,8 @@ class _PlaneSpline:
     inverse_u: np.ndarray
     throat_angle_deg: float
     mouth_angle_deg: float
+    anchor_angles_deg: np.ndarray
+    anchor_strengths: np.ndarray
 
     def radii_at_z(self, z: np.ndarray) -> np.ndarray:
         flat_z = np.asarray(z, dtype=float).reshape(-1)
@@ -139,6 +145,10 @@ class FreeformGeometry:
                     "throat": self._profile_v.throat_angle_deg,
                     "mouth": self._profile_v.mouth_angle_deg,
                 },
+            },
+            "anchorTangents": {
+                "H": _anchor_tangent_report(self._profile_h),
+                "V": _anchor_tangent_report(self._profile_v),
             },
         }
 
@@ -316,49 +326,126 @@ def _finite_float(value: Any, field: str) -> float:
     return result
 
 
-def _parse_anchors(profile: Mapping[str, Any], plane: str) -> np.ndarray:
+@dataclass(frozen=True)
+class _ParsedAnchors:
+    points: np.ndarray
+    angles_deg: np.ndarray
+    strengths: np.ndarray
+
+
+def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
     points = profile.get("points")
-    try:
-        anchors = np.asarray(points, dtype=float)
-    except (TypeError, ValueError) as exc:
+    if not isinstance(points, (list, tuple, np.ndarray)) or (
+        isinstance(points, np.ndarray) and points.ndim == 0
+    ):
         raise ValueError(
-            f"FREEFORM profile{plane}.points must be [[z_mm, r_mm], ...] numbers"
-        ) from exc
-    if anchors.ndim != 2 or anchors.shape[1:] != (2,):
-        raise ValueError(
-            f"FREEFORM profile{plane}.points must have shape (N, 2), got {anchors.shape}"
+            f"FREEFORM profile{plane}.points must be a list of 2-4 element rows"
         )
-    if not (2 <= anchors.shape[0] <= 64):
+    if not (2 <= len(points) <= 64):
         raise ValueError(
-            f"FREEFORM profile{plane}.points requires 2-64 anchors, got {anchors.shape[0]}"
+            f"FREEFORM profile{plane}.points requires 2-64 anchors, got {len(points)}"
         )
-    if not np.all(np.isfinite(anchors)):
-        raise ValueError(f"FREEFORM profile{plane}.points must all be finite")
+
+    anchors = np.empty((len(points), 2), dtype=float)
+    angles_deg = np.full(len(points), np.nan, dtype=float)
+    strengths = np.full(len(points), np.nan, dtype=float)
+    for index, row in enumerate(points):
+        row_is_sequence = isinstance(row, (list, tuple, np.ndarray)) and not (
+            isinstance(row, np.ndarray) and row.ndim == 0
+        )
+        row_length = len(row) if row_is_sequence else None
+        if row_length not in {2, 3, 4}:
+            raise ValueError(
+                f"FREEFORM profile{plane}.points[{index}] must have 2, 3, or 4 "
+                f"elements, got {row_length if row_length is not None else type(row).__name__}"
+            )
+        anchors[index, 0] = _finite_float(
+            row[0], f"profile{plane}.points[{index}].z"
+        )
+        anchors[index, 1] = _finite_float(
+            row[1], f"profile{plane}.points[{index}].r"
+        )
+        if len(row) == 4 and row[2] is None:
+            raise ValueError(
+                f"FREEFORM profile{plane}.points[{index}] strength requires "
+                "angleDeg in the same row"
+            )
+        if len(row) >= 3:
+            angle = _finite_float(
+                row[2], f"profile{plane}.points[{index}].angleDeg"
+            )
+            is_endpoint = index in {0, len(points) - 1}
+            lower_bracket, upper_bracket = ("[", "]") if is_endpoint else ("(", ")")
+            angle_allowed = (
+                -90.0 <= angle <= 90.0 if is_endpoint else -90.0 < angle < 90.0
+            )
+            if not angle_allowed:
+                anchor_kind = "endpoint" if is_endpoint else "interior anchor"
+                raise ValueError(
+                    f"FREEFORM profile{plane}.points[{index}].angleDeg must be in "
+                    f"{lower_bracket}-90, 90{upper_bracket} degrees for an "
+                    f"{anchor_kind}, got {angle:g}"
+                )
+            angles_deg[index] = angle
+        if len(row) == 4:
+            strength = _finite_float(
+                row[3], f"profile{plane}.points[{index}].strength"
+            )
+            if not (0.0 < strength <= 3.0):
+                raise ValueError(
+                    f"FREEFORM profile{plane}.points[{index}].strength must be in "
+                    f"(0, 3], got {strength:g}"
+                )
+            strengths[index] = strength
+
     if np.any(anchors[:, 1] <= 0.0):
         raise ValueError(f"FREEFORM profile{plane} anchor radii must all be > 0 mm")
     if np.any(np.diff(anchors[:, 0]) <= 0.0):
         raise ValueError(
             f"FREEFORM profile{plane} anchor z values must be strictly increasing"
         )
-    return anchors
+    return _ParsedAnchors(anchors, angles_deg, strengths)
 
 
 def _parse_endpoint_values(
     profile: Mapping[str, Any],
-    anchors: np.ndarray,
+    parsed: _ParsedAnchors,
     plane: str,
     default_throat_angle: float,
 ) -> tuple[float, float, float, float]:
-    throat_angle = _finite_float(
-        profile.get("throatAngleDeg", default_throat_angle),
-        f"profile{plane}.throatAngleDeg",
-    )
+    anchors = parsed.points
+    if np.isfinite(parsed.angles_deg[0]):
+        throat_angle = float(parsed.angles_deg[0])
+        throat_scale = (
+            float(parsed.strengths[0]) if np.isfinite(parsed.strengths[0]) else 1.0
+        )
+    else:
+        throat_angle = _finite_float(
+            profile.get("throatAngleDeg", default_throat_angle),
+            f"profile{plane}.throatAngleDeg",
+        )
+        throat_scale = _finite_float(
+            profile.get("throatTangentScale", 1.0),
+            f"profile{plane}.throatTangentScale",
+        )
+
     last_delta = anchors[-1] - anchors[-2]
     default_mouth_angle = math.degrees(math.atan2(last_delta[1], last_delta[0]))
-    mouth_angle = _finite_float(
-        profile.get("mouthAngleDeg", default_mouth_angle),
-        f"profile{plane}.mouthAngleDeg",
-    )
+    if np.isfinite(parsed.angles_deg[-1]):
+        mouth_angle = float(parsed.angles_deg[-1])
+        mouth_scale = (
+            float(parsed.strengths[-1]) if np.isfinite(parsed.strengths[-1]) else 1.0
+        )
+    else:
+        mouth_angle = _finite_float(
+            profile.get("mouthAngleDeg", default_mouth_angle),
+            f"profile{plane}.mouthAngleDeg",
+        )
+        mouth_scale = _finite_float(
+            profile.get("mouthTangentScale", 1.0),
+            f"profile{plane}.mouthTangentScale",
+        )
+
     for field, angle in (
         ("throatAngleDeg", throat_angle),
         ("mouthAngleDeg", mouth_angle),
@@ -368,14 +455,6 @@ def _parse_endpoint_values(
                 f"FREEFORM profile{plane}.{field} must be in [-90, 90] degrees, got {angle:g}"
             )
 
-    throat_scale = _finite_float(
-        profile.get("throatTangentScale", 1.0),
-        f"profile{plane}.throatTangentScale",
-    )
-    mouth_scale = _finite_float(
-        profile.get("mouthTangentScale", 1.0),
-        f"profile{plane}.mouthTangentScale",
-    )
     for field, scale in (
         ("throatTangentScale", throat_scale),
         ("mouthTangentScale", mouth_scale),
@@ -491,7 +570,7 @@ def _validate_plane_spline(plane: _PlaneSpline, overshoot_allowed: bool) -> None
 
 def _build_plane_spline(
     name: str,
-    anchors: np.ndarray,
+    parsed: _ParsedAnchors,
     throat_angle_deg: float,
     mouth_angle_deg: float,
     throat_scale: float,
@@ -501,6 +580,7 @@ def _build_plane_spline(
     # Lazy by design: merely importing hornlab_mesher.freeform does not import scipy.
     from scipy.interpolate import CubicHermiteSpline, PchipInterpolator
 
+    anchors = parsed.points
     chord_lengths = np.linalg.norm(np.diff(anchors, axis=0), axis=1)
     cumulative = np.concatenate(([0.0], np.cumsum(chord_lengths)))
     anchor_u = cumulative / cumulative[-1]
@@ -521,6 +601,25 @@ def _build_plane_spline(
             [math.cos(angle), math.sin(angle)]
         )
 
+    for index in np.flatnonzero(np.isfinite(parsed.angles_deg)):
+        automatic_speed = float(
+            np.linalg.norm(
+                [
+                    z_pchip.derivative()(anchor_u[index]),
+                    r_pchip.derivative()(anchor_u[index]),
+                ]
+            )
+        )
+        strength = (
+            float(parsed.strengths[index])
+            if np.isfinite(parsed.strengths[index])
+            else 1.0
+        )
+        angle = math.radians(float(parsed.angles_deg[index]))
+        derivatives[index] = automatic_speed * strength * np.asarray(
+            [math.cos(angle), math.sin(angle)]
+        )
+
     spline = CubicHermiteSpline(anchor_u, anchors, derivatives, axis=0)
     inverse_u = np.unique(np.concatenate((np.linspace(0.0, 1.0, _INVERSION_SAMPLE_N), anchor_u)))
     inverse_points = np.asarray(spline(inverse_u), dtype=float)
@@ -533,6 +632,8 @@ def _build_plane_spline(
         inverse_u=inverse_u,
         throat_angle_deg=throat_angle_deg,
         mouth_angle_deg=mouth_angle_deg,
+        anchor_angles_deg=parsed.angles_deg.copy(),
+        anchor_strengths=parsed.strengths.copy(),
     )
     _validate_plane_spline(plane, overshoot_allowed)
     return plane
@@ -877,6 +978,20 @@ def _max_normal_deviation(plane: _PlaneSpline) -> float:
     return maximum
 
 
+def _anchor_tangent_report(plane: _PlaneSpline) -> list[dict[str, float | None]]:
+    return [
+        {
+            "z": float(anchor[0]),
+            "r": float(anchor[1]),
+            "angleDeg": float(angle) if math.isfinite(float(angle)) else None,
+            "strength": float(strength) if math.isfinite(float(strength)) else None,
+        }
+        for anchor, angle, strength in zip(
+            plane.anchors, plane.anchor_angles_deg, plane.anchor_strengths
+        )
+    ]
+
+
 def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     """Parse, validate, construct, and memoize a FREEFORM geometry definition."""
     if not isinstance(params, Mapping):
@@ -894,8 +1009,10 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     if not isinstance(profile_v, Mapping):
         raise ValueError("FREEFORM requires profileV as a mapping with a points list")
 
-    anchors_h = _parse_anchors(profile_h, "H")
-    anchors_v = _parse_anchors(profile_v, "V")
+    parsed_h = _parse_anchors(profile_h, "H")
+    parsed_v = _parse_anchors(profile_v, "V")
+    anchors_h = parsed_h.points
+    anchors_v = parsed_v.points
     z_tolerance = 1.0e-9
     if not math.isclose(
         float(anchors_h[0, 0]),
@@ -919,8 +1036,8 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         )
 
     default_throat_angle = _finite_float(params.get("a0", 15.5), "a0")
-    endpoint_h = _parse_endpoint_values(profile_h, anchors_h, "H", default_throat_angle)
-    endpoint_v = _parse_endpoint_values(profile_v, anchors_v, "V", default_throat_angle)
+    endpoint_h = _parse_endpoint_values(profile_h, parsed_h, "H", default_throat_angle)
+    endpoint_v = _parse_endpoint_values(profile_v, parsed_v, "V", default_throat_angle)
     if abs(endpoint_h[0] - endpoint_v[0]) > 5.0:
         warnings.warn(
             "FREEFORM H/V throat tangent angles differ by more than 5 degrees; "
@@ -942,8 +1059,8 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         )
     )
 
-    plane_h = _build_plane_spline("H", anchors_h, *endpoint_h, policy == "allow")
-    plane_v = _build_plane_spline("V", anchors_v, *endpoint_v, policy == "allow")
+    plane_h = _build_plane_spline("H", parsed_h, *endpoint_h, policy == "allow")
+    plane_v = _build_plane_spline("V", parsed_v, *endpoint_v, policy == "allow")
     geometry = FreeformGeometry(plane_h, plane_v, stations)
     _validate_station_corner_radii(geometry)
 

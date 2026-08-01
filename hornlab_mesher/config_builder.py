@@ -1788,11 +1788,11 @@ def build_meridian(
     throat_z = float(inner_profile[0, 1])
     source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
     if formula == "FREEFORM":
-        profile_h = params.get("profileH")
-        if isinstance(profile_h, Mapping):
-            source_auto_angle_deg = float(
-                profile_h.get("throatAngleDeg", source_auto_angle_deg)
-            )
+        source_auto_angle_deg = float(
+            build_freeform_geometry(params).report()["tangentAnglesDeg"]["H"][
+                "throat"
+            ]
+        )
     source_geometry = PointGridHornGeometry(
         inner_points=inner_points,
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
@@ -2466,15 +2466,13 @@ def build_from_config(
     freeform_axis_samples_mm: np.ndarray | None = None
     freeform_report: dict[str, Any] | None = None
     if formula == "FREEFORM":
-        profile_h = params.get("profileH")
-        if isinstance(profile_h, Mapping):
-            source_auto_angle_deg = float(
-                profile_h.get("throatAngleDeg", source_auto_angle_deg)
-            )
         freeform_geometry = build_freeform_geometry(params)
         freeform_report = freeform_geometry.report()
+        source_auto_angle_deg = float(
+            freeform_report["tangentAnglesDeg"]["H"]["throat"]
+        )
         slice_map = np.asarray(grid.get("slice_map"), dtype=np.float64)
-        z0 = float(np.asarray(params["profileH"]["points"], dtype=np.float64)[0, 0])
+        z0 = float(params["profileH"]["points"][0][0])
         analytic_z = z0 + slice_map * freeform_geometry.length_mm
         analytic_h, analytic_v = freeform_geometry.evaluate_radii(analytic_z)
         if mode == "infinite-baffle":

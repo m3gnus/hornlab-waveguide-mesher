@@ -658,11 +658,13 @@ def _freeform_merged_axial_map(
     params: Mapping[str, Any], geometry: FreeformGeometry, n_length: int
 ) -> tuple[np.ndarray, str]:
     base_t, sampling_mode = _axial_sample_map(n_length, params)
-    z0 = float(np.asarray(params["profileH"]["points"], dtype=np.float64)[0, 0])
+    z0 = float(params["profileH"]["points"][0][0])
     feature_t = [float(station["t"]) for station in geometry.stations]
     for profile_key in ("profileH", "profileV"):
-        anchors = np.asarray(params[profile_key]["points"], dtype=np.float64)
-        feature_t.extend(((anchors[:, 0] - z0) / geometry.length_mm).tolist())
+        anchor_z = np.asarray(
+            [row[0] for row in params[profile_key]["points"]], dtype=np.float64
+        )
+        feature_t.extend(((anchor_z - z0) / geometry.length_mm).tolist())
     merged = np.unique(
         np.concatenate((np.asarray(base_t, dtype=np.float64), np.asarray(feature_t)))
     )
@@ -695,7 +697,7 @@ def _freeform_raw_radial_grid(
 ]:
     geometry = _validate_freeform_config(params)
     t_values, sampling_mode = _freeform_merged_axial_map(params, geometry, n_length)
-    z0 = float(np.asarray(params["profileH"]["points"], dtype=np.float64)[0, 0])
+    z0 = float(params["profileH"]["points"][0][0])
     shared_z = z0 + t_values * geometry.length_mm
     radii_h, radii_v = geometry.evaluate_radii(shared_z)
 
