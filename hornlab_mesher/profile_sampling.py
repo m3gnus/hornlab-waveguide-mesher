@@ -8,6 +8,7 @@ import numpy as np
 from .freeform import (
     FreeformGeometry,
     _validate_freeform_config,
+    station_corner_radius_mm,
     validate_outer_offset_grid,
 )
 from .profile_common import (
@@ -603,7 +604,7 @@ def _freeform_rounded_rect_quadrant_angles(
     *,
     half_width: float,
     half_height: float,
-    corner_ratio: float,
+    corner_radius: float,
     side1_segments: int,
     side2_segments: int,
     arc_subdivision: int,
@@ -619,7 +620,7 @@ def _freeform_rounded_rect_quadrant_angles(
 
     a = float(half_width)
     b = float(half_height)
-    corner = float(corner_ratio) * min(a, b)
+    corner = min(max(float(corner_radius), 0.0), a, b)
     theta1 = math.atan2(b - corner, a)
     theta2 = math.atan2(b, a - corner)
     arc_segments = 3 * max(1, int(arc_subdivision))
@@ -709,11 +710,10 @@ def _freeform_raw_radial_grid(
             0,
             int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
         )
-        corner_ratio = float(mouth_station["cornerRatio"])
         arc_subdivision = _morph_corner_arc_subdivision(params)
         mouth_a = float(radii_h[-1])
         mouth_b = float(radii_v[-1])
-        mouth_corner = corner_ratio * min(mouth_a, mouth_b)
+        mouth_corner = station_corner_radius_mm(mouth_station, mouth_a, mouth_b)
         mouth_base = _rounded_rect_quadrant_angles(
             points_per_quadrant,
             mouth_a,
@@ -739,11 +739,13 @@ def _freeform_raw_radial_grid(
         corner_arc_spans: list[list[float]] = []
         full_circle = quadrants in {"", "1234"}
         for a, b in zip(radii_h, radii_v):
-            corner_radius = corner_ratio * min(float(a), float(b))
+            corner_radius = station_corner_radius_mm(
+                mouth_station, float(a), float(b)
+            )
             q1 = _freeform_rounded_rect_quadrant_angles(
                 half_width=float(a),
                 half_height=float(b),
-                corner_ratio=corner_ratio,
+                corner_radius=corner_radius,
                 side1_segments=side1_segments,
                 side2_segments=side2_segments,
                 arc_subdivision=arc_subdivision,

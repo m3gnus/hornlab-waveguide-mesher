@@ -573,16 +573,35 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
                 )
             station["exponent"] = exponent
         elif shape == "rounded_rectangle":
-            corner_ratio = _finite_float(
-                raw_station.get("cornerRatio", 1.0),
-                f"crossSections[{index}].cornerRatio",
-            )
-            if not (0.02 <= corner_ratio <= 1.0):
+            has_corner_ratio = "cornerRatio" in raw_station
+            has_corner_radius = "cornerRadiusMm" in raw_station
+            if has_corner_ratio == has_corner_radius:
                 raise ValueError(
-                    f"FREEFORM crossSections[{index}].cornerRatio must be in [0.02, 1], "
-                    f"got {corner_ratio:g}"
+                    f"FREEFORM crossSections[{index}] rounded_rectangle station must "
+                    "specify exactly one of cornerRatio or cornerRadiusMm"
                 )
-            station["cornerRatio"] = corner_ratio
+            if has_corner_ratio:
+                corner_ratio = _finite_float(
+                    raw_station["cornerRatio"],
+                    f"crossSections[{index}].cornerRatio",
+                )
+                if not (0.02 <= corner_ratio <= 1.0):
+                    raise ValueError(
+                        f"FREEFORM crossSections[{index}].cornerRatio must be in [0.02, 1], "
+                        f"got {corner_ratio:g}"
+                    )
+                station["cornerRatio"] = corner_ratio
+            else:
+                corner_radius = _finite_float(
+                    raw_station["cornerRadiusMm"],
+                    f"crossSections[{index}].cornerRadiusMm",
+                )
+                if corner_radius <= 0.0:
+                    raise ValueError(
+                        f"FREEFORM crossSections[{index}].cornerRadiusMm must be > 0 mm, "
+                        f"got {corner_radius:g}"
+                    )
+                station["cornerRadiusMm"] = corner_radius
         stations.append(station)
 
     if stations[0]["t"] != 0.0:
@@ -605,7 +624,21 @@ def _station_descriptor(station: Mapping[str, Any]) -> tuple[Any, ...]:
         return ("ellipse",)
     if shape == "superellipse":
         return ("superellipse", float(station["exponent"]))
-    return ("rounded_rectangle", float(station["cornerRatio"]))
+    if "cornerRadiusMm" in station:
+        return ("rounded_rectangle", "cornerRadiusMm", float(station["cornerRadiusMm"]))
+    return ("rounded_rectangle", "cornerRatio", float(station["cornerRatio"]))
+
+
+def station_corner_radius_mm(
+    station: Mapping[str, Any], a: float, b: float
+) -> float:
+    """Return a rounded-rectangle station's effective corner radius in mm."""
+    limit = min(float(a), float(b))
+    if "cornerRadiusMm" in station:
+        corner = float(station["cornerRadiusMm"])
+    else:
+        corner = float(station["cornerRatio"]) * limit
+    return min(max(corner, 0.0), limit)
 
 
 def _station_radius(
@@ -619,7 +652,7 @@ def _station_radius(
         term = (cos_phi / a) ** exponent + (sin_phi / b) ** exponent
         return np.asarray(term ** (-1.0 / exponent), dtype=float)
 
-    corner_radius = float(station["cornerRatio"]) * min(a, b)
+    corner_radius = station_corner_radius_mm(station, a, b)
     flat_phi = phi.reshape(-1)
     result = np.fromiter(
         (
@@ -662,7 +695,7 @@ def _curvature_phi_samples(
     for station in geometry.stations:
         if station["shape"] != "rounded_rectangle":
             continue
-        corner = float(station["cornerRatio"]) * min(a, b)
+        corner = station_corner_radius_mm(station, a, b)
         cx = a - corner
         cy = b - corner
         theta1 = math.atan2(cy, a)
@@ -812,6 +845,24 @@ def _station_span_name(stations: list[dict[str, Any]], t: float) -> str:
     return "unknown"
 
 
+def _validate_station_corner_radii(geometry: FreeformGeometry) -> None:
+    z0 = float(geometry._profile_h.anchors[0, 0])
+    for index, station in enumerate(geometry.stations):
+        if station["shape"] != "rounded_rectangle" or "cornerRadiusMm" not in station:
+            continue
+        t = float(station["t"])
+        z = z0 + t * geometry.length_mm
+        a_value, b_value = geometry.evaluate_radii(np.asarray(z))
+        limit = min(float(a_value), float(b_value))
+        lower = 0.02 * limit
+        radius = float(station["cornerRadiusMm"])
+        if not (lower <= radius <= limit):
+            raise ValueError(
+                f"FREEFORM crossSections[{index}].cornerRadiusMm must be in "
+                f"[{lower:g}, {limit:g}] mm at station t={t:g}, got {radius:g} mm"
+            )
+
+
 def _max_normal_deviation(plane: _PlaneSpline) -> float:
     maximum = 0.0
     for index in range(plane.anchor_u.size - 1):
@@ -894,6 +945,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     plane_h = _build_plane_spline("H", anchors_h, *endpoint_h, policy == "allow")
     plane_v = _build_plane_spline("V", anchors_v, *endpoint_v, policy == "allow")
     geometry = FreeformGeometry(plane_h, plane_v, stations)
+    _validate_station_corner_radii(geometry)
 
     violations = convexity_violations(
         geometry,
@@ -905,7 +957,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         span = _station_span_name(stations, offending_t)
         raise ValueError(
             f"FREEFORM crossSections span {span} produces a non-convex outline "
-            f"near t={offending_t:g}; adjust its shape, aspect, or cornerRatio"
+            f"near t={offending_t:g}; adjust its shape, aspect, or corner setting"
         )
 
     _cache_store(key, geometry)

@@ -55,6 +55,24 @@ def _pure_rounded_radius(geometry, phi: np.ndarray, t: float, ratio: float) -> n
     )
 
 
+def _pure_rounded_radius_mm(
+    geometry, phi: np.ndarray, t: float, corner_radius_mm: float
+) -> np.ndarray:
+    z = t * geometry.length_mm
+    a, b = (float(value) for value in geometry.evaluate_radii(np.asarray(z)))
+    return np.asarray(
+        [
+            _rounded_rect_radius(
+                float(angle),
+                half_width=a,
+                half_height=b,
+                corner_radius=corner_radius_mm,
+            )
+            for angle in phi
+        ]
+    )
+
+
 def test_module_import_does_not_import_scipy() -> None:
     code = "import sys; import hornlab_mesher.freeform; print(json.dumps('scipy' in sys.modules))"
     completed = subprocess.run(
@@ -123,6 +141,75 @@ def test_rounded_rectangle_held_station_matches_shared_primitive() -> None:
     np.testing.assert_allclose(
         geometry.cross_section_radius(phi, 0.7), expected, rtol=0.0, atol=1.0e-13
     )
+
+
+def test_rounded_rectangle_mm_station_matches_equivalent_ratio_at_station() -> None:
+    ratio_params = _profiles()
+    ratio_params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.3},
+    ]
+    mm_params = copy.deepcopy(ratio_params)
+    mm_params["crossSections"][-1] = {
+        "t": 1.0,
+        "shape": "rounded_rectangle",
+        "cornerRadiusMm": 13.5,
+    }
+    ratio_geometry = build_freeform_geometry(ratio_params)
+    mm_geometry = build_freeform_geometry(mm_params)
+    phi = np.linspace(0.0, math.tau, 257, endpoint=False)
+
+    np.testing.assert_array_equal(
+        mm_geometry.cross_section_radius(phi, 1.0),
+        ratio_geometry.cross_section_radius(phi, 1.0),
+    )
+
+
+def test_rounded_rectangle_identical_mm_stations_hold_absolute_radius() -> None:
+    params = _profiles()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 0.35, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
+    ]
+    geometry = build_freeform_geometry(params)
+    phi = np.linspace(0.0, math.tau, 257, endpoint=False)
+    expected = _pure_rounded_radius_mm(geometry, phi, 0.7, 10.0)
+
+    np.testing.assert_allclose(
+        geometry.cross_section_radius(phi, 0.7), expected, rtol=0.0, atol=1.0e-13
+    )
+
+
+def test_rounded_rectangle_rejects_both_corner_forms_with_station_name() -> None:
+    params = _profiles()
+    params["crossSections"][-1] = {
+        "t": 1.0,
+        "shape": "rounded_rectangle",
+        "cornerRatio": 0.3,
+        "cornerRadiusMm": 13.5,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"crossSections\[1\].*exactly one of cornerRatio or cornerRadiusMm",
+    ):
+        build_freeform_geometry(params)
+
+
+def test_rounded_rectangle_rejects_mm_radius_outside_station_range() -> None:
+    params = _profiles()
+    params["crossSections"][-1] = {
+        "t": 1.0,
+        "shape": "rounded_rectangle",
+        "cornerRadiusMm": 0.5,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"crossSections\[1\].*\[0.9, 45\] mm at station t=1",
+    ):
+        build_freeform_geometry(params)
 
 
 def test_owner_circle_to_rounded_rectangle_then_hold_scenario() -> None:

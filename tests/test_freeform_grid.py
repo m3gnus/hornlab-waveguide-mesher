@@ -103,6 +103,34 @@ def test_quadrant_one_is_exact_subset_of_full_freeform_grid() -> None:
     )
 
 
+def test_mm_corner_mouth_grid_keeps_each_rings_own_corner_tangencies() -> None:
+    config = _owner_config()
+    config["profile"]["crossSections"][-1] = {
+        "t": 1.0,
+        "shape": "rounded_rectangle",
+        "cornerRadiusMm": 10.0,
+    }
+    params, grid, points, phi_grid = _built_grid(config)
+    geometry = build_freeform_geometry(params)
+    radii_h, radii_v = geometry.evaluate_radii(points[0, :, 2])
+    expected_spans = np.asarray(
+        [
+            [
+                math.atan2(float(b) - 10.0, float(a)),
+                math.atan2(float(b), float(a) - 10.0),
+            ]
+            for a, b in zip(radii_h, radii_v)
+        ]
+    )
+    actual_spans = np.asarray(grid["freeform_corner_arc_spans"], dtype=np.float64)
+
+    np.testing.assert_allclose(actual_spans, expected_spans, rtol=0.0, atol=1.0e-14)
+    for ring_index, (theta_1, theta_2) in enumerate(expected_spans):
+        assert np.any(np.isclose(phi_grid[:, ring_index], theta_1, atol=1.0e-14))
+        assert np.any(np.isclose(phi_grid[:, ring_index], theta_2, atol=1.0e-14))
+    assert np.ptp(expected_spans[:, 0]) > 1.0e-3
+
+
 def test_circle_degenerate_freeform_grid_is_circular_on_every_ring() -> None:
     config = _owner_config()
     shared = [[0.0, 12.7], [45.0, 31.0], [120.0, 80.0]]
