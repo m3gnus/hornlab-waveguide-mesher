@@ -1,0 +1,340 @@
+"""Unit tests for the gmsh-free FREEFORM geometry kernel (stage M1)."""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import subprocess
+import sys
+
+import numpy as np
+import pytest
+
+from hornlab_mesher.freeform import (
+    _smootherstep,
+    build_freeform_geometry,
+    convexity_violations,
+)
+from hornlab_mesher.profile_morph import _rounded_rect_radius
+
+
+def _profiles(
+    h_points: list[list[float]] | None = None,
+    v_points: list[list[float]] | None = None,
+) -> dict:
+    return {
+        "profileH": {
+            "points": h_points or [[0.0, 12.7], [100.0, 55.0]],
+            "throatAngleDeg": 15.5,
+        },
+        "profileV": {
+            "points": v_points or [[0.0, 12.7], [100.0, 45.0]],
+            "throatAngleDeg": 15.5,
+        },
+        "crossSections": [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "ellipse"},
+        ],
+    }
+
+
+def _pure_rounded_radius(geometry, phi: np.ndarray, t: float, ratio: float) -> np.ndarray:
+    z = t * geometry.length_mm
+    a, b = (float(value) for value in geometry.evaluate_radii(np.asarray(z)))
+    return np.asarray(
+        [
+            _rounded_rect_radius(
+                float(angle),
+                half_width=a,
+                half_height=b,
+                corner_radius=ratio * min(a, b),
+            )
+            for angle in phi
+        ]
+    )
+
+
+def test_module_import_does_not_import_scipy() -> None:
+    code = "import sys; import hornlab_mesher.freeform; print(json.dumps('scipy' in sys.modules))"
+    completed = subprocess.run(
+        [sys.executable, "-c", "import json; " + code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout.strip()) is False
+
+
+def test_circle_degenerate_is_radius_independent_of_phi() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [40.0, 25.0], [100.0, 50.0]],
+        [[0.0, 12.7], [40.0, 25.0], [100.0, 50.0]],
+    )
+    geometry = build_freeform_geometry(params)
+    phi = np.linspace(0.0, 2.0 * math.pi, 181)
+    for t in np.linspace(0.0, 1.0, 7):
+        radius_h, radius_v = geometry.evaluate_radii(np.asarray(t * geometry.length_mm))
+        np.testing.assert_allclose(radius_h, radius_v, rtol=0.0, atol=1.0e-13)
+        np.testing.assert_allclose(
+            geometry.cross_section_radius(phi, float(t)),
+            np.full_like(phi, float(radius_h)),
+            rtol=1.0e-13,
+            atol=1.0e-13,
+        )
+
+
+@pytest.mark.parametrize(
+    "station",
+    [
+        {"shape": "ellipse"},
+        {"shape": "superellipse", "exponent": 4.0},
+        {"shape": "rounded_rectangle", "cornerRatio": 0.3},
+    ],
+)
+def test_axis_exactness_for_every_shape_and_blend_position(station: dict) -> None:
+    params = _profiles()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 1.0, **station},
+    ]
+    geometry = build_freeform_geometry(params)
+    for t in (0.0, 0.17, 0.5, 0.83, 1.0):
+        expected_h, expected_v = geometry.evaluate_radii(np.asarray(t * geometry.length_mm))
+        actual = geometry.cross_section_radius(np.asarray([0.0, math.pi / 2.0]), t)
+        np.testing.assert_allclose(
+            actual,
+            np.asarray([expected_h, expected_v]),
+            rtol=1.0e-12,
+            atol=1.0e-13,
+        )
+
+
+def test_rounded_rectangle_held_station_matches_shared_primitive() -> None:
+    params = _profiles()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 0.35, "shape": "rounded_rectangle", "cornerRatio": 0.3},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.3},
+    ]
+    geometry = build_freeform_geometry(params)
+    phi = np.linspace(0.0, 2.0 * math.pi, 257, endpoint=False)
+    expected = _pure_rounded_radius(geometry, phi, 0.7, 0.3)
+    np.testing.assert_allclose(
+        geometry.cross_section_radius(phi, 0.7), expected, rtol=0.0, atol=1.0e-13
+    )
+
+
+def test_owner_circle_to_rounded_rectangle_then_hold_scenario() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [100.0, 50.0]],
+        [[0.0, 12.7], [100.0, 50.0]],
+    )
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {"t": 0.4, "shape": "rounded_rectangle", "cornerRatio": 0.12},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.12},
+    ]
+    geometry = build_freeform_geometry(params)
+    phi = np.asarray([math.pi / 4.0])
+
+    for t in (0.4, 0.7):
+        np.testing.assert_allclose(
+            geometry.cross_section_radius(phi, t),
+            _pure_rounded_radius(geometry, phi, t, 0.12),
+            rtol=0.0,
+            atol=1.0e-13,
+        )
+
+    a_mid = float(geometry.evaluate_radii(np.asarray(0.2 * geometry.length_mm))[0])
+    circle = np.asarray([a_mid])
+    rounded = _pure_rounded_radius(geometry, phi, 0.2, 0.12)
+    blended = geometry.cross_section_radius(phi, 0.2)
+    assert circle[0] < blended[0] < rounded[0]
+    assert convexity_violations(geometry, [0.0, 0.2, 0.4, 0.7, 1.0], 64) == []
+
+
+def test_smootherstep_first_and_second_derivatives_vanish_at_ends() -> None:
+    h = 1.0e-5
+    assert _smootherstep(0.0) == pytest.approx(0.0)
+    assert _smootherstep(1.0) == pytest.approx(1.0)
+
+    derivative_start = (_smootherstep(h) - _smootherstep(0.0)) / h
+    derivative_end = (_smootherstep(1.0) - _smootherstep(1.0 - h)) / h
+    second_start = (
+        _smootherstep(2.0 * h) - 2.0 * _smootherstep(h) + _smootherstep(0.0)
+    ) / h**2
+    second_end = (
+        _smootherstep(1.0)
+        - 2.0 * _smootherstep(1.0 - h)
+        + _smootherstep(1.0 - 2.0 * h)
+    ) / h**2
+    assert derivative_start == pytest.approx(0.0, abs=2.0e-9)
+    assert derivative_end == pytest.approx(0.0, abs=2.0e-9)
+    assert second_start == pytest.approx(0.0, abs=7.0e-4)
+    assert second_end == pytest.approx(0.0, abs=7.0e-4)
+
+
+@pytest.mark.parametrize("mouth_angle", [60.0, 90.0])
+def test_two_anchor_tangent_curve_is_monotone_and_interpolates_endpoints(
+    mouth_angle: float,
+) -> None:
+    profile = {
+        "points": [[0.0, 12.7], [120.0, 150.0]],
+        "throatAngleDeg": 15.5,
+        "mouthAngleDeg": mouth_angle,
+    }
+    params = {
+        "profileH": copy.deepcopy(profile),
+        "profileV": copy.deepcopy(profile),
+        "crossSections": [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "ellipse"},
+        ],
+    }
+    geometry = build_freeform_geometry(params)
+    z = np.linspace(0.0, 120.0, 2001)
+    radius_h, radius_v = geometry.evaluate_radii(z)
+    assert np.all(np.diff(radius_h) > 0.0)
+    np.testing.assert_allclose(radius_h, radius_v, rtol=0.0, atol=1.0e-12)
+    np.testing.assert_allclose(
+        radius_h[[0, -1]], np.asarray([12.7, 150.0]), rtol=0.0, atol=1.0e-12
+    )
+    endpoint_dz_du = float(geometry._profile_h.spline.derivative()(1.0)[0])
+    if mouth_angle == 90.0:
+        assert endpoint_dz_du == pytest.approx(0.0, abs=1.0e-12)
+    else:
+        assert endpoint_dz_du > 0.0
+    dense_u = np.linspace(0.0, 1.0, 2001)
+    dz_du = geometry._profile_h.spline.derivative()(dense_u)[:, 0]
+    assert np.all(dz_du[:-1] > 0.0)
+    assert dz_du[-1] >= -1.0e-12
+
+
+def _invalid_cases() -> list[tuple[str, callable]]:
+    return [
+        (
+            "2-64 anchors",
+            lambda p: p["profileH"].update(points=[[0.0, 12.7]]),
+        ),
+        (
+            "strictly increasing",
+            lambda p: p["profileH"].update(
+                points=[[0.0, 12.7], [50.0, 30.0], [40.0, 35.0]]
+            ),
+        ),
+        (
+            "throat radii",
+            lambda p: p["profileV"].update(points=[[0.0, 12.8], [100.0, 45.0]]),
+        ),
+        (
+            "[-90, 90]",
+            lambda p: p["profileH"].update(mouthAngleDeg=91.0),
+        ),
+        (
+            "cornerRatio",
+            lambda p: p.update(
+                crossSections=[
+                    {"t": 0.0, "shape": "circle"},
+                    {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.01},
+                ]
+            ),
+        ),
+        (
+            "strictly increasing",
+            lambda p: p.update(
+                crossSections=[
+                    {"t": 0.0, "shape": "circle"},
+                    {"t": 0.7, "shape": "ellipse"},
+                    {"t": 0.6, "shape": "ellipse"},
+                    {"t": 1.0, "shape": "ellipse"},
+                ]
+            ),
+        ),
+        (
+            "first station",
+            lambda p: p.update(
+                crossSections=[
+                    {"t": 0.1, "shape": "circle"},
+                    {"t": 1.0, "shape": "ellipse"},
+                ]
+            ),
+        ),
+    ]
+
+
+@pytest.mark.parametrize("message,mutate", _invalid_cases())
+def test_validation_rejections(message: str, mutate) -> None:
+    params = _profiles()
+    mutate(params)
+    with pytest.raises(ValueError, match=message):
+        build_freeform_geometry(params)
+
+
+def test_radius_overshoot_rejected_by_default_and_allowed_explicitly() -> None:
+    profile = {
+        "points": [[0.0, 10.0], [50.0, 20.0], [100.0, 30.0]],
+        "throatAngleDeg": 80.0,
+    }
+    params = {
+        "profileH": copy.deepcopy(profile),
+        "profileV": copy.deepcopy(profile),
+        "crossSections": [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "ellipse"},
+        ],
+    }
+    with pytest.raises(ValueError, match="overshoots"):
+        build_freeform_geometry(params)
+    params["overshootPolicy"] = "allow"
+    assert build_freeform_geometry(params).length_mm == pytest.approx(100.0)
+
+
+def test_identical_param_dicts_return_same_memoized_object() -> None:
+    first = _profiles()
+    second = copy.deepcopy(first)
+    assert build_freeform_geometry(first) is build_freeform_geometry(second)
+
+
+def test_report_deviation_is_zero_for_line_and_positive_for_curved_spline() -> None:
+    z = np.asarray([0.0, 18.0, 47.0, 83.0, 120.0])
+    throat_radius = 12.7
+    h_angle = 20.0
+    v_angle = 15.0
+    line_params = {
+        "profileH": {
+            "points": np.column_stack((z, throat_radius + z * math.tan(math.radians(h_angle)))),
+            "throatAngleDeg": h_angle,
+            "mouthAngleDeg": h_angle,
+        },
+        "profileV": {
+            "points": np.column_stack((z, throat_radius + z * math.tan(math.radians(v_angle)))),
+            "throatAngleDeg": v_angle,
+            "mouthAngleDeg": v_angle,
+        },
+    }
+    line_report = build_freeform_geometry(line_params).report()
+    assert line_report["maxNormalDeviationMm"]["H"] < 1.0e-11
+    assert line_report["maxNormalDeviationMm"]["V"] < 1.0e-11
+    assert line_report["throatRadiusMm"] == pytest.approx(throat_radius)
+    assert line_report["tangentAnglesDeg"]["H"] == {
+        "throat": h_angle,
+        "mouth": h_angle,
+    }
+
+    curved_params = {
+        "profileH": {
+            "points": [[0.0, 12.7], [65.0, 29.0], [120.0, 75.0]],
+            "throatAngleDeg": 10.0,
+            "mouthAngleDeg": 50.0,
+        },
+        "profileV": {
+            "points": [[0.0, 12.7], [55.0, 25.0], [120.0, 58.0]],
+            "throatAngleDeg": 10.0,
+            "mouthAngleDeg": 40.0,
+        },
+        "overshootPolicy": "allow",
+    }
+    curved_report = build_freeform_geometry(curved_params).report()
+    assert curved_report["maxNormalDeviationMm"]["H"] > 0.1
+    assert curved_report["maxNormalDeviationMm"]["V"] > 0.1
