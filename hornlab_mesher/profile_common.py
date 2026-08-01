@@ -298,9 +298,10 @@ def _normalise_formula(value: Any) -> str:
     raw = str(value or "OSSE").strip().upper().replace("_", "-")
     if raw == "ROSSE":
         raw = "R-OSSE"
-    if raw not in {"OSSE", "R-OSSE", "LOOKUP", "ICW"}:
+    if raw not in {"OSSE", "R-OSSE", "LOOKUP", "ICW", "FREEFORM"}:
         raise ValueError(
-            f"formula must be OSSE, R-OSSE/ROSSE, LOOKUP, or ICW, got {value!r}"
+            "formula must be OSSE, R-OSSE/ROSSE, LOOKUP, ICW, or FREEFORM, "
+            f"got {value!r}"
         )
     return raw
 

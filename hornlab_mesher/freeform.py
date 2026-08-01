@@ -21,6 +21,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from .profile_common import _is_true, eval_param
 from .profile_morph import _rounded_rect_radius
 
 
@@ -659,6 +660,88 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         )
 
     _cache_store(key, geometry)
+    return geometry
+
+
+def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeometry:
+    """Validate FREEFORM's pipeline-level exclusions and return its geometry.
+
+    The spline/station kernel owns intrinsic geometry validation.  This shared
+    entry-point adds the exclusions required by both config ingestion and
+    callers that invoke :func:`build_point_grid` directly.
+    """
+    geometry = build_freeform_geometry(profile_params)
+
+    sample_phi = np.linspace(0.0, math.tau, 33, endpoint=False)
+    morph_targets = {
+        int(round(eval_param(profile_params.get("morphTarget"), float(phi), 0.0)))
+        for phi in sample_phi
+    }
+    if morph_targets & {1, 2}:
+        raise ValueError(
+            "FREEFORM does not support active morphTarget shaping; "
+            "use crossSections stations instead"
+        )
+
+    gcurve_active = any(
+        int(round(eval_param(profile_params.get("gcurveType"), float(phi), 0.0)))
+        in {1, 2}
+        and eval_param(profile_params.get("gcurveWidth"), float(phi), 0.0) > 0.0
+        for phi in sample_phi
+    )
+    if gcurve_active:
+        raise ValueError(
+            "FREEFORM does not support active guiding curves; "
+            "use crossSections stations instead"
+        )
+
+    profile_system = profile_params.get("profileSystem")
+    cross_section: Mapping[str, Any] = {}
+    if isinstance(profile_system, Mapping):
+        candidate = profile_system.get("crossSection")
+        if isinstance(candidate, Mapping):
+            cross_section = candidate
+    exponent = float(cross_section.get("exponent", 2.0))
+    aspect_ratio = float(cross_section.get("aspectRatio", 1.0))
+    if not math.isclose(exponent, 2.0, rel_tol=0.0, abs_tol=1.0e-12):
+        raise ValueError(
+            "FREEFORM requires cross-section exponent=2; "
+            "use crossSections stations for outline shaping"
+        )
+    if not math.isclose(aspect_ratio, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+        raise ValueError(
+            "FREEFORM requires cross-section aspectRatio=1; "
+            "the H/V profiles define the aspect ratio"
+        )
+
+    for key in ("rot", "h", "throatExtLength", "throatExtAngle", "slotLength"):
+        if abs(eval_param(profile_params.get(key), 0.0, 0.0)) > 1.0e-12:
+            raise ValueError(f"FREEFORM does not support active {key}")
+
+    raw_mode = str(profile_params.get("samplingMode") or "").strip().lower()
+    mode = raw_mode.replace("_", "-")
+    uniform_modes = {"", "uniform", "linear", "canonical", "default"}
+    custom_modes = {"zmap", "z-map", "custom", "custom-zmap", "custom-z-map"}
+    if _is_true(profile_params.get("athParitySampling")) or mode not in (
+        uniform_modes | custom_modes
+    ):
+        raise ValueError(
+            "FREEFORM samplingMode must be uniform or a custom zmap"
+        )
+
+    source_shape = int(
+        round(eval_param(profile_params.get("sourceShape"), 0.0, 1.0))
+    )
+    source_radius = eval_param(profile_params.get("sourceRadius"), 0.0, -1.0)
+    throat_radius = float(geometry.report()["throatRadiusMm"])
+    if source_shape == 1 and source_radius > 0.0 and source_radius < throat_radius:
+        raise ValueError(
+            "FREEFORM rounded-cap sourceRadius must be at least the throat radius "
+            f"({source_radius:g} mm requested, throat radius {throat_radius:g} mm)"
+        )
+
+    # TODO(M3): add surface-curvature and generated outer-offset regularity guards.
+    # TODO(M3): report OCC-to-analytic H/V deviation in build metadata.
     return geometry
 
 

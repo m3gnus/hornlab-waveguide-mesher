@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
+from .freeform import build_freeform_geometry
 from .profile_common import (
     _DEFAULTS,
     _deg,
@@ -676,6 +677,37 @@ def profile_points(
     if formula == "ICW":
         curve = build_icw_curve(params, phi)
         return icw_meridian_points(curve, t_values)
+    if formula == "FREEFORM":
+        geometry = build_freeform_geometry(params)
+        profile_h = np.asarray(params["profileH"]["points"], dtype=np.float64)
+        z = np.linspace(
+            float(profile_h[0, 0]),
+            float(profile_h[-1, 0]),
+            int(n_axial),
+            dtype=np.float64,
+        )
+        radius_h, _radius_v = geometry.evaluate_radii(z)
+        return np.column_stack((z, radius_h))
+    if formula == "LOOKUP":
+        raw = params.get("lookupProfile", params.get("lookup_profile"))
+        if raw is None:
+            raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
+        lookup = np.asarray(raw, dtype=np.float64)
+        if lookup.ndim != 2 or lookup.shape[1] != 2 or lookup.shape[0] < 2:
+            raise ValueError(
+                "lookupProfile must be an array of at least two [z, r] pairs"
+            )
+        if not np.all(np.isfinite(lookup)):
+            raise ValueError("lookupProfile must contain only finite values")
+        if np.any(np.diff(lookup[:, 0]) <= 0.0):
+            raise ValueError("lookupProfile z values must be strictly increasing")
+        z = np.linspace(
+            float(lookup[0, 0]),
+            float(lookup[-1, 0]),
+            int(n_axial),
+            dtype=np.float64,
+        )
+        return np.column_stack((z, np.interp(z, lookup[:, 0], lookup[:, 1])))
     points = np.empty((len(t_values), 2), dtype=np.float64)
     if formula == "OSSE":
         total = osse_total_length(params, phi)

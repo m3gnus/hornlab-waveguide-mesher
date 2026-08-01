@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from .freeform import FreeformGeometry, _validate_freeform_config
 from .profile_common import (
     _is_true,
     _normalise_formula,
@@ -574,6 +575,117 @@ def _raw_radial_grid(
     return raw_radials, z_values, max_fixed_len, max_total_len
 
 
+def _freeform_quadrant_angles(
+    q1: np.ndarray, quadrants: str
+) -> tuple[np.ndarray, bool]:
+    full = _mirror_quadrant_angles(q1)
+    if not quadrants or quadrants == "1234":
+        return full, True
+    if quadrants == "1":
+        return full[full <= math.pi / 2.0 + 1.0e-12], False
+    if quadrants == "12":
+        return full[full <= math.pi + 1.0e-12], False
+    if quadrants == "14":
+        selected = full[
+            (full <= math.pi / 2.0 + 1.0e-12)
+            | (full >= 3.0 * math.pi / 2.0 - 1.0e-12)
+        ]
+        selected = np.where(selected > math.pi, selected - math.tau, selected)
+        return np.sort(selected), False
+    return full, True
+
+
+def _freeform_merged_axial_map(
+    params: Mapping[str, Any], geometry: FreeformGeometry, n_length: int
+) -> tuple[np.ndarray, str]:
+    base_t, sampling_mode = _axial_sample_map(n_length, params)
+    z0 = float(np.asarray(params["profileH"]["points"], dtype=np.float64)[0, 0])
+    feature_t = [float(station["t"]) for station in geometry.stations]
+    for profile_key in ("profileH", "profileV"):
+        anchors = np.asarray(params[profile_key]["points"], dtype=np.float64)
+        feature_t.extend(((anchors[:, 0] - z0) / geometry.length_mm).tolist())
+    merged = np.unique(
+        np.concatenate((np.asarray(base_t, dtype=np.float64), np.asarray(feature_t)))
+    )
+    merged[0] = 0.0
+    merged[-1] = 1.0
+    if np.any(np.diff(merged) <= 0.0):
+        raise ValueError("FREEFORM merged axial stations must be strictly increasing")
+    return merged, sampling_mode
+
+
+def _freeform_raw_radial_grid(
+    params: Mapping[str, Any], n_length: int
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    str,
+    np.ndarray,
+    bool,
+]:
+    geometry = _validate_freeform_config(params)
+    t_values, sampling_mode = _freeform_merged_axial_map(params, geometry, n_length)
+    z0 = float(np.asarray(params["profileH"]["points"], dtype=np.float64)[0, 0])
+    shared_z = z0 + t_values * geometry.length_mm
+    radii_h, radii_v = geometry.evaluate_radii(shared_z)
+
+    mouth_station = geometry.stations[-1]
+    quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
+    if mouth_station["shape"] == "rounded_rectangle":
+        angular_segments = _normalise_ath_angular_segments(
+            int(params.get("angularSegments", 64))
+        )
+        points_per_quadrant = _morph_quadrant_budget(params, angular_segments)
+        corner_segments = max(
+            0,
+            int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
+        )
+        corner_ratio = float(mouth_station["cornerRatio"])
+        ring_angles = []
+        full_circle = quadrants in {"", "1234"}
+        for a, b in zip(radii_h, radii_v):
+            q1 = _rounded_rect_quadrant_angles(
+                points_per_quadrant,
+                float(a),
+                float(b),
+                corner_ratio * min(float(a), float(b)),
+                corner_segments,
+            )
+            reduced, full_circle = _freeform_quadrant_angles(q1, quadrants)
+            ring_angles.append(reduced)
+        row_counts = {len(values) for values in ring_angles}
+        if len(row_counts) != 1:
+            raise ValueError(
+                "FREEFORM per-ring azimuth grids must have a constant row count"
+            )
+        phi_grid = np.column_stack(ring_angles)
+    else:
+        angles, full_circle = _angle_list(params)
+        phi_grid = np.repeat(angles[:, np.newaxis], len(t_values), axis=1)
+
+    raw_radials = np.empty_like(phi_grid)
+    for j, t_value in enumerate(t_values):
+        raw_radials[:, j] = geometry.cross_section_radius(
+            phi_grid[:, j], float(t_value)
+        )
+    z_values = np.repeat(shared_z[np.newaxis, :], phi_grid.shape[0], axis=0)
+
+    # M2 uses the mouth station's structural angle family on every ring.  The
+    # acoustic loop's per-ring corner masks and additional azimuth pinning are
+    # deliberately deferred to M3.
+    return (
+        raw_radials,
+        z_values,
+        phi_grid,
+        t_values,
+        sampling_mode,
+        phi_grid[:, -1].copy(),
+        full_circle,
+    )
+
+
 def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     formula = _normalise_formula(params.get("type", "OSSE"))
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
@@ -586,32 +698,56 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
         raise ValueError("lengthSegments must be a positive integer")
-    angles, full_circle = _angle_list(params)
     exponent, aspect_ratio = _cross_section(params)
-    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
-    if formula == "ICW":
-        # ICW samples uniformly in sigma (normalised arc length): it has no
-        # ATH/R-OSSE reference axial table, and the kernel already concentrates
-        # detail by arc length, so a uniform sigma grid is the natural mapping.
-        # An explicit custom z-map cannot be honoured and must not be silently
-        # ignored (generic defaulted modes pass through as uniform).
-        requested_mode = str(params.get("samplingMode") or "").strip().lower()
-        if requested_mode == "zmap" or params.get("zMapPoints") is not None:
-            raise ValueError(
-                "ICW does not support samplingMode='zmap'/zMapPoints; "
-                "it always samples uniformly in normalised arc length"
-            )
-        t_unit_values = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
-        sampling_mode = "uniform"
+    phi_grid: np.ndarray | None = None
+    if formula == "FREEFORM":
+        (
+            raw_radials,
+            z_values,
+            phi_grid,
+            t_values,
+            sampling_mode,
+            angles,
+            full_circle,
+        ) = _freeform_raw_radial_grid(params, n_length)
+        t_unit_values = t_values
+        n_length = len(t_values) - 1
+        max_fixed_len = 0.0
+        max_total_len = 0.0
     else:
-        t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
-    t_values = t_unit_values * t_max
-    raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
-        params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
-    )
+        angles, full_circle = _angle_list(params)
+        t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
+        if formula == "ICW":
+            # ICW samples uniformly in sigma (normalised arc length): it has no
+            # ATH/R-OSSE reference axial table, and the kernel already concentrates
+            # detail by arc length, so a uniform sigma grid is the natural mapping.
+            # An explicit custom z-map cannot be honoured and must not be silently
+            # ignored (generic defaulted modes pass through as uniform).
+            requested_mode = str(params.get("samplingMode") or "").strip().lower()
+            if requested_mode == "zmap" or params.get("zMapPoints") is not None:
+                raise ValueError(
+                    "ICW does not support samplingMode='zmap'/zMapPoints; "
+                    "it always samples uniformly in normalised arc length"
+                )
+            t_unit_values = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
+            sampling_mode = "uniform"
+        else:
+            t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+        t_values = t_unit_values * t_max
+        raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
+            params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
+        )
 
-    raw_half_width = float(np.max(np.abs(raw_radials[:, -1] * np.cos(angles))))
-    raw_half_height = float(np.max(np.abs(raw_radials[:, -1] * np.sin(angles))))
+    if formula == "FREEFORM":
+        raw_half_width = float(
+            np.max(np.abs(raw_radials[:, -1] * np.cos(phi_grid[:, -1])))
+        )
+        raw_half_height = float(
+            np.max(np.abs(raw_radials[:, -1] * np.sin(phi_grid[:, -1])))
+        )
+    else:
+        raw_half_width = float(np.max(np.abs(raw_radials[:, -1] * np.cos(angles))))
+        raw_half_height = float(np.max(np.abs(raw_radials[:, -1] * np.sin(angles))))
 
     morph_target = _morph_target_shape(params, 0.0)
     resolved_half_width: float | None = None
@@ -671,33 +807,44 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
         morph_possible = True
 
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
-    for i, phi in enumerate(angles):
-        phi_value = float(phi)
-        cos_phi = math.cos(phi_value)
-        sin_phi = math.sin(phi_value)
-        mouth_radial = float(raw_radials[i, -1])
-        for j in range(n_length + 1):
-            radial = float(raw_radials[i, j])
-            # Morph progress is the global normalized axial position (z / L
-            # for OSSE), identical for every azimuth: ATH does not shift the
-            # blend by the per-azimuth slot length.
-            morph_t = float(t_values[j])
-            if morph_possible:
-                radial = _apply_morphing(
-                    radial,
-                    mouth_radial,
-                    morph_t,
-                    phi_value,
-                    params,
-                    morph_start=snapped_morph_start,
-                    implicit_half_width=resolved_half_width,
-                    implicit_half_height=resolved_half_height,
+    if formula == "FREEFORM":
+        for i in range(len(angles)):
+            for j in range(n_length + 1):
+                phi_value = float(phi_grid[i, j])
+                radial = float(raw_radials[i, j])
+                inner[i, j] = (
+                    radial * math.cos(phi_value),
+                    radial * math.sin(phi_value),
+                    float(z_values[i, j]),
                 )
-            inner[i, j] = (
-                radial * cos_phi,
-                radial * sin_phi,
-                float(z_values[i, j]),
-            )
+    else:
+        for i, phi in enumerate(angles):
+            phi_value = float(phi)
+            cos_phi = math.cos(phi_value)
+            sin_phi = math.sin(phi_value)
+            mouth_radial = float(raw_radials[i, -1])
+            for j in range(n_length + 1):
+                radial = float(raw_radials[i, j])
+                # Morph progress is the global normalized axial position (z / L
+                # for OSSE), identical for every azimuth: ATH does not shift the
+                # blend by the per-azimuth slot length.
+                morph_t = float(t_values[j])
+                if morph_possible:
+                    radial = _apply_morphing(
+                        radial,
+                        mouth_radial,
+                        morph_t,
+                        phi_value,
+                        params,
+                        morph_start=snapped_morph_start,
+                        implicit_half_width=resolved_half_width,
+                        implicit_half_height=resolved_half_height,
+                    )
+                inner[i, j] = (
+                    radial * cos_phi,
+                    radial * sin_phi,
+                    float(z_values[i, j]),
+                )
 
     # ATH's global Scale multiplies every linear geometry dimension after the
     # profile (and morph-target ceil) is evaluated.
@@ -742,5 +889,10 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             None
             if morph_corner_arc_span is None
             else [float(morph_corner_arc_span[0]), float(morph_corner_arc_span[1])]
+        ),
+        **(
+            {"phi_grid": phi_grid.tolist()}
+            if formula == "FREEFORM" and phi_grid is not None
+            else {}
         ),
     }

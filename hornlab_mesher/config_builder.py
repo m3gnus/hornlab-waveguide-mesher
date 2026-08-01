@@ -18,6 +18,7 @@ import numpy as np
 
 from . import cost
 from .config_parser import ConfigError
+from .freeform import _validate_freeform_config
 from .geometry import (
     HornEnclosure,
     HornInterface,
@@ -255,9 +256,10 @@ def _normalise_formula(value: Any) -> str:
     raw = str(value or "OSSE").strip().upper().replace("_", "-")
     if raw == "ROSSE":
         raw = "R-OSSE"
-    if raw not in {"OSSE", "R-OSSE", "LOOKUP", "ICW"}:
+    if raw not in {"OSSE", "R-OSSE", "LOOKUP", "ICW", "FREEFORM"}:
         raise ConfigError(
-            f"formula must be OSSE, R-OSSE/ROSSE, LOOKUP, or ICW, got {value!r}"
+            "formula must be OSSE, R-OSSE/ROSSE, LOOKUP, ICW, or FREEFORM, "
+            f"got {value!r}"
         )
     return raw
 
@@ -275,6 +277,44 @@ def _validate_formula_specific_keys(
     profile: Mapping[str, Any],
     config: Mapping[str, Any],
 ) -> None:
+    if formula == "FREEFORM":
+        names = (
+            "R_mm",
+            "R",
+            "r",
+            "b",
+            "m",
+            "tmax",
+            "L_mm",
+            "L",
+            "s",
+            "n",
+            "k",
+            "q",
+        )
+        if _has_any(profile, config, names=names):
+            raise ConfigError(
+                "formula FREEFORM does not accept OSSE/R-OSSE profile coefficient keys"
+            )
+        if "h" in profile and profile["h"] is not None:
+            raise ConfigError(
+                "formula FREEFORM does not accept OSSE profile coefficient key h"
+            )
+        foreign_icw = sorted(
+            {
+                str(key)
+                for source in (profile, config)
+                for key, value in source.items()
+                if str(key).startswith("icw_") and value is not None
+            }
+        )
+        if foreign_icw:
+            raise ConfigError(
+                "formula FREEFORM does not accept ICW profile coefficient keys: "
+                + ", ".join(foreign_icw)
+            )
+        return
+
     if formula == "OSSE":
         names = ("R_mm", "R", "tmax", "m", "r", "b")
         if _has_any(profile, config, names=names):
@@ -403,10 +443,68 @@ def _validate_static_gcurve_type(
 
 def _validate_formula_features(
     formula: str,
+    profile: Mapping[str, Any],
+    cross: Mapping[str, Any],
+    morph: Mapping[str, Any],
     gcurve: Mapping[str, Any],
     config: Mapping[str, Any],
 ) -> None:
     _validate_static_gcurve_type(gcurve, config)
+    if formula == "FREEFORM":
+        raw_morph_target = _pick(
+            morph, config, names=("morph_target", "morphTarget"), default=0
+        )
+        morph_target = _static_float_or_none(raw_morph_target)
+        if morph_target is None:
+            try:
+                morph_active = any(
+                    int(round(eval_param(raw_morph_target, float(phi), 0.0)))
+                    in {1, 2}
+                    for phi in np.linspace(0.0, math.tau, 33, endpoint=False)
+                )
+            except ValueError as exc:
+                raise ConfigError(str(exc)) from exc
+        else:
+            morph_active = int(round(morph_target)) in {1, 2}
+        if morph_active:
+            raise ConfigError(
+                "FREEFORM does not support active morphTarget shaping; "
+                "use crossSections stations instead"
+            )
+        if _gcurve_could_be_active(gcurve, config):
+            raise ConfigError(
+                "FREEFORM does not support active guiding curves; "
+                "use crossSections stations instead"
+            )
+        exponent = _float(
+            cross,
+            profile,
+            config,
+            names=("exponent", "cross_section_exponent"),
+            default=2.0,
+        )
+        aspect_ratio = _float(
+            cross,
+            profile,
+            config,
+            names=("aspect_ratio", "aspectRatio"),
+            default=1.0,
+        )
+        if not math.isclose(exponent, 2.0, rel_tol=0.0, abs_tol=1.0e-12):
+            raise ConfigError("FREEFORM requires cross-section exponent=2")
+        if not math.isclose(aspect_ratio, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+            raise ConfigError("FREEFORM requires cross-section aspectRatio=1")
+        for key, aliases in (
+            ("rot", ("rot_deg", "rot")),
+            ("h", ("h",)),
+            ("throatExtLength", ("throat_ext_length_mm", "throatExtLength")),
+            ("throatExtAngle", ("throat_ext_angle_deg", "throatExtAngle")),
+            ("slotLength", ("slot_length_mm", "slotLength")),
+        ):
+            value = _pick(profile, config, names=aliases, default=0.0)
+            if _param_is_nonzero(value, name=key):
+                raise ConfigError(f"FREEFORM does not support active {key}")
+        return
     if formula != "OSSE" and _gcurve_could_be_active(gcurve, config):
         raise ConfigError("guiding curves are only supported with formula OSSE")
 
@@ -676,7 +774,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         _pick(config, profile, names=("formula", "type"), default="OSSE")
     )
     _validate_formula_specific_keys(formula, profile, config)
-    _validate_formula_features(formula, gcurve, config)
+    _validate_formula_features(formula, profile, cross, morph, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure, formula)
     enc_depth = 0.0
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
@@ -907,6 +1005,11 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 ),
             }
         )
+    elif formula == "FREEFORM":
+        for key in ("profileH", "profileV", "crossSections", "overshootPolicy"):
+            value = _pick(profile, names=(key,), default=None)
+            if value is not None:
+                common[key] = value
     elif formula == "LOOKUP":
         # No analytic coefficients: the precomputed lookupProfile (threaded
         # into common above) fully defines the radial profile.
@@ -990,6 +1093,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 common[key] = _scalar_or_expr(
                     profile, config, names=(key,), default=None
                 )
+
+    if formula == "FREEFORM":
+        try:
+            _validate_freeform_config(common)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
 
     return common, formula, mode
 
@@ -1677,13 +1786,20 @@ def build_meridian(
     throat_radius = float(inner_profile[0, 0])
     mouth_radius = float(inner_profile[-1, 0])
     throat_z = float(inner_profile[0, 1])
+    source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
+    if formula == "FREEFORM":
+        profile_h = params.get("profileH")
+        if isinstance(profile_h, Mapping):
+            source_auto_angle_deg = float(
+                profile_h.get("throatAngleDeg", source_auto_angle_deg)
+            )
     source_geometry = PointGridHornGeometry(
         inner_points=inner_points,
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
         source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
         source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
         source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
-        source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
+        source_auto_angle_deg=source_auto_angle_deg,
         infinite_baffle=(mode == "infinite-baffle"),
     )
     source_shape = int(source_geometry.source_shape)
@@ -2022,7 +2138,7 @@ def _build_acoustic_sampling_grid(
             "geometrySampleLengthSegments": int(working["lengthSegments"]),
         }
 
-    if not working.get("zMapPoints"):
+    if not working.get("zMapPoints") and working.get("type") != "FREEFORM":
         working["samplingMode"] = "ath-default-zmap"
 
     # The sagitta limit is a smooth-curvature heuristic, so it is only applied
@@ -2034,6 +2150,8 @@ def _build_acoustic_sampling_grid(
         _static_float_or_none(working.get("morphTarget", 0)) == 0.0
         and _static_float_or_none(working.get("gcurveType", 0)) == 0.0
     )
+    # TODO(M3): classify FREEFORM rounded-rectangle corner edges per ring and
+    # route their chord/sagitta refinement through a two-dimensional mask.
 
     max_segments = 2048
     # 3*k intervals per corner quadrant; the cap only exists to keep a genuinely
@@ -2282,6 +2400,13 @@ def build_from_config(
         )
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_mode(mode, quadrants)
+    source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
+    if formula == "FREEFORM":
+        profile_h = params.get("profileH")
+        if isinstance(profile_h, Mapping):
+            source_auto_angle_deg = float(
+                profile_h.get("throatAngleDeg", source_auto_angle_deg)
+            )
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -2299,7 +2424,7 @@ def build_from_config(
         source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
         source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
         source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
-        source_auto_angle_deg=float(eval_param(params.get("a0"), 0.0, 15.5)),
+        source_auto_angle_deg=source_auto_angle_deg,
         interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
         interfaces=interfaces,
         enclosure=enclosure_obj,
