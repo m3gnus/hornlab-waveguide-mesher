@@ -144,7 +144,10 @@ def test_rounded_rectangle_held_station_matches_shared_primitive() -> None:
 
 
 def test_rounded_rectangle_mm_station_matches_equivalent_ratio_at_station() -> None:
-    ratio_params = _profiles()
+    ratio_params = _profiles(
+        [[0.0, 20.0], [100.0, 55.0]],
+        [[0.0, 20.0], [100.0, 45.0]],
+    )
     ratio_params["crossSections"] = [
         {"t": 0.0, "shape": "ellipse"},
         {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.3},
@@ -208,6 +211,31 @@ def test_rounded_rectangle_rejects_mm_radius_outside_station_range() -> None:
     with pytest.raises(
         ValueError,
         match=r"crossSections\[1\].*\[0.9, 45\] mm at station t=1",
+    ):
+        build_freeform_geometry(params)
+
+
+def test_rounded_rectangle_rejects_mm_radius_outside_full_active_span() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [50.0, 8.0], [100.0, 30.0]],
+        [[0.0, 12.7], [50.0, 8.0], [100.0, 30.0]],
+    )
+    params["overshootPolicy"] = "allow"
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": 10.0,
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"crossSections\[1\].*maximum allowed value .*active z range "
+            r"\[0, 100\] mm.*offending z range"
+        ),
     ):
         build_freeform_geometry(params)
 

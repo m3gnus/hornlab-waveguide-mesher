@@ -53,6 +53,42 @@ class _InflectionSpan:
 
 
 @dataclass(frozen=True)
+class _ActiveStationBlend:
+    """The two shape stations and smootherstep weight active at one ``t``."""
+
+    first_index: int
+    second_index: int
+    weight: float
+
+    def station_weight(self, index: int) -> float:
+        if index == self.first_index:
+            return 1.0 - self.weight
+        if index == self.second_index:
+            return self.weight
+        return 0.0
+
+
+def _resolve_active_station_blend(
+    stations: list[dict[str, Any]], t: float
+) -> _ActiveStationBlend:
+    """Resolve the station span used by outlines, validation, and sampling."""
+
+    span_index = len(stations) - 2
+    for index in range(len(stations) - 1):
+        if t <= float(stations[index + 1]["t"]):
+            span_index = index
+            break
+    t0 = float(stations[span_index]["t"])
+    t1 = float(stations[span_index + 1]["t"])
+    local_u = min(1.0, max(0.0, (float(t) - t0) / (t1 - t0)))
+    return _ActiveStationBlend(
+        first_index=span_index,
+        second_index=span_index + 1,
+        weight=float(_smootherstep(local_u)),
+    )
+
+
+@dataclass(frozen=True)
 class _PlaneSpline:
     name: str
     anchors: np.ndarray
@@ -124,23 +160,17 @@ class FreeformGeometry:
         a = float(r_h)
         b = float(r_v)
 
-        span_index = len(self.stations) - 2
-        for index in range(len(self.stations) - 1):
-            if t <= float(self.stations[index + 1]["t"]):
-                span_index = index
-                break
-        first = self.stations[span_index]
-        second = self.stations[span_index + 1]
-        t0 = float(first["t"])
-        t1 = float(second["t"])
-        local_u = min(1.0, max(0.0, (t - t0) / (t1 - t0)))
+        blend = _resolve_active_station_blend(self.stations, t)
+        first = self.stations[blend.first_index]
+        second = self.stations[blend.second_index]
 
         rho0 = _station_radius(first, phi, a, b)
         if _station_descriptor(first) == _station_descriptor(second):
             return rho0
         rho1 = _station_radius(second, phi, a, b)
-        weight = _smootherstep(local_u)
-        return np.asarray((1.0 - weight) * rho0 + weight * rho1, dtype=float)
+        return np.asarray(
+            (1.0 - blend.weight) * rho0 + blend.weight * rho1, dtype=float
+        )
 
     def report(self) -> dict[str, Any]:
         """Return spline deviation, tangents, inflections, and endpoint metadata."""
@@ -768,6 +798,43 @@ def station_corner_radius_mm(
     return min(max(corner, 0.0), limit)
 
 
+def active_rounded_rect_corner_radius_mm(
+    stations: list[dict[str, Any]], t: float, a: float, b: float
+) -> float:
+    """Corner radius for the structural rounded-rectangle family at ``t``.
+
+    Active rounded-rectangle descriptors are blended using their normalized
+    station weights.  If the active outline is purely smooth, the nearest
+    rounded-rectangle station supplies the descriptor while the local
+    semi-axes still supply its scale.
+    """
+
+    blend = _resolve_active_station_blend(stations, float(t))
+    weighted_corners: list[tuple[float, float]] = []
+    for index in (blend.first_index, blend.second_index):
+        station = stations[index]
+        weight = blend.station_weight(index)
+        if station["shape"] == "rounded_rectangle" and weight > 0.0:
+            weighted_corners.append(
+                (weight, station_corner_radius_mm(station, a, b))
+            )
+    if weighted_corners:
+        total_weight = sum(weight for weight, _corner in weighted_corners)
+        return sum(
+            weight * corner for weight, corner in weighted_corners
+        ) / total_weight
+
+    nearest = min(
+        (
+            (abs(float(station["t"]) - float(t)), index, station)
+            for index, station in enumerate(stations)
+            if station["shape"] == "rounded_rectangle"
+        ),
+        key=lambda item: (item[0], item[1]),
+    )[2]
+    return station_corner_radius_mm(nearest, a, b)
+
+
 def _station_radius(
     station: Mapping[str, Any], phi: np.ndarray, a: float, b: float
 ) -> np.ndarray:
@@ -988,6 +1055,34 @@ def _validate_station_corner_radii(geometry: FreeformGeometry) -> None:
                 f"FREEFORM crossSections[{index}].cornerRadiusMm must be in "
                 f"[{lower:g}, {limit:g}] mm at station t={t:g}, got {radius:g} mm"
             )
+
+        active_t_parts: list[np.ndarray] = []
+        for first, second in zip(geometry.stations[:-1], geometry.stations[1:]):
+            midpoint = 0.5 * (float(first["t"]) + float(second["t"]))
+            blend = _resolve_active_station_blend(geometry.stations, midpoint)
+            if blend.station_weight(index) > 0.0:
+                active_t_parts.append(
+                    np.linspace(
+                        float(first["t"]), float(second["t"]), 1001, dtype=float
+                    )
+                )
+        if not active_t_parts:
+            continue
+        active_t = np.unique(np.concatenate(active_t_parts))
+        active_z = z0 + active_t * geometry.length_mm
+        active_a, active_b = geometry.evaluate_radii(active_z)
+        allowed = np.minimum(active_a, active_b)
+        max_allowed = float(np.min(allowed))
+        if radius <= max_allowed:
+            continue
+        offending = allowed < radius
+        offending_z = active_z[offending]
+        raise ValueError(
+            f"FREEFORM crossSections[{index}].cornerRadiusMm={radius:g} mm exceeds "
+            f"the maximum allowed value {max_allowed:g} mm over its active z range "
+            f"[{float(active_z[0]):g}, {float(active_z[-1]):g}] mm; sampled offending "
+            f"z range [{float(offending_z[0]):g}, {float(offending_z[-1]):g}] mm"
+        )
 
 
 def _max_normal_deviation(plane: _PlaneSpline) -> float:

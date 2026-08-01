@@ -8,7 +8,7 @@ import numpy as np
 from .freeform import (
     FreeformGeometry,
     _validate_freeform_config,
-    station_corner_radius_mm,
+    active_rounded_rect_corner_radius_mm,
     validate_outer_offset_grid,
 )
 from .profile_common import (
@@ -701,9 +701,11 @@ def _freeform_raw_radial_grid(
     shared_z = z0 + t_values * geometry.length_mm
     radii_h, radii_v = geometry.evaluate_radii(shared_z)
 
-    mouth_station = geometry.stations[-1]
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
-    if mouth_station["shape"] == "rounded_rectangle":
+    has_rounded_rectangle = any(
+        station["shape"] == "rounded_rectangle" for station in geometry.stations
+    )
+    if has_rounded_rectangle:
         angular_segments = _normalise_ath_angular_segments(
             int(params.get("angularSegments", 64))
         )
@@ -713,36 +715,42 @@ def _freeform_raw_radial_grid(
             int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
         )
         arc_subdivision = _morph_corner_arc_subdivision(params)
-        mouth_a = float(radii_h[-1])
-        mouth_b = float(radii_v[-1])
-        mouth_corner = station_corner_radius_mm(mouth_station, mouth_a, mouth_b)
-        mouth_base = _rounded_rect_quadrant_angles(
+        reference_a = float(radii_h[-1])
+        reference_b = float(radii_v[-1])
+        reference_corner = active_rounded_rect_corner_radius_mm(
+            geometry.stations, float(t_values[-1]), reference_a, reference_b
+        )
+        reference_base = _rounded_rect_quadrant_angles(
             points_per_quadrant,
-            mouth_a,
-            mouth_b,
-            mouth_corner,
+            reference_a,
+            reference_b,
+            reference_corner,
             corner_segments,
         )
-        mouth_span = rounded_rect_corner_arc_span(
-            points_per_quadrant, mouth_a, mouth_b, mouth_corner
+        reference_span = rounded_rect_corner_arc_span(
+            points_per_quadrant, reference_a, reference_b, reference_corner
         )
-        if mouth_span is None:
+        if reference_span is None:
             side1_segments = max(0, points_per_quadrant - 3)
             side2_segments = 0
         else:
             side1_segments = int(
-                np.flatnonzero(np.isclose(mouth_base, mouth_span[0], atol=1.0e-12))[-1]
+                np.flatnonzero(
+                    np.isclose(reference_base, reference_span[0], atol=1.0e-12)
+                )[-1]
             )
             theta2_index = int(
-                np.flatnonzero(np.isclose(mouth_base, mouth_span[1], atol=1.0e-12))[0]
+                np.flatnonzero(
+                    np.isclose(reference_base, reference_span[1], atol=1.0e-12)
+                )[0]
             )
-            side2_segments = int(len(mouth_base) - 1 - theta2_index)
+            side2_segments = int(len(reference_base) - 1 - theta2_index)
         ring_angles = []
         corner_arc_spans: list[list[float]] = []
         full_circle = quadrants in {"", "1234"}
-        for a, b in zip(radii_h, radii_v):
-            corner_radius = station_corner_radius_mm(
-                mouth_station, float(a), float(b)
+        for t_value, a, b in zip(t_values, radii_h, radii_v):
+            corner_radius = active_rounded_rect_corner_radius_mm(
+                geometry.stations, float(t_value), float(a), float(b)
             )
             q1 = _freeform_rounded_rect_quadrant_angles(
                 half_width=float(a),
@@ -782,9 +790,9 @@ def _freeform_raw_radial_grid(
         )
     z_values = np.repeat(shared_z[np.newaxis, :], phi_grid.shape[0], axis=0)
 
-    # M2 uses the mouth station's structural angle family on every ring.  The
-    # acoustic loop's per-ring corner masks and additional azimuth pinning are
-    # deliberately deferred to M3.
+    # Any rounded-rectangle station selects the structural corner-aware family
+    # for every ring so intermediate station tangencies cannot alias. Smooth
+    # rings use the nearest rounded-rectangle descriptor for harmless pinning.
     return (
         raw_radials,
         z_values,

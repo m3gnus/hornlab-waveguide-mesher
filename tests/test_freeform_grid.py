@@ -10,7 +10,10 @@ import pytest
 
 from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.config_parser import ConfigError
-from hornlab_mesher.freeform import build_freeform_geometry
+from hornlab_mesher.freeform import (
+    active_rounded_rect_corner_radius_mm,
+    build_freeform_geometry,
+)
 from hornlab_mesher.profiles import build_point_grid, profile_points
 
 
@@ -63,6 +66,20 @@ def _built_grid(config: dict) -> tuple[dict, dict, np.ndarray, np.ndarray]:
     return params, grid, points, phi_grid
 
 
+def _mixed_schedule_config(*, quadrants: str = "1234") -> dict:
+    config = _owner_config(quadrants=quadrants)
+    config["profile"]["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {
+            "t": 0.5,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": 10.0,
+        },
+        {"t": 1.0, "shape": "ellipse"},
+    ]
+    return config
+
+
 def test_owner_grid_honours_axes_and_merges_feature_stations() -> None:
     params, grid, points, phi_grid = _built_grid(_owner_config())
     geometry = build_freeform_geometry(params)
@@ -103,7 +120,40 @@ def test_quadrant_one_is_exact_subset_of_full_freeform_grid() -> None:
     )
 
 
-def test_mm_corner_mouth_grid_keeps_each_rings_own_corner_tangencies() -> None:
+def test_mixed_schedule_quadrant_one_is_exact_subset_of_full_grid() -> None:
+    _params, _grid, full_points, full_phi = _built_grid(_mixed_schedule_config())
+    _params, _grid, q1_points, q1_phi = _built_grid(
+        _mixed_schedule_config(quadrants="1")
+    )
+    np.testing.assert_allclose(
+        q1_points, full_points[: q1_points.shape[0]], rtol=0.0, atol=1.0e-12
+    )
+    np.testing.assert_allclose(
+        q1_phi, full_phi[: q1_phi.shape[0]], rtol=0.0, atol=1.0e-14
+    )
+
+
+def test_intermediate_rounded_rectangle_pins_tangencies_on_nearby_rings() -> None:
+    params, grid, points, phi_grid = _built_grid(_mixed_schedule_config())
+    geometry = build_freeform_geometry(params)
+    t_values = np.asarray(grid["slice_map"], dtype=np.float64)
+    radii_h, radii_v = geometry.evaluate_radii(points[0, :, 2])
+    middle = int(np.flatnonzero(np.isclose(t_values, 0.5, atol=1.0e-14))[0])
+
+    for ring_index in (middle - 1, middle, middle + 1):
+        a = float(radii_h[ring_index])
+        b = float(radii_v[ring_index])
+        theta_1 = math.atan2(b - 10.0, a)
+        theta_2 = math.atan2(b, a - 10.0)
+        assert np.any(
+            np.isclose(phi_grid[:, ring_index], theta_1, rtol=0.0, atol=1.0e-14)
+        )
+        assert np.any(
+            np.isclose(phi_grid[:, ring_index], theta_2, rtol=0.0, atol=1.0e-14)
+        )
+
+
+def test_mm_corner_mouth_grid_uses_each_rings_active_corner_tangencies() -> None:
     config = _owner_config()
     config["profile"]["crossSections"][-1] = {
         "t": 1.0,
@@ -113,15 +163,19 @@ def test_mm_corner_mouth_grid_keeps_each_rings_own_corner_tangencies() -> None:
     params, grid, points, phi_grid = _built_grid(config)
     geometry = build_freeform_geometry(params)
     radii_h, radii_v = geometry.evaluate_radii(points[0, :, 2])
-    expected_spans = np.asarray(
-        [
+    t_values = np.asarray(grid["slice_map"], dtype=np.float64)
+    expected_spans = []
+    for t, a, b in zip(t_values, radii_h, radii_v):
+        corner = active_rounded_rect_corner_radius_mm(
+            geometry.stations, float(t), float(a), float(b)
+        )
+        expected_spans.append(
             [
-                math.atan2(float(b) - 10.0, float(a)),
-                math.atan2(float(b), float(a) - 10.0),
+                math.atan2(float(b) - corner, float(a)),
+                math.atan2(float(b), float(a) - corner),
             ]
-            for a, b in zip(radii_h, radii_v)
-        ]
-    )
+        )
+    expected_spans = np.asarray(expected_spans)
     actual_spans = np.asarray(grid["freeform_corner_arc_spans"], dtype=np.float64)
 
     np.testing.assert_allclose(actual_spans, expected_spans, rtol=0.0, atol=1.0e-14)
