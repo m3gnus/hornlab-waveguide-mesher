@@ -156,9 +156,10 @@ def test_circle_degenerate_freeform_grid_is_circular_on_every_ring() -> None:
 
 def test_freeform_config_threading_and_value_based_feature_gates() -> None:
     config = _owner_config()
+    config["profile"]["inflectionPolicy"] = "allow"
     params, formula, _mode = build_geometry_params(config)
     assert formula == "FREEFORM"
-    for key in ("profileH", "profileV", "crossSections"):
+    for key in ("profileH", "profileV", "crossSections", "inflectionPolicy"):
         assert params[key] == config["profile"][key]
 
     accepted_zero = copy.deepcopy(config)

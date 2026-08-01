@@ -1006,7 +1006,13 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             }
         )
     elif formula == "FREEFORM":
-        for key in ("profileH", "profileV", "crossSections", "overshootPolicy"):
+        for key in (
+            "profileH",
+            "profileV",
+            "crossSections",
+            "overshootPolicy",
+            "inflectionPolicy",
+        ):
             value = _pick(profile, names=(key,), default=None)
             if value is not None:
                 common[key] = value

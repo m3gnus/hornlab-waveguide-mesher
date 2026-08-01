@@ -10,6 +10,10 @@ Profile anchors accept ``[z, r]``, ``[z, r, angleDeg]``, or
 ``[z, r, angleDeg, strength]``.  A per-anchor tangent takes precedence over the
 corresponding block-level endpoint angle and tangent scale.
 
+Significant reverse-curvature spans are reported by default
+(``inflectionPolicy='warn'``).  They may instead be rejected, while ``'allow'``
+is retained as a non-blocking intent alias.
+
 SciPy is deliberately imported only while constructing a profile.  Importing
 this module therefore remains cheap and does not load SciPy.
 """
@@ -36,8 +40,16 @@ _FREEFORM_PARAM_KEYS = (
     "profileV",
     "crossSections",
     "overshootPolicy",
+    "inflectionPolicy",
     "a0",
 )
+
+
+@dataclass(frozen=True)
+class _InflectionSpan:
+    z_start_mm: float
+    z_end_mm: float
+    tangent_drop_deg: float
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,9 @@ class FreeformGeometry:
     _profile_h: _PlaneSpline
     _profile_v: _PlaneSpline
     stations: list[dict[str, Any]]
+    _inflection_spans: dict[str, tuple[_InflectionSpan, ...]] = field(
+        default_factory=dict, repr=False
+    )
     _curvature_reports: dict[tuple[float, float], dict[str, Any]] = field(
         default_factory=dict, repr=False
     )
@@ -128,7 +143,7 @@ class FreeformGeometry:
         return np.asarray((1.0 - weight) * rho0 + weight * rho1, dtype=float)
 
     def report(self) -> dict[str, Any]:
-        """Return spline-vs-anchor deviation and endpoint geometry metadata."""
+        """Return spline deviation, tangents, inflections, and endpoint metadata."""
         deviations = {
             "H": _max_normal_deviation(self._profile_h),
             "V": _max_normal_deviation(self._profile_v),
@@ -149,6 +164,17 @@ class FreeformGeometry:
             "anchorTangents": {
                 "H": _anchor_tangent_report(self._profile_h),
                 "V": _anchor_tangent_report(self._profile_v),
+            },
+            "inflectionSpans": {
+                plane: [
+                    {
+                        "zStartMm": span.z_start_mm,
+                        "zEndMm": span.z_end_mm,
+                        "tangentDropDeg": span.tangent_drop_deg,
+                    }
+                    for span in self._inflection_spans.get(plane, ())
+                ]
+                for plane in ("H", "V")
             },
         }
 
@@ -992,6 +1018,56 @@ def _anchor_tangent_report(plane: _PlaneSpline) -> list[dict[str, float | None]]
     ]
 
 
+def _significant_inflection_spans(
+    plane: _PlaneSpline,
+) -> tuple[_InflectionSpan, ...]:
+    """Return sampled negative-curvature spans with a visible tangent dip."""
+
+    u = plane.inverse_u
+    first = np.asarray(plane.spline.derivative(1)(u), dtype=float)
+    second = np.asarray(plane.spline.derivative(2)(u), dtype=float)
+    signed_curvature_numerator = (
+        first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]
+    )
+    negative = signed_curvature_numerator < 0.0
+    changes = np.diff(np.concatenate(([False], negative, [False])).astype(np.int8))
+    starts = np.flatnonzero(changes == 1)
+    ends = np.flatnonzero(changes == -1) - 1
+    tangent_angles_deg = np.degrees(np.arctan2(first[:, 1], first[:, 0]))
+
+    spans: list[_InflectionSpan] = []
+    for start, end in zip(starts, ends):
+        tangent_drop_deg = float(
+            tangent_angles_deg[start] - tangent_angles_deg[end]
+        )
+        if tangent_drop_deg <= 1.0:
+            continue
+        endpoints = np.asarray(plane.spline(u[[start, end]]), dtype=float)
+        spans.append(
+            _InflectionSpan(
+                z_start_mm=float(endpoints[0, 0]),
+                z_end_mm=float(endpoints[1, 0]),
+                tangent_drop_deg=tangent_drop_deg,
+            )
+        )
+    return tuple(spans)
+
+
+def _reject_inflections(
+    plane: _PlaneSpline, spans: tuple[_InflectionSpan, ...]
+) -> None:
+    if not spans:
+        return
+    span = spans[0]
+    raise ValueError(
+        f"FREEFORM profile{plane.name} inflection spans "
+        f"z={span.z_start_mm:.3f}..{span.z_end_mm:.3f} mm with a "
+        f"{span.tangent_drop_deg:.2f} deg tangent-angle drop; adjust a tangent "
+        "handle or add an extra point, or change inflectionPolicy to 'warn' "
+        "or 'allow'"
+    )
+
+
 def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     """Parse, validate, construct, and memoize a FREEFORM geometry definition."""
     if not isinstance(params, Mapping):
@@ -1046,11 +1122,19 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             stacklevel=2,
         )
 
-    policy = str(params.get("overshootPolicy", "reject")).strip().lower()
-    if policy not in {"reject", "allow"}:
+    overshoot_policy = (
+        str(params.get("overshootPolicy", "reject")).strip().lower()
+    )
+    if overshoot_policy not in {"reject", "allow"}:
         raise ValueError(
             "FREEFORM overshootPolicy must be 'reject' or 'allow', "
             f"got {params.get('overshootPolicy')!r}"
+        )
+    inflection_policy = str(params.get("inflectionPolicy", "warn")).strip().lower()
+    if inflection_policy not in {"warn", "reject", "allow"}:
+        raise ValueError(
+            "FREEFORM inflectionPolicy must be 'warn', 'reject', or 'allow', "
+            f"got {params.get('inflectionPolicy')!r}"
         )
     stations = _normalise_stations(
         params.get(
@@ -1059,9 +1143,25 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         )
     )
 
-    plane_h = _build_plane_spline("H", parsed_h, *endpoint_h, policy == "allow")
-    plane_v = _build_plane_spline("V", parsed_v, *endpoint_v, policy == "allow")
-    geometry = FreeformGeometry(plane_h, plane_v, stations)
+    plane_h = _build_plane_spline(
+        "H", parsed_h, *endpoint_h, overshoot_policy == "allow"
+    )
+    plane_v = _build_plane_spline(
+        "V", parsed_v, *endpoint_v, overshoot_policy == "allow"
+    )
+    inflection_spans = {
+        "H": _significant_inflection_spans(plane_h),
+        "V": _significant_inflection_spans(plane_v),
+    }
+    if inflection_policy == "reject":
+        _reject_inflections(plane_h, inflection_spans["H"])
+        _reject_inflections(plane_v, inflection_spans["V"])
+    geometry = FreeformGeometry(
+        plane_h,
+        plane_v,
+        stations,
+        _inflection_spans=inflection_spans,
+    )
     _validate_station_corner_radii(geometry)
 
     violations = convexity_violations(

@@ -241,6 +241,67 @@ def test_owner_circle_to_rounded_rectangle_then_hold_scenario() -> None:
     assert convexity_violations(geometry, [0.0, 0.2, 0.4, 0.7, 1.0], 64) == []
 
 
+def test_owner_s_curvature_builds_by_default_and_reports_inflection_spans() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [60.0, 80.0], [120.0, 160.0]],
+        [[0.0, 12.7], [60.0, 60.0], [120.0, 110.0]],
+    )
+    params["profileH"]["mouthAngleDeg"] = 70.0
+    params["profileV"]["mouthAngleDeg"] = 60.0
+
+    report = build_freeform_geometry(params).report()
+
+    assert report["inflectionSpans"]["H"]
+    assert report["inflectionSpans"]["H"][0]["tangentDropDeg"] > 5.0
+
+
+def test_explicit_s_curvature_rejected_only_under_reject_policy() -> None:
+    h_points = [[0.0, 12.7], [50.0, 35.0, 40.0], [100.0, 55.0]]
+    params = _profiles(h_points, [[0.0, 12.7], [100.0, 55.0]])
+    params["profileH"]["mouthAngleDeg"] = 25.0
+
+    assert build_freeform_geometry(params).report()["inflectionSpans"]["H"]
+
+    params["inflectionPolicy"] = "reject"
+    with pytest.raises(
+        ValueError,
+        match=r"profileH.*z=[0-9.]+\.\.[0-9.]+ mm.*[0-9.]+ deg",
+    ):
+        build_freeform_geometry(params)
+
+
+def test_straight_cones_have_no_reported_inflection_spans() -> None:
+    angle = 20.0
+    slope = math.tan(math.radians(angle))
+    points = [[0.0, 12.7], [100.0, 12.7 + 100.0 * slope]]
+    params = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+    for profile in (params["profileH"], params["profileV"]):
+        profile.update(throatAngleDeg=angle, mouthAngleDeg=angle)
+
+    assert build_freeform_geometry(params).report()["inflectionSpans"] == {
+        "H": [],
+        "V": [],
+    }
+
+
+def test_sub_degree_tangent_wiggle_is_not_reported() -> None:
+    angle = 20.0
+    slope = math.tan(math.radians(angle))
+    points = [
+        [0.0, 12.7],
+        [50.0, 12.7 + 50.0 * slope, angle - 0.5],
+        [100.0, 12.7 + 100.0 * slope],
+    ]
+    params = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+    for profile in (params["profileH"], params["profileV"]):
+        profile.update(throatAngleDeg=angle, mouthAngleDeg=angle)
+
+    assert build_freeform_geometry(params).report()["inflectionSpans"] == {
+        "H": [],
+        "V": [],
+    }
+
+
 def test_smootherstep_first_and_second_derivatives_vanish_at_ends() -> None:
     h = 1.0e-5
     assert _smootherstep(0.0) == pytest.approx(0.0)
@@ -346,6 +407,10 @@ def _invalid_cases() -> list[tuple[str, callable]]:
                     {"t": 1.0, "shape": "ellipse"},
                 ]
             ),
+        ),
+        (
+            "inflectionPolicy",
+            lambda p: p.update(inflectionPolicy="ignore"),
         ),
     ]
 
@@ -507,6 +572,36 @@ def test_cache_distinguishes_anchor_tangent_rows() -> None:
     automatic_geometry = build_freeform_geometry(automatic)
     explicit_geometry = build_freeform_geometry(explicit)
     assert automatic_geometry is not explicit_geometry
+
+
+def test_cache_distinguishes_inflection_policies() -> None:
+    angle = 20.0
+    slope = math.tan(math.radians(angle))
+    points = [[0.0, 12.7], [100.0, 12.7 + 100.0 * slope]]
+    warned = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+    for profile in (warned["profileH"], warned["profileV"]):
+        profile.update(throatAngleDeg=angle, mouthAngleDeg=angle)
+    rejected = copy.deepcopy(warned)
+    warned["inflectionPolicy"] = "warn"
+    rejected["inflectionPolicy"] = "reject"
+
+    assert build_freeform_geometry(warned) is not build_freeform_geometry(rejected)
+
+
+def test_allow_inflection_policy_is_a_reporting_alias_for_warn() -> None:
+    points = [[0.0, 12.7], [50.0, 35.0, 40.0], [100.0, 55.0]]
+    warned = _profiles(copy.deepcopy(points), copy.deepcopy(points))
+    warned["profileH"]["mouthAngleDeg"] = 25.0
+    warned["profileV"]["mouthAngleDeg"] = 25.0
+    allowed = copy.deepcopy(warned)
+    warned["inflectionPolicy"] = "warn"
+    allowed["inflectionPolicy"] = "allow"
+
+    warn_report = build_freeform_geometry(warned).report()["inflectionSpans"]
+    allow_report = build_freeform_geometry(allowed).report()["inflectionSpans"]
+
+    assert allow_report == warn_report
+    assert warn_report["H"]
 
 
 def test_report_includes_authoritative_per_anchor_tangent_rows() -> None:
