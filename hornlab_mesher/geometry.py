@@ -171,6 +171,10 @@ class PointGridHornGeometry:
     # cut-plane logic has run at y=0. The declared symmetry plane stays at y=0,
     # so a y-cut (quadrants 1/12) reconstructs about y=0 -- matching ATH.
     vertical_offset_mm: float = 0.0
+    # FREEFORM-only analytic axis samples/report. Builders and mesher keep
+    # these optional so every existing point-grid caller remains unchanged.
+    freeform_axis_samples_mm: NDArray[np.float64] | None = None
+    freeform_report: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.topology_mode not in {"acoustic", "legacy"}:

@@ -18,7 +18,7 @@ import numpy as np
 
 from . import cost
 from .config_parser import ConfigError
-from .freeform import _validate_freeform_config
+from .freeform import build_freeform_geometry, _validate_freeform_config
 from .geometry import (
     HornEnclosure,
     HornInterface,
@@ -1998,6 +1998,37 @@ def _corner_arc_edge_mask(grid: Mapping[str, Any]) -> np.ndarray | None:
     that ends at the tangency point still refines with the angular budget.
     """
 
+    freeform_spans = grid.get("freeform_corner_arc_spans")
+    if freeform_spans is not None:
+        phi_grid = np.asarray(grid.get("phi_grid") or (), dtype=np.float64)
+        if phi_grid.ndim != 2 or phi_grid.shape[0] < 2:
+            return None
+        spans = list(freeform_spans)
+        if len(spans) != phi_grid.shape[1]:
+            return None
+        folded = np.arctan2(np.abs(np.sin(phi_grid)), np.abs(np.cos(phi_grid)))
+        edges = np.zeros(
+            (
+                phi_grid.shape[0] if bool(grid.get("full_circle", True)) else phi_grid.shape[0] - 1,
+                phi_grid.shape[1],
+            ),
+            dtype=bool,
+        )
+        for ring, span in enumerate(spans):
+            if not span:
+                continue
+            theta1, theta2 = float(span[0]), float(span[1])
+            on_arc = (folded[:, ring] >= theta1 - 1.0e-12) & (
+                folded[:, ring] <= theta2 + 1.0e-12
+            )
+            ring_edges = on_arc[:-1] & on_arc[1:]
+            if bool(grid.get("full_circle", True)):
+                ring_edges = np.concatenate(
+                    (ring_edges, [bool(on_arc[-1] and on_arc[0])])
+                )
+            edges[:, ring] = ring_edges
+        return edges if np.any(edges) else None
+
     span = grid.get("morph_corner_arc_span")
     if not span:
         return None
@@ -2138,7 +2169,8 @@ def _build_acoustic_sampling_grid(
             "geometrySampleLengthSegments": int(working["lengthSegments"]),
         }
 
-    if not working.get("zMapPoints") and working.get("type") != "FREEFORM":
+    formula = _normalise_formula(working.get("type"))
+    if not working.get("zMapPoints") and formula != "FREEFORM":
         working["samplingMode"] = "ath-default-zmap"
 
     # The sagitta limit is a smooth-curvature heuristic, so it is only applied
@@ -2147,11 +2179,12 @@ def _build_acoustic_sampling_grid(
     # 1/n rather than 1/n^2; enforcing it there stalls against the segment cap
     # instead of converging. See docs/builder-invariants.md.
     enforce_angular_sagitta = (
-        _static_float_or_none(working.get("morphTarget", 0)) == 0.0
-        and _static_float_or_none(working.get("gcurveType", 0)) == 0.0
+        formula == "FREEFORM"
+        or (
+            _static_float_or_none(working.get("morphTarget", 0)) == 0.0
+            and _static_float_or_none(working.get("gcurveType", 0)) == 0.0
+        )
     )
-    # TODO(M3): classify FREEFORM rounded-rectangle corner edges per ring and
-    # route their chord/sagitta refinement through a two-dimensional mask.
 
     max_segments = 2048
     # 3*k intervals per corner quadrant; the cap only exists to keep a genuinely
@@ -2173,7 +2206,12 @@ def _build_acoustic_sampling_grid(
             _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
         ]
 
-        ring_t = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
+        if formula == "FREEFORM":
+            ring_t = np.asarray(grid.get("slice_map"), dtype=np.float64)
+            if ring_t.shape != (n_length + 1,):
+                raise ConfigError("FREEFORM acoustic grid has an invalid axial slice map")
+        else:
+            ring_t = np.linspace(0.0, 1.0, n_length + 1, dtype=np.float64)
         ring_h = (
             float(density.throat_res_mm)
             + (float(density.mouth_res_mm) - float(density.throat_res_mm)) * ring_t
@@ -2187,7 +2225,8 @@ def _build_acoustic_sampling_grid(
         full_circle = bool(grid.get("full_circle", True))
         angular_ratio = 0.0
         corner_angular_ratio = 0.0
-        sagitta_ratio = 0.0
+        ordinary_sagitta_ratio = 0.0
+        corner_sagitta_ratio = 0.0
         axial_ratio = 0.0
         for points in surfaces:
             angular_delta = np.diff(points, axis=0)
@@ -2198,7 +2237,10 @@ def _build_acoustic_sampling_grid(
             if angular_delta.size:
                 angular_lengths = np.linalg.norm(angular_delta, axis=2)
                 angular_ratios = angular_lengths / (2.0 * ring_h[None, :])
-                if corner_edge is not None and corner_edge.shape[0] == angular_ratios.shape[0]:
+                if corner_edge is not None and corner_edge.shape == angular_ratios.shape:
+                    ordinary_ratios = angular_ratios[~corner_edge]
+                    corner_ratios = angular_ratios[corner_edge]
+                elif corner_edge is not None and corner_edge.shape[0] == angular_ratios.shape[0]:
                     ordinary_ratios = angular_ratios[~corner_edge, :]
                     corner_ratios = angular_ratios[corner_edge, :]
                 else:
@@ -2229,10 +2271,27 @@ def _build_acoustic_sampling_grid(
                     )
                     projection = previous + alpha[:, :, None] * chord
                     sagitta = np.linalg.norm(current - projection, axis=2)
-                    sagitta_ratio = max(
-                        sagitta_ratio,
-                        float(np.max(sagitta / (0.05 * ring_h[None, :]))),
-                    )
+                    sagitta_ratios = sagitta / (0.05 * ring_h[None, :])
+                    corner_triplet: np.ndarray | None = None
+                    if corner_edge is not None and corner_edge.ndim == 2:
+                        if full_circle:
+                            corner_triplet = np.roll(corner_edge, 1, axis=0) & corner_edge
+                        else:
+                            corner_triplet = corner_edge[:-1, :] & corner_edge[1:, :]
+                    if corner_triplet is not None and corner_triplet.shape == sagitta_ratios.shape:
+                        ordinary_sagitta = sagitta_ratios[~corner_triplet]
+                        corner_sagitta = sagitta_ratios[corner_triplet]
+                    else:
+                        ordinary_sagitta = sagitta_ratios
+                        corner_sagitta = sagitta_ratios[:0]
+                    if ordinary_sagitta.size:
+                        ordinary_sagitta_ratio = max(
+                            ordinary_sagitta_ratio, float(np.max(ordinary_sagitta))
+                        )
+                    if corner_sagitta.size:
+                        corner_sagitta_ratio = max(
+                            corner_sagitta_ratio, float(np.max(corner_sagitta))
+                        )
 
             axial_delta = np.diff(points, axis=1)
             if axial_delta.size:
@@ -2247,8 +2306,11 @@ def _build_acoustic_sampling_grid(
         # sagitta violation linearly (as this loop used to) overshoots by sqrt of
         # the ratio, which is why the fitted grid used to depend so strongly on
         # the caller's starting segment counts.
-        ordinary_factor = max(angular_ratio, math.sqrt(sagitta_ratio))
-        corner_factor = corner_angular_ratio
+        sagitta_ratio = max(ordinary_sagitta_ratio, corner_sagitta_ratio)
+        ordinary_factor = max(angular_ratio, math.sqrt(ordinary_sagitta_ratio))
+        corner_factor = max(
+            corner_angular_ratio, math.sqrt(corner_sagitta_ratio)
+        )
         axial_factor = axial_ratio
 
         converged = (
@@ -2401,12 +2463,30 @@ def build_from_config(
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_mode(mode, quadrants)
     source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
+    freeform_axis_samples_mm: np.ndarray | None = None
+    freeform_report: dict[str, Any] | None = None
     if formula == "FREEFORM":
         profile_h = params.get("profileH")
         if isinstance(profile_h, Mapping):
             source_auto_angle_deg = float(
                 profile_h.get("throatAngleDeg", source_auto_angle_deg)
             )
+        freeform_geometry = build_freeform_geometry(params)
+        freeform_report = freeform_geometry.report()
+        slice_map = np.asarray(grid.get("slice_map"), dtype=np.float64)
+        z0 = float(np.asarray(params["profileH"]["points"], dtype=np.float64)[0, 0])
+        analytic_z = z0 + slice_map * freeform_geometry.length_mm
+        analytic_h, analytic_v = freeform_geometry.evaluate_radii(analytic_z)
+        if mode == "infinite-baffle":
+            analytic_z = analytic_z - analytic_z[-1]
+        scale = float(eval_param(params.get("scale"), 0.0, 1.0))
+        h_samples = np.column_stack(
+            (analytic_h, np.zeros_like(analytic_h), analytic_z)
+        )
+        v_samples = np.column_stack(
+            (np.zeros_like(analytic_v), analytic_v, analytic_z)
+        )
+        freeform_axis_samples_mm = scale * np.vstack((h_samples, v_samples))
     geometry = PointGridHornGeometry(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -2421,6 +2501,8 @@ def build_from_config(
         closed=bool(grid.get("full_circle", True)),
         symmetry_planes=_symmetry_planes_for_quadrants(quadrants),
         vertical_offset_mm=float(grid.get("vertical_offset_mm", 0.0) or 0.0),
+        freeform_axis_samples_mm=freeform_axis_samples_mm,
+        freeform_report=freeform_report,
         source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
         source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
         source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
@@ -2450,7 +2532,11 @@ def build_from_config(
         native_check_open_edges=_native_check_open_edges_for_mode(mode),
         mesh_report=mesh_report,
         solve_cost=cost.estimate_solve_cost(info.n_triangles).to_dict(),
-        metadata={**info.metadata, **geometry_sampling_metadata},
+        metadata={
+            **info.metadata,
+            **geometry_sampling_metadata,
+            **({"freeformReport": freeform_report} if freeform_report is not None else {}),
+        },
     )
 
 

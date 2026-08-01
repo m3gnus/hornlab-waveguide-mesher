@@ -101,6 +101,38 @@ def _dispatch_builder(geometry: HornGeometry) -> BuiltGeometry:
     raise TypeError(f"unsupported geometry type: {type(geometry)!r}")
 
 
+def _freeform_profile_deviation_mm(
+    geometry: PointGridHornGeometry, built: BuiltGeometry
+) -> float | None:
+    """Measure fitted OCC wall deviation from FREEFORM's analytic H/V cuts."""
+
+    samples = geometry.freeform_axis_samples_mm
+    if samples is None or geometry.topology_mode != "acoustic" or geometry.preserve_grid:
+        return None
+    expected = np.asarray(samples, dtype=np.float64)
+    if expected.ndim != 2 or expected.shape[1] != 3 or expected.shape[0] == 0:
+        return None
+    surface_tags = [int(tag) for tag in built.mesh_surface_groups.get("inner", ())]
+    if not surface_tags:
+        return None
+
+    gmsh = __import__("gmsh")
+    best_distance = np.full(expected.shape[0], np.inf, dtype=np.float64)
+    best_radial = np.full(expected.shape[0], np.nan, dtype=np.float64)
+    coordinates = expected.reshape(-1).tolist()
+    for tag in surface_tags:
+        closest, _parameters = gmsh.model.getClosestPoint(2, tag, coordinates)
+        projected = np.asarray(closest, dtype=np.float64).reshape(-1, 3)
+        distance = np.linalg.norm(projected - expected, axis=1)
+        improve = distance < best_distance
+        best_distance[improve] = distance[improve]
+        best_radial[improve] = np.linalg.norm(projected[improve, :2], axis=1)
+    if not np.all(np.isfinite(best_radial)):
+        raise MesherError("could not sample the fitted FREEFORM OCC wall surface")
+    expected_radial = np.linalg.norm(expected[:, :2], axis=1)
+    return float(np.max(np.abs(best_radial - expected_radial)))
+
+
 def build_mesh(
     geometry: HornGeometry,
     density: MeshDensity | str | Path | None = None,
@@ -172,6 +204,12 @@ def build_mesh_with_info(
             built = _dispatch_builder(acoustic_geometry)
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
+            if isinstance(acoustic_geometry, PointGridHornGeometry):
+                deviation = _freeform_profile_deviation_mm(acoustic_geometry, built)
+                if deviation is not None:
+                    built.metadata["freeformProfileDeviationMm"] = deviation
+                if acoustic_geometry.freeform_report is not None:
+                    built.metadata["freeformReport"] = acoustic_geometry.freeform_report
 
             configure_density(built, mesh_density)
             add_physical_groups(built.surface_groups)

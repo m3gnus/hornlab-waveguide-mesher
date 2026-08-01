@@ -16,7 +16,7 @@ import json
 import math
 import warnings
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 import numpy as np
@@ -61,6 +61,9 @@ class FreeformGeometry:
     _profile_h: _PlaneSpline
     _profile_v: _PlaneSpline
     stations: list[dict[str, Any]]
+    _curvature_reports: dict[tuple[float, float], dict[str, Any]] = field(
+        default_factory=dict, repr=False
+    )
 
     @property
     def length_mm(self) -> float:
@@ -138,6 +141,119 @@ class FreeformGeometry:
                 },
             },
         }
+
+    def surface_curvature_report(
+        self, wall_thickness_mm: float, *, margin: float = 0.4
+    ) -> dict[str, Any]:
+        """Finite-difference principal-curvature regularity of ``S(t, phi)``.
+
+        The azimuth samples include uniform coverage plus dense samples around
+        every rounded-rectangle tangency.  This is important for small corner
+        ratios: their largest principal curvature generally does not occur at
+        a cardinal or diagonal azimuth.
+        """
+
+        thickness = float(wall_thickness_mm)
+        limit = float(margin)
+        if not math.isfinite(thickness) or thickness <= 0.0:
+            raise ValueError("FREEFORM wall thickness must be finite and > 0 mm")
+        if not math.isfinite(limit) or not (0.0 < limit < 1.0):
+            raise ValueError("FREEFORM shell curvature margin must lie in (0, 1)")
+        cache_key = (thickness, limit)
+        cached = self._curvature_reports.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
+        maximum = 0.0
+        offending_t = 0.0
+        offending_phi = 0.0
+        offending_curvatures = (0.0, 0.0)
+        # Include every station exactly. Smootherstep makes the joins C2, so a
+        # centred stencil is valid there and catches a station-local maximum.
+        t_samples = np.unique(
+            np.concatenate(
+                (
+                    np.linspace(5.0e-4, 1.0 - 5.0e-4, 161),
+                    np.asarray([station["t"] for station in self.stations], dtype=float),
+                )
+            )
+        )
+        dt = 2.5e-4
+        dphi = 2.5e-4
+
+        for t in t_samples:
+            tc = min(1.0 - dt, max(dt, float(t)))
+            phi = _curvature_phi_samples(self, tc)
+
+            center = _surface_points(self, tc, phi)
+            t_minus = _surface_points(self, tc - dt, phi)
+            t_plus = _surface_points(self, tc + dt, phi)
+            phi_minus = _surface_points(self, tc, phi - dphi)
+            phi_plus = _surface_points(self, tc, phi + dphi)
+            mixed_pp = _surface_points(self, tc + dt, phi + dphi)
+            mixed_pm = _surface_points(self, tc + dt, phi - dphi)
+            mixed_mp = _surface_points(self, tc - dt, phi + dphi)
+            mixed_mm = _surface_points(self, tc - dt, phi - dphi)
+
+            s_t = (t_plus - t_minus) / (2.0 * dt)
+            s_phi = (phi_plus - phi_minus) / (2.0 * dphi)
+            s_tt = (t_plus - 2.0 * center + t_minus) / (dt * dt)
+            s_phiphi = (phi_plus - 2.0 * center + phi_minus) / (dphi * dphi)
+            s_tphi = (mixed_pp - mixed_pm - mixed_mp + mixed_mm) / (
+                4.0 * dt * dphi
+            )
+
+            cross = np.cross(s_t, s_phi)
+            cross_length = np.linalg.norm(cross, axis=1)
+            regular = cross_length > 1.0e-12
+            if not np.all(regular):
+                bad_phi = float(phi[np.flatnonzero(~regular)[0]])
+                raise ValueError(
+                    "FREEFORM surface curvature grid is singular near "
+                    f"t={tc:.4f}, phi={math.degrees(bad_phi) % 360.0:.2f} deg"
+                )
+            normal = cross / cross_length[:, None]
+            first_e = np.sum(s_t * s_t, axis=1)
+            first_f = np.sum(s_t * s_phi, axis=1)
+            first_g = np.sum(s_phi * s_phi, axis=1)
+            second_e = np.sum(normal * s_tt, axis=1)
+            second_f = np.sum(normal * s_tphi, axis=1)
+            second_g = np.sum(normal * s_phiphi, axis=1)
+            determinant = first_e * first_g - first_f * first_f
+            if np.any(determinant <= 1.0e-18):
+                bad_phi = float(phi[np.flatnonzero(determinant <= 1.0e-18)[0]])
+                raise ValueError(
+                    "FREEFORM surface first fundamental form is singular near "
+                    f"t={tc:.4f}, phi={math.degrees(bad_phi) % 360.0:.2f} deg"
+                )
+            mean = (
+                second_e * first_g
+                - 2.0 * second_f * first_f
+                + second_g * first_e
+            ) / (2.0 * determinant)
+            gaussian = (second_e * second_g - second_f * second_f) / determinant
+            root = np.sqrt(np.maximum(0.0, mean * mean - gaussian))
+            kappa_1 = mean + root
+            kappa_2 = mean - root
+            scaled = thickness * np.maximum(np.abs(kappa_1), np.abs(kappa_2))
+            index = int(np.argmax(scaled))
+            value = float(scaled[index])
+            if value > maximum:
+                maximum = value
+                offending_t = tc
+                offending_phi = float(phi[index] % math.tau)
+                offending_curvatures = (float(kappa_1[index]), float(kappa_2[index]))
+
+        report = {
+            "ok": maximum < limit,
+            "margin": limit,
+            "maxThicknessTimesPrincipalCurvature": maximum,
+            "offendingT": offending_t,
+            "offendingPhiDeg": math.degrees(offending_phi),
+            "principalCurvaturesPerMm": list(offending_curvatures),
+        }
+        self._curvature_reports[cache_key] = dict(report)
+        return report
 
 
 _FREEFORM_GEOMETRY_CACHE: "OrderedDict[str, FreeformGeometry]" = OrderedDict()
@@ -521,6 +637,139 @@ def _station_radius(
     return result.reshape(phi.shape)
 
 
+def _surface_points(
+    geometry: FreeformGeometry, t: float, phi: np.ndarray
+) -> np.ndarray:
+    radii = geometry.cross_section_radius(phi, float(t))
+    z0 = float(geometry._profile_h.anchors[0, 0])
+    z = z0 + float(t) * geometry.length_mm
+    return np.column_stack(
+        (radii * np.cos(phi), radii * np.sin(phi), np.full(phi.shape, z))
+    )
+
+
+def _curvature_phi_samples(
+    geometry: FreeformGeometry, t: float
+) -> np.ndarray:
+    """All-azimuth curvature probes, enriched at rounded-corner features."""
+
+    z0 = float(geometry._profile_h.anchors[0, 0])
+    z = z0 + float(t) * geometry.length_mm
+    radii_h, radii_v = geometry.evaluate_radii(np.asarray(z))
+    a = float(radii_h)
+    b = float(radii_v)
+    samples = [np.linspace(0.0, math.tau, 721, endpoint=False)]
+    for station in geometry.stations:
+        if station["shape"] != "rounded_rectangle":
+            continue
+        corner = float(station["cornerRatio"]) * min(a, b)
+        cx = a - corner
+        cy = b - corner
+        theta1 = math.atan2(cy, a)
+        theta2 = math.atan2(b, cx)
+        q1 = np.linspace(theta1, theta2, 41)
+        samples.extend(
+            (
+                q1,
+                math.pi - q1,
+                math.pi + q1,
+                math.tau - q1,
+            )
+        )
+    return np.unique(np.mod(np.concatenate(samples), math.tau))
+
+
+def _polyline_self_intersects_2d(points: np.ndarray, *, closed: bool) -> bool:
+    """Return whether non-neighbouring segments of a 2-D polyline intersect."""
+
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 4:
+        return False
+    segment_count = pts.shape[0] if closed else pts.shape[0] - 1
+
+    def orientation(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+        return float((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+
+    def intersects(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
+        scale = max(1.0, *(abs(float(value)) for value in (a - b)), *(abs(float(value)) for value in (c - d)))
+        tolerance = 1.0e-10 * scale * scale
+        o1 = orientation(a, b, c)
+        o2 = orientation(a, b, d)
+        o3 = orientation(c, d, a)
+        o4 = orientation(c, d, b)
+        return o1 * o2 < -tolerance and o3 * o4 < -tolerance
+
+    for first in range(segment_count):
+        a = pts[first]
+        b = pts[(first + 1) % pts.shape[0]]
+        for second in range(first + 1, segment_count):
+            if second == first + 1:
+                continue
+            if closed and first == 0 and second == segment_count - 1:
+                continue
+            c = pts[second]
+            d = pts[(second + 1) % pts.shape[0]]
+            if intersects(a, b, c, d):
+                return True
+    return False
+
+
+def validate_outer_offset_grid(
+    inner_points: Any, outer_points: Any, *, full_circle: bool
+) -> None:
+    """Reject folds or intersections in FREEFORM's generated offset shell."""
+
+    inner = np.asarray(inner_points, dtype=float)
+    outer = np.asarray(outer_points, dtype=float)
+    if inner.shape != outer.shape or inner.ndim != 3 or inner.shape[2] != 3:
+        raise ValueError("FREEFORM outer offset grid does not match the inner grid")
+    if not np.all(np.isfinite(outer)):
+        raise ValueError("FREEFORM outer offset grid contains non-finite coordinates")
+
+    phi_count = inner.shape[0] if full_circle else inner.shape[0] - 1
+    for i in range(phi_count):
+        ni = (i + 1) % inner.shape[0]
+        inner_phi = inner[ni, :-1] - inner[i, :-1]
+        inner_axial = inner[i, 1:] - inner[i, :-1]
+        outer_phi = outer[ni, :-1] - outer[i, :-1]
+        outer_axial = outer[i, 1:] - outer[i, :-1]
+        inner_normal = np.cross(inner_phi, inner_axial)
+        outer_normal = np.cross(outer_phi, outer_axial)
+        inner_len = np.linalg.norm(inner_normal, axis=1)
+        outer_len = np.linalg.norm(outer_normal, axis=1)
+        degenerate = (inner_len <= 1.0e-12) | (outer_len <= 1.0e-12)
+        alignment = np.sum(inner_normal * outer_normal, axis=1)
+        flipped = degenerate | (alignment <= 0.0)
+        if np.any(flipped):
+            ring = int(np.flatnonzero(flipped)[0])
+            raise ValueError(
+                "FREEFORM generated outer offset grid has a normal flip "
+                f"near azimuth row {i}, axial interval {ring}"
+            )
+
+    # Shared-z FREEFORM cannot hide a non-local axial overlap in Cartesian z;
+    # checking every generated meridian in (z, radius) catches offset rollback.
+    for i in range(outer.shape[0]):
+        meridian = np.column_stack(
+            (outer[i, :, 2], np.linalg.norm(outer[i, :, :2], axis=1))
+        )
+        if _polyline_self_intersects_2d(meridian, closed=False):
+            raise ValueError(
+                "FREEFORM generated outer offset grid self-intersects "
+                f"near azimuth row {i}"
+            )
+
+    # Each input ring is convex. Its regular outward offset must retain one
+    # consistent turn direction; a sign reversal names the earliest bad ring.
+    for j in range(outer.shape[1]):
+        xy = outer[:, j, :2]
+        if _polyline_self_intersects_2d(xy, closed=full_circle):
+            raise ValueError(
+                "FREEFORM generated outer offset grid self-intersects "
+                f"on axial ring {j}"
+            )
+
+
 def _smootherstep(value: Any) -> Any:
     u = np.asarray(value, dtype=float)
     result = u * u * u * (u * (u * 6.0 - 15.0) + 10.0)
@@ -740,9 +989,30 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
             f"({source_radius:g} mm requested, throat radius {throat_radius:g} mm)"
         )
 
-    # TODO(M3): add surface-curvature and generated outer-offset regularity guards.
-    # TODO(M3): report OCC-to-analytic H/V deviation in build metadata.
+    wall_thickness = float(profile_params.get("wallThickness") or 0.0)
+    enc_depth = float(profile_params.get("encDepth") or 0.0)
+    if wall_thickness > 0.0 and enc_depth <= 0.0:
+        geometry_scale = float(profile_params.get("scale") or 1.0)
+        report = geometry.surface_curvature_report(
+            wall_thickness / geometry_scale,
+            margin=0.4,
+        )
+        if not bool(report["ok"]):
+            kappa_1, kappa_2 = report["principalCurvaturesPerMm"]
+            raise ValueError(
+                "FREEFORM wall offset fails the surface-curvature guard near "
+                f"t={float(report['offendingT']):.4f}, "
+                f"phi={float(report['offendingPhiDeg']):.2f} deg: "
+                "|wallThickness*kappa_i|="
+                f"{float(report['maxThicknessTimesPrincipalCurvature']):.3f} "
+                f">= margin=0.400 (kappa=[{kappa_1:.6g}, {kappa_2:.6g}] 1/mm)"
+            )
     return geometry
 
 
-__all__ = ["FreeformGeometry", "build_freeform_geometry", "convexity_violations"]
+__all__ = [
+    "FreeformGeometry",
+    "build_freeform_geometry",
+    "convexity_violations",
+    "validate_outer_offset_grid",
+]

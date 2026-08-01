@@ -5,7 +5,11 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .freeform import FreeformGeometry, _validate_freeform_config
+from .freeform import (
+    FreeformGeometry,
+    _validate_freeform_config,
+    validate_outer_offset_grid,
+)
 from .profile_common import (
     _is_true,
     _normalise_formula,
@@ -595,6 +599,60 @@ def _freeform_quadrant_angles(
     return full, True
 
 
+def _freeform_rounded_rect_quadrant_angles(
+    *,
+    half_width: float,
+    half_height: float,
+    corner_ratio: float,
+    side1_segments: int,
+    side2_segments: int,
+    arc_subdivision: int,
+) -> np.ndarray:
+    """Rounded-corner angles with stable row identity from ring to ring.
+
+    The generic morph sampler rounds the wall-span allocation independently
+    for each outline.  When H/V aspect changes along FREEFORM, that integer
+    allocation can jump and make one control-net row teleport to another wall
+    span.  Fix the two wall budgets from the mouth while retaining each ring's
+    own moving tangencies.
+    """
+
+    a = float(half_width)
+    b = float(half_height)
+    corner = float(corner_ratio) * min(a, b)
+    theta1 = math.atan2(b - corner, a)
+    theta2 = math.atan2(b, a - corner)
+    arc_segments = 3 * max(1, int(arc_subdivision))
+    total_segments = int(side1_segments) + arc_segments + int(side2_segments)
+    if theta1 <= 1.0e-12 and theta2 >= math.pi / 2.0 - 1.0e-12:
+        return np.linspace(0.0, math.pi / 2.0, total_segments + 1)
+
+    angles: list[float] = []
+    if side1_segments:
+        angles.extend(np.linspace(0.0, theta1, side1_segments + 1).tolist())
+    else:
+        angles.append(theta1)
+    cx = a - corner
+    cy = b - corner
+    for index in range(1, arc_segments + 1):
+        arc_phi = index * math.pi / (2.0 * arc_segments)
+        angles.append(
+            math.atan2(
+                cy + corner * math.sin(arc_phi),
+                cx + corner * math.cos(arc_phi),
+            )
+        )
+    if side2_segments:
+        angles.extend(
+            (
+                theta2
+                + (math.pi / 2.0 - theta2) * index / side2_segments
+                for index in range(1, side2_segments + 1)
+            )
+        )
+    return np.asarray(angles, dtype=np.float64)
+
+
 def _freeform_merged_axial_map(
     params: Mapping[str, Any], geometry: FreeformGeometry, n_length: int
 ) -> tuple[np.ndarray, str]:
@@ -624,6 +682,7 @@ def _freeform_raw_radial_grid(
     str,
     np.ndarray,
     bool,
+    list[list[float]] | None,
 ]:
     geometry = _validate_freeform_config(params)
     t_values, sampling_mode = _freeform_merged_axial_map(params, geometry, n_length)
@@ -643,18 +702,56 @@ def _freeform_raw_radial_grid(
             int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
         )
         corner_ratio = float(mouth_station["cornerRatio"])
+        arc_subdivision = _morph_corner_arc_subdivision(params)
+        mouth_a = float(radii_h[-1])
+        mouth_b = float(radii_v[-1])
+        mouth_corner = corner_ratio * min(mouth_a, mouth_b)
+        mouth_base = _rounded_rect_quadrant_angles(
+            points_per_quadrant,
+            mouth_a,
+            mouth_b,
+            mouth_corner,
+            corner_segments,
+        )
+        mouth_span = rounded_rect_corner_arc_span(
+            points_per_quadrant, mouth_a, mouth_b, mouth_corner
+        )
+        if mouth_span is None:
+            side1_segments = max(0, points_per_quadrant - 3)
+            side2_segments = 0
+        else:
+            side1_segments = int(
+                np.flatnonzero(np.isclose(mouth_base, mouth_span[0], atol=1.0e-12))[-1]
+            )
+            theta2_index = int(
+                np.flatnonzero(np.isclose(mouth_base, mouth_span[1], atol=1.0e-12))[0]
+            )
+            side2_segments = int(len(mouth_base) - 1 - theta2_index)
         ring_angles = []
+        corner_arc_spans: list[list[float]] = []
         full_circle = quadrants in {"", "1234"}
         for a, b in zip(radii_h, radii_v):
-            q1 = _rounded_rect_quadrant_angles(
-                points_per_quadrant,
-                float(a),
-                float(b),
-                corner_ratio * min(float(a), float(b)),
-                corner_segments,
+            corner_radius = corner_ratio * min(float(a), float(b))
+            q1 = _freeform_rounded_rect_quadrant_angles(
+                half_width=float(a),
+                half_height=float(b),
+                corner_ratio=corner_ratio,
+                side1_segments=side1_segments,
+                side2_segments=side2_segments,
+                arc_subdivision=arc_subdivision,
             )
             reduced, full_circle = _freeform_quadrant_angles(q1, quadrants)
             ring_angles.append(reduced)
+            span = rounded_rect_corner_arc_span(
+                points_per_quadrant,
+                float(a),
+                float(b),
+                corner_radius,
+            )
+            if span is None:
+                corner_arc_spans.append([])
+            else:
+                corner_arc_spans.append([float(span[0]), float(span[1])])
         row_counts = {len(values) for values in ring_angles}
         if len(row_counts) != 1:
             raise ValueError(
@@ -664,6 +761,7 @@ def _freeform_raw_radial_grid(
     else:
         angles, full_circle = _angle_list(params)
         phi_grid = np.repeat(angles[:, np.newaxis], len(t_values), axis=1)
+        corner_arc_spans = None
 
     raw_radials = np.empty_like(phi_grid)
     for j, t_value in enumerate(t_values):
@@ -683,6 +781,7 @@ def _freeform_raw_radial_grid(
         sampling_mode,
         phi_grid[:, -1].copy(),
         full_circle,
+        corner_arc_spans,
     )
 
 
@@ -709,6 +808,7 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             sampling_mode,
             angles,
             full_circle,
+            freeform_corner_arc_spans,
         ) = _freeform_raw_radial_grid(params, n_length)
         t_unit_values = t_values
         n_length = len(t_values) - 1
@@ -870,6 +970,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
     if enc_depth <= 0.0 and wall > 0.0:
         outer = _outer_offset_shell(inner, wall, full_circle=full_circle)
+        if formula == "FREEFORM":
+            validate_outer_offset_grid(inner, outer, full_circle=full_circle)
 
     return {
         "inner_points": inner.reshape(-1).tolist(),
@@ -891,7 +993,10 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             else [float(morph_corner_arc_span[0]), float(morph_corner_arc_span[1])]
         ),
         **(
-            {"phi_grid": phi_grid.tolist()}
+            {
+                "phi_grid": phi_grid.tolist(),
+                "freeform_corner_arc_spans": freeform_corner_arc_spans,
+            }
             if formula == "FREEFORM" and phi_grid is not None
             else {}
         ),
