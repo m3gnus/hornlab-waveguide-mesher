@@ -312,7 +312,18 @@ class FreeformGeometry:
             root = np.sqrt(np.maximum(0.0, mean * mean - gaussian))
             kappa_1 = mean + root
             kappa_2 = mean - root
-            scaled = thickness * np.maximum(np.abs(kappa_1), np.abs(kappa_2))
+            # ``cross(s_t, s_phi)`` points toward the acoustic axis for the
+            # FREEFORM parameterisation, while the generated wall shell is
+            # offset in the opposite (outward) direction.  Its signed offset
+            # distance relative to ``normal`` is therefore ``-thickness``.
+            # A parallel surface becomes locally singular only as the signed
+            # product d*kappa approaches +1; using |d*kappa| incorrectly
+            # rejects harmless convex outward offsets (even a thick cylinder).
+            signed_offset = -thickness
+            scaled = np.maximum(
+                0.0,
+                np.maximum(signed_offset * kappa_1, signed_offset * kappa_2),
+            )
             index = int(np.argmax(scaled))
             value = float(scaled[index])
             if value > maximum:
@@ -911,7 +922,15 @@ def _curvature_phi_samples(
     a = float(radii_h)
     b = float(radii_v)
     samples = [np.linspace(0.0, math.tau, uniform_n, endpoint=False)]
-    for station in geometry.stations:
+    blend = _resolve_active_station_blend(geometry.stations, float(t))
+    # Only the two stations in the active span contribute to this outline.
+    # Sampling tangencies from every unrelated rounded-rectangle station made
+    # curvature validation scale quadratically with station count and could
+    # push an otherwise valid viewport request past its deadline.
+    for index in (blend.first_index, blend.second_index):
+        if blend.station_weight(index) <= 1.0e-12:
+            continue
+        station = geometry.stations[index]
         if station["shape"] != "rounded_rectangle":
             continue
         corner = station_corner_radius_mm(station, a, b)
@@ -1602,10 +1621,10 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
         if not bool(report["ok"]):
             kappa_1, kappa_2 = report["principalCurvaturesPerMm"]
             raise ValueError(
-                "FREEFORM wall offset fails the surface-curvature guard near "
+                "FREEFORM outward wall offset fails the surface-curvature guard near "
                 f"t={float(report['offendingT']):.4f}, "
                 f"phi={float(report['offendingPhiDeg']):.2f} deg: "
-                "|wallThickness*kappa_i|="
+                "max(0, -wallThickness*kappa_i)="
                 f"{float(report['maxThicknessTimesPrincipalCurvature']):.3f} "
                 f">= margin=0.400 (kappa=[{kappa_1:.6g}, {kappa_2:.6g}] 1/mm)"
             )

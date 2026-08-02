@@ -82,7 +82,7 @@ def _assert_closed_valid_mesh(result, *, require_positive_volume: bool) -> None:
 @pytest.mark.parametrize(
     "mode,extra,require_positive_volume",
     [
-        ("freestanding", {"wall_thickness_mm": 1.0}, True),
+        ("freestanding", {"wall_thickness_mm": 5.0}, True),
         ("enclosure", None, True),
         ("infinite-baffle", None, False),
     ],
@@ -198,10 +198,10 @@ def test_small_corner_large_mouth_acoustic_fit_stays_within_caps(tmp_path):
     assert metadata["geometrySampleControlPoints"] <= MAX_EFFECTIVE_CONTROL_POINTS
 
 
-def test_tight_corner_thick_wall_fails_surface_curvature_guard(tmp_path):
+def test_concave_meridian_thick_wall_fails_signed_surface_curvature_guard(tmp_path):
     config = _owner_config()
     config["mode"] = "freestanding"
-    config["mesh"]["wall_thickness_mm"] = 6.0
+    config["mesh"]["wall_thickness_mm"] = 20.0
     config["profile"]["crossSections"] = [
         {"t": 0.0, "shape": "circle"},
         {"t": 0.5, "shape": "superellipse", "exponent": 16.0},

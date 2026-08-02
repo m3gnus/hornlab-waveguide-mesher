@@ -190,10 +190,13 @@ identifies the station span and offending normalized position and, for a
 rounded-rectangle blend, reports an estimated feasible corner-radius hint.
 
 For a freestanding shell, the inner loft is checked over all azimuths with a
-finite-difference first/second fundamental-form calculation. The build is
-rejected when either principal curvature violates
-`|wallThickness * kappa_i| < 0.4`. After the outer wall is generated, its grid
-is checked for normal flips, meridian self-intersections, and ring
+finite-difference first/second fundamental-form calculation. The analytic
+normal points toward the acoustic axis and the wall is offset in the opposite
+direction, so the signed local risk is
+`max(0, -wallThickness * kappa_i)`. The build is rejected when that risk
+reaches the `0.4` safety margin; convex curvature that expands under the
+outward offset is not rejected. After the outer wall is generated, its grid is
+checked for normal flips, meridian self-intersections, and ring
 self-intersections. The corner-radius active-span guard described above runs
 before both surface checks. Enclosure and infinite-baffle modes do not create
 this freestanding outer offset.

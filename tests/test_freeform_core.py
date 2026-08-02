@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.freeform import (
+    _curvature_phi_samples,
     _smootherstep,
     build_freeform_geometry,
     convexity_violations,
@@ -408,6 +409,37 @@ def test_cached_geometry_and_curvature_reports_are_effectively_immutable() -> No
     assert rebuilt.surface_curvature_report(0.1)[
         "principalCurvaturesPerMm"
     ] == pytest.approx(baseline_curvatures)
+
+
+def test_outward_cylinder_wall_uses_signed_curvature_direction() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [120.0, 12.7]],
+        [[0.0, 12.7], [120.0, 12.7]],
+    )
+    params["profileH"].update(throatAngleDeg=0.0, mouthAngleDeg=0.0)
+    params["profileV"].update(throatAngleDeg=0.0, mouthAngleDeg=0.0)
+
+    report = build_freeform_geometry(params).surface_curvature_report(10.0)
+
+    assert report["ok"] is True
+    assert report["maxThicknessTimesPrincipalCurvature"] == pytest.approx(0.0)
+
+
+def test_curvature_sampling_ignores_inactive_rounded_rectangle_stations() -> None:
+    params = _profiles()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 0.5, "shape": "ellipse"},
+        {"t": 0.75, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 20.0},
+    ]
+    geometry = build_freeform_geometry(params)
+
+    inactive = _curvature_phi_samples(geometry, 0.25)
+    active = _curvature_phi_samples(geometry, 0.6)
+
+    assert inactive.size == 721
+    assert active.size > inactive.size
 
 
 @pytest.mark.parametrize("corner_radius_mm", [15.0, 30.0])
