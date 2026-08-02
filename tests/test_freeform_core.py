@@ -112,6 +112,68 @@ def test_axis_exactness_for_every_shape_and_blend_position(station: dict) -> Non
         )
 
 
+@pytest.mark.parametrize("exponent", [4.0, 16.0])
+def test_superellipse_off_axis_matches_independent_closed_form(
+    exponent: float,
+) -> None:
+    params = _profiles([[0.0, 12.7], [100.0, 55.0]], [[0.0, 12.7], [100.0, 45.0]])
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 1.0, "shape": "superellipse", "exponent": exponent},
+    ]
+    geometry = build_freeform_geometry(params)
+    phi = math.pi / 4.0
+    expected = (
+        (abs(math.cos(phi)) / 55.0) ** exponent
+        + (abs(math.sin(phi)) / 45.0) ** exponent
+    ) ** (-1.0 / exponent)
+
+    assert float(geometry.cross_section_radius(np.asarray([phi]), 1.0)[0]) == pytest.approx(
+        expected, abs=1.0e-12
+    )
+
+
+def test_rounded_rectangle_regions_match_independent_closed_forms() -> None:
+    a, b, corner = 55.0, 45.0, 10.0
+    params = _profiles([[0.0, 12.7], [100.0, a]], [[0.0, 12.7], [100.0, b]])
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": corner,
+        },
+    ]
+    geometry = build_freeform_geometry(params)
+    straight_h = 0.3
+    corner_phi = 0.7
+    straight_v = 1.0
+    center_x, center_y = a - corner, b - corner
+    center_projection = (
+        center_x * math.cos(corner_phi) + center_y * math.sin(corner_phi)
+    )
+    arc_radius = center_projection + math.sqrt(
+        center_projection**2 - (center_x**2 + center_y**2 - corner**2)
+    )
+    phi = np.asarray([0.0, straight_h, corner_phi, straight_v, math.pi / 2.0])
+    expected = np.asarray(
+        [
+            a,
+            a / math.cos(straight_h),
+            arc_radius,
+            b / math.sin(straight_v),
+            b,
+        ]
+    )
+
+    np.testing.assert_allclose(
+        geometry.cross_section_radius(phi, 1.0),
+        expected,
+        rtol=0.0,
+        atol=1.0e-12,
+    )
+
+
 def test_rounded_rectangle_held_station_matches_shared_primitive() -> None:
     params = _profiles()
     params["crossSections"] = [
@@ -296,6 +358,56 @@ def test_convexity_guard_reports_minimum_feasible_corner_radius() -> None:
         build_freeform_geometry(_convexity_window_params(3.0))
 
     assert build_freeform_geometry(_convexity_window_params(6.0)).length_mm == 120.0
+
+
+def test_convexity_ingest_rejects_shallow_rounded_rectangle_blend() -> None:
+    params = _profiles(
+        [[0.0, 5.541511132371429], [100.0, 106.15347704489386]],
+        [[0.0, 5.541511132371429], [100.0, 164.0176191763291]],
+    )
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": 6.023758168248212,
+        },
+    ]
+
+    with pytest.raises(ValueError, match="non-convex outline"):
+        build_freeform_geometry(params)
+
+
+def test_cached_geometry_and_curvature_reports_are_effectively_immutable() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [120.0, 80.0]],
+        [[0.0, 12.7], [120.0, 60.0]],
+    )
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {"t": 1.0, "shape": "superellipse", "exponent": 4.0},
+    ]
+    geometry = build_freeform_geometry(params)
+    baseline_radius = float(
+        geometry.cross_section_radius(np.asarray([math.pi / 4.0]), 1.0)[0]
+    )
+
+    with pytest.raises(TypeError):
+        geometry.stations[-1]["shape"] = "ellipse"
+    with pytest.raises(ValueError):
+        geometry._profile_h.anchors[0, 0] = 999.0
+
+    curvature = geometry.surface_curvature_report(0.1)
+    baseline_curvatures = curvature["principalCurvaturesPerMm"].copy()
+    curvature["principalCurvaturesPerMm"][0] = 999.0
+
+    rebuilt = build_freeform_geometry(params)
+    assert float(
+        rebuilt.cross_section_radius(np.asarray([math.pi / 4.0]), 1.0)[0]
+    ) == pytest.approx(baseline_radius)
+    assert rebuilt.surface_curvature_report(0.1)[
+        "principalCurvaturesPerMm"
+    ] == pytest.approx(baseline_curvatures)
 
 
 @pytest.mark.parametrize("corner_radius_mm", [15.0, 30.0])

@@ -32,7 +32,11 @@ from .profile_common import (
     _parse_number_list,
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
-from .profile_sampling import ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY
+from .profile_sampling import (
+    ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
+    FREEFORM_CONTINUOUS_COLLAPSE_KEY,
+    _classify_zmap_kind,
+)
 from .profiles import build_point_grid, eval_param, profile_points
 from .builders.point_grid_freestanding import (
     _outer_wall_axial_ring_indices,
@@ -456,16 +460,11 @@ def _validate_formula_features(
         )
         morph_target = _static_float_or_none(raw_morph_target)
         if morph_target is None:
-            try:
-                morph_active = any(
-                    int(round(eval_param(raw_morph_target, float(phi), 0.0)))
-                    in {1, 2}
-                    for phi in np.linspace(0.0, math.tau, 33, endpoint=False)
-                )
-            except ValueError as exc:
-                raise ConfigError(str(exc)) from exc
-        else:
-            morph_active = int(round(morph_target)) in {1, 2}
+            raise ConfigError(
+                "FREEFORM morphTarget expression cannot be proven inactive; "
+                "crossSections owns the outline"
+            )
+        morph_active = int(round(morph_target)) in {1, 2}
         if morph_active:
             raise ConfigError(
                 "FREEFORM does not support active morphTarget shaping; "
@@ -798,6 +797,23 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         names=("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints"),
         default=None,
     )
+    z_map_kind = _pick(
+        mesh,
+        config,
+        names=("z_map_kind", "zMapKind"),
+        default=None,
+    )
+    length_segments = _int(
+        mesh,
+        config,
+        names=("length_segments", "lengthSegments"),
+        default=32,
+    )
+    if z_map_kind is None and z_map_points is not None:
+        try:
+            z_map_kind = _classify_zmap_kind(length_segments, z_map_points)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     default_sampling_mode = "zmap" if z_map_points is not None else "uniform"
 
     common: dict[str, Any] = {
@@ -833,9 +849,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "cornerSegments": _int(
             mesh, config, names=("corner_segments", "cornerSegments"), default=0
         ),
-        "lengthSegments": _int(
-            mesh, config, names=("length_segments", "lengthSegments"), default=32
-        ),
+        "lengthSegments": length_segments,
         "samplingMode": _pick(
             mesh,
             config,
@@ -849,6 +863,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             default=False,
         ),
         "zMapPoints": z_map_points,
+        "zMapKind": z_map_kind,
         "wallThickness": wall_thickness,
         "encDepth": enc_depth,
         "morphTarget": _scalar_or_expr(
@@ -2176,6 +2191,8 @@ def _build_acoustic_sampling_grid(
         }
 
     formula = _normalise_formula(working.get("type"))
+    if formula == "FREEFORM":
+        working[FREEFORM_CONTINUOUS_COLLAPSE_KEY] = True
     if not working.get("zMapPoints") and formula != "FREEFORM":
         working["samplingMode"] = "ath-default-zmap"
 

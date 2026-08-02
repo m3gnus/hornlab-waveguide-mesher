@@ -169,7 +169,9 @@ rejecting an impossible local corner.
 
 The base axial map is uniform or a user-supplied custom z-map. The sampler
 merges every H/V anchor and cross-section station into that map, collapsing
-only positions within floating-point noise. Rounded-rectangle tangency
+only positions within `1e-7` normalized-`t` floating-point noise. A base
+sample is snapped to the exact semantic feature; two distinct features within
+that tolerance are rejected rather than merged. Rounded-rectangle tangency
 azimuths depend on the local semi-axes and corner radius, so they can move
 along z. FREEFORM therefore constructs a separate azimuth grid for every
 axial ring. The point-grid conversion consumes `phi_grid[i, j]`, preserving

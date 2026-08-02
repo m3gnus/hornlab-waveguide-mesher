@@ -106,6 +106,50 @@ def test_owner_freeform_closed_acoustic_builds_are_watertight(
     assert result.metadata["freeformReport"]["throatRadiusMm"] == pytest.approx(12.7)
 
 
+def test_owner_freeform_bare_build_has_open_mouth_and_expected_groups(tmp_path):
+    config = _owner_config()
+    config["mesh"].update(throat_res_mm=40.0, mouth_res_mm=40.0)
+
+    result = build_from_config(config, tmp_path / "freeform-bare.msh")
+
+    mesh = meshio.read(result.mesh_path)
+    points = np.asarray(mesh.points, dtype=np.float64)
+    triangles = np.asarray(mesh.cells_dict["triangle"], dtype=np.int64)
+    edges = np.sort(
+        np.concatenate(
+            (triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]])
+        ),
+        axis=1,
+    )
+    unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+    boundary_edges = unique_edges[counts == 1]
+    mouth_z = float(np.max(points[:, 2]))
+
+    assert result.mode == "bare"
+    assert result.physical_groups == {1: "SD1G0", 2: "SD1D1001"}
+    assert result.native_check_open_edges is False
+    assert boundary_edges.size > 0
+    assert np.any(
+        np.all(np.isclose(points[boundary_edges, 2], mouth_z, atol=1.0e-9), axis=1)
+    )
+
+
+def test_freeform_acoustic_refinement_retargets_full_sample_zmap(tmp_path):
+    config = _owner_config()
+    config["mesh"].update(
+        lengthSegments=8,
+        samplingMode="zmap",
+        zMapPoints=[0.0, 0.02, 0.08, 0.18, 0.32, 0.5, 0.68, 0.84, 1.0],
+        throat_res_mm=40.0,
+        mouth_res_mm=40.0,
+    )
+
+    result = build_from_config(config, tmp_path / "freeform-full-zmap.msh")
+
+    assert result.mode == "bare"
+    assert result.n_triangles > 0
+
+
 def test_owner_freeform_quadrant_reduced_freestanding_build_succeeds(tmp_path):
     config = _owner_config(quadrants="1")
     config["mode"] = "freestanding"

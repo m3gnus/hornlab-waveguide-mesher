@@ -33,6 +33,7 @@ from .profile_morph import (
     _guiding_curve_active,
     _morph_active,
     _morph_target_shape,
+    _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
     rounded_rect_corner_arc_span,
 )
@@ -40,6 +41,7 @@ from .profile_morph import (
 # Private params key: acoustic-only corner-arc subdivision (see
 # ``_morph_corner_arc_subdivision``). Never set by user configs.
 ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY = "_acousticCornerArcSubdivision"
+FREEFORM_CONTINUOUS_COLLAPSE_KEY = "_freeformContinuousCollapse"
 
 
 def _normalise_ath_angular_segments(raw_count: int) -> int:
@@ -297,14 +299,62 @@ def _zmap_number_list(value: Any) -> list[float]:
     return _parse_number_list(value, separators=",;", flatten=True)
 
 
-def _custom_zmap(n_length: int, z_map_points: Any) -> np.ndarray:
+def _classify_zmap_kind(n_length: int, z_map_points: Any) -> str:
+    """Classify a z-map once, before acoustic refinement changes its length."""
+
+    steps = max(1, int(n_length))
+    values = _zmap_number_list(z_map_points)
+    if not values:
+        raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
+    if (
+        len(values) == steps + 1
+        and math.isclose(values[0], 0.0, abs_tol=1.0e-12)
+        and math.isclose(values[-1], 1.0, abs_tol=1.0e-12)
+    ):
+        return "samples"
+    return "controls"
+
+
+def _custom_zmap(
+    n_length: int, z_map_points: Any, z_map_kind: Any = None
+) -> np.ndarray:
     steps = max(1, int(n_length))
     values = _zmap_number_list(z_map_points)
     if not values:
         raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
 
-    if len(values) == steps + 1 and math.isclose(values[0], 0.0, abs_tol=1.0e-12) and math.isclose(values[-1], 1.0, abs_tol=1.0e-12):
-        out = np.asarray(values, dtype=np.float64)
+    kind = (
+        _classify_zmap_kind(steps, values)
+        if z_map_kind is None
+        else str(z_map_kind).strip().lower().replace("_", "-")
+    )
+    if kind in {"sample", "samples", "full", "full-samples"}:
+        kind = "samples"
+    elif kind in {"control", "controls", "control-pairs", "pairs"}:
+        kind = "controls"
+    else:
+        raise ValueError(
+            f"zMapKind must be 'samples' or 'controls', got {z_map_kind!r}"
+        )
+
+    if kind == "samples":
+        sample_values = np.asarray(values, dtype=np.float64)
+        if sample_values.size < 2:
+            raise ValueError("zMapPoints full sample map requires at least 2 values")
+        if not np.all(np.isfinite(sample_values)):
+            raise ValueError("zMapPoints must contain finite values")
+        if not math.isclose(float(sample_values[0]), 0.0, abs_tol=1.0e-12) or not math.isclose(
+            float(sample_values[-1]), 1.0, abs_tol=1.0e-12
+        ):
+            raise ValueError("zMapPoints full sample map must start at 0 and end at 1")
+        if np.any(np.diff(sample_values) < -1.0e-12):
+            raise ValueError("zMapPoints samples must be non-decreasing")
+        source_x = np.linspace(0.0, 1.0, sample_values.size, dtype=np.float64)
+        out = np.interp(
+            np.linspace(0.0, 1.0, steps + 1, dtype=np.float64),
+            source_x,
+            sample_values,
+        )
     else:
         if len(values) % 2 != 0:
             raise ValueError("zMapPoints must be x,y control-point pairs or a full n+1 sample map")
@@ -347,7 +397,11 @@ def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndar
     if mode == "ath-default-zmap":
         return _ath_default_zmap(n_length, _normalise_formula(params.get("type", "OSSE"))), mode
     if mode == "zmap":
-        return _custom_zmap(n_length, z_map_points), mode
+        return _custom_zmap(
+            n_length,
+            z_map_points,
+            params.get("zMapKind", params.get("z_map_kind")),
+        ), mode
     raise AssertionError(f"unhandled sampling mode {mode!r}")
 
 
@@ -608,6 +662,7 @@ def _freeform_rounded_rect_quadrant_angles(
     side1_segments: int,
     side2_segments: int,
     arc_subdivision: int,
+    collapse_transition_intervals: float,
 ) -> np.ndarray:
     """Rounded-corner angles with stable row identity from ring to ring.
 
@@ -624,9 +679,24 @@ def _freeform_rounded_rect_quadrant_angles(
     theta1 = math.atan2(b - corner, a)
     theta2 = math.atan2(b, a - corner)
     arc_segments = 3 * max(1, int(arc_subdivision))
-    total_segments = int(side1_segments) + arc_segments + int(side2_segments)
-    if theta1 <= 1.0e-12 and theta2 >= math.pi / 2.0 - 1.0e-12:
-        return np.linspace(0.0, math.pi / 2.0, total_segments + 1)
+    side1_segments = int(side1_segments)
+    side2_segments = int(side2_segments)
+    total_segments = side1_segments + arc_segments + side2_segments
+    base_layout = _rounded_rect_quadrant_layout(
+        side1_segments + side2_segments + 3,
+        a,
+        b,
+        corner,
+    )
+    uniform_angles = np.linspace(0.0, math.pi / 2.0, total_segments + 1)
+    if corner >= b and corner >= a:
+        return uniform_angles
+
+    span1 = theta1
+    span2 = math.pi / 2.0 - theta2
+    arc_segments = (
+        3 if base_layout is None else int(base_layout.arc_segments)
+    ) * max(1, int(arc_subdivision))
 
     angles: list[float] = []
     if side1_segments:
@@ -651,7 +721,23 @@ def _freeform_rounded_rect_quadrant_angles(
                 for index in range(1, side2_segments + 1)
             )
         )
-    return np.asarray(angles, dtype=np.float64)
+    structural_angles = np.asarray(angles, dtype=np.float64)
+    # The fixed mouth budgets preserve exact tangencies once both walls are
+    # developed, but squeezing those fixed rows onto a vanishing wall would
+    # duplicate angles. Blend continuously from the fully reassigned uniform
+    # layout over a caller-selected number of nominal angular intervals. Unlike
+    # changing integer budgets ring by ring, this keeps every control-net row
+    # continuous along z, so
+    # acoustic axial refinement can converge and walled offsets cannot fold at
+    # a budget transition.
+    transition_span = (
+        max(1.0, float(collapse_transition_intervals))
+        * math.pi
+        / (2.0 * total_segments)
+    )
+    progress = min(1.0, max(0.0, min(span1, span2) / transition_span))
+    blend = progress * progress * (3.0 - 2.0 * progress)
+    return uniform_angles + blend * (structural_angles - uniform_angles)
 
 
 def _freeform_merged_axial_map(
@@ -659,23 +745,58 @@ def _freeform_merged_axial_map(
 ) -> tuple[np.ndarray, str]:
     base_t, sampling_mode = _axial_sample_map(n_length, params)
     z0 = float(params["profileH"]["points"][0][0])
-    feature_t = [float(station["t"]) for station in geometry.stations]
+    semantic_features = [
+        (float(station["t"]), f"crossSections[{index}]")
+        for index, station in enumerate(geometry.stations)
+    ]
     for profile_key in ("profileH", "profileV"):
         anchor_z = np.asarray(
             [row[0] for row in params[profile_key]["points"]], dtype=np.float64
         )
-        feature_t.extend(((anchor_z - z0) / geometry.length_mm).tolist())
-    merged = np.unique(
-        np.concatenate((np.asarray(base_t, dtype=np.float64), np.asarray(feature_t)))
-    )
+        semantic_features.extend(
+            (float(t), f"{profile_key}.points[{index}]")
+            for index, t in enumerate((anchor_z - z0) / geometry.length_mm)
+        )
     # A base sample can land within float noise of a feature station (e.g. an
     # anchor at t=1/3 vs a uniform station at 35/105): np.unique keeps both and
     # the duplicated ring makes the outer offset shell locally degenerate.
-    # Collapse clusters tighter than eps, keeping the first member.
+    # Collapse clusters tighter than eps onto their semantic feature. Distinct
+    # semantic positions this close describe an unmeshable axial sliver, so
+    # reject them rather than silently deleting either one.
     eps = 1.0e-7
-    keep = np.ones(merged.size, dtype=bool)
-    keep[1:] = np.diff(merged) > eps
-    merged = merged[keep]
+    entries = [
+        (float(value), False, f"base[{index}]")
+        for index, value in enumerate(np.asarray(base_t, dtype=np.float64))
+    ]
+    entries.extend((value, True, label) for value, label in semantic_features)
+    entries.sort(key=lambda item: item[0])
+    clusters: list[list[tuple[float, bool, str]]] = []
+    for entry in entries:
+        if not clusters or entry[0] - clusters[-1][-1][0] > eps:
+            clusters.append([entry])
+        else:
+            clusters[-1].append(entry)
+
+    merged_values: list[float] = []
+    for cluster in clusters:
+        features = [entry for entry in cluster if entry[1]]
+        distinct_feature_values = sorted({entry[0] for entry in features})
+        if len(distinct_feature_values) > 1:
+            first_value, second_value = distinct_feature_values[:2]
+            first_label = next(
+                entry[2] for entry in features if entry[0] == first_value
+            )
+            second_label = next(
+                entry[2] for entry in features if entry[0] == second_value
+            )
+            raise ValueError(
+                "FREEFORM semantic axial features are closer than normalized-t "
+                f"tolerance {eps:g}: {first_label} at t={first_value:.12g} and "
+                f"{second_label} at t={second_value:.12g}"
+            )
+        merged_values.append(features[0][0] if features else cluster[0][0])
+
+    merged = np.asarray(merged_values, dtype=np.float64)
     merged[0] = 0.0
     merged[-1] = 1.0
     if np.any(np.diff(merged) <= 0.0):
@@ -748,7 +869,16 @@ def _freeform_raw_radial_grid(
         ring_angles = []
         corner_arc_spans: list[list[float]] = []
         full_circle = quadrants in {"", "1234"}
-        for t_value, a, b in zip(t_values, radii_h, radii_v):
+        wall_thickness = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
+        collapse_transition_intervals = (
+            4.0
+            if wall_thickness > 0.0
+            or _is_true(params.get(FREEFORM_CONTINUOUS_COLLAPSE_KEY))
+            else 1.0
+        )
+        for ring_index, (t_value, a, b) in enumerate(
+            zip(t_values, radii_h, radii_v)
+        ):
             corner_radius = active_rounded_rect_corner_radius_mm(
                 geometry.stations, float(t_value), float(a), float(b)
             )
@@ -759,8 +889,29 @@ def _freeform_raw_radial_grid(
                 side1_segments=side1_segments,
                 side2_segments=side2_segments,
                 arc_subdivision=arc_subdivision,
+                collapse_transition_intervals=collapse_transition_intervals,
             )
             reduced, full_circle = _freeform_quadrant_angles(q1, quadrants)
+            if np.any(np.diff(reduced) <= 0.0):
+                raise ValueError(
+                    f"FREEFORM ring {ring_index} azimuths must be strictly increasing"
+                )
+            required_cardinals = {
+                "1": (0.0, math.pi / 2.0),
+                "12": (0.0, math.pi / 2.0, math.pi),
+                "14": (-math.pi / 2.0, 0.0, math.pi / 2.0),
+            }.get(
+                quadrants,
+                (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0),
+            )
+            for cardinal in required_cardinals:
+                if not np.any(
+                    np.isclose(reduced, cardinal, rtol=0.0, atol=1.0e-12)
+                ):
+                    raise ValueError(
+                        f"FREEFORM ring {ring_index} azimuths omit required "
+                        f"cardinal {cardinal:g} rad"
+                    )
             ring_angles.append(reduced)
             span = rounded_rect_corner_arc_span(
                 points_per_quadrant,

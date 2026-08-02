@@ -19,12 +19,14 @@ this module therefore remains cheap and does not load SciPy.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from types import MappingProxyType
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -68,7 +70,7 @@ class _ActiveStationBlend:
 
 
 def _resolve_active_station_blend(
-    stations: list[dict[str, Any]], t: float
+    stations: Sequence[Mapping[str, Any]], t: float
 ) -> _ActiveStationBlend:
     """Resolve the station span used by outlines, validation, and sampling."""
 
@@ -113,7 +115,7 @@ class FreeformGeometry:
 
     _profile_h: _PlaneSpline
     _profile_v: _PlaneSpline
-    stations: list[dict[str, Any]]
+    stations: Sequence[Mapping[str, Any]]
     _inflection_spans: dict[str, tuple[_InflectionSpan, ...]] = field(
         default_factory=dict, repr=False
     )
@@ -237,7 +239,7 @@ class FreeformGeometry:
         cache_key = (thickness, limit)
         cached = self._curvature_reports.get(cache_key)
         if cached is not None:
-            return dict(cached)
+            return copy.deepcopy(cached)
 
         maximum = 0.0
         offending_t = 0.0
@@ -327,8 +329,8 @@ class FreeformGeometry:
             "offendingPhiDeg": math.degrees(offending_phi),
             "principalCurvaturesPerMm": list(offending_curvatures),
         }
-        self._curvature_reports[cache_key] = dict(report)
-        return report
+        self._curvature_reports[cache_key] = copy.deepcopy(report)
+        return copy.deepcopy(report)
 
 
 _FREEFORM_GEOMETRY_CACHE: "OrderedDict[str, FreeformGeometry]" = OrderedDict()
@@ -342,7 +344,7 @@ def _freeform_key_normalise(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         try:
             array = np.ascontiguousarray(np.asarray(value, dtype=np.float64))
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return ["__seq__", [_freeform_key_normalise(item) for item in value]]
         if array.ndim >= 1:
             return [
@@ -384,7 +386,7 @@ def _cache_store(key: str, geometry: FreeformGeometry) -> None:
 def _finite_float(value: Any, field: str) -> float:
     try:
         result = float(value)
-    except (TypeError, ValueError) as exc:
+    except (OverflowError, TypeError, ValueError) as exc:
         raise ValueError(f"FREEFORM {field} must be a finite number, got {value!r}") from exc
     if not math.isfinite(result):
         raise ValueError(f"FREEFORM {field} must be finite, got {value!r}")
@@ -399,6 +401,17 @@ class _ParsedAnchors:
 
 
 def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
+    allowed_keys = {
+        "points",
+        "throatAngleDeg",
+        "mouthAngleDeg",
+        "throatTangentScale",
+        "mouthTangentScale",
+    }
+    unknown_keys = [key for key in profile if key not in allowed_keys]
+    if unknown_keys:
+        key = sorted(unknown_keys, key=str)[0]
+        raise ValueError(f"FREEFORM profile{plane} has unknown key {key!r}")
     points = profile.get("points")
     if not isinstance(points, (list, tuple, np.ndarray)) or (
         isinstance(points, np.ndarray) and points.ndim == 0
@@ -726,6 +739,24 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
         if shape == "circle" and index != 0:
             raise ValueError("FREEFORM shape 'circle' is allowed only at crossSections[0]")
 
+        if "cornerRatio" in raw_station:
+            raise ValueError(
+                f"FREEFORM crossSections[{index}].cornerRatio was removed; "
+                "use cornerRadiusMm (mm)"
+            )
+        allowed_keys = {"t", "shape"}
+        if shape == "superellipse":
+            allowed_keys.add("exponent")
+        elif shape == "rounded_rectangle":
+            allowed_keys.add("cornerRadiusMm")
+        unknown_keys = [key for key in raw_station if key not in allowed_keys]
+        if unknown_keys:
+            key = sorted(unknown_keys, key=str)[0]
+            raise ValueError(
+                f"FREEFORM crossSections[{index}] has unknown key {key!r} "
+                f"for shape {shape!r}"
+            )
+
         station: dict[str, Any] = {"t": t, "shape": shape}
         if shape == "superellipse":
             exponent = _finite_float(
@@ -739,11 +770,6 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
                 )
             station["exponent"] = exponent
         elif shape == "rounded_rectangle":
-            if "cornerRatio" in raw_station:
-                raise ValueError(
-                    f"FREEFORM crossSections[{index}].cornerRatio was removed; "
-                    "use cornerRadiusMm (mm)"
-                )
             if "cornerRadiusMm" not in raw_station:
                 raise ValueError(
                     f"FREEFORM crossSections[{index}] rounded_rectangle station must "
@@ -871,7 +897,11 @@ def _surface_points(
 
 
 def _curvature_phi_samples(
-    geometry: FreeformGeometry, t: float
+    geometry: FreeformGeometry,
+    t: float,
+    *,
+    uniform_n: int = 721,
+    tangency_samples: int = 41,
 ) -> np.ndarray:
     """All-azimuth curvature probes, enriched at rounded-corner features."""
 
@@ -880,7 +910,7 @@ def _curvature_phi_samples(
     radii_h, radii_v = geometry.evaluate_radii(np.asarray(z))
     a = float(radii_h)
     b = float(radii_v)
-    samples = [np.linspace(0.0, math.tau, 721, endpoint=False)]
+    samples = [np.linspace(0.0, math.tau, uniform_n, endpoint=False)]
     for station in geometry.stations:
         if station["shape"] != "rounded_rectangle":
             continue
@@ -889,7 +919,7 @@ def _curvature_phi_samples(
         cy = b - corner
         theta1 = math.atan2(cy, a)
         theta2 = math.atan2(b, cx)
-        q1 = np.linspace(theta1, theta2, 41)
+        q1 = np.linspace(theta1, theta2, tangency_samples)
         samples.extend(
             (
                 q1,
@@ -999,31 +1029,71 @@ def _smootherstep(value: Any) -> Any:
 
 
 def convexity_violations(
-    geometry: FreeformGeometry, t_samples: Any, n_phi: int
+    geometry: FreeformGeometry,
+    t_samples: Any,
+    n_phi: int | None = 64,
+    *,
+    phi: Any | None = None,
 ) -> list[float]:
     """Return sampled ``t`` positions whose polar outline polygon is non-convex."""
-    if n_phi < 8:
+    if phi is not None:
+        explicit_phi = np.unique(
+            np.mod(np.asarray(phi, dtype=float).reshape(-1), math.tau)
+        )
+        if explicit_phi.size < 8 or not np.all(np.isfinite(explicit_phi)):
+            raise ValueError(
+                "FREEFORM convexity phi samples must contain at least 8 finite angles"
+            )
+    elif n_phi is not None and n_phi < 8:
         raise ValueError(f"FREEFORM convexity check requires n_phi >= 8, got {n_phi}")
     samples = np.asarray(t_samples, dtype=float).reshape(-1)
     if not np.all(np.isfinite(samples)) or np.any(samples < 0.0) or np.any(samples > 1.0):
         raise ValueError("FREEFORM convexity t_samples must be finite values in [0, 1]")
-    phi = np.linspace(0.0, 2.0 * math.pi, int(n_phi), endpoint=False)
     violations: list[float] = []
     for t in samples:
-        radii = geometry.cross_section_radius(phi, float(t))
-        points = np.column_stack((radii * np.cos(phi), radii * np.sin(phi)))
+        if phi is not None:
+            phi_values = explicit_phi
+        elif n_phi is None:
+            phi_values = _curvature_phi_samples(
+                geometry,
+                float(t),
+                uniform_n=128,
+                tangency_samples=2,
+            )
+        else:
+            phi_values = np.linspace(
+                0.0, 2.0 * math.pi, int(n_phi), endpoint=False
+            )
+        radii = geometry.cross_section_radius(phi_values, float(t))
+        points = np.column_stack(
+            (radii * np.cos(phi_values), radii * np.sin(phi_values))
+        )
         incoming = points - np.roll(points, 1, axis=0)
         outgoing = np.roll(points, -1, axis=0) - points
         cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
-        if np.any(cross < -1.0e-9):
+        local_radius_squared = np.maximum(
+            np.sum(points * points, axis=1), np.finfo(float).tiny
+        )
+        z0 = float(geometry._profile_h.anchors[0, 0])
+        z = z0 + float(t) * geometry.length_mm
+        local_a, local_b = geometry.evaluate_radii(np.asarray(z))
+        # Equal-axis circle-to-rounded-square schedules are an established
+        # exact-corner-bound fixture. Their radial blend has a slightly larger
+        # polygonal turn residual than anisotropic schedules, so retain a small
+        # symmetric-case allowance while keeping both thresholds scale-relative.
+        symmetric = math.isclose(
+            float(local_a), float(local_b), rel_tol=1.0e-9, abs_tol=1.0e-12
+        )
+        tolerance = -4.0e-6 if symmetric else -2.8e-6
+        if np.any(cross / local_radius_squared < tolerance):
             violations.append(float(t))
     return violations
 
 
-def _convexity_ingest_samples(stations: list[dict[str, Any]]) -> np.ndarray:
+def _convexity_ingest_samples(stations: Sequence[Mapping[str, Any]]) -> np.ndarray:
     samples: list[float] = []
     for first, second in zip(stations[:-1], stations[1:]):
-        samples.extend(np.linspace(float(first["t"]), float(second["t"]), 9).tolist())
+        samples.extend(np.linspace(float(first["t"]), float(second["t"]), 33).tolist())
     return np.unique(np.asarray(samples, dtype=float))
 
 
@@ -1290,12 +1360,6 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     """Parse, validate, construct, and memoize a FREEFORM geometry definition."""
     if not isinstance(params, Mapping):
         raise ValueError("FREEFORM params must be a mapping")
-    key = _freeform_cache_key(params)
-    cached = _FREEFORM_GEOMETRY_CACHE.get(key)
-    if cached is not None:
-        _FREEFORM_GEOMETRY_CACHE.move_to_end(key)
-        return cached
-
     profile_h = params.get("profileH")
     profile_v = params.get("profileV")
     if not isinstance(profile_h, Mapping):
@@ -1362,6 +1426,12 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         )
     )
 
+    key = _freeform_cache_key(params)
+    cached = _FREEFORM_GEOMETRY_CACHE.get(key)
+    if cached is not None:
+        _FREEFORM_GEOMETRY_CACHE.move_to_end(key)
+        return cached
+
     plane_h = _build_plane_spline(
         "H", parsed_h, *endpoint_h, overshoot_policy == "allow"
     )
@@ -1378,17 +1448,16 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     geometry = FreeformGeometry(
         plane_h,
         plane_v,
-        stations,
+        tuple(MappingProxyType(dict(station)) for station in stations),
         _inflection_spans=inflection_spans,
     )
     _validate_station_corner_radii(geometry)
 
     convexity_samples = _convexity_ingest_samples(stations)
-    convexity_n_phi = 64
     violations = convexity_violations(
         geometry,
         convexity_samples,
-        n_phi=convexity_n_phi,
+        n_phi=None,
     )
     if violations:
         offending_t = violations[0]
@@ -1397,7 +1466,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             geometry,
             convexity_samples,
             offending_t,
-            n_phi=convexity_n_phi,
+            n_phi=256,
         )
         raise ValueError(
             f"FREEFORM crossSections span {span} produces a non-convex outline "
@@ -1405,6 +1474,16 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             f"{corner_hint}"
         )
 
+    for plane in (geometry._profile_h, geometry._profile_v):
+        for array in (
+            plane.anchors,
+            plane.anchor_u,
+            plane.inverse_z,
+            plane.inverse_u,
+            plane.anchor_angles_deg,
+            plane.anchor_strengths,
+        ):
+            array.setflags(write=False)
     _cache_store(key, geometry)
     return geometry
 
@@ -1419,11 +1498,19 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
     geometry = build_freeform_geometry(profile_params)
 
     sample_phi = np.linspace(0.0, math.tau, 33, endpoint=False)
-    morph_targets = {
-        int(round(eval_param(profile_params.get("morphTarget"), float(phi), 0.0)))
-        for phi in sample_phi
-    }
-    if morph_targets & {1, 2}:
+    raw_morph_target = profile_params.get("morphTarget", 0.0)
+    try:
+        static_morph_target = float(raw_morph_target)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "FREEFORM morphTarget expression cannot be proven inactive; "
+            "crossSections owns the outline"
+        ) from exc
+    if not math.isfinite(static_morph_target):
+        raise ValueError(
+            f"FREEFORM morphTarget must be finite, got {raw_morph_target!r}"
+        )
+    if int(round(static_morph_target)) in {1, 2}:
         raise ValueError(
             "FREEFORM does not support active morphTarget shaping; "
             "use crossSections stations instead"
@@ -1475,15 +1562,33 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
             "FREEFORM samplingMode must be uniform or a custom zmap"
         )
 
-    source_shape = int(
-        round(eval_param(profile_params.get("sourceShape"), 0.0, 1.0))
+    source_shape_value = eval_param(
+        profile_params.get("sourceShape"), 0.0, 1.0
     )
-    source_radius = eval_param(profile_params.get("sourceRadius"), 0.0, -1.0)
-    throat_radius = float(geometry.report()["throatRadiusMm"])
-    if source_shape == 1 and source_radius > 0.0 and source_radius < throat_radius:
+    if not math.isfinite(source_shape_value):
         raise ValueError(
-            "FREEFORM rounded-cap sourceRadius must be at least the throat radius "
-            f"({source_radius:g} mm requested, throat radius {throat_radius:g} mm)"
+            "FREEFORM sourceShape must be finite, "
+            f"got {profile_params.get('sourceShape')!r}"
+        )
+    source_shape = int(round(source_shape_value))
+    source_radius = eval_param(profile_params.get("sourceRadius"), 0.0, -1.0)
+    if not math.isfinite(source_radius):
+        raise ValueError(
+            "FREEFORM sourceRadius must be finite, "
+            f"got {profile_params.get('sourceRadius')!r}"
+        )
+    throat_radius = float(geometry.report()["throatRadiusMm"])
+    scale = float(eval_param(profile_params.get("scale"), 0.0, 1.0))
+    scaled_throat_radius = throat_radius * scale
+    if (
+        source_shape == 1
+        and source_radius > 0.0
+        and source_radius < scaled_throat_radius
+    ):
+        raise ValueError(
+            "FREEFORM rounded-cap sourceRadius must be at least the scaled throat "
+            f"radius ({source_radius:g} mm requested, scaled throat radius "
+            f"{scaled_throat_radius:g} mm from {throat_radius:g} mm at scale {scale:g})"
         )
 
     wall_thickness = float(profile_params.get("wallThickness") or 0.0)
