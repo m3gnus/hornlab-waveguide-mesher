@@ -37,12 +37,12 @@ def _owner_config(*, quadrants: str = "1234") -> dict:
                 {
                     "t": 0.4,
                     "shape": "rounded_rectangle",
-                    "cornerRatio": 0.12,
+                    "cornerRadiusMm": 13.2,
                 },
                 {
                     "t": 1.0,
                     "shape": "rounded_rectangle",
-                    "cornerRatio": 0.12,
+                    "cornerRadiusMm": 13.2,
                 },
             ],
         },
@@ -155,11 +155,8 @@ def test_intermediate_rounded_rectangle_pins_tangencies_on_nearby_rings() -> Non
 
 def test_mm_corner_mouth_grid_uses_each_rings_active_corner_tangencies() -> None:
     config = _owner_config()
-    config["profile"]["crossSections"][-1] = {
-        "t": 1.0,
-        "shape": "rounded_rectangle",
-        "cornerRadiusMm": 10.0,
-    }
+    for station in config["profile"]["crossSections"][1:]:
+        station["cornerRadiusMm"] = 10.0
     params, grid, points, phi_grid = _built_grid(config)
     geometry = build_freeform_geometry(params)
     radii_h, radii_v = geometry.evaluate_radii(points[0, :, 2])
@@ -210,7 +207,7 @@ def test_circle_degenerate_freeform_grid_is_circular_on_every_ring() -> None:
 
 def test_freeform_config_threading_and_value_based_feature_gates() -> None:
     config = _owner_config()
-    config["profile"]["inflectionPolicy"] = "allow"
+    config["profile"]["inflectionPolicy"] = "warn"
     params, formula, _mode = build_geometry_params(config)
     assert formula == "FREEFORM"
     for key in ("profileH", "profileV", "crossSections", "inflectionPolicy"):

@@ -39,22 +39,6 @@ def _profiles(
     }
 
 
-def _pure_rounded_radius(geometry, phi: np.ndarray, t: float, ratio: float) -> np.ndarray:
-    z = t * geometry.length_mm
-    a, b = (float(value) for value in geometry.evaluate_radii(np.asarray(z)))
-    return np.asarray(
-        [
-            _rounded_rect_radius(
-                float(angle),
-                half_width=a,
-                half_height=b,
-                corner_radius=ratio * min(a, b),
-            )
-            for angle in phi
-        ]
-    )
-
-
 def _pure_rounded_radius_mm(
     geometry, phi: np.ndarray, t: float, corner_radius_mm: float
 ) -> np.ndarray:
@@ -107,7 +91,7 @@ def test_circle_degenerate_is_radius_independent_of_phi() -> None:
     [
         {"shape": "ellipse"},
         {"shape": "superellipse", "exponent": 4.0},
-        {"shape": "rounded_rectangle", "cornerRatio": 0.3},
+        {"shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
     ],
 )
 def test_axis_exactness_for_every_shape_and_blend_position(station: dict) -> None:
@@ -132,39 +116,32 @@ def test_rounded_rectangle_held_station_matches_shared_primitive() -> None:
     params = _profiles()
     params["crossSections"] = [
         {"t": 0.0, "shape": "ellipse"},
-        {"t": 0.35, "shape": "rounded_rectangle", "cornerRatio": 0.3},
-        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.3},
+        {"t": 0.35, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
     ]
     geometry = build_freeform_geometry(params)
     phi = np.linspace(0.0, 2.0 * math.pi, 257, endpoint=False)
-    expected = _pure_rounded_radius(geometry, phi, 0.7, 0.3)
+    expected = _pure_rounded_radius_mm(geometry, phi, 0.7, 10.0)
     np.testing.assert_allclose(
         geometry.cross_section_radius(phi, 0.7), expected, rtol=0.0, atol=1.0e-13
     )
 
 
-def test_rounded_rectangle_mm_station_matches_equivalent_ratio_at_station() -> None:
-    ratio_params = _profiles(
+def test_rounded_rectangle_mm_station_matches_shared_primitive_at_station() -> None:
+    params = _profiles(
         [[0.0, 20.0], [100.0, 55.0]],
         [[0.0, 20.0], [100.0, 45.0]],
     )
-    ratio_params["crossSections"] = [
+    params["crossSections"] = [
         {"t": 0.0, "shape": "ellipse"},
-        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.3},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 13.5},
     ]
-    mm_params = copy.deepcopy(ratio_params)
-    mm_params["crossSections"][-1] = {
-        "t": 1.0,
-        "shape": "rounded_rectangle",
-        "cornerRadiusMm": 13.5,
-    }
-    ratio_geometry = build_freeform_geometry(ratio_params)
-    mm_geometry = build_freeform_geometry(mm_params)
+    geometry = build_freeform_geometry(params)
     phi = np.linspace(0.0, math.tau, 257, endpoint=False)
 
     np.testing.assert_array_equal(
-        mm_geometry.cross_section_radius(phi, 1.0),
-        ratio_geometry.cross_section_radius(phi, 1.0),
+        geometry.cross_section_radius(phi, 1.0),
+        _pure_rounded_radius_mm(geometry, phi, 1.0, 13.5),
     )
 
 
@@ -184,18 +161,31 @@ def test_rounded_rectangle_identical_mm_stations_hold_absolute_radius() -> None:
     )
 
 
-def test_rounded_rectangle_rejects_both_corner_forms_with_station_name() -> None:
+def test_rounded_rectangle_rejects_removed_corner_ratio_with_migration_message() -> None:
     params = _profiles()
     params["crossSections"][-1] = {
         "t": 1.0,
         "shape": "rounded_rectangle",
         "cornerRatio": 0.3,
-        "cornerRadiusMm": 13.5,
     }
 
     with pytest.raises(
         ValueError,
-        match=r"crossSections\[1\].*exactly one of cornerRatio or cornerRadiusMm",
+        match=r"crossSections\[1\]\.cornerRatio was removed; use cornerRadiusMm \(mm\)",
+    ):
+        build_freeform_geometry(params)
+
+
+def test_rounded_rectangle_requires_corner_radius_mm() -> None:
+    params = _profiles()
+    params["crossSections"][-1] = {
+        "t": 1.0,
+        "shape": "rounded_rectangle",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=r"crossSections\[1\].*must specify cornerRadiusMm \(mm\)",
     ):
         build_freeform_geometry(params)
 
@@ -456,15 +446,6 @@ def _invalid_cases() -> list[tuple[str, callable]]:
             lambda p: p["profileH"].update(mouthAngleDeg=91.0),
         ),
         (
-            "cornerRatio",
-            lambda p: p.update(
-                crossSections=[
-                    {"t": 0.0, "shape": "circle"},
-                    {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.01},
-                ]
-            ),
-        ),
-        (
             "strictly increasing",
             lambda p: p.update(
                 crossSections=[
@@ -664,20 +645,15 @@ def test_cache_distinguishes_inflection_policies() -> None:
     assert build_freeform_geometry(warned) is not build_freeform_geometry(rejected)
 
 
-def test_allow_inflection_policy_is_a_reporting_alias_for_warn() -> None:
-    points = [[0.0, 12.7], [50.0, 35.0, 40.0], [100.0, 55.0]]
-    warned = _profiles(copy.deepcopy(points), copy.deepcopy(points))
-    warned["profileH"]["mouthAngleDeg"] = 25.0
-    warned["profileV"]["mouthAngleDeg"] = 25.0
-    allowed = copy.deepcopy(warned)
-    warned["inflectionPolicy"] = "warn"
-    allowed["inflectionPolicy"] = "allow"
+def test_allow_inflection_policy_is_rejected_with_migration_message() -> None:
+    params = _profiles()
+    params["inflectionPolicy"] = "allow"
 
-    warn_report = build_freeform_geometry(warned).report()["inflectionSpans"]
-    allow_report = build_freeform_geometry(allowed).report()["inflectionSpans"]
-
-    assert allow_report == warn_report
-    assert warn_report["H"]
+    with pytest.raises(
+        ValueError,
+        match=r"inflectionPolicy.*'allow' was removed; use 'warn' or remove the key",
+    ):
+        build_freeform_geometry(params)
 
 
 def test_report_includes_authoritative_per_anchor_tangent_rows() -> None:

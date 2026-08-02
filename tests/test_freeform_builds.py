@@ -16,7 +16,7 @@ from hornlab_mesher.config_builder import (
     circsym_rejection_reasons,
 )
 from hornlab_mesher.config_parser import ConfigError
-from hornlab_mesher.freeform import validate_outer_offset_grid
+from hornlab_mesher.freeform import build_freeform_geometry, validate_outer_offset_grid
 from hornlab_mesher.normals import validate_orientation
 from hornlab_mesher.profile_sampling import build_point_grid
 
@@ -38,8 +38,8 @@ def _owner_config(*, quadrants: str = "1234") -> dict:
             },
             "crossSections": [
                 {"t": 0.0, "shape": "circle"},
-                {"t": 0.4, "shape": "rounded_rectangle", "cornerRatio": 0.12},
-                {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.12},
+                {"t": 0.4, "shape": "rounded_rectangle", "cornerRadiusMm": 5.9},
+                {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 5.9},
             ],
         },
         "mesh": {
@@ -118,28 +118,20 @@ def test_owner_freeform_quadrant_reduced_freestanding_build_succeeds(tmp_path):
     assert result.metadata["freeformProfileDeviationMm"] < 0.25
 
 
-def test_mouth_grid_ring_matches_equivalent_ratio_at_end_of_hold():
-    mm_config = _owner_config()
-    mm_config["profile"]["crossSections"] = [
-        {"t": 0.0, "shape": "circle"},
-        {"t": 0.4, "shape": "rounded_rectangle", "cornerRadiusMm": 13.2},
-        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 13.2},
-    ]
-    ratio_config = _owner_config()
-    mm_params, _formula, _mode = build_geometry_params(mm_config)
-    ratio_params, _formula, _mode = build_geometry_params(ratio_config)
-
-    mm_grid = build_point_grid(mm_params)
-    ratio_grid = build_point_grid(ratio_params)
-    mm_inner = np.asarray(mm_grid["inner_points"], dtype=np.float64).reshape(
-        int(mm_grid["grid_n_phi"]), int(mm_grid["grid_n_length"]) + 1, 3
+def test_owner_mouth_grid_ring_uses_absolute_corner_radius_at_end_of_hold():
+    params, _formula, _mode = build_geometry_params(_owner_config())
+    geometry = build_freeform_geometry(params)
+    grid = build_point_grid(params)
+    inner = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        int(grid["grid_n_phi"]), int(grid["grid_n_length"]) + 1, 3
     )
-    ratio_inner = np.asarray(ratio_grid["inner_points"], dtype=np.float64).reshape(
-        int(ratio_grid["grid_n_phi"]), int(ratio_grid["grid_n_length"]) + 1, 3
-    )
+    phi = np.asarray(grid["phi_grid"], dtype=np.float64)[:, -1]
 
     np.testing.assert_allclose(
-        mm_inner[:, -1, :], ratio_inner[:, -1, :], rtol=0.0, atol=5.0e-13
+        np.linalg.norm(inner[:, -1, :2], axis=1),
+        geometry.cross_section_radius(phi, 1.0),
+        rtol=0.0,
+        atol=5.0e-13,
     )
 
 
@@ -150,7 +142,7 @@ def test_small_corner_large_mouth_acoustic_fit_stays_within_caps(tmp_path):
     config["profile"]["crossSections"] = [
         {"t": 0.0, "shape": "circle"},
         {"t": 0.5, "shape": "superellipse", "exponent": 16.0},
-        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.02},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 2.8},
     ]
     config["mesh"]["mouth_res_mm"] = 15.0
 
@@ -169,7 +161,7 @@ def test_tight_corner_thick_wall_fails_surface_curvature_guard(tmp_path):
     config["profile"]["crossSections"] = [
         {"t": 0.0, "shape": "circle"},
         {"t": 0.5, "shape": "superellipse", "exponent": 16.0},
-        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.02},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 2.2},
     ]
 
     with pytest.raises(

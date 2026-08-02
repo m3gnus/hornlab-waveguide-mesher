@@ -11,8 +11,7 @@ Profile anchors accept ``[z, r]``, ``[z, r, angleDeg]``, or
 corresponding block-level endpoint angle and tangent scale.
 
 Significant reverse-curvature spans are reported by default
-(``inflectionPolicy='warn'``).  They may instead be rejected, while ``'allow'``
-is retained as a non-blocking intent alias.
+(``inflectionPolicy='warn'``).  They may instead be rejected.
 
 SciPy is deliberately imported only while constructing a profile.  Importing
 this module therefore remains cheap and does not load SciPy.
@@ -740,35 +739,26 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
                 )
             station["exponent"] = exponent
         elif shape == "rounded_rectangle":
-            has_corner_ratio = "cornerRatio" in raw_station
-            has_corner_radius = "cornerRadiusMm" in raw_station
-            if has_corner_ratio == has_corner_radius:
+            if "cornerRatio" in raw_station:
+                raise ValueError(
+                    f"FREEFORM crossSections[{index}].cornerRatio was removed; "
+                    "use cornerRadiusMm (mm)"
+                )
+            if "cornerRadiusMm" not in raw_station:
                 raise ValueError(
                     f"FREEFORM crossSections[{index}] rounded_rectangle station must "
-                    "specify exactly one of cornerRatio or cornerRadiusMm"
+                    "specify cornerRadiusMm (mm)"
                 )
-            if has_corner_ratio:
-                corner_ratio = _finite_float(
-                    raw_station["cornerRatio"],
-                    f"crossSections[{index}].cornerRatio",
+            corner_radius = _finite_float(
+                raw_station["cornerRadiusMm"],
+                f"crossSections[{index}].cornerRadiusMm",
+            )
+            if corner_radius <= 0.0:
+                raise ValueError(
+                    f"FREEFORM crossSections[{index}].cornerRadiusMm must be > 0 mm, "
+                    f"got {corner_radius:g}"
                 )
-                if not (0.02 <= corner_ratio <= 1.0):
-                    raise ValueError(
-                        f"FREEFORM crossSections[{index}].cornerRatio must be in [0.02, 1], "
-                        f"got {corner_ratio:g}"
-                    )
-                station["cornerRatio"] = corner_ratio
-            else:
-                corner_radius = _finite_float(
-                    raw_station["cornerRadiusMm"],
-                    f"crossSections[{index}].cornerRadiusMm",
-                )
-                if corner_radius <= 0.0:
-                    raise ValueError(
-                        f"FREEFORM crossSections[{index}].cornerRadiusMm must be > 0 mm, "
-                        f"got {corner_radius:g}"
-                    )
-                station["cornerRadiusMm"] = corner_radius
+            station["cornerRadiusMm"] = corner_radius
         stations.append(station)
 
     if stations[0]["t"] != 0.0:
@@ -791,9 +781,7 @@ def _station_descriptor(station: Mapping[str, Any]) -> tuple[Any, ...]:
         return ("ellipse",)
     if shape == "superellipse":
         return ("superellipse", float(station["exponent"]))
-    if "cornerRadiusMm" in station:
-        return ("rounded_rectangle", "cornerRadiusMm", float(station["cornerRadiusMm"]))
-    return ("rounded_rectangle", "cornerRatio", float(station["cornerRatio"]))
+    return ("rounded_rectangle", float(station["cornerRadiusMm"]))
 
 
 def station_corner_radius_mm(
@@ -801,10 +789,7 @@ def station_corner_radius_mm(
 ) -> float:
     """Return a rounded-rectangle station's effective corner radius in mm."""
     limit = min(float(a), float(b))
-    if "cornerRadiusMm" in station:
-        corner = float(station["cornerRadiusMm"])
-    else:
-        corner = float(station["cornerRatio"]) * limit
+    corner = float(station["cornerRadiusMm"])
     return min(max(corner, 0.0), limit)
 
 
@@ -1156,8 +1141,7 @@ def _geometry_with_station_corner(
     geometry: FreeformGeometry, index: int, value: float
 ) -> FreeformGeometry:
     stations = [dict(station) for station in geometry.stations]
-    key = "cornerRadiusMm" if "cornerRadiusMm" in stations[index] else "cornerRatio"
-    stations[index][key] = float(value)
+    stations[index]["cornerRadiusMm"] = float(value)
     return FreeformGeometry(
         geometry._profile_h,
         geometry._profile_v,
@@ -1185,22 +1169,14 @@ def _minimum_feasible_corner_radius_hint(
         return ""
 
     z0 = float(geometry._profile_h.anchors[0, 0])
-    offending_z = z0 + float(offending_t) * geometry.length_mm
-    a_value, b_value = geometry.evaluate_radii(np.asarray(offending_z))
-    local_limit = min(float(a_value), float(b_value))
-
     for index in candidates:
         station = geometry.stations[index]
         station_t = float(station["t"])
         station_z = z0 + station_t * geometry.length_mm
         station_a, station_b = geometry.evaluate_radii(np.asarray(station_z))
         station_limit = min(float(station_a), float(station_b))
-        if "cornerRadiusMm" in station:
-            lower = 0.02 * station_limit
-            upper = _maximum_feasible_station_corner_radius_mm(geometry, index)
-        else:
-            lower = 0.02
-            upper = 1.0
+        lower = 0.02 * station_limit
+        upper = _maximum_feasible_station_corner_radius_mm(geometry, index)
 
         def schedule_is_convex(value: float) -> bool:
             trial = _geometry_with_station_corner(geometry, index, value)
@@ -1220,14 +1196,9 @@ def _minimum_feasible_corner_radius_hint(
                 else:
                     infeasible = midpoint
 
-        feasible_mm = (
-            feasible
-            if "cornerRadiusMm" in station
-            else feasible * local_limit
-        )
         return (
             f"; for crossSections[{index}], minimum feasible corner radius here "
-            f"is ~{feasible_mm:.1f} mm"
+            f"is ~{feasible:.1f} mm"
         )
 
     station_names = ", ".join(f"crossSections[{index}]" for index in candidates)
@@ -1311,7 +1282,7 @@ def _reject_inflections(
         f"z={span.z_start_mm:.3f}..{span.z_end_mm:.3f} mm with a "
         f"{span.tangent_drop_deg:.2f} deg tangent-angle drop; adjust a tangent "
         "handle or add an extra point, or change inflectionPolicy to 'warn' "
-        "or 'allow'"
+        "or remove the key"
     )
 
 
@@ -1378,9 +1349,10 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             f"got {params.get('overshootPolicy')!r}"
         )
     inflection_policy = str(params.get("inflectionPolicy", "warn")).strip().lower()
-    if inflection_policy not in {"warn", "reject", "allow"}:
+    if inflection_policy not in {"warn", "reject"}:
         raise ValueError(
-            "FREEFORM inflectionPolicy must be 'warn', 'reject', or 'allow', "
+            "FREEFORM inflectionPolicy must be 'warn' or 'reject' "
+            "('allow' was removed; use 'warn' or remove the key), "
             f"got {params.get('inflectionPolicy')!r}"
         )
     stations = _normalise_stations(
