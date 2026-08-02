@@ -1,0 +1,18 @@
+formula = "FREEFORM"
+mode = "bare"
+
+[profile]
+profileH = { points = [[0.0, 12.7], [60.0, 80.0], [120.0, 160.0]], throatAngleDeg = 15.5, mouthAngleDeg = 70.0 }
+profileV = { points = [[0.0, 12.7], [60.0, 60.0], [120.0, 110.0]], throatAngleDeg = 15.5, mouthAngleDeg = 60.0 }
+crossSections = [
+  { t = 0.0, shape = "circle" },
+  { t = 0.4, shape = "rounded_rectangle", cornerRadiusMm = 5.9 },
+  { t = 1.0, shape = "rounded_rectangle", cornerRadiusMm = 5.9 },
+]
+
+[mesh]
+angular_segments = 64
+length_segments = 32
+throat_res_mm = 4.0
+mouth_res_mm = 26.0
+rear_res_mm = 25.0

@@ -1,7 +1,7 @@
 # Geometry Contract
 
 This document defines the geometry rules that `hornlab-waveguide-mesher`
-implements for OS-SE/OSSE, R-OSSE, and ICW waveguides. It also separates
+implements for OS-SE/OSSE, R-OSSE, ICW, and FREEFORM waveguides. It also separates
 canonical mathematical behavior from ATH compatibility behavior so code
 changes do not hide reference-tool quirks inside generic helper names.
 
@@ -116,6 +116,107 @@ Implementation rules:
   `zMapPoints` because the natural grid coordinate is normalized arc length.
 - OSSE/R-OSSE shape keys (`m`, `r`, `b`, `tmax`, OSSE `n/s/rot`) are rejected at
   top level for ICW unless nested inside an `icw_seed`.
+
+## FREEFORM Profile and Loft
+
+FREEFORM defines two independent meridians: H at azimuth 0 and V at azimuth
+90 degrees. Each is a vector-valued parametric cubic Hermite curve
+`P(u) = (z(u), r(u))` through all supplied anchors. Anchors are parameterized
+by normalized cumulative chord length. PCHIP supplies the automatic interior
+z and radius derivatives; explicit anchor tangents and the endpoint
+angle/scale controls replace those derivatives where configured. Anchor
+positions therefore remain exactly on the analytic curve.
+
+The implementation validates each polynomial segment analytically and on a
+dense radius sample. Axial motion must remain forward: `z'(u)` cannot be
+negative and may be zero only at a curve endpoint. Radius must stay positive.
+By default, radius may not leave the range of the adjacent anchor radii; the
+explicit `overshootPolicy = "allow"` relaxes only that range check. H and V
+share the same start/end z span and throat radius, so their local radii
+
+```text
+a(t) = r_H(t)
+b(t) = r_V(t)
+```
+
+are the semi-axes of every cross-section and the mouth is planar.
+
+The cross-section station schedule lofts `circle`, `ellipse`, `superellipse`,
+and `rounded_rectangle` outlines using those local semi-axes. Within the span
+from station `k` to `k+1`, local progress `u` uses the C2 smootherstep
+
+```text
+w(u) = 6u^5 - 15u^4 + 10u^3
+rho(phi, t) = (1 - w) rho_k(phi; a(t), b(t))
+            + w rho_k+1(phi; a(t), b(t))
+```
+
+Every outline hits `a(t)` at phi=0 and `b(t)` at phi=90 degrees, so the loft
+honors both meridians throughout the blend. Consecutive stations with the same
+complete descriptor produce a hold: the outline descriptor stays constant
+while the H/V semi-axes continue to follow their curves.
+
+Rounded-rectangle corner radii are absolute millimetre values. At a station,
+the value must lie between 2% and 100% of the local minimum semi-axis. Across
+the adjacent active spans, validation uses the station's actual smootherstep
+weight and requires `weight * cornerRadiusMm <= min(a(t), b(t))`. Equal
+descriptors form a hold, for which either endpoint has full weight across the
+whole span. This weight-aware active window prevents an absolute corner from
+binding an unrelated region where its contribution is negligible while still
+rejecting an impossible local corner.
+
+### FREEFORM sampling
+
+The base axial map is uniform or a user-supplied custom z-map. The sampler
+merges every H/V anchor and cross-section station into that map, collapsing
+only positions within floating-point noise. Rounded-rectangle tangency
+azimuths depend on the local semi-axes and corner radius, so they can move
+along z. FREEFORM therefore constructs a separate azimuth grid for every
+axial ring. The point-grid conversion consumes `phi_grid[i, j]`, preserving
+the moving corners instead of projecting every ring onto one mouth-derived
+angle list. Cardinal axes remain pinned for symmetry and H/V exactness.
+
+Acoustic fitting may refine the axial, ordinary angular, and rounded-corner
+arc sampling to meet chord and sagitta limits. `angular_segments`,
+`corner_segments`, and `length_segments` are geometry sampling inputs; the
+mesh resolution fields independently control requested BEM element size.
+
+### FREEFORM diagnostics and guards
+
+Cross-section blends are sampled for polygon convexity at ingest. A failure
+identifies the station span and offending normalized position and, for a
+rounded-rectangle blend, reports an estimated feasible corner-radius hint.
+
+For a freestanding shell, the inner loft is checked over all azimuths with a
+finite-difference first/second fundamental-form calculation. The build is
+rejected when either principal curvature violates
+`|wallThickness * kappa_i| < 0.4`. After the outer wall is generated, its grid
+is checked for normal flips, meridian self-intersections, and ring
+self-intersections. The corner-radius active-span guard described above runs
+before both surface checks. Enclosure and infinite-baffle modes do not create
+this freestanding outer offset.
+
+An inflection span is a contiguous portion of an H or V Hermite meridian with
+negative signed curvature and more than a 1 degree drop in tangent angle.
+Spans are sampled on the spline's 4001-point inversion grid and reported by
+default. `inflectionPolicy = "reject"` rejects the first span; `"warn"` is the
+default and retains it as a diagnostic. There is no `"allow"` policy.
+
+`FreeformGeometry.report()` returns:
+
+- `maxNormalDeviationMm`: per-plane maximum normal distance from the Hermite
+  curve to each anchor chord.
+- `curveSamples`: 192 exact Hermite `[z, r]` samples per plane for an
+  authoritative display curve.
+- `throatRadiusMm`: the shared H/V throat radius.
+- `tangentAnglesDeg`: resolved throat and mouth angles for H and V.
+- `anchorTangents`: every anchor as `z`, `r`, and its explicit `angleDeg` and
+  `strength` (the latter two are null when automatic).
+- `inflectionSpans`: per-plane `zStartMm`, `zEndMm`, and `tangentDropDeg`.
+
+The report is carried into build metadata as `freeformReport`. Acoustic OCC
+builds additionally report `freeformProfileDeviationMm`, the fitted wall's
+maximum deviation from the analytic H/V axis samples.
 
 ## Guiding Curve
 

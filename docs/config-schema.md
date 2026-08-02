@@ -17,7 +17,7 @@ Unsupported extensions fail before any geometry is built.
 
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, `ROSSE`, `ICW`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. |
+| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. |
 | `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
 | `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
 | `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
@@ -134,6 +134,105 @@ ICW keys:
 ICW is not available through ATH text import. Configure it through TOML, JSON,
 or direct dict input. ICW always samples uniformly in normalized arc length and
 rejects `sampling_mode = "zmap"` / `z_map_points`.
+
+### FREEFORM
+
+Select this family with `formula = "FREEFORM"`. FREEFORM is available through
+TOML, JSON, and direct dict input, not ATH-style text import. Its H and V
+meridians and cross-section schedule live inside `[profile]`:
+
+```toml
+formula = "FREEFORM"
+
+[profile]
+profileH = { points = [[0.0, 12.7], [60.0, 80.0], [120.0, 160.0]], throatAngleDeg = 15.5, mouthAngleDeg = 70.0 }
+profileV = { points = [[0.0, 12.7], [60.0, 60.0], [120.0, 110.0]], throatAngleDeg = 15.5, mouthAngleDeg = 60.0 }
+crossSections = [
+  { t = 0.0, shape = "circle" },
+  { t = 0.4, shape = "rounded_rectangle", cornerRadiusMm = 5.9 },
+  { t = 1.0, shape = "rounded_rectangle", cornerRadiusMm = 5.9 },
+]
+```
+
+`profileH` and `profileV` are both required. Each profile accepts these keys:
+
+| Key | Default | Validation and meaning |
+| --- | --- | --- |
+| `points` | required | List of 2-64 anchors. A row is `[z, r]`, `[z, r, angleDeg]`, or `[z, r, angleDeg, strength]`; `z` and `r` are millimetres. Values must be finite, radii must be positive, and z values must be strictly increasing. |
+| `throatAngleDeg` | top-level/profile `a0_deg` or `a0`, otherwise `15.5` | Endpoint tangent angle in degrees from the +z axis, in `[-90, 90]`. |
+| `mouthAngleDeg` | direction of the last anchor chord | Endpoint tangent angle in degrees from the +z axis, in `[-90, 90]`. |
+| `throatTangentScale` | `1.0` | Multiplier on the automatically derived endpoint tangent speed, in `(0, 3]`. |
+| `mouthTangentScale` | `1.0` | Multiplier on the automatically derived endpoint tangent speed, in `(0, 3]`. |
+
+An anchor-row `angleDeg` overrides the corresponding automatically derived
+tangent. Interior anchor angles must be strictly inside `(-90, 90)`; endpoint
+angles may equal either limit. Supplying `strength` requires `angleDeg` in the
+same row, and `strength` must be in `(0, 3]`. An endpoint row with an explicit
+angle overrides its block-level angle and tangent scale; its strength defaults
+to `1.0` when omitted.
+
+The two planes must have the same first and last z values (within `1e-9` mm)
+and equal first radii (within `1e-6` mm). The first anchor is the throat; use
+`z = 0` mm for the throat coordinate. The last anchor is the planar mouth, and
+the H and V mouth radii may differ.
+
+FREEFORM profile-level policy keys are:
+
+| Key | Default | Accepted values | Meaning |
+| --- | --- | --- | --- |
+| `overshootPolicy` | `reject` | `reject`, `allow` | Rejects a spline segment whose radius leaves the range of its two anchor radii unless explicitly allowed. Positive-radius and forward-z guards still apply. |
+| `inflectionPolicy` | `warn` | `warn`, `reject` | Reports significant reverse-curvature spans, or rejects the first such span. The removed value `allow` is not accepted. |
+
+`crossSections` is a list of 2-32 axial shape stations. If omitted, it defaults
+to a circle at `t = 0` and an ellipse at `t = 1`. Station `t` is normalized
+axial position in `[0, 1]`; values must be strictly increasing, the first must
+be `0`, and the last must be `1`. The first shape must be `circle` or
+`ellipse`, and `circle` is accepted only for the first station.
+
+| `shape` value | Per-shape keys | Validation and meaning |
+| --- | --- | --- |
+| `circle` | none | Throat-only spelling of the exponent-2 outline. Equal H/V throat radii make it circular. |
+| `ellipse` | none | Exponent-2 outline using the local H/V radii as semi-axes. |
+| `superellipse` | `exponent` (default `2.0`) | Exponent must be in `[2, 16]`. |
+| `rounded_rectangle` | required `cornerRadiusMm` | Absolute corner radius in millimetres. `cornerRatio` was removed and is rejected. |
+
+For a rounded-rectangle station, `cornerRadiusMm` must be positive and must be
+between 2% and 100% of `min(r_H, r_V)` at that station. Validation also covers
+the station's adjacent blend spans: its smootherstep contribution multiplied
+by the requested corner radius may not exceed the local minimum semi-axis. A
+hold has full contribution throughout its span, so its radius must remain valid
+over that entire span. The rejection identifies the binding `t`/z location and
+the maximum feasible station radius.
+
+Adjacent stations with the same complete descriptor hold that outline between
+their two positions; for example, two `rounded_rectangle` stations with the
+same `cornerRadiusMm` hold one absolute corner radius. Their `t` values are
+still different because duplicate station positions are invalid. Different
+descriptors blend with C2 smootherstep,
+`6u^5 - 15u^4 + 10u^3`, over their station span.
+
+FREEFORM uses the shared mesh sampling keys, with these additional rules:
+
+- `angular_segments` (default `64`) sets the base azimuth budget;
+  `corner_segments` (default `0`) adds rounded-corner sampling pressure.
+- `length_segments` (default `32`) sets the base axial sampling. Every H/V
+  anchor z and cross-section station is merged into the axial grid exactly.
+- `sampling_mode` may be uniform (`uniform`, `linear`, `canonical`, or
+  `default`) or a custom z-map (`zmap`, `z-map`, `custom`, `custom-zmap`, or
+  `custom-z-map`). `z_map_points` selects the custom map. ATH parity sampling
+  and ATH sampling modes are rejected for FREEFORM.
+- Acoustic fitting refines those geometry samples against chord and sagitta
+  limits derived from `throat_res_mm` and `mouth_res_mm`; it does not rewrite
+  the requested mesh element sizes.
+
+Ingest rejects non-convex station blends. Freestanding builds with positive
+`wall_thickness_mm` also run a full-surface principal-curvature guard and then
+check the generated outer offset for normal flips and self-intersections. A
+positive rounded-cap `source.source_radius_mm` must be at least the FREEFORM
+throat radius. Active morph targets and guiding curves are rejected because
+`crossSections` owns the outline; FREEFORM likewise rejects non-default legacy
+cross-section exponent/aspect, rotation, `h`, throat extensions, and slot
+length.
 
 Formula-specific keys are rejected when used with the other formula. For
 example, `R_mm`, `m`, `r`, `b`, and `tmax` are invalid with `OSSE`, while
