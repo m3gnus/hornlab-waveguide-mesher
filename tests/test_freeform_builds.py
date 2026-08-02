@@ -8,7 +8,7 @@ import meshio
 import numpy as np
 import pytest
 
-from hornlab_mesher import build_from_config
+from hornlab_mesher import build_from_config, build_geometry_params
 from hornlab_mesher.config_builder import (
     MAX_EFFECTIVE_AXIAL_RINGS,
     MAX_EFFECTIVE_CONTROL_POINTS,
@@ -18,6 +18,7 @@ from hornlab_mesher.config_builder import (
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.freeform import validate_outer_offset_grid
 from hornlab_mesher.normals import validate_orientation
+from hornlab_mesher.profile_sampling import build_point_grid
 
 
 def _owner_config(*, quadrants: str = "1234") -> dict:
@@ -115,6 +116,31 @@ def test_owner_freeform_quadrant_reduced_freestanding_build_succeeds(tmp_path):
     assert result.n_triangles > 0
     assert result.native_symmetry_plane == "yz+xz"
     assert result.metadata["freeformProfileDeviationMm"] < 0.25
+
+
+def test_mouth_grid_ring_matches_equivalent_ratio_at_end_of_hold():
+    mm_config = _owner_config()
+    mm_config["profile"]["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {"t": 0.4, "shape": "rounded_rectangle", "cornerRadiusMm": 13.2},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 13.2},
+    ]
+    ratio_config = _owner_config()
+    mm_params, _formula, _mode = build_geometry_params(mm_config)
+    ratio_params, _formula, _mode = build_geometry_params(ratio_config)
+
+    mm_grid = build_point_grid(mm_params)
+    ratio_grid = build_point_grid(ratio_params)
+    mm_inner = np.asarray(mm_grid["inner_points"], dtype=np.float64).reshape(
+        int(mm_grid["grid_n_phi"]), int(mm_grid["grid_n_length"]) + 1, 3
+    )
+    ratio_inner = np.asarray(ratio_grid["inner_points"], dtype=np.float64).reshape(
+        int(ratio_grid["grid_n_phi"]), int(ratio_grid["grid_n_length"]) + 1, 3
+    )
+
+    np.testing.assert_allclose(
+        mm_inner[:, -1, :], ratio_inner[:, -1, :], rtol=0.0, atol=5.0e-13
+    )
 
 
 def test_small_corner_large_mouth_acoustic_fit_stays_within_caps(tmp_path):

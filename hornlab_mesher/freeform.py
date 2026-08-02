@@ -1039,8 +1039,67 @@ def _station_span_name(stations: list[dict[str, Any]], t: float) -> str:
     return "unknown"
 
 
+def _station_validation_weight(
+    stations: list[dict[str, Any]], index: int, t: float
+) -> float:
+    """Return a station's outline contribution for absolute-radius validation.
+
+    Equal adjacent descriptors form a hold rather than a blend, so either
+    endpoint owns the full corner radius throughout that span.
+    """
+
+    blend = _resolve_active_station_blend(stations, float(t))
+    if index not in (blend.first_index, blend.second_index):
+        return 0.0
+    first = stations[blend.first_index]
+    second = stations[blend.second_index]
+    if _station_descriptor(first) == _station_descriptor(second):
+        return 1.0
+    return blend.station_weight(index)
+
+
+def _station_corner_radius_samples(
+    geometry: FreeformGeometry, index: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Sample an absolute-radius station's active span and feasible cap."""
+
+    active_t_parts: list[np.ndarray] = []
+    for span_index, (first, second) in enumerate(
+        zip(geometry.stations[:-1], geometry.stations[1:])
+    ):
+        if index not in (span_index, span_index + 1):
+            continue
+        active_t_parts.append(
+            np.linspace(float(first["t"]), float(second["t"]), 1001, dtype=float)
+        )
+    active_t = np.unique(np.concatenate(active_t_parts))
+    weights = np.asarray(
+        [
+            _station_validation_weight(geometry.stations, index, float(t))
+            for t in active_t
+        ],
+        dtype=float,
+    )
+    z0 = float(geometry._profile_h.anchors[0, 0])
+    active_z = z0 + active_t * geometry.length_mm
+    active_a, active_b = geometry.evaluate_radii(active_z)
+    limits = np.minimum(active_a, active_b)
+    return active_t, active_z, weights, limits
+
+
+def _maximum_feasible_station_corner_radius_mm(
+    geometry: FreeformGeometry, index: int
+) -> float:
+    _active_t, _active_z, weights, limits = _station_corner_radius_samples(
+        geometry, index
+    )
+    constrained = weights > 1.0e-6
+    return float(np.min(limits[constrained] / weights[constrained]))
+
+
 def _validate_station_corner_radii(geometry: FreeformGeometry) -> None:
     z0 = float(geometry._profile_h.anchors[0, 0])
+    relative_tolerance = 1.0e-9
     for index, station in enumerate(geometry.stations):
         if station["shape"] != "rounded_rectangle" or "cornerRadiusMm" not in station:
             continue
@@ -1050,39 +1109,122 @@ def _validate_station_corner_radii(geometry: FreeformGeometry) -> None:
         limit = min(float(a_value), float(b_value))
         lower = 0.02 * limit
         radius = float(station["cornerRadiusMm"])
-        if not (lower <= radius <= limit):
+        below_lower = radius < lower and not math.isclose(
+            radius, lower, rel_tol=relative_tolerance, abs_tol=0.0
+        )
+        above_upper = radius > limit and not math.isclose(
+            radius, limit, rel_tol=relative_tolerance, abs_tol=0.0
+        )
+        if below_lower or above_upper:
             raise ValueError(
                 f"FREEFORM crossSections[{index}].cornerRadiusMm must be in "
                 f"[{lower:g}, {limit:g}] mm at station t={t:g}, got {radius:g} mm"
             )
 
-        active_t_parts: list[np.ndarray] = []
-        for first, second in zip(geometry.stations[:-1], geometry.stations[1:]):
-            midpoint = 0.5 * (float(first["t"]) + float(second["t"]))
-            blend = _resolve_active_station_blend(geometry.stations, midpoint)
-            if blend.station_weight(index) > 0.0:
-                active_t_parts.append(
-                    np.linspace(
-                        float(first["t"]), float(second["t"]), 1001, dtype=float
-                    )
-                )
-        if not active_t_parts:
+        active_t, active_z, weights, limits = _station_corner_radius_samples(
+            geometry, index
+        )
+        weighted_radius = radius * weights
+        allowed_with_tolerance = limits * (1.0 + relative_tolerance)
+        if np.all(weighted_radius <= allowed_with_tolerance):
             continue
-        active_t = np.unique(np.concatenate(active_t_parts))
-        active_z = z0 + active_t * geometry.length_mm
-        active_a, active_b = geometry.evaluate_radii(active_z)
-        allowed = np.minimum(active_a, active_b)
-        max_allowed = float(np.min(allowed))
-        if radius <= max_allowed:
-            continue
-        offending = allowed < radius
-        offending_z = active_z[offending]
+        constrained = weights > 1.0e-6
+        feasible = np.full(weights.shape, np.inf, dtype=float)
+        feasible[constrained] = limits[constrained] / weights[constrained]
+        binding_index = int(np.argmin(feasible))
+        max_feasible = float(feasible[binding_index])
         raise ValueError(
             f"FREEFORM crossSections[{index}].cornerRadiusMm={radius:g} mm exceeds "
-            f"the maximum allowed value {max_allowed:g} mm over its active z range "
-            f"[{float(active_z[0]):g}, {float(active_z[-1]):g}] mm; sampled offending "
-            f"z range [{float(offending_z[0]):g}, {float(offending_z[-1]):g}] mm"
+            f"the weight-aware local limit at binding t={float(active_t[binding_index]):g}, "
+            f"z={float(active_z[binding_index]):g} mm (local limit "
+            f"{float(limits[binding_index]):g} mm); maximum feasible cornerRadiusMm "
+            f"for this station is {max_feasible:g} mm"
         )
+
+
+def _geometry_with_station_corner(
+    geometry: FreeformGeometry, index: int, value: float
+) -> FreeformGeometry:
+    stations = [dict(station) for station in geometry.stations]
+    key = "cornerRadiusMm" if "cornerRadiusMm" in stations[index] else "cornerRatio"
+    stations[index][key] = float(value)
+    return FreeformGeometry(
+        geometry._profile_h,
+        geometry._profile_v,
+        stations,
+        _inflection_spans=geometry._inflection_spans,
+    )
+
+
+def _minimum_feasible_corner_radius_hint(
+    geometry: FreeformGeometry,
+    t_samples: np.ndarray,
+    offending_t: float,
+    *,
+    n_phi: int,
+) -> str:
+    """Characterize a convexity failure by increasing an involved corner."""
+
+    blend = _resolve_active_station_blend(geometry.stations, offending_t)
+    candidates = [
+        index
+        for index in (blend.first_index, blend.second_index)
+        if geometry.stations[index]["shape"] == "rounded_rectangle"
+    ]
+    if not candidates:
+        return ""
+
+    z0 = float(geometry._profile_h.anchors[0, 0])
+    offending_z = z0 + float(offending_t) * geometry.length_mm
+    a_value, b_value = geometry.evaluate_radii(np.asarray(offending_z))
+    local_limit = min(float(a_value), float(b_value))
+
+    for index in candidates:
+        station = geometry.stations[index]
+        station_t = float(station["t"])
+        station_z = z0 + station_t * geometry.length_mm
+        station_a, station_b = geometry.evaluate_radii(np.asarray(station_z))
+        station_limit = min(float(station_a), float(station_b))
+        if "cornerRadiusMm" in station:
+            lower = 0.02 * station_limit
+            upper = _maximum_feasible_station_corner_radius_mm(geometry, index)
+        else:
+            lower = 0.02
+            upper = 1.0
+
+        def schedule_is_convex(value: float) -> bool:
+            trial = _geometry_with_station_corner(geometry, index, value)
+            return not convexity_violations(trial, t_samples, n_phi)
+
+        if not schedule_is_convex(upper):
+            continue
+        if schedule_is_convex(lower):
+            feasible = lower
+        else:
+            infeasible = lower
+            feasible = upper
+            for _iteration in range(12):
+                midpoint = 0.5 * (infeasible + feasible)
+                if schedule_is_convex(midpoint):
+                    feasible = midpoint
+                else:
+                    infeasible = midpoint
+
+        feasible_mm = (
+            feasible
+            if "cornerRadiusMm" in station
+            else feasible * local_limit
+        )
+        return (
+            f"; for crossSections[{index}], minimum feasible corner radius here "
+            f"is ~{feasible_mm:.1f} mm"
+        )
+
+    station_names = ", ".join(f"crossSections[{index}]" for index in candidates)
+    return (
+        f"; no feasible corner radius was found for {station_names} "
+        "within the allowed range"
+    )
 
 
 def _max_normal_deviation(plane: _PlaneSpline) -> float:
@@ -1259,17 +1401,26 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     )
     _validate_station_corner_radii(geometry)
 
+    convexity_samples = _convexity_ingest_samples(stations)
+    convexity_n_phi = 64
     violations = convexity_violations(
         geometry,
-        _convexity_ingest_samples(stations),
-        n_phi=64,
+        convexity_samples,
+        n_phi=convexity_n_phi,
     )
     if violations:
         offending_t = violations[0]
         span = _station_span_name(stations, offending_t)
+        corner_hint = _minimum_feasible_corner_radius_hint(
+            geometry,
+            convexity_samples,
+            offending_t,
+            n_phi=convexity_n_phi,
+        )
         raise ValueError(
             f"FREEFORM crossSections span {span} produces a non-convex outline "
             f"near t={offending_t:g}; adjust its shape, aspect, or corner setting"
+            f"{corner_hint}"
         )
 
     _cache_store(key, geometry)

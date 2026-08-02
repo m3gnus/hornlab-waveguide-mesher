@@ -217,27 +217,43 @@ def test_rounded_rectangle_rejects_mm_radius_outside_station_range() -> None:
 
 def test_rounded_rectangle_rejects_mm_radius_outside_full_active_span() -> None:
     params = _profiles(
-        [[0.0, 12.7], [50.0, 8.0], [100.0, 30.0]],
-        [[0.0, 12.7], [50.0, 8.0], [100.0, 30.0]],
+        [[0.0, 12.7], [35.0, 20.0], [60.0, 4.0], [100.0, 30.0]],
+        [[0.0, 12.7], [35.0, 20.0], [60.0, 4.0], [100.0, 30.0]],
     )
     params["overshootPolicy"] = "allow"
     params["crossSections"] = [
         {"t": 0.0, "shape": "circle"},
         {
-            "t": 1.0,
+            "t": 0.35,
             "shape": "rounded_rectangle",
             "cornerRadiusMm": 10.0,
         },
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
     ]
 
     with pytest.raises(
         ValueError,
         match=(
-            r"crossSections\[1\].*maximum allowed value .*active z range "
-            r"\[0, 100\] mm.*offending z range"
+            r"crossSections\[1\].*binding t=.*z=60\.[0-9]+ mm "
+            r"\(local limit 4\.[0-9]+ mm\).*maximum feasible cornerRadiusMm"
         ),
     ):
         build_freeform_geometry(params)
+
+
+def test_rounded_rectangle_exact_mm_floor_is_accepted() -> None:
+    params = _profiles(
+        [[0.0, 12.7], [120.0, 140.0]],
+        [[0.0, 12.7], [120.0, 140.0]],
+    )
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 2.8},
+    ]
+
+    geometry = build_freeform_geometry(params)
+
+    assert geometry.stations[-1]["cornerRadiusMm"] == pytest.approx(2.8)
 
 
 def test_owner_circle_to_rounded_rectangle_then_hold_scenario() -> None:
@@ -247,8 +263,8 @@ def test_owner_circle_to_rounded_rectangle_then_hold_scenario() -> None:
     )
     params["crossSections"] = [
         {"t": 0.0, "shape": "circle"},
-        {"t": 0.4, "shape": "rounded_rectangle", "cornerRatio": 0.12},
-        {"t": 1.0, "shape": "rounded_rectangle", "cornerRatio": 0.12},
+        {"t": 0.4, "shape": "rounded_rectangle", "cornerRadiusMm": 13.2},
+        {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 13.2},
     ]
     geometry = build_freeform_geometry(params)
     phi = np.asarray([math.pi / 4.0])
@@ -256,17 +272,49 @@ def test_owner_circle_to_rounded_rectangle_then_hold_scenario() -> None:
     for t in (0.4, 0.7):
         np.testing.assert_allclose(
             geometry.cross_section_radius(phi, t),
-            _pure_rounded_radius(geometry, phi, t, 0.12),
+            _pure_rounded_radius_mm(geometry, phi, t, 13.2),
             rtol=0.0,
             atol=1.0e-13,
         )
 
     a_mid = float(geometry.evaluate_radii(np.asarray(0.2 * geometry.length_mm))[0])
     circle = np.asarray([a_mid])
-    rounded = _pure_rounded_radius(geometry, phi, 0.2, 0.12)
+    rounded = _pure_rounded_radius_mm(geometry, phi, 0.2, 13.2)
     blended = geometry.cross_section_radius(phi, 0.2)
     assert circle[0] < blended[0] < rounded[0]
     assert convexity_violations(geometry, [0.0, 0.2, 0.4, 0.7, 1.0], 64) == []
+
+
+def _convexity_window_params(corner_radius_mm: float) -> dict:
+    params = _profiles(
+        [[0.0, 12.7], [60.0, 34.0], [120.0, 70.0]],
+        [[0.0, 12.7], [60.0, 30.0], [120.0, 50.0]],
+    )
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": corner_radius_mm,
+        },
+    ]
+    return params
+
+
+def test_convexity_guard_reports_minimum_feasible_corner_radius() -> None:
+    with pytest.raises(ValueError, match=r"minimum feasible corner radius here is ~[0-9.]+ mm"):
+        build_freeform_geometry(_convexity_window_params(3.0))
+
+    assert build_freeform_geometry(_convexity_window_params(6.0)).length_mm == 120.0
+
+
+@pytest.mark.parametrize("corner_radius_mm", [15.0, 30.0])
+def test_weight_aware_corner_cap_accepts_convex_corners_above_throat_radius(
+    corner_radius_mm: float,
+) -> None:
+    geometry = build_freeform_geometry(_convexity_window_params(corner_radius_mm))
+
+    assert geometry.stations[-1]["cornerRadiusMm"] == corner_radius_mm
 
 
 def test_owner_s_curvature_builds_by_default_and_reports_inflection_spans() -> None:
