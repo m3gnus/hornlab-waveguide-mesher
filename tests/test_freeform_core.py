@@ -734,3 +734,33 @@ def test_report_deviation_is_zero_for_line_and_positive_for_curved_spline() -> N
     curved_report = build_freeform_geometry(curved_params).report()
     assert curved_report["maxNormalDeviationMm"]["H"] > 0.1
     assert curved_report["maxNormalDeviationMm"]["V"] > 0.1
+
+
+def test_report_curve_samples_are_exact_spline_points() -> None:
+    """report() exposes 192 authoritative [z, r] samples per plane for the UI."""
+    params = {
+        "profileH": {
+            "points": [[0.0, 12.7], [60.0, 80.0], [120.0, 160.0]],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 70.0,
+        },
+        "profileV": {
+            "points": [[0.0, 12.7], [60.0, 60.0], [120.0, 110.0]],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 60.0,
+        },
+        "crossSections": [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "ellipse"},
+        ],
+    }
+    geometry = build_freeform_geometry(params)
+    samples = geometry.report()["curveSamples"]
+    for plane in ("H", "V"):
+        rows = samples[plane]
+        assert len(rows) == 192
+        assert rows[0][0] == pytest.approx(0.0, abs=1e-9)
+        assert rows[0][1] == pytest.approx(12.7, abs=1e-9)
+        assert rows[-1][0] == pytest.approx(120.0, abs=1e-9)
+    assert samples["H"][-1][1] == pytest.approx(160.0, abs=1e-9)
+    assert samples["V"][-1][1] == pytest.approx(110.0, abs=1e-9)

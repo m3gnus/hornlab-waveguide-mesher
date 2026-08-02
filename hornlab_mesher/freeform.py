@@ -178,8 +178,18 @@ class FreeformGeometry:
             "H": _max_normal_deviation(self._profile_h),
             "V": _max_normal_deviation(self._profile_v),
         }
+        # Authoritative display samples for the frontend editor: the exact
+        # spline evaluated on a uniform parameter grid, as [z, r] mm pairs.
+        curve_samples = {}
+        sample_u = np.linspace(0.0, 1.0, 192)
+        for plane_name, plane in (("H", self._profile_h), ("V", self._profile_v)):
+            points = np.asarray(plane.spline(sample_u), dtype=float)
+            curve_samples[plane_name] = [
+                [float(z), float(r)] for z, r in points
+            ]
         return {
             "maxNormalDeviationMm": deviations,
+            "curveSamples": curve_samples,
             "throatRadiusMm": float(self._profile_h.anchors[0, 1]),
             "tangentAnglesDeg": {
                 "H": {
