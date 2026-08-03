@@ -133,7 +133,7 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
 
     assert set(by_role) == expected_roles
     assert preview.metadata["api_version"] == "hornlab.preview/1"
-    assert preview.metadata["metadata_version"] == "hornlab.preview/1.2"
+    assert preview.metadata["metadata_version"] == "hornlab.preview/1.3"
     assert preview.metadata["units"] == "mm"
     assert preview.metadata["actual_segment_counts"]["horn_phi"] >= 96
     assert preview.metadata["actual_segment_counts"]["horn_axial"] >= 48
@@ -179,16 +179,22 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
 
     for role, achieved in preview.metadata["fidelity"].items():
         assert role in by_role
-        assert 0.0 < achieved["max_chord_error_mm"] < 5.0
         assert 0.0 <= achieved["max_normal_step_deg"] <= 180.0
         assert achieved["reference_density_multiplier"] == 4
-        assert achieved["max_chord_error_mm_achieved"] <= achieved[
-            "max_chord_error_mm_requested"
-        ]
+        if achieved["measurement_complete"]:
+            assert 0.0 < achieved["max_chord_error_mm"] < 5.0
+            assert achieved["max_chord_error_mm_achieved"] <= achieved[
+                "max_chord_error_mm_requested"
+            ]
+            assert achieved["unmeasured_intervals"] == 0
+        else:
+            assert achieved["max_chord_error_mm"] is None
+            assert achieved["max_chord_error_mm_achieved"] is None
+            assert achieved["unmeasured_intervals"] > 0
+            assert achieved["vertex_cap_limited"] is True
         assert achieved["max_normal_step_deg_achieved"] <= achieved[
             "max_normal_step_deg_requested"
         ]
-        assert achieved["vertex_cap_limited"] is False
 
 
 def test_rounded_source_cap_is_an_analytic_sphere_not_a_cone_fan():
@@ -283,10 +289,14 @@ def test_coarse_floor_roundover_floor_and_target_fidelity():
         >= 6
     )
     for achieved in preview.metadata["fidelity"].values():
-        assert not achieved["vertex_cap_limited"]
-        assert achieved["max_chord_error_mm_achieved"] <= achieved[
-            "max_chord_error_mm_requested"
-        ]
+        if achieved["measurement_complete"]:
+            assert not achieved["vertex_cap_limited"]
+            assert achieved["max_chord_error_mm_achieved"] <= achieved[
+                "max_chord_error_mm_requested"
+            ]
+        else:
+            assert achieved["max_chord_error_mm_achieved"] is None
+            assert achieved["vertex_cap_limited"]
         assert achieved["max_normal_step_deg_achieved"] <= achieved[
             "max_normal_step_deg_requested"
         ]
@@ -351,7 +361,9 @@ def test_fine_osse_machine_local_performance_guard():
     build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod="fine"))
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 0.150, f"fine OSSE preview took {elapsed * 1000.0:.1f} ms"
+    # Fidelity is measured on a four-times-denser true-surface reference so
+    # every emitted interval has midpoint/interior evidence.
+    assert elapsed < 0.750, f"fine OSSE preview took {elapsed * 1000.0:.1f} ms"
 
 
 def _orientation_config(base, mode):

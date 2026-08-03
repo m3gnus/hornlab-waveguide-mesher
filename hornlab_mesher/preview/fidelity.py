@@ -21,7 +21,8 @@ def _axis_interval_error(
     *,
     axis: int,
     wrapped_length: int | None = None,
-) -> tuple[float, float, int | None]:
+    coordinates: NDArray[np.float64] | None = None,
+) -> tuple[float, float, int | None, bool]:
     """Measure every available true sample against one parameter chord."""
 
     if wrapped_length is None:
@@ -33,13 +34,23 @@ def _axis_interval_error(
         candidates = (first + np.arange(1, span, dtype=np.int64)) % wrapped_length
         endpoint_last = last % wrapped_length
     if span <= 0:
-        return 0.0, 0.0, None
+        return 0.0, 0.0, None, False
 
     if axis == 0:
         normal_step = _angle_degrees(normals[first], normals[endpoint_last])
         if not len(candidates):
-            return 0.0, normal_step, None
-        weights = np.arange(1, span, dtype=np.float64)[:, None, None] / span
+            return 0.0, normal_step, None, False
+        if coordinates is None:
+            weights = np.arange(1, span, dtype=np.float64) / span
+        else:
+            parameter = np.asarray(coordinates, dtype=np.float64)
+            if parameter.shape != (points.shape[0],):
+                raise ValueError("axial coordinates do not match the surface grid")
+            denominator = parameter[endpoint_last] - parameter[first]
+            if not math.isfinite(float(denominator)) or denominator <= 0.0:
+                raise ValueError("axial coordinates must be finite and increasing")
+            weights = (parameter[candidates] - parameter[first]) / denominator
+        weights = weights[:, None, None]
         chord = points[first][None, :, :] * (1.0 - weights) + points[endpoint_last][
             None, :, :
         ] * weights
@@ -47,8 +58,28 @@ def _axis_interval_error(
     else:
         normal_step = _angle_degrees(normals[:, first], normals[:, endpoint_last])
         if not len(candidates):
-            return 0.0, normal_step, None
-        weights = np.arange(1, span, dtype=np.float64)[None, :, None] / span
+            return 0.0, normal_step, None, False
+        if coordinates is None:
+            weights = np.broadcast_to(
+                np.arange(1, span, dtype=np.float64)[None, :] / span,
+                (points.shape[0], len(candidates)),
+            )
+        else:
+            parameter = np.asarray(coordinates, dtype=np.float64)
+            if parameter.shape != points.shape[:2]:
+                raise ValueError("azimuth coordinates do not match the surface grid")
+            first_values = parameter[:, first]
+            last_values = parameter[:, endpoint_last].copy()
+            if wrapped_length is not None and endpoint_last <= first:
+                last_values += math.tau
+            candidate_values = parameter[:, candidates].copy()
+            if wrapped_length is not None:
+                candidate_values[:, candidates <= first] += math.tau
+            denominator = last_values - first_values
+            if np.any(~np.isfinite(denominator)) or np.any(denominator <= 0.0):
+                raise ValueError("azimuth coordinates must be finite and increasing")
+            weights = (candidate_values - first_values[:, None]) / denominator[:, None]
+        weights = weights[:, :, None]
         chord = points[:, first][:, None, :] * (1.0 - weights) + points[:, endpoint_last][
             :, None, :
         ] * weights
@@ -59,7 +90,7 @@ def _axis_interval_error(
     split = int(candidates[candidate_axis])
     if normal_step > 0.0 and float(np.max(deviations)) <= 1.0e-14:
         split = int(candidates[len(candidates) // 2])
-    return float(np.max(deviations)), normal_step, split
+    return float(np.max(deviations)), normal_step, split, True
 
 
 def _intervals(indices: list[int], size: int, closed: bool) -> list[tuple[int, int]]:
@@ -79,28 +110,33 @@ def _worst_axis_interval(
     closed: bool,
     chord_target: float,
     normal_target: float,
-) -> tuple[float, float, float, int | None]:
+    coordinates: NDArray[np.float64] | None = None,
+) -> tuple[float, float, float, int | None, int]:
     worst_score = -1.0
     worst_chord = 0.0
     worst_normal = 0.0
     worst_split: int | None = None
+    unmeasured = 0
     size = points.shape[axis]
     for first, last in _intervals(indices, size, closed):
-        chord, normal, split = _axis_interval_error(
+        chord, normal, split, measured = _axis_interval_error(
             points,
             normals,
             first,
             last,
             axis=axis,
             wrapped_length=size if closed else None,
+            coordinates=coordinates,
         )
+        if not measured:
+            unmeasured += 1
         score = max(chord / max(chord_target, 1.0e-15), normal / normal_target)
         if score > worst_score + 1.0e-15:
             worst_score = score
             worst_chord = chord
             worst_normal = normal
             worst_split = split
-    return worst_score, worst_chord, worst_normal, worst_split
+    return worst_score, worst_chord, worst_normal, worst_split, unmeasured
 
 
 def adaptive_grid_indices(
@@ -113,7 +149,9 @@ def adaptive_grid_indices(
     max_normal_step_deg: float,
     max_vertices: int | None,
     closed_phi: bool,
-) -> tuple[NDArray[np.int64], NDArray[np.int64], dict[str, float | bool]]:
+    t_coordinates: NDArray[np.float64] | None = None,
+    phi_coordinates: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.int64], NDArray[np.int64], dict[str, float | int | bool | None]]:
     """Largest-error-first refinement of a canonical candidate grid.
 
     Each interval is checked at every available interior candidate sample.  A
@@ -126,6 +164,14 @@ def adaptive_grid_indices(
 
     sample_points = np.asarray(points, dtype=np.float64)
     sample_normals = _normalise(np.asarray(normals, dtype=np.float64))
+    axial_parameter = (
+        None if t_coordinates is None else np.asarray(t_coordinates, dtype=np.float64)
+    )
+    azimuth_parameter = (
+        None
+        if phi_coordinates is None
+        else np.unwrap(np.asarray(phi_coordinates, dtype=np.float64), axis=1)
+    )
     t_indices = sorted({int(value) for value in initial_t})
     phi_indices = sorted({int(value) for value in initial_phi})
     if len(t_indices) < 2 or len(phi_indices) < 3:
@@ -150,19 +196,22 @@ def adaptive_grid_indices(
     directional_chord = max_chord_error_mm * 0.5
     while True:
         candidates: list[tuple[float, int, int | None]] = []
+        saw_unmeasured = False
         for axis, indices, closed in (
             (0, t_indices, False),
             (1, phi_indices, closed_phi),
         ):
             for first, last in _intervals(indices, sample_points.shape[axis], closed):
-                chord, normal, split = _axis_interval_error(
+                chord, normal, split, measured = _axis_interval_error(
                     sample_points,
                     sample_normals,
                     first,
                     last,
                     axis=axis,
                     wrapped_length=sample_points.shape[axis] if closed else None,
+                    coordinates=axial_parameter if axis == 0 else azimuth_parameter,
                 )
+                saw_unmeasured = saw_unmeasured or not measured
                 score = max(
                     chord / max(directional_chord, 1.0e-15),
                     normal / max_normal_step_deg,
@@ -170,6 +219,7 @@ def adaptive_grid_indices(
                 if score > 1.0 + 1.0e-12:
                     candidates.append((score, axis, split))
         if not candidates:
+            cap_limited = cap_limited or saw_unmeasured
             break
         added = False
         for _score, axis, split in sorted(
@@ -205,6 +255,7 @@ def adaptive_grid_indices(
         closed=False,
         chord_target=directional_chord,
         normal_target=max_normal_step_deg,
+        coordinates=axial_parameter,
     )
     phi_error = _worst_axis_interval(
         sample_points,
@@ -214,12 +265,23 @@ def adaptive_grid_indices(
         closed=closed_phi,
         chord_target=directional_chord,
         normal_target=max_normal_step_deg,
+        coordinates=azimuth_parameter,
     )
-    achieved_chord = max(np.finfo(np.float64).eps, t_error[1] + phi_error[1])
+    unmeasured_intervals = int(t_error[4] + phi_error[4])
+    measurement_complete = unmeasured_intervals == 0
+    achieved_chord = (
+        max(np.finfo(np.float64).eps, t_error[1] + phi_error[1])
+        if measurement_complete
+        else None
+    )
     achieved_normal = max(t_error[2], phi_error[2])
     limited = bool(
         cap_limited
-        or achieved_chord > max_chord_error_mm * (1.0 + 1.0e-9)
+        or not measurement_complete
+        or (
+            achieved_chord is not None
+            and achieved_chord > max_chord_error_mm * (1.0 + 1.0e-9)
+        )
         or achieved_normal > max_normal_step_deg * (1.0 + 1.0e-9)
     )
     return (
@@ -229,6 +291,8 @@ def adaptive_grid_indices(
             "max_chord_error_mm": achieved_chord,
             "max_normal_step_deg": achieved_normal,
             "vertex_cap_limited": limited,
+            "measurement_complete": measurement_complete,
+            "unmeasured_intervals": unmeasured_intervals,
         },
     )
 
@@ -275,8 +339,17 @@ def analytic_grid_normals(
             d_phi[jt] = np.gradient(
                 extended_points, extended_phi, axis=0, edge_order=2
             )[1:-1]
-    else:
+    elif phi_coordinates is None:
         d_phi = np.gradient(points, axis=1, edge_order=2)
+    else:
+        phi = np.asarray(phi_coordinates, dtype=np.float64)
+        if phi.shape != points.shape[:2]:
+            raise ValueError("azimuth coordinates do not match the surface grid")
+        d_phi = np.empty_like(points)
+        for jt in range(points.shape[0]):
+            d_phi[jt] = np.gradient(
+                points[jt], phi[jt], axis=0, edge_order=2
+            )
     t_axis = (
         np.asarray(t_coordinates, dtype=np.float64)
         if t_coordinates is not None
@@ -293,6 +366,8 @@ def _coordinate_grid(
     n_phi: int,
     t_coordinates: NDArray[np.float64] | None,
     phi_coordinates: NDArray[np.float64] | None,
+    *,
+    closed_phi: bool,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     t = (
         np.asarray(t_coordinates, dtype=np.float64)
@@ -300,9 +375,12 @@ def _coordinate_grid(
         else np.linspace(0.0, 1.0, n_t)
     )
     if phi_coordinates is None:
-        phi = np.broadcast_to(
-            np.arange(n_phi, dtype=np.float64) * math.tau / n_phi, (n_t, n_phi)
+        base_phi = (
+            np.arange(n_phi, dtype=np.float64) * math.tau / n_phi
+            if closed_phi
+            else np.linspace(0.0, 1.0, n_phi)
         )
+        phi = np.broadcast_to(base_phi, (n_t, n_phi))
     else:
         phi = np.asarray(phi_coordinates, dtype=np.float64)
     if t.shape != (n_t,) or phi.shape != (n_t, n_phi):
@@ -327,6 +405,20 @@ def _periodic_row_interp(
     return result
 
 
+def _open_row_interp(
+    row: NDArray[np.float64],
+    source_phi: NDArray[np.float64],
+    target_phi: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    order = np.argsort(source_phi)
+    phi = source_phi[order]
+    values = row[order]
+    result = np.empty((len(target_phi), row.shape[1]), dtype=np.float64)
+    for component in range(row.shape[1]):
+        result[:, component] = np.interp(target_phi, phi, values[:, component])
+    return result
+
+
 def resample_parametric_grid(
     source: NDArray[np.float64],
     out_shape: tuple[int, int],
@@ -336,17 +428,18 @@ def resample_parametric_grid(
     target_t: NDArray[np.float64] | None = None,
     target_phi: NDArray[np.float64] | None = None,
     normalise: bool = False,
+    closed_phi: bool = True,
 ) -> NDArray[np.float64]:
-    """Interpolate a grid by its true t/phi coordinates, periodically in phi."""
+    """Interpolate a grid by its true coordinates, periodically when closed."""
 
     values = np.asarray(source, dtype=np.float64)
     src_t, src_phi_count, _ = values.shape
     out_t, out_phi_count = out_shape
     source_t_values, source_phi_values = _coordinate_grid(
-        src_t, src_phi_count, source_t, source_phi
+        src_t, src_phi_count, source_t, source_phi, closed_phi=closed_phi
     )
     target_t_values, target_phi_values = _coordinate_grid(
-        out_t, out_phi_count, target_t, target_phi
+        out_t, out_phi_count, target_t, target_phi, closed_phi=closed_phi
     )
     result = np.empty((out_t, out_phi_count, 3), dtype=np.float64)
     for jt, t_value in enumerate(target_t_values):
@@ -355,10 +448,11 @@ def resample_parametric_grid(
         lower = upper - 1
         span = source_t_values[upper] - source_t_values[lower]
         weight = 0.0 if abs(span) <= 1.0e-15 else (t_value - source_t_values[lower]) / span
-        row_lower = _periodic_row_interp(
+        interpolate_row = _periodic_row_interp if closed_phi else _open_row_interp
+        row_lower = interpolate_row(
             values[lower], source_phi_values[lower], target_phi_values[jt]
         )
-        row_upper = _periodic_row_interp(
+        row_upper = interpolate_row(
             values[upper], source_phi_values[upper], target_phi_values[jt]
         )
         result[jt] = row_lower * (1.0 - weight) + row_upper * weight
@@ -453,7 +547,7 @@ def estimate_grid_fidelity(
 
     coarse_points = np.asarray(coarse, dtype=np.float64)
     reference_points = np.asarray(reference, dtype=np.float64)
-    if closed_phi and any(
+    if any(
         value is not None
         for value in (coarse_t, coarse_phi, reference_t, reference_phi)
     ):
@@ -464,6 +558,7 @@ def estimate_grid_fidelity(
             source_phi=coarse_phi,
             target_t=reference_t,
             target_phi=reference_phi,
+            closed_phi=closed_phi,
         )
     else:
         chord_surface = _bilinear_coarse_points(

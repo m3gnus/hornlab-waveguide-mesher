@@ -9,6 +9,13 @@ strictly positive dot product with the triangle's average vertex normal.
 
 These rules are checked directly for every emitted triangle. Signed volume is
 deliberately not used because most preview roles are open shells.
+
+``analytic-parametric`` means finite differences of samples evaluated on the
+true analytic/canonical surface in its real axial and azimuthal parameter
+coordinates.  It never means a derivative of, or normal averaged from, the
+emitted triangle mesh.  This definition intentionally includes finite
+differences: the method identifies the surface being differentiated, not a
+symbolic differentiation implementation.
 """
 
 from __future__ import annotations
@@ -45,7 +52,10 @@ from .fidelity import (
 
 
 _API_VERSION = "hornlab.preview/1"
-_METADATA_VERSION = "hornlab.preview/1.2"
+_METADATA_VERSION = "hornlab.preview/1.3"
+_MAX_ARC_INTERVALS = 1024
+_MAX_ANGULAR_SAMPLES = 4096
+_MAX_CANONICAL_VERTICES = 1_000_000
 _ORIENTATION_BY_ROLE = {
     "horn.inner": "air-side",
     "horn.outer": "exterior",
@@ -86,6 +96,19 @@ _LOD_PRESETS = {
         "master_axial": 192,
     },
 }
+
+
+def _validate_finite_metadata(value: Any, path: str = "metadata") -> None:
+    """Reject non-finite numeric metadata before it reaches strict JSON."""
+
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_finite_metadata(item, f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_finite_metadata(item, f"{path}[{index}]")
+    elif isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+        raise ValueError(f"{path} must be finite or null")
 
 
 @dataclass(frozen=True)
@@ -161,6 +184,7 @@ class PreviewSurfaceV1:
             raise ValueError(f"{self.role}: windingChecked must be true")
         metadata["orientation"] = orientation
         metadata["windingChecked"] = True
+        _validate_finite_metadata(metadata, f"{self.role}.metadata")
         positions.setflags(write=False)
         normals.setflags(write=False)
         indices.setflags(write=False)
@@ -204,7 +228,8 @@ def _adaptive_lod_config(
     ).strip().lower()
     formula = str(config.get("formula", "OSSE")).strip().upper()
     if formula != "ICW" and sampling in {"", "uniform", "linear", "canonical", "default"} and not any(
-        key in mesh for key in ("z_map_points", "zMapPoints", "zmapPoints")
+        key in mesh
+        for key in ("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints")
     ):
         mesh["sampling_mode"] = "zmap"
         mesh["z_map_kind"] = "samples"
@@ -288,7 +313,7 @@ def _smooth_grid_surface(
         t_coordinates=reference_t,
         phi_coordinates=reference_phi,
     )
-    if closed_phi and any(
+    if any(
         value is not None
         for value in (point_t, point_phi, reference_t, reference_phi)
     ):
@@ -300,6 +325,7 @@ def _smooth_grid_surface(
             target_t=point_t,
             target_phi=point_phi,
             normalise=True,
+            closed_phi=closed_phi,
         )
     else:
         normals = resample_grid_vectors(
@@ -445,7 +471,7 @@ def _source_cap(
     radial_intervals: int,
     *,
     closed_phi: bool,
-) -> tuple[PreviewSurfaceV1, dict[str, float] | None, dict[str, float]]:
+) -> tuple[PreviewSurfaceV1, dict[str, float] | None, dict[str, float | None]]:
     ring = np.asarray(inner[:, 0, :], dtype=np.float64)
     center = np.mean(ring, axis=0)
     radial = ring[:, :2] - center[:2]
@@ -454,9 +480,9 @@ def _source_cap(
     geometry = _source_geometry(params, formula, inner)
     cap_height = _source_cap_height(throat_radius, geometry)
     radius = _source_cap_radius(throat_radius, geometry)
-    details = {
+    details: dict[str, float | None] = {
         "source_cap_height_mm": float(cap_height),
-        "source_cap_radius_mm": float(radius),
+        "source_cap_radius_mm": float(radius) if math.isfinite(radius) else None,
     }
     if int(geometry.source_shape) == 0 or cap_height <= 1.0e-12 or not math.isfinite(radius):
         return _flat_cap("source_cap", ring, (0.0, 0.0, 1.0), closed_phi=closed_phi), None, details
@@ -551,6 +577,27 @@ def _plan_ring(
     edge = float(enclosure["edge_mm"])
     d = edge * (1.0 - radial_t)
     radius = max(0.1, edge * radial_t)
+    plan_type = int(enclosure["plan_type"])
+    if plan_type in {2, 3}:
+        count = max(4, 4 * int(corner_intervals))
+        cx = 0.5 * (float(bounds["bx0"]) + float(bounds["bx1"]))
+        cy = 0.5 * (float(bounds["by0"]) + float(bounds["by1"]))
+        a = 0.5 * (float(bounds["bx1"]) - float(bounds["bx0"])) - d
+        b = 0.5 * (float(bounds["by1"]) - float(bounds["by0"])) - d
+        n = 2.0 if plan_type == 2 else float(enclosure.get("plan_n", 2.0))
+        theta = np.arange(count, dtype=np.float64) * math.tau / count
+        cosine = np.cos(theta)
+        sine = np.sin(theta)
+        radial = (
+            np.abs(cosine / a) ** n + np.abs(sine / b) ** n
+        ) ** (-1.0 / n)
+        return np.column_stack(
+            (
+                cx + radial * cosine,
+                cy + radial * sine,
+                np.full(count, float(z), dtype=np.float64),
+            )
+        )
     return _ccw_ring(
         sample_enclosure_plan(
             bx0=float(bounds["bx0"]) + d,
@@ -560,12 +607,136 @@ def _plan_ring(
             corner_radius=radius,
             edge_type=int(enclosure["edge_type"]),
             z=float(z),
-            plan_type=int(enclosure["plan_type"]),
+            plan_type=plan_type,
             plan_n=float(enclosure.get("plan_n", 2.0)),
             n_per_edge=1,
             n_per_corner=max(1, int(corner_intervals)),
         )
     )
+
+
+def _plan_fidelity(
+    enclosure: Mapping[str, Any], corner_intervals: int
+) -> dict[str, float]:
+    """Measure an emitted ellipse/superellipse plan against dense true samples."""
+
+    plan_type = int(enclosure["plan_type"])
+    if plan_type == 1:
+        radius = float(enclosure.get("edge_mm", 0.1))
+        return {
+            "max_chord_error_mm": max(
+                np.finfo(np.float64).eps,
+                radius * (1.0 - math.cos(math.pi / (4.0 * corner_intervals))),
+            ),
+            "max_normal_step_deg": 90.0 / corner_intervals,
+            "reference_density_multiplier": 4,
+        }
+
+    bounds = enclosure["bounds"]
+    cx = 0.5 * (float(bounds["bx0"]) + float(bounds["bx1"]))
+    cy = 0.5 * (float(bounds["by0"]) + float(bounds["by1"]))
+    half_width = 0.5 * (float(bounds["bx1"]) - float(bounds["bx0"]))
+    half_height = 0.5 * (float(bounds["by1"]) - float(bounds["by0"]))
+    n = 2.0 if plan_type == 2 else float(enclosure.get("plan_n", 2.0))
+    chord_error = 0.0
+    normal_step = 0.0
+    # Roundovers traverse the inset family. Sampling several true members makes
+    # the published plan bound apply to the emitted transition, not just its
+    # largest outer ring.
+    for radial_t in np.linspace(0.0, 1.0, 5):
+        ring = _plan_ring(
+            enclosure, 0.0, float(radial_t), corner_intervals=corner_intervals
+        )
+        count = len(ring)
+        dense_count = 8 * count
+        dense = _plan_ring(
+            enclosure, 0.0, float(radial_t), corner_intervals=2 * count
+        )
+        segment = np.arange(dense_count, dtype=np.int64) // 8
+        weight = (np.arange(dense_count, dtype=np.float64) % 8) / 8.0
+        chord = ring[segment] * (1.0 - weight[:, None]) + ring[
+            (segment + 1) % count
+        ] * weight[:, None]
+        chord_error = max(
+            chord_error, float(np.max(np.linalg.norm(dense - chord, axis=1)))
+        )
+
+        inset = float(enclosure["edge_mm"]) * (1.0 - float(radial_t))
+        a = half_width - inset
+        b = half_height - inset
+        ux = (ring[:, 0] - cx) / a
+        uy = (ring[:, 1] - cy) / b
+        gradients = np.column_stack(
+            (
+                np.sign(ux) * np.abs(ux) ** (n - 1.0) / a,
+                np.sign(uy) * np.abs(uy) ** (n - 1.0) / b,
+            )
+        )
+        gradients /= np.linalg.norm(gradients, axis=1, keepdims=True)
+        dots = np.sum(gradients * np.roll(gradients, -1, axis=0), axis=1)
+        normal_step = max(
+            normal_step,
+            float(np.degrees(np.arccos(np.clip(np.min(dots), -1.0, 1.0)))),
+        )
+    return {
+        "max_chord_error_mm": max(chord_error, np.finfo(np.float64).eps),
+        "max_normal_step_deg": normal_step,
+        "reference_density_multiplier": 8,
+    }
+
+
+def _adaptive_plan_intervals(
+    enclosure: Mapping[str, Any],
+    chord_target: float,
+    normal_target: float,
+    floor: int,
+) -> tuple[int, bool]:
+    if int(enclosure["plan_type"]) == 1:
+        intervals = _intervals_for_arc(
+            float(enclosure.get("edge_mm", 0.1)),
+            90.0,
+            chord_target,
+            normal_target,
+            floor,
+        )
+        return intervals, intervals >= _MAX_ARC_INTERVALS
+
+    low = max(1, int(floor))
+    measured = _plan_fidelity(enclosure, low)
+    if (
+        measured["max_chord_error_mm"] <= chord_target
+        and measured["max_normal_step_deg"] <= normal_target
+    ):
+        return low, False
+    high = low
+    while high < _MAX_ARC_INTERVALS:
+        high = min(_MAX_ARC_INTERVALS, high * 2)
+        measured = _plan_fidelity(enclosure, high)
+        if (
+            measured["max_chord_error_mm"] <= chord_target
+            and measured["max_normal_step_deg"] <= normal_target
+        ):
+            break
+    else:
+        return _MAX_ARC_INTERVALS, True
+    if high == _MAX_ARC_INTERVALS and (
+        measured["max_chord_error_mm"] > chord_target
+        or measured["max_normal_step_deg"] > normal_target
+    ):
+        return high, True
+    left = low + 1
+    right = high
+    while left < right:
+        middle = (left + right) // 2
+        measured = _plan_fidelity(enclosure, middle)
+        if (
+            measured["max_chord_error_mm"] <= chord_target
+            and measured["max_normal_step_deg"] <= normal_target
+        ):
+            right = middle
+        else:
+            left = middle + 1
+    return left, False
 
 
 def _ray_aligned_ring(
@@ -731,6 +902,29 @@ def _combine_surfaces(role: str, parts: list[PreviewSurfaceV1]) -> PreviewSurfac
     )
 
 
+def _hard_side_surface(
+    front: NDArray[np.float64], back: NDArray[np.float64]
+) -> PreviewSurfaceV1:
+    """Build one planar quad per plan edge, duplicating every hard seam."""
+
+    parts: list[PreviewSurfaceV1] = []
+    for index in range(len(front)):
+        next_index = (index + 1) % len(front)
+        edge = front[next_index, :2] - front[index, :2]
+        outward = np.asarray((edge[1], -edge[0], 0.0), dtype=np.float64)
+        outward /= np.linalg.norm(outward)
+        parts.append(
+            _flat_strip(
+                "enclosure.side",
+                front[[index, next_index]],
+                back[[index, next_index]],
+                tuple(float(value) for value in outward),
+                closed_phi=False,
+            )
+        )
+    return _combine_surfaces("enclosure.side", parts)
+
+
 def _enclosure_surfaces(
     enclosure: Mapping[str, Any],
     mouth: NDArray[np.float64],
@@ -833,20 +1027,24 @@ def _enclosure_surfaces(
         ],
         axis=0,
     )
-    side_surface, side_fidelity = _smooth_grid_surface(
-        "enclosure.side",
-        side_grid,
-        side_ref,
-        closed_phi=True,
-        orientation_hint=np.stack(
-            (
-                side_grid[:, :, 0] - center_xy[0],
-                side_grid[:, :, 1] - center_xy[1],
-                np.zeros(side_grid.shape[:2], dtype=np.float64),
+    if int(enclosure["edge_type"]) == 2:
+        side_surface = _hard_side_surface(side_front, side_back)
+        side_fidelity = _plan_fidelity(enclosure, plan_corner_intervals)
+    else:
+        side_surface, side_fidelity = _smooth_grid_surface(
+            "enclosure.side",
+            side_grid,
+            side_ref,
+            closed_phi=True,
+            orientation_hint=np.stack(
+                (
+                    side_grid[:, :, 0] - center_xy[0],
+                    side_grid[:, :, 1] - center_xy[1],
+                    np.zeros(side_grid.shape[:2], dtype=np.float64),
+                ),
+                axis=2,
             ),
-            axis=2,
-        ),
-    )
+        )
     surfaces.append(side_surface)
     fidelity["enclosure.side"] = side_fidelity
     if include_rear:
@@ -972,21 +1170,46 @@ def _fidelity_record(
     silhouette_target: int,
     cap_limited: bool = False,
 ) -> dict[str, Any]:
-    chord = float((achieved or {}).get("max_chord_error_mm", np.finfo(np.float64).eps))
+    measurement_complete = bool((achieved or {}).get("measurement_complete", True))
+    raw_chord = (achieved or {}).get("max_chord_error_mm", np.finfo(np.float64).eps)
+    chord = None if not measurement_complete or raw_chord is None else float(raw_chord)
     normal = float((achieved or {}).get("max_normal_step_deg", 0.0))
-    limited = bool((achieved or {}).get("vertex_cap_limited", False) or cap_limited)
+    unmeasured = int((achieved or {}).get("unmeasured_intervals", 0))
+    limited = bool(
+        (achieved or {}).get("vertex_cap_limited", False)
+        or cap_limited
+        or not measurement_complete
+    )
     return {
         # Stage-1 aliases remain for consumers already reading them.
         "max_chord_error_mm": chord,
         "max_normal_step_deg": normal,
-        "reference_density_multiplier": 4,
+        "reference_density_multiplier": int(
+            (achieved or {}).get("reference_density_multiplier", 4)
+        ),
         "max_chord_error_mm_requested": chord_target,
         "max_normal_step_deg_requested": normal_target,
         "min_silhouette_segments_requested": silhouette_target,
         "max_chord_error_mm_achieved": chord,
         "max_normal_step_deg_achieved": normal,
         "vertex_cap_limited": limited,
+        "measurement_complete": measurement_complete,
+        "unmeasured_intervals": unmeasured,
+        "silhouette_segments_achieved": None,
     }
+
+
+def _silhouette_segments(
+    phi: NDArray[np.float64], *, closed_phi: bool
+) -> int:
+    if closed_phi:
+        return int(phi.shape[1])
+    equivalents: list[int] = []
+    for row in np.asarray(phi, dtype=np.float64):
+        span = float(np.unwrap(row)[-1] - np.unwrap(row)[0])
+        if span > 0.0:
+            equivalents.append(int(round((len(row) - 1) * math.tau / span)))
+    return min(equivalents, default=max(0, phi.shape[1] - 1))
 
 
 def _intervals_for_arc(
@@ -998,7 +1221,7 @@ def _intervals_for_arc(
     else:
         half_angle = math.acos(np.clip(1.0 - chord / radius, -1.0, 1.0))
         by_chord = int(math.ceil(math.radians(span_deg) / max(2.0 * half_angle, 1.0e-12)))
-    return max(int(floor), by_normal, by_chord)
+    return min(_MAX_ARC_INTERVALS, max(int(floor), by_normal, by_chord))
 
 
 def _configuration_has_corners(config: Mapping[str, Any]) -> bool:
@@ -1062,23 +1285,29 @@ def build_preview_geometry(
         if options.max_normal_step_deg is None
         else options.max_normal_step_deg
     )
-    silhouette_target = int(
-        preset["silhouette"]
-        if options.min_silhouette_segments is None
-        else options.min_silhouette_segments
-    )
-    vertex_cap = None if options.max_vertices is None else int(options.max_vertices)
+    try:
+        silhouette_target = int(
+            preset["silhouette"]
+            if options.min_silhouette_segments is None
+            else options.min_silhouette_segments
+        )
+        vertex_cap = None if options.max_vertices is None else int(options.max_vertices)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("silhouette and vertex limits must be finite integers") from exc
     if not math.isfinite(chord_target) or chord_target <= 0.0:
         raise ValueError("max_chord_error_mm must be finite and > 0")
     if not math.isfinite(normal_target) or not 0.0 < normal_target <= 180.0:
         raise ValueError("max_normal_step_deg must be finite and in (0, 180]")
     if silhouette_target < 3:
         raise ValueError("min_silhouette_segments must be >= 3")
-    if vertex_cap is not None and vertex_cap < 6:
-        raise ValueError("max_vertices must be >= 6")
+    if vertex_cap is not None and vertex_cap < 8:
+        raise ValueError(
+            "max_vertices must be >= 8 (the minimum robust 2x4 horn topology)"
+        )
 
-    start = time.perf_counter()
     warnings: list[str] = []
+    preflight_limited = False
+    start = time.perf_counter()
 
     has_corners = _configuration_has_corners(config)
     corner_intervals = _intervals_for_arc(
@@ -1088,26 +1317,49 @@ def build_preview_geometry(
         normal_target,
         int(preset["roundover"]),
     )
+    if corner_intervals >= _MAX_ARC_INTERVALS:
+        preflight_limited = True
+        warnings.append(
+            f"acoustic corner reference clamped to {_MAX_ARC_INTERVALS} intervals"
+        )
     # The canonical corner sampler refines its three stable arc rows in whole
     # multiples. Ordinary/circular grids instead use a 2x candidate lattice.
     if has_corners:
         corner_intervals = 3 * int(math.ceil(corner_intervals / 3.0))
-        angular_master = max(
-            silhouette_target,
-            silhouette_target - 4 * max(0, corner_intervals - 3),
-        )
+        # Corner grids already add a dense, stable union of analytic arc rows;
+        # multiplying the flat-side seed would defeat that adaptive allocation.
+        angular_master = max(3, silhouette_target)
     else:
         angular_master = max(
-            silhouette_target, int(math.ceil(360.0 / normal_target))
+            4 * silhouette_target, 4 * int(math.ceil(360.0 / normal_target))
+        )
+    if angular_master > _MAX_ANGULAR_SAMPLES:
+        angular_master = _MAX_ANGULAR_SAMPLES
+        preflight_limited = True
+        warnings.append(
+            f"canonical azimuth reference clamped to {_MAX_ANGULAR_SAMPLES} samples"
         )
     default_chord = float(preset["chord"])
-    axial_scale = max(1.0, math.sqrt(default_chord / chord_target))
-    axial_master = min(
-        512, max(int(preset["master_axial"]), int(math.ceil(preset["master_axial"] * axial_scale)))
+    chord_ratio = default_chord / chord_target
+    axial_scale = math.sqrt(chord_ratio) if math.isfinite(chord_ratio) else math.inf
+    scaled_axial = (
+        512
+        if not math.isfinite(axial_scale)
+        or axial_scale >= 512 / int(preset["master_axial"])
+        else int(math.ceil(int(preset["master_axial"]) * max(1.0, axial_scale)))
     )
+    axial_master = min(512, max(int(preset["master_axial"]), scaled_axial))
+    axial_master = min(512, max(axial_master, 4 * int(preset["axial"])))
     formula_name = str(config.get("formula", "OSSE")).strip().upper()
     if formula_name in {"R-OSSE", "ROSSE", "FREEFORM"}:
         axial_master = min(512, axial_master * 2)
+    angular_product_cap = max(3, _MAX_CANONICAL_VERTICES // (axial_master + 1))
+    if angular_master > angular_product_cap:
+        angular_master = angular_product_cap
+        preflight_limited = True
+        warnings.append(
+            f"canonical reference clamped to {_MAX_CANONICAL_VERTICES} points"
+        )
 
     canonical_start = time.perf_counter()
     axial_power = {"coarse": 1.75, "fine": 2.0, "inspection": 2.5}[lod]
@@ -1152,7 +1404,7 @@ def build_preview_geometry(
         inner_master,
         closed_phi=closed_phi,
         t_coordinates=master_t,
-        phi_coordinates=master_phi if closed_phi else None,
+        phi_coordinates=master_phi,
     )
     semantic_t, semantic_inserted, semantic_unavailable = _semantic_t_stations(
         config, output, master_t
@@ -1178,6 +1430,8 @@ def build_preview_geometry(
         max_normal_step_deg=normal_target,
         max_vertices=vertex_cap,
         closed_phi=closed_phi,
+        t_coordinates=master_t,
+        phi_coordinates=master_phi,
     )
 
     assembly_start = time.perf_counter()
@@ -1214,7 +1468,7 @@ def build_preview_geometry(
                 outer_master,
                 closed_phi=closed_phi,
                 t_coordinates=master_t,
-                phi_coordinates=master_phi if closed_phi else None,
+                phi_coordinates=master_phi,
             )
             surfaces.append(
                 _grid_surface_from_selection(
@@ -1256,9 +1510,7 @@ def build_preview_geometry(
                 selected_outer_master,
                 closed_phi=closed_phi,
                 t_coordinates=master_t[t_indices],
-                phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)]
-                if closed_phi
-                else None,
+                phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
             )
             outer_positions = selected_outer_master.reshape(-1, 3)
             outer_flat_normals = selected_outer_normals.reshape(-1, 3)
@@ -1356,20 +1608,56 @@ def build_preview_geometry(
             normal_target,
             int(preset["roundover"]),
         )
-        plan_corner_intervals = _intervals_for_arc(
-            float(enclosure_payload.get("edge_mm", 0.1)),
-            90.0,
+        plan_corner_intervals, plan_preflight_limited = _adaptive_plan_intervals(
+            enclosure_payload,
             chord_target,
             normal_target,
             1,
         )
-        enclosure_cap_limited = False
+        if plan_preflight_limited:
+            preflight_limited = True
+            warnings.append(
+                f"enclosure plan reference clamped to {_MAX_ARC_INTERVALS} intervals per quarter"
+            )
+        enclosure_cap_limited = plan_preflight_limited
         if vertex_cap is not None:
-            def estimated_roundover_vertices() -> int:
-                plan_vertices = 4 * plan_corner_intervals + 8
-                return len(phi_indices) + (2 * roundover_intervals + 1) * plan_vertices
+            def enclosure_vertex_estimates(
+                radial_intervals: int, plan_intervals: int
+            ) -> dict[str, int]:
+                plan_vertices = (
+                    4 * plan_intervals + 8
+                    if int(enclosure_payload["plan_type"]) == 1
+                    else 4 * plan_intervals
+                )
+                estimates = {
+                    "mouth_rim": 2 * len(phi_indices),
+                    "enclosure.front": 2 * len(phi_indices),
+                    "enclosure.side": (
+                        4 * plan_vertices
+                        if int(enclosure_payload["edge_type"]) == 2
+                        else 2 * plan_vertices
+                    ),
+                }
+                if float(enclosure_payload.get("edge_depth", 0.0)) > 0.0:
+                    estimates["enclosure.roundover"] = len(phi_indices) + (
+                        2 * radial_intervals + 1
+                    ) * plan_vertices
+                if options.include_rear_cap:
+                    estimates["enclosure.rear"] = plan_vertices + 1
+                return estimates
 
-            while estimated_roundover_vertices() > vertex_cap and (
+            minimum_estimates = enclosure_vertex_estimates(1, 1)
+            topology_minimum = max(minimum_estimates.values())
+            if vertex_cap < topology_minimum:
+                raise ValueError(
+                    f"max_vertices={vertex_cap} is below the enclosure topological "
+                    f"minimum {topology_minimum}"
+                )
+            while max(
+                enclosure_vertex_estimates(
+                    roundover_intervals, plan_corner_intervals
+                ).values()
+            ) > vertex_cap and (
                 roundover_intervals > 1 or plan_corner_intervals > 1
             ):
                 enclosure_cap_limited = True
@@ -1385,10 +1673,19 @@ def build_preview_geometry(
             include_rear=options.include_rear_cap,
         )
         surfaces.extend(enclosure_surfaces)
-        plan_chord = float(enclosure_payload.get("edge_mm", 0.1)) * (
-            1.0 - math.cos(math.pi / (4.0 * plan_corner_intervals))
+        plan_measurement = _plan_fidelity(
+            enclosure_payload, plan_corner_intervals
         )
-        plan_normal = 90.0 / plan_corner_intervals
+        plan_chord = plan_measurement["max_chord_error_mm"]
+        plan_normal = plan_measurement["max_normal_step_deg"]
+        plan_vertices = len(
+            _plan_ring(
+                enclosure_payload,
+                0.0,
+                1.0,
+                corner_intervals=plan_corner_intervals,
+            )
+        )
         round_chord = float(enclosure_payload.get("edge_depth", 0.0)) * (
             1.0 - math.cos(math.pi / (4.0 * roundover_intervals))
         )
@@ -1408,10 +1705,7 @@ def build_preview_geometry(
                     round_normal,
                 )
             elif surface.role == "enclosure.side":
-                measured = {
-                    "max_chord_error_mm": max(plan_chord, np.finfo(np.float64).eps),
-                    "max_normal_step_deg": plan_normal,
-                }
+                measured = dict(plan_measurement)
             fidelity[surface.role] = _fidelity_record(
                 measured,
                 chord_target=chord_target,
@@ -1448,6 +1742,36 @@ def build_preview_geometry(
                 silhouette_target=silhouette_target,
             ),
         )
+
+    selected_phi_coordinates = master_phi[np.ix_(t_indices, phi_indices)]
+    horn_silhouette = _silhouette_segments(
+        selected_phi_coordinates, closed_phi=closed_phi
+    )
+    enclosure_plan_roles = {
+        "enclosure.roundover",
+        "enclosure.side",
+        "enclosure.rear",
+    }
+    for surface in surfaces:
+        achieved_silhouette = (
+            plan_vertices
+            if surface.role in enclosure_plan_roles
+            and output.get("enclosure") is not None
+            and options.include_enclosure
+            else horn_silhouette
+        )
+        fidelity[surface.role]["silhouette_segments_achieved"] = int(
+            achieved_silhouette
+        )
+        if achieved_silhouette < silhouette_target:
+            fidelity[surface.role]["vertex_cap_limited"] = True
+        if preflight_limited:
+            fidelity[surface.role]["preflight_limited"] = True
+        if vertex_cap is not None and len(surface.positions) > vertex_cap:
+            raise ValueError(
+                f"max_vertices={vertex_cap} cannot represent {surface.role}; "
+                f"minimum emitted topology has {len(surface.positions)} vertices"
+            )
 
     assembly_ms = (time.perf_counter() - assembly_start) * 1000.0
     total_ms = (time.perf_counter() - start) * 1000.0
@@ -1526,11 +1850,19 @@ def build_preview_geometry(
             "role-oriented analytic/exact normals; every triangle is counter-clockwise "
             "when viewed from its normal side"
         ),
+        "normal_method_notes": {
+            "analytic-parametric": (
+                "finite differences of true analytic/canonical surface samples in "
+                "their real axial and azimuthal parameter coordinates; never mesh-derived"
+            ),
+            "exact-planar": "the exact constant normal of an emitted planar face",
+        },
         "surface_metadata": {
             surface.role: dict(surface.metadata) for surface in surfaces
         },
         **source_details,
     }
+    _validate_finite_metadata(metadata)
     return PreviewGeometryV1(surfaces=surfaces, metadata=metadata)
 
 
