@@ -1,4 +1,15 @@
-"""Public ``hornlab.preview/1`` geometry API."""
+"""Public ``hornlab.preview/1`` geometry API.
+
+Surface orientation is part of the render contract. ``horn.inner`` and
+``source_cap`` normals point into the acoustic air domain. ``horn.outer``,
+``mouth_rim``, ``wall.rear_cap``, and every ``enclosure.*`` role point toward
+the solid exterior (the rim/front roles are front-facing). Every triangle is
+counter-clockwise from its shipped normal side: ``cross(b-a, c-a)`` has a
+strictly positive dot product with the triangle's average vertex normal.
+
+These rules are checked directly for every emitted triangle. Signed volume is
+deliberately not used because most preview roles are open shells.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +45,18 @@ from .fidelity import (
 
 
 _API_VERSION = "hornlab.preview/1"
+_METADATA_VERSION = "hornlab.preview/1.2"
+_ORIENTATION_BY_ROLE = {
+    "horn.inner": "air-side",
+    "horn.outer": "exterior",
+    "mouth_rim": "exterior",
+    "source_cap": "air-side",
+    "wall.rear_cap": "exterior",
+    "enclosure.front": "exterior",
+    "enclosure.roundover": "exterior",
+    "enclosure.side": "exterior",
+    "enclosure.rear": "exterior",
+}
 _LOD_PRESETS = {
     "coarse": {
         "chord": 0.15,
@@ -88,6 +111,7 @@ class PreviewSurfaceV1:
     shading: str
     normal_method: str
     closed_phi: bool
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         positions = np.ascontiguousarray(self.positions, dtype=np.float64)
@@ -111,12 +135,39 @@ class PreviewSurfaceV1:
             raise ValueError(
                 f"{self.role}: unsupported normal method {self.normal_method!r}"
             )
+        orientation = _ORIENTATION_BY_ROLE.get(self.role)
+        if orientation is None:
+            raise ValueError(f"{self.role}: no preview orientation contract")
+        triangles = indices.reshape(-1, 3)
+        if len(triangles):
+            a = positions[triangles[:, 0]]
+            b = positions[triangles[:, 1]]
+            c = positions[triangles[:, 2]]
+            average_normal = np.mean(normals[triangles], axis=1)
+            agreement = np.einsum(
+                "ij,ij->i", np.cross(b - a, c - a), average_normal
+            )
+            if np.any(agreement <= 0.0):
+                first = int(np.flatnonzero(agreement <= 0.0)[0])
+                raise ValueError(
+                    f"{self.role}: triangle {first} winding disagrees with its normal"
+                )
+        metadata = dict(self.metadata)
+        if metadata.get("orientation", orientation) != orientation:
+            raise ValueError(
+                f"{self.role}: orientation must be {orientation!r}"
+            )
+        if metadata.get("windingChecked", True) is not True:
+            raise ValueError(f"{self.role}: windingChecked must be true")
+        metadata["orientation"] = orientation
+        metadata["windingChecked"] = True
         positions.setflags(write=False)
         normals.setflags(write=False)
         indices.setflags(write=False)
         object.__setattr__(self, "positions", positions)
         object.__setattr__(self, "normals", normals)
         object.__setattr__(self, "indices", indices)
+        object.__setattr__(self, "metadata", metadata)
 
 
 @dataclass(frozen=True)
@@ -190,6 +241,35 @@ def _grid_indices(n_t: int, n_phi: int, *, closed_phi: bool) -> NDArray[np.uint3
     return np.asarray(triangles, dtype=np.uint32)
 
 
+def _orient_indices_to_normals(
+    role: str,
+    positions: NDArray[np.float64],
+    indices: NDArray[np.uint32],
+    normals: NDArray[np.float64],
+) -> NDArray[np.uint32]:
+    """Return one consistently wound index buffer for the shipped normals."""
+
+    triangles = np.asarray(indices, dtype=np.uint32).reshape(-1, 3)
+    points = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    vectors = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+    if not len(triangles):
+        return triangles.reshape(-1)
+    a = points[triangles[:, 0]]
+    b = points[triangles[:, 1]]
+    c = points[triangles[:, 2]]
+    average_normal = np.mean(vectors[triangles], axis=1)
+    agreement = np.einsum("ij,ij->i", np.cross(b - a, c - a), average_normal)
+    if np.all(agreement > 0.0):
+        return triangles.reshape(-1)
+    if np.all(agreement < 0.0):
+        return triangles[:, (0, 2, 1)].reshape(-1)
+    nonpositive = int(np.count_nonzero(agreement <= 0.0))
+    raise ValueError(
+        f"{role}: inconsistent local orientation ({nonpositive}/{len(triangles)} "
+        "triangles disagree with their normals)"
+    )
+
+
 def _smooth_grid_surface(
     role: str,
     points: NDArray[np.float64],
@@ -229,11 +309,19 @@ def _smooth_grid_surface(
         hint = np.broadcast_to(np.asarray(orientation_hint, dtype=np.float64), normals.shape)
         if float(np.median(np.sum(normals * hint, axis=2))) < 0.0:
             normals = -normals
+    positions = points.reshape(-1, 3)
+    flat_normals = normals.reshape(-1, 3)
+    indices = _orient_indices_to_normals(
+        role,
+        positions,
+        _grid_indices(*points.shape[:2], closed_phi=closed_phi),
+        flat_normals,
+    )
     surface = PreviewSurfaceV1(
         role=role,
-        positions=points.reshape(-1, 3),
-        indices=_grid_indices(*points.shape[:2], closed_phi=closed_phi),
-        normals=normals.reshape(-1, 3),
+        positions=positions,
+        indices=indices,
+        normals=flat_normals,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=closed_phi,
@@ -261,11 +349,19 @@ def _flat_strip(
 ) -> PreviewSurfaceV1:
     points = np.stack((inner, outer), axis=0)
     normals = np.broadcast_to(np.asarray(normal, dtype=np.float64), points.shape).copy()
+    positions = points.reshape(-1, 3)
+    flat_normals = normals.reshape(-1, 3)
+    indices = _orient_indices_to_normals(
+        role,
+        positions,
+        _grid_indices(2, points.shape[1], closed_phi=closed_phi),
+        flat_normals,
+    )
     return PreviewSurfaceV1(
         role=role,
-        positions=points.reshape(-1, 3),
-        indices=_grid_indices(2, points.shape[1], closed_phi=closed_phi),
-        normals=normals.reshape(-1, 3),
+        positions=positions,
+        indices=indices,
+        normals=flat_normals,
         shading="flat",
         normal_method="exact-planar",
         closed_phi=closed_phi,
@@ -291,10 +387,16 @@ def _flat_cap(
         else:
             triangles.extend((center_index, ip1, ip))
     normals = np.broadcast_to(np.asarray(normal, dtype=np.float64), positions.shape).copy()
+    indices = _orient_indices_to_normals(
+        role,
+        positions,
+        np.asarray(triangles, dtype=np.uint32),
+        normals,
+    )
     return PreviewSurfaceV1(
         role=role,
         positions=positions,
-        indices=np.asarray(triangles, dtype=np.uint32),
+        indices=indices,
         normals=normals,
         shading="flat",
         normal_method="exact-planar",
@@ -400,10 +502,17 @@ def _source_cap(
             triangles.extend((row0 + ip, row1 + ip1, row0 + ip1))
 
     normal_array = np.asarray(normals, dtype=np.float64)
+    position_array = np.asarray(positions, dtype=np.float64)
+    index_array = _orient_indices_to_normals(
+        "source_cap",
+        position_array,
+        np.asarray(triangles, dtype=np.uint32),
+        normal_array,
+    )
     surface = PreviewSurfaceV1(
         role="source_cap",
-        positions=np.asarray(positions, dtype=np.float64),
-        indices=np.asarray(triangles, dtype=np.uint32),
+        positions=position_array,
+        indices=index_array,
         normals=normal_array,
         shading="smooth",
         normal_method="analytic-parametric",
@@ -578,11 +687,19 @@ def _roundover_piece(
             a0, a1 = offsets[level] + ip, offsets[level] + ip1
             b0, b1 = offsets[level + 1] + ip, offsets[level + 1] + ip1
             triangles.extend((a0, a1, b1, a0, b1, b0))
+    position_array = np.vstack(positions)
+    normal_array = np.vstack(normals)
+    index_array = _orient_indices_to_normals(
+        role,
+        position_array,
+        np.asarray(triangles, dtype=np.uint32),
+        normal_array,
+    )
     surface = PreviewSurfaceV1(
         role=role,
-        positions=np.vstack(positions),
-        indices=np.asarray(triangles, dtype=np.uint32),
-        normals=np.vstack(normals),
+        positions=position_array,
+        indices=index_array,
+        normals=normal_array,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=True,
@@ -824,14 +941,23 @@ def _grid_surface_from_selection(
     phi_indices: NDArray[np.int64],
     *,
     closed_phi: bool,
+    normal_sign: float = 1.0,
 ) -> PreviewSurfaceV1:
     selected_points = points[np.ix_(t_indices, phi_indices)]
-    selected_normals = normals[np.ix_(t_indices, phi_indices)]
+    selected_normals = normal_sign * normals[np.ix_(t_indices, phi_indices)]
+    positions = selected_points.reshape(-1, 3)
+    flat_normals = selected_normals.reshape(-1, 3)
+    indices = _orient_indices_to_normals(
+        role,
+        positions,
+        _grid_indices(*selected_points.shape[:2], closed_phi=closed_phi),
+        flat_normals,
+    )
     return PreviewSurfaceV1(
         role=role,
-        positions=selected_points.reshape(-1, 3),
-        indices=_grid_indices(*selected_points.shape[:2], closed_phi=closed_phi),
-        normals=selected_normals.reshape(-1, 3),
+        positions=positions,
+        indices=indices,
+        normals=flat_normals,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=closed_phi,
@@ -1066,6 +1192,7 @@ def build_preview_geometry(
                 t_indices,
                 phi_indices,
                 closed_phi=closed_phi,
+                normal_sign=-1.0,
             )
         )
         fidelity["horn.inner"] = _fidelity_record(
@@ -1133,14 +1260,22 @@ def build_preview_geometry(
                 if closed_phi
                 else None,
             )
+            outer_positions = selected_outer_master.reshape(-1, 3)
+            outer_flat_normals = selected_outer_normals.reshape(-1, 3)
+            outer_indices = _orient_indices_to_normals(
+                "horn.outer",
+                outer_positions,
+                _grid_indices(
+                    *selected_outer_master.shape[:2], closed_phi=closed_phi
+                ),
+                outer_flat_normals,
+            )
             surfaces.append(
                 PreviewSurfaceV1(
                     role="horn.outer",
-                    positions=selected_outer_master.reshape(-1, 3),
-                    indices=_grid_indices(
-                        *selected_outer_master.shape[:2], closed_phi=closed_phi
-                    ),
-                    normals=selected_outer_normals.reshape(-1, 3),
+                    positions=outer_positions,
+                    indices=outer_indices,
+                    normals=outer_flat_normals,
                     shading="smooth",
                     normal_method="analytic-parametric",
                     closed_phi=closed_phi,
@@ -1318,6 +1453,7 @@ def build_preview_geometry(
     total_ms = (time.perf_counter() - start) * 1000.0
     metadata: dict[str, Any] = {
         "api_version": _API_VERSION,
+        "metadata_version": _METADATA_VERSION,
         "units": "mm",
         "coordinate_frame": "mesher-xyz",
         "formula": output["formula"],
@@ -1386,7 +1522,13 @@ def build_preview_geometry(
                 "canonical ATH z-map modes are not guaranteed to be nested",
             ],
         },
-        "normal_convention": "normalize(dP/dphi x dP/dt); exact constants on planar faces",
+        "normal_convention": (
+            "role-oriented analytic/exact normals; every triangle is counter-clockwise "
+            "when viewed from its normal side"
+        ),
+        "surface_metadata": {
+            surface.role: dict(surface.metadata) for surface in surfaces
+        },
         **source_details,
     }
     return PreviewGeometryV1(surfaces=surfaces, metadata=metadata)

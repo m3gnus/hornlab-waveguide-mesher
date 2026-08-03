@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 
 import numpy as np
@@ -132,6 +133,7 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
 
     assert set(by_role) == expected_roles
     assert preview.metadata["api_version"] == "hornlab.preview/1"
+    assert preview.metadata["metadata_version"] == "hornlab.preview/1.2"
     assert preview.metadata["units"] == "mm"
     assert preview.metadata["actual_segment_counts"]["horn_phi"] >= 96
     assert preview.metadata["actual_segment_counts"]["horn_axial"] >= 48
@@ -142,6 +144,14 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
     }
 
     for surface in preview.surfaces:
+        expected_orientation = (
+            "air-side" if surface.role in {"horn.inner", "source_cap"} else "exterior"
+        )
+        assert surface.metadata == {
+            "orientation": expected_orientation,
+            "windingChecked": True,
+        }
+        assert preview.metadata["surface_metadata"][surface.role] == surface.metadata
         assert surface.positions.dtype == np.float64
         assert surface.normals.dtype == np.float64
         assert surface.indices.dtype == np.uint32
@@ -342,3 +352,101 @@ def test_fine_osse_machine_local_performance_guard():
     elapsed = time.perf_counter() - started
 
     assert elapsed < 0.150, f"fine OSSE preview took {elapsed * 1000.0:.1f} ms"
+
+
+def _orientation_config(base, mode):
+    """Symmetric analytic cases with front/rear enclosure regions split by z=0."""
+
+    config = copy.deepcopy(base)
+    config["mode"] = mode
+    if mode == "enclosure":
+        # Every family is shorter than 200 mm. A 500 mm enclosure therefore
+        # puts the analytically known front roundover above z=0 and rear below.
+        config["enclosure"] = {
+            "depth_mm": 500.0,
+            "edge_mm": 18.0,
+            "edge_type": 1,
+        }
+    else:
+        config.pop("enclosure", None)
+        config.setdefault("mesh", {})["wall_thickness_mm"] = 6.0
+    return config
+
+
+ORIENTATION_CASES = [
+    pytest.param(
+        _orientation_config(base, mode),
+        lod,
+        id=f"{family}-{mode}-{lod}",
+    )
+    for family, base in (
+        ("osse", OSSE_FREESTANDING),
+        ("rosse", ROSSE_ENCLOSURE),
+        ("icw", ICW_FLAT_BAFFLE),
+        ("freeform", FREEFORM_FREESTANDING),
+    )
+    for mode in ("freestanding", "enclosure")
+    for lod in ("coarse", "fine", "inspection")
+]
+
+
+def _analytic_side_point(role, centroid):
+    """Known-side point for the centered analytic configs above, never a volume oracle."""
+
+    outside = 1.0e6
+    point = centroid.copy()
+    radial = centroid[:2]
+    radial_length = float(np.linalg.norm(radial))
+
+    if role == "horn.inner":
+        point[:2] = (0.0, 0.0)  # the horn axis is acoustic air near the throat
+    elif role in {"horn.outer", "enclosure.side"}:
+        point[:2] = outside * radial / radial_length
+    elif role in {"mouth_rim", "source_cap", "enclosure.front"}:
+        point[2] = outside
+    elif role in {"wall.rear_cap", "enclosure.rear"}:
+        point[2] = -outside
+    elif role == "enclosure.roundover":
+        point[:2] = outside * radial / radial_length
+        point[2] = outside if centroid[2] > 0.0 else -outside
+    else:  # pragma: no cover - adding a role requires an explicit orientation oracle
+        raise AssertionError(f"missing analytic side point for {role}")
+    return point
+
+
+@pytest.mark.parametrize("config,lod", ORIENTATION_CASES)
+def test_orientation_and_winding_contract_across_families_modes_and_lods(config, lod):
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
+    horn_phi = preview.metadata["actual_segment_counts"]["horn_phi"]
+
+    for surface in preview.surfaces:
+        triangles = surface.indices.reshape(-1, 3)
+        triangle_points = surface.positions[triangles]
+        average_normals = np.mean(surface.normals[triangles], axis=1)
+        face_vectors = np.cross(
+            triangle_points[:, 1] - triangle_points[:, 0],
+            triangle_points[:, 2] - triangle_points[:, 0],
+        )
+
+        # This is the renderer contract and is checked for every triangle, not
+        # inferred from a signed volume (these roles are open shells).
+        winding_agreement = np.einsum("ij,ij->i", face_vectors, average_normals)
+        assert np.all(winding_agreement > 0.0), surface.role
+
+        # The axis/far-exterior reference is unambiguous for the first horn
+        # interval near the throat. Other roles are sampled over their full span.
+        if surface.role in {"horn.inner", "horn.outer"}:
+            sample = np.arange(min(2 * horn_phi, len(triangles)))
+        else:
+            sample = np.linspace(
+                0, len(triangles) - 1, min(64, len(triangles)), dtype=np.int64
+            )
+        centroids = np.mean(triangle_points[sample], axis=1)
+        sampled_normals = average_normals[sample]
+        side_agreement = np.asarray(
+            [
+                np.dot(normal, _analytic_side_point(surface.role, centroid) - centroid)
+                for normal, centroid in zip(sampled_normals, centroids, strict=True)
+            ]
+        )
+        assert np.all(side_agreement > 0.0), surface.role
