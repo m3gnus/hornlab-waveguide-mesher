@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -170,6 +172,13 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
         assert 0.0 < achieved["max_chord_error_mm"] < 5.0
         assert 0.0 <= achieved["max_normal_step_deg"] <= 180.0
         assert achieved["reference_density_multiplier"] == 4
+        assert achieved["max_chord_error_mm_achieved"] <= achieved[
+            "max_chord_error_mm_requested"
+        ]
+        assert achieved["max_normal_step_deg_achieved"] <= achieved[
+            "max_normal_step_deg_requested"
+        ]
+        assert achieved["vertex_cap_limited"] is False
 
 
 def test_rounded_source_cap_is_an_analytic_sphere_not_a_cone_fan():
@@ -223,16 +232,19 @@ def test_identical_calls_have_byte_identical_arrays():
         assert left.indices.tobytes() == right.indices.tobytes()
 
 
-def test_stage_two_options_are_accepted_and_reported_as_ignored():
+def test_stage_two_tolerance_options_are_honored_and_reported():
     preview = build_preview_geometry(
         OSSE_FREESTANDING,
         PreviewOptionsV1(max_chord_error_mm=0.05, max_normal_step_deg=3.0),
     )
 
-    assert preview.metadata["warnings"] == [
-        "max_chord_error_mm is reserved for stage 2 and was ignored",
-        "max_normal_step_deg is reserved for stage 2 and was ignored",
-    ]
+    assert preview.metadata["warnings"] == []
+    requested = preview.metadata["requested_fidelity"]
+    assert requested["max_chord_error_mm"] == 0.05
+    assert requested["max_normal_step_deg"] == 3.0
+    for achieved in preview.metadata["fidelity"].values():
+        assert achieved["max_chord_error_mm_achieved"] <= 0.05
+        assert achieved["max_normal_step_deg_achieved"] <= 3.0
 
 
 def test_surface_include_options_do_not_recompute_or_leak_omitted_roles():
@@ -247,3 +259,86 @@ def test_surface_include_options_do_not_recompute_or_leak_omitted_roles():
     )
 
     assert [surface.role for surface in preview.surfaces] == ["horn.inner"]
+
+
+def test_coarse_floor_roundover_floor_and_target_fidelity():
+    preview = build_preview_geometry(
+        ROSSE_ENCLOSURE, PreviewOptionsV1(lod="coarse")
+    )
+
+    assert preview.metadata["actual_segment_counts"]["horn_phi"] >= 64
+    assert preview.metadata["actual_segment_counts"]["horn_axial"] >= 12
+    assert (
+        preview.metadata["actual_segment_counts"]["enclosure_roundover_quarter"]
+        >= 6
+    )
+    for achieved in preview.metadata["fidelity"].values():
+        assert not achieved["vertex_cap_limited"]
+        assert achieved["max_chord_error_mm_achieved"] <= achieved[
+            "max_chord_error_mm_requested"
+        ]
+        assert achieved["max_normal_step_deg_achieved"] <= achieved[
+            "max_normal_step_deg_requested"
+        ]
+
+
+def test_freeform_corner_arcs_are_dense_and_flat_rows_remain_sparser():
+    preview = build_preview_geometry(FREEFORM_FREESTANDING)
+    sampling = preview.metadata["angular_sampling"]
+
+    assert sampling["strategy"] == "stable-union-corner-grid"
+    assert sampling["corner_arc_rows"] >= 4 * 12
+    assert 0 < sampling["flat_side_rows"] < sampling["corner_arc_rows"]
+    assert preview.metadata["fidelity"]["horn.inner"][
+        "max_normal_step_deg_achieved"
+    ] <= 3.0
+
+
+def test_default_osse_coarse_vertices_are_an_exact_subset_of_fine():
+    coarse = build_preview_geometry(
+        OSSE_FREESTANDING, PreviewOptionsV1(lod="coarse")
+    )
+    fine = build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod="fine"))
+    coarse_inner = next(s for s in coarse.surfaces if s.role == "horn.inner")
+    fine_inner = next(s for s in fine.surfaces if s.role == "horn.inner")
+
+    fine_vertices = {tuple(position) for position in fine_inner.positions}
+    assert all(tuple(position) in fine_vertices for position in coarse_inner.positions)
+
+
+def test_tiny_per_body_cap_degrades_to_valid_cap_limited_surfaces():
+    cap = 200
+    preview = build_preview_geometry(
+        ROSSE_ENCLOSURE,
+        PreviewOptionsV1(lod="fine", max_vertices=cap),
+    )
+
+    assert preview.surfaces
+    for surface in preview.surfaces:
+        assert len(surface.positions) <= cap
+        assert surface.indices.size % 3 == 0
+        assert int(surface.indices.max()) < len(surface.positions)
+        accounting = preview.metadata["vertex_accounting"][surface.role]
+        assert accounting["vertices"] == len(surface.positions)
+        assert accounting["vertex_cap_limited"] is True
+
+
+def test_freeform_semantic_station_availability_is_explicit():
+    preview = build_preview_geometry(FREEFORM_FREESTANDING)
+    semantic = preview.metadata["semantic_stations"]
+
+    assert "FREEFORM cross-section stations" in semantic["inserted_first"]
+    assert "FREEFORM H/V anchors" in semantic["inserted_first"]
+    assert "corner tangencies/cardinals" in semantic["inserted_first"]
+    assert isinstance(semantic["unavailable_additively"], list)
+
+
+def test_fine_osse_machine_local_performance_guard():
+    # Warm imports/allocator state; this is deliberately a generous local guard
+    # against accidental density explosions, not a micro-benchmark.
+    build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod="fine"))
+    started = time.perf_counter()
+    build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod="fine"))
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.150, f"fine OSSE preview took {elapsed * 1000.0:.1f} ms"

@@ -1,9 +1,4 @@
-"""Measured stage-1 preview fidelity estimates.
-
-The estimators compare the emitted parameter grid with a four-times denser
-sampling of the same canonical analytic surface.  These are measurements, not
-stage-2 refinement targets.
-"""
+"""Fidelity measurement and error-bounded preview-grid refinement."""
 
 from __future__ import annotations
 
@@ -11,6 +6,231 @@ import math
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+def _angle_degrees(left: NDArray[np.float64], right: NDArray[np.float64]) -> float:
+    dots = np.sum(left * right, axis=-1)
+    return float(np.degrees(np.arccos(np.clip(np.min(dots), -1.0, 1.0))))
+
+
+def _axis_interval_error(
+    points: NDArray[np.float64],
+    normals: NDArray[np.float64],
+    first: int,
+    last: int,
+    *,
+    axis: int,
+    wrapped_length: int | None = None,
+) -> tuple[float, float, int | None]:
+    """Measure every available true sample against one parameter chord."""
+
+    if wrapped_length is None:
+        candidates = np.arange(first + 1, last, dtype=np.int64)
+        span = last - first
+        endpoint_last = last
+    else:
+        span = (last - first) % wrapped_length
+        candidates = (first + np.arange(1, span, dtype=np.int64)) % wrapped_length
+        endpoint_last = last % wrapped_length
+    if span <= 0:
+        return 0.0, 0.0, None
+
+    if axis == 0:
+        normal_step = _angle_degrees(normals[first], normals[endpoint_last])
+        if not len(candidates):
+            return 0.0, normal_step, None
+        weights = np.arange(1, span, dtype=np.float64)[:, None, None] / span
+        chord = points[first][None, :, :] * (1.0 - weights) + points[endpoint_last][
+            None, :, :
+        ] * weights
+        deviations = np.linalg.norm(points[candidates] - chord, axis=2)
+    else:
+        normal_step = _angle_degrees(normals[:, first], normals[:, endpoint_last])
+        if not len(candidates):
+            return 0.0, normal_step, None
+        weights = np.arange(1, span, dtype=np.float64)[None, :, None] / span
+        chord = points[:, first][:, None, :] * (1.0 - weights) + points[:, endpoint_last][
+            :, None, :
+        ] * weights
+        deviations = np.linalg.norm(points[:, candidates] - chord, axis=2)
+
+    flat_index = int(np.argmax(deviations))
+    candidate_axis = np.unravel_index(flat_index, deviations.shape)[axis]
+    split = int(candidates[candidate_axis])
+    if normal_step > 0.0 and float(np.max(deviations)) <= 1.0e-14:
+        split = int(candidates[len(candidates) // 2])
+    return float(np.max(deviations)), normal_step, split
+
+
+def _intervals(indices: list[int], size: int, closed: bool) -> list[tuple[int, int]]:
+    ordered = sorted(set(indices))
+    result = list(zip(ordered[:-1], ordered[1:]))
+    if closed and len(ordered) > 1:
+        result.append((ordered[-1], ordered[0]))
+    return result
+
+
+def _worst_axis_interval(
+    points: NDArray[np.float64],
+    normals: NDArray[np.float64],
+    indices: list[int],
+    *,
+    axis: int,
+    closed: bool,
+    chord_target: float,
+    normal_target: float,
+) -> tuple[float, float, float, int | None]:
+    worst_score = -1.0
+    worst_chord = 0.0
+    worst_normal = 0.0
+    worst_split: int | None = None
+    size = points.shape[axis]
+    for first, last in _intervals(indices, size, closed):
+        chord, normal, split = _axis_interval_error(
+            points,
+            normals,
+            first,
+            last,
+            axis=axis,
+            wrapped_length=size if closed else None,
+        )
+        score = max(chord / max(chord_target, 1.0e-15), normal / normal_target)
+        if score > worst_score + 1.0e-15:
+            worst_score = score
+            worst_chord = chord
+            worst_normal = normal
+            worst_split = split
+    return worst_score, worst_chord, worst_normal, worst_split
+
+
+def adaptive_grid_indices(
+    points: NDArray[np.float64],
+    normals: NDArray[np.float64],
+    initial_t: NDArray[np.int64] | list[int],
+    initial_phi: NDArray[np.int64] | list[int],
+    *,
+    max_chord_error_mm: float,
+    max_normal_step_deg: float,
+    max_vertices: int | None,
+    closed_phi: bool,
+) -> tuple[NDArray[np.int64], NDArray[np.int64], dict[str, float | bool]]:
+    """Largest-error-first refinement of a canonical candidate grid.
+
+    Each interval is checked at every available interior candidate sample.  A
+    chord test uses the true midpoint/interior point against its endpoint chord;
+    the normal test uses the analytic normals at the interval endpoints.  The
+    two parameter directions compete for the next vertex allocation by their
+    normalized worst error.  Using one shared phi-index set is the union-grid
+    alternative allowed by P1.2 and retains FREEFORM row correspondence.
+    """
+
+    sample_points = np.asarray(points, dtype=np.float64)
+    sample_normals = _normalise(np.asarray(normals, dtype=np.float64))
+    t_indices = sorted({int(value) for value in initial_t})
+    phi_indices = sorted({int(value) for value in initial_phi})
+    if len(t_indices) < 2 or len(phi_indices) < 3:
+        raise ValueError("adaptive preview grid needs at least 2x3 initial stations")
+
+    cap = None if max_vertices is None else max(6, int(max_vertices))
+    cap_limited = cap is not None and len(t_indices) * len(phi_indices) > cap
+    if cap_limited:
+        # Semantic/end stations have already been inserted.  Retain the axial
+        # endpoints and a deterministic spread of the remaining stations.
+        max_phi = max(3, cap // 2)
+        if len(phi_indices) > max_phi:
+            take = np.linspace(0, len(phi_indices) - 1, max_phi, dtype=np.int64)
+            phi_indices = [phi_indices[int(index)] for index in take]
+        max_t = max(2, cap // len(phi_indices))
+        if len(t_indices) > max_t:
+            take = np.linspace(0, len(t_indices) - 1, max_t, dtype=np.int64)
+            t_indices = [t_indices[int(index)] for index in take]
+
+    # Directional chord bounds add under bilinear interpolation, hence each
+    # direction receives half the requested surface-error allowance.
+    directional_chord = max_chord_error_mm * 0.5
+    while True:
+        candidates: list[tuple[float, int, int | None]] = []
+        for axis, indices, closed in (
+            (0, t_indices, False),
+            (1, phi_indices, closed_phi),
+        ):
+            for first, last in _intervals(indices, sample_points.shape[axis], closed):
+                chord, normal, split = _axis_interval_error(
+                    sample_points,
+                    sample_normals,
+                    first,
+                    last,
+                    axis=axis,
+                    wrapped_length=sample_points.shape[axis] if closed else None,
+                )
+                score = max(
+                    chord / max(directional_chord, 1.0e-15),
+                    normal / max_normal_step_deg,
+                )
+                if score > 1.0 + 1.0e-12:
+                    candidates.append((score, axis, split))
+        if not candidates:
+            break
+        added = False
+        for _score, axis, split in sorted(
+            candidates, key=lambda item: (-item[0], item[1], item[2] or -1)
+        ):
+            if split is None:
+                cap_limited = True
+                continue
+            target = t_indices if axis == 0 else phi_indices
+            if split in target:
+                continue
+            projected = (
+                (len(t_indices) + 1) * len(phi_indices)
+                if axis == 0
+                else len(t_indices) * (len(phi_indices) + 1)
+            )
+            if cap is not None and projected > cap:
+                cap_limited = True
+                continue
+            target.append(split)
+            added = True
+        t_indices.sort()
+        phi_indices.sort()
+        if not added:
+            cap_limited = True
+            break
+
+    t_error = _worst_axis_interval(
+        sample_points,
+        sample_normals,
+        t_indices,
+        axis=0,
+        closed=False,
+        chord_target=directional_chord,
+        normal_target=max_normal_step_deg,
+    )
+    phi_error = _worst_axis_interval(
+        sample_points,
+        sample_normals,
+        phi_indices,
+        axis=1,
+        closed=closed_phi,
+        chord_target=directional_chord,
+        normal_target=max_normal_step_deg,
+    )
+    achieved_chord = max(np.finfo(np.float64).eps, t_error[1] + phi_error[1])
+    achieved_normal = max(t_error[2], phi_error[2])
+    limited = bool(
+        cap_limited
+        or achieved_chord > max_chord_error_mm * (1.0 + 1.0e-9)
+        or achieved_normal > max_normal_step_deg * (1.0 + 1.0e-9)
+    )
+    return (
+        np.asarray(t_indices, dtype=np.int64),
+        np.asarray(phi_indices, dtype=np.int64),
+        {
+            "max_chord_error_mm": achieved_chord,
+            "max_normal_step_deg": achieved_normal,
+            "vertex_cap_limited": limited,
+        },
+    )
 
 
 def _normalise(vectors: NDArray[np.float64]) -> NDArray[np.float64]:
