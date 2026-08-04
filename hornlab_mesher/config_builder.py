@@ -1445,12 +1445,29 @@ def _validate_mode_contract(params: Mapping[str, Any], mode: str) -> None:
             )
 
 
-def _radial_profile_from_grid(points: np.ndarray, *, name: str) -> np.ndarray:
+def _radial_profile_from_grid(
+    points: np.ndarray,
+    *,
+    name: str,
+    require_axisymmetric: bool = True,
+) -> np.ndarray:
+    """Collapse an azimuthal grid to a meridian profile.
+
+    The inner acoustic surface is the authoritative eligibility check and must
+    be circular to floating-point tolerance.  A freestanding outer surface is
+    constructed by offsetting the triangulated inner grid; on coarse angular
+    grids that discrete normal field introduces a small polygonal radius/z
+    span even when the requested geometry is exactly circular.  Once the inner
+    surface has passed, averaging that construction noise is the correct body-
+    of-revolution profile for the axisymmetric solver.
+    """
     radial = np.linalg.norm(points[:, :, :2], axis=2)
     z_values = points[:, :, 2]
     radial_span = np.ptp(radial, axis=0)
     z_span = np.ptp(z_values, axis=0)
-    if np.any(radial_span > 1.0e-6) or np.any(z_span > 1.0e-6):
+    if require_axisymmetric and (
+        np.any(radial_span > 1.0e-6) or np.any(z_span > 1.0e-6)
+    ):
         max_radial = float(np.max(radial_span)) if radial_span.size else 0.0
         max_z = float(np.max(z_span)) if z_span.size else 0.0
         raise ConfigError(
@@ -1778,7 +1795,9 @@ def build_meridian(
             wall_thickness_mm=float(params["wallThickness"] or 0.0),
         )
         outer_profile_grid = _radial_profile_from_grid(
-            outer_points, name="outer profile"
+            outer_points,
+            name="outer profile",
+            require_axisymmetric=False,
         )
         rear_z = float(
             np.mean(inner_points[:, 0, 2]) - float(params["wallThickness"] or 0.0)
@@ -1787,6 +1806,7 @@ def build_meridian(
         rear_profile = _radial_profile_from_grid(
             rear_points[:, np.newaxis, :],
             name="rear cap",
+            require_axisymmetric=False,
         )[0:1, :]
         outer_indices = _outer_wall_axial_ring_indices(inner_points)
         topology_rows = [rear_profile[0], outer_profile_grid[0]]

@@ -241,6 +241,24 @@ def test_circsym_rejection_reasons_empty_for_eligible_round_config():
     assert circsym_rejection_reasons(_round_osse_config()) == []
 
 
+def test_circsym_accepts_coarse_round_freestanding_offset_noise():
+    config = _round_osse_config(
+        mesh={
+            "angularSegments": 12,
+            "lengthSegments": 4,
+            "wallThickness": 2.0,
+            "throatResolution": 8.0,
+            "mouthResolution": 15.0,
+        }
+    )
+
+    # The offset outer grid is polygonal at this resolution (historically
+    # about 0.06 mm of azimuthal span), but the authoritative inner acoustic
+    # surface is exactly circular and therefore eligible for CircSym.
+    assert circsym_rejection_reasons(config) == []
+    assert build_meridian(config).metadata["outerSegmentCount"] > 0
+
+
 def test_circsym_rejection_reasons_flags_non_circular_cross_section():
     reasons = circsym_rejection_reasons(
         _round_osse_config(cross_section={"aspectRatio": 1.15})
