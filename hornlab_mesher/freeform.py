@@ -6,9 +6,9 @@ C2), and both meridians share one axial ``z`` span.  The implementation follows
 ``/Users/magnus/Code/hornlab-workspace/Waveguide Generator/docs/plans/260801-freeform-hv-spline-profiles.md``
 (especially sections 2.1, 2.2, 2.3, and 2.5).
 
-Profile anchors accept ``[z, r]``, ``[z, r, angleDeg]``, or
-``[z, r, angleDeg, strength]``.  A per-anchor tangent takes precedence over the
-corresponding block-level endpoint angle and tangent scale.
+Profile anchors accept ``[z, r]`` or ``[z, r, angleDeg]``.  A per-anchor
+tangent angle takes precedence over the corresponding block-level endpoint
+angle; tangent speeds are solved automatically to preserve a valid meridian.
 
 Significant reverse-curvature spans are reported by default
 (``inflectionPolicy='warn'``).  They may instead be rejected.
@@ -40,7 +40,6 @@ _FREEFORM_PARAM_KEYS = (
     "profileH",
     "profileV",
     "crossSections",
-    "overshootPolicy",
     "inflectionPolicy",
     "a0",
 )
@@ -100,7 +99,7 @@ class _PlaneSpline:
     throat_angle_deg: float
     mouth_angle_deg: float
     anchor_angles_deg: np.ndarray
-    anchor_strengths: np.ndarray
+    speed_factors: np.ndarray
 
     def radii_at_z(self, z: np.ndarray) -> np.ndarray:
         flat_z = np.asarray(z, dtype=float).reshape(-1)
@@ -147,9 +146,13 @@ class FreeformGeometry:
         try:
             t = float(t_scalar)
         except (TypeError, ValueError) as exc:
-            raise ValueError("FREEFORM cross-section t must be a finite scalar") from exc
+            raise ValueError(
+                "FREEFORM cross-section t must be a finite scalar"
+            ) from exc
         if not math.isfinite(t) or not (0.0 <= t <= 1.0):
-            raise ValueError(f"FREEFORM cross-section t must be in [0, 1], got {t_scalar!r}")
+            raise ValueError(
+                f"FREEFORM cross-section t must be in [0, 1], got {t_scalar!r}"
+            )
 
         phi = np.asarray(phi_array, dtype=float)
         if not np.all(np.isfinite(phi)):
@@ -185,9 +188,7 @@ class FreeformGeometry:
         sample_u = np.linspace(0.0, 1.0, 192)
         for plane_name, plane in (("H", self._profile_h), ("V", self._profile_v)):
             points = np.asarray(plane.spline(sample_u), dtype=float)
-            curve_samples[plane_name] = [
-                [float(z), float(r)] for z, r in points
-            ]
+            curve_samples[plane_name] = [[float(z), float(r)] for z, r in points]
         return {
             "maxNormalDeviationMm": deviations,
             "curveSamples": curve_samples,
@@ -251,7 +252,9 @@ class FreeformGeometry:
             np.concatenate(
                 (
                     np.linspace(5.0e-4, 1.0 - 5.0e-4, 161),
-                    np.asarray([station["t"] for station in self.stations], dtype=float),
+                    np.asarray(
+                        [station["t"] for station in self.stations], dtype=float
+                    ),
                 )
             )
         )
@@ -276,9 +279,7 @@ class FreeformGeometry:
             s_phi = (phi_plus - phi_minus) / (2.0 * dphi)
             s_tt = (t_plus - 2.0 * center + t_minus) / (dt * dt)
             s_phiphi = (phi_plus - 2.0 * center + phi_minus) / (dphi * dphi)
-            s_tphi = (mixed_pp - mixed_pm - mixed_mp + mixed_mm) / (
-                4.0 * dt * dphi
-            )
+            s_tphi = (mixed_pp - mixed_pm - mixed_mp + mixed_mm) / (4.0 * dt * dphi)
 
             cross = np.cross(s_t, s_phi)
             cross_length = np.linalg.norm(cross, axis=1)
@@ -304,9 +305,7 @@ class FreeformGeometry:
                     f"t={tc:.4f}, phi={math.degrees(bad_phi) % 360.0:.2f} deg"
                 )
             mean = (
-                second_e * first_g
-                - 2.0 * second_f * first_f
-                + second_g * first_e
+                second_e * first_g - 2.0 * second_f * first_f + second_g * first_e
             ) / (2.0 * determinant)
             gaussian = (second_e * second_g - second_f * second_f) / determinant
             root = np.sqrt(np.maximum(0.0, mean * mean - gaussian))
@@ -351,7 +350,12 @@ def _freeform_key_normalise(value: Any) -> Any:
     """Recursively encode arrays and numeric sequences without precision loss."""
     if isinstance(value, np.ndarray):
         array = np.ascontiguousarray(value)
-        return ["__ndarray__", list(array.shape), str(array.dtype), array.tobytes().hex()]
+        return [
+            "__ndarray__",
+            list(array.shape),
+            str(array.dtype),
+            array.tobytes().hex(),
+        ]
     if isinstance(value, (list, tuple)):
         try:
             array = np.ascontiguousarray(np.asarray(value, dtype=np.float64))
@@ -398,7 +402,9 @@ def _finite_float(value: Any, field: str) -> float:
     try:
         result = float(value)
     except (OverflowError, TypeError, ValueError) as exc:
-        raise ValueError(f"FREEFORM {field} must be a finite number, got {value!r}") from exc
+        raise ValueError(
+            f"FREEFORM {field} must be a finite number, got {value!r}"
+        ) from exc
     if not math.isfinite(result):
         raise ValueError(f"FREEFORM {field} must be finite, got {value!r}")
     return result
@@ -408,7 +414,6 @@ def _finite_float(value: Any, field: str) -> float:
 class _ParsedAnchors:
     points: np.ndarray
     angles_deg: np.ndarray
-    strengths: np.ndarray
 
 
 def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
@@ -416,8 +421,6 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
         "points",
         "throatAngleDeg",
         "mouthAngleDeg",
-        "throatTangentScale",
-        "mouthTangentScale",
     }
     unknown_keys = [key for key in profile if key not in allowed_keys]
     if unknown_keys:
@@ -428,7 +431,7 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
         isinstance(points, np.ndarray) and points.ndim == 0
     ):
         raise ValueError(
-            f"FREEFORM profile{plane}.points must be a list of 2-4 element rows"
+            f"FREEFORM profile{plane}.points must be a list of 2-3 element rows"
         )
     if not (2 <= len(points) <= 64):
         raise ValueError(
@@ -437,32 +440,25 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
 
     anchors = np.empty((len(points), 2), dtype=float)
     angles_deg = np.full(len(points), np.nan, dtype=float)
-    strengths = np.full(len(points), np.nan, dtype=float)
     for index, row in enumerate(points):
         row_is_sequence = isinstance(row, (list, tuple, np.ndarray)) and not (
             isinstance(row, np.ndarray) and row.ndim == 0
         )
         row_length = len(row) if row_is_sequence else None
-        if row_length not in {2, 3, 4}:
+        if row_length == 4:
             raise ValueError(
-                f"FREEFORM profile{plane}.points[{index}] must have 2, 3, or 4 "
+                f"FREEFORM profile{plane}.points[{index}] per-anchor strength was "
+                "removed; tangent speed is now solved automatically"
+            )
+        if row_length not in {2, 3}:
+            raise ValueError(
+                f"FREEFORM profile{plane}.points[{index}] must have 2 or 3 "
                 f"elements, got {row_length if row_length is not None else type(row).__name__}"
             )
-        anchors[index, 0] = _finite_float(
-            row[0], f"profile{plane}.points[{index}].z"
-        )
-        anchors[index, 1] = _finite_float(
-            row[1], f"profile{plane}.points[{index}].r"
-        )
-        if len(row) == 4 and row[2] is None:
-            raise ValueError(
-                f"FREEFORM profile{plane}.points[{index}] strength requires "
-                "angleDeg in the same row"
-            )
+        anchors[index, 0] = _finite_float(row[0], f"profile{plane}.points[{index}].z")
+        anchors[index, 1] = _finite_float(row[1], f"profile{plane}.points[{index}].r")
         if len(row) >= 3:
-            angle = _finite_float(
-                row[2], f"profile{plane}.points[{index}].angleDeg"
-            )
+            angle = _finite_float(row[2], f"profile{plane}.points[{index}].angleDeg")
             is_endpoint = index in {0, len(points) - 1}
             lower_bracket, upper_bracket = ("[", "]") if is_endpoint else ("(", ")")
             angle_allowed = (
@@ -476,24 +472,13 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
                     f"{anchor_kind}, got {angle:g}"
                 )
             angles_deg[index] = angle
-        if len(row) == 4:
-            strength = _finite_float(
-                row[3], f"profile{plane}.points[{index}].strength"
-            )
-            if not (0.0 < strength <= 3.0):
-                raise ValueError(
-                    f"FREEFORM profile{plane}.points[{index}].strength must be in "
-                    f"(0, 3], got {strength:g}"
-                )
-            strengths[index] = strength
-
     if np.any(anchors[:, 1] <= 0.0):
         raise ValueError(f"FREEFORM profile{plane} anchor radii must all be > 0 mm")
     if np.any(np.diff(anchors[:, 0]) <= 0.0):
         raise ValueError(
             f"FREEFORM profile{plane} anchor z values must be strictly increasing"
         )
-    return _ParsedAnchors(anchors, angles_deg, strengths)
+    return _ParsedAnchors(anchors, angles_deg)
 
 
 def _parse_endpoint_values(
@@ -501,58 +486,37 @@ def _parse_endpoint_values(
     parsed: _ParsedAnchors,
     plane: str,
     default_throat_angle: float,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float]:
     anchors = parsed.points
     if np.isfinite(parsed.angles_deg[0]):
         throat_angle = float(parsed.angles_deg[0])
-        throat_scale = (
-            float(parsed.strengths[0]) if np.isfinite(parsed.strengths[0]) else 1.0
-        )
     else:
         throat_angle = _finite_float(
             profile.get("throatAngleDeg", default_throat_angle),
             f"profile{plane}.throatAngleDeg",
-        )
-        throat_scale = _finite_float(
-            profile.get("throatTangentScale", 1.0),
-            f"profile{plane}.throatTangentScale",
         )
 
     last_delta = anchors[-1] - anchors[-2]
     default_mouth_angle = math.degrees(math.atan2(last_delta[1], last_delta[0]))
     if np.isfinite(parsed.angles_deg[-1]):
         mouth_angle = float(parsed.angles_deg[-1])
-        mouth_scale = (
-            float(parsed.strengths[-1]) if np.isfinite(parsed.strengths[-1]) else 1.0
-        )
     else:
         mouth_angle = _finite_float(
             profile.get("mouthAngleDeg", default_mouth_angle),
             f"profile{plane}.mouthAngleDeg",
         )
-        mouth_scale = _finite_float(
-            profile.get("mouthTangentScale", 1.0),
-            f"profile{plane}.mouthTangentScale",
-        )
 
-    for field, angle in (
+    for field_name, angle in (
         ("throatAngleDeg", throat_angle),
         ("mouthAngleDeg", mouth_angle),
     ):
         if not (-90.0 <= angle <= 90.0):
             raise ValueError(
-                f"FREEFORM profile{plane}.{field} must be in [-90, 90] degrees, got {angle:g}"
+                f"FREEFORM profile{plane}.{field_name} must be in [-90, 90] degrees, "
+                f"got {angle:g}"
             )
 
-    for field, scale in (
-        ("throatTangentScale", throat_scale),
-        ("mouthTangentScale", mouth_scale),
-    ):
-        if not (0.0 < scale <= 3.0):
-            raise ValueError(
-                f"FREEFORM profile{plane}.{field} must be in (0, 3], got {scale:g}"
-            )
-    return throat_angle, mouth_angle, throat_scale, mouth_scale
+    return throat_angle, mouth_angle
 
 
 def _quadratic_roots(a: float, b: float, c: float) -> list[float]:
@@ -576,7 +540,11 @@ def _derivative_roots(coefficients: np.ndarray, interval: float) -> list[float]:
         float(coefficients[2]),
     )
     tolerance = 1.0e-12 * max(1.0, interval)
-    return [min(interval, max(0.0, root)) for root in roots if -tolerance <= root <= interval + tolerance]
+    return [
+        min(interval, max(0.0, root))
+        for root in roots
+        if -tolerance <= root <= interval + tolerance
+    ]
 
 
 def _poly_value(coefficients: np.ndarray, local_u: float) -> float:
@@ -594,12 +562,27 @@ def _poly_derivative(coefficients: np.ndarray, local_u: float) -> float:
     )
 
 
-def _validate_plane_spline(plane: _PlaneSpline, overshoot_allowed: bool) -> None:
-    coefficients = np.asarray(plane.spline.c, dtype=float)
-    knots = np.asarray(plane.spline.x, dtype=float)
-    n_segments = knots.size - 1
+@dataclass(frozen=True)
+class _SplineViolation:
+    segment: int
+    message: str
 
-    for segment in range(n_segments):
+
+def _plane_spline_violations(
+    name: str,
+    anchors: np.ndarray,
+    spline: Any,
+    segments: Sequence[int] | None = None,
+) -> list[_SplineViolation]:
+    """Return the same segment failures used by solving and final validation."""
+
+    coefficients = np.asarray(spline.c, dtype=float)
+    knots = np.asarray(spline.x, dtype=float)
+    n_segments = knots.size - 1
+    checked_segments = range(n_segments) if segments is None else segments
+    violations: list[_SplineViolation] = []
+
+    for segment in checked_segments:
         interval = float(knots[segment + 1] - knots[segment])
         z_coeff = coefficients[:, segment, 0]
         r_coeff = coefficients[:, segment, 1]
@@ -611,21 +594,33 @@ def _validate_plane_spline(plane: _PlaneSpline, overshoot_allowed: bool) -> None
             vertex = -float(z_coeff[1]) / (3.0 * float(z_coeff[0]))
             if 0.0 < vertex < interval:
                 z_candidates.append(vertex)
-        minimum_derivative = min(_poly_derivative(z_coeff, value) for value in z_candidates)
+        minimum_derivative = min(
+            _poly_derivative(z_coeff, value) for value in z_candidates
+        )
         if minimum_derivative < -derivative_tol:
-            raise ValueError(
-                f"FREEFORM profile{plane.name} segment {segment} folds backward: "
-                "z'(u) must be non-negative"
+            violations.append(
+                _SplineViolation(
+                    segment,
+                    f"FREEFORM profile{name} segment {segment} folds backward: "
+                    "z'(u) must be non-negative",
+                )
             )
+            continue
 
         for root in _derivative_roots(z_coeff, interval):
             at_curve_start = segment == 0 and root <= 1.0e-10
             at_curve_end = segment == n_segments - 1 and interval - root <= 1.0e-10
             if not (at_curve_start or at_curve_end):
-                raise ValueError(
-                    f"FREEFORM profile{plane.name} segment {segment} has z'(u)=0 "
-                    "away from a curve endpoint"
+                violations.append(
+                    _SplineViolation(
+                        segment,
+                        f"FREEFORM profile{name} segment {segment} has z'(u)=0 "
+                        "away from a curve endpoint",
+                    )
                 )
+                break
+        if violations and violations[-1].segment == segment:
+            continue
 
         dense_local = np.linspace(0.0, interval, 257)
         dense_r = np.asarray([_poly_value(r_coeff, value) for value in dense_local])
@@ -634,27 +629,46 @@ def _validate_plane_spline(plane: _PlaneSpline, overshoot_allowed: bool) -> None
             [_poly_value(r_coeff, value) for value in radius_candidates], dtype=float
         )
         if not np.all(np.isfinite(dense_r)) or not np.all(np.isfinite(candidate_r)):
-            raise ValueError(
-                f"FREEFORM profile{plane.name} segment {segment} produces non-finite radius"
+            violations.append(
+                _SplineViolation(
+                    segment,
+                    f"FREEFORM profile{name} segment {segment} produces non-finite radius",
+                )
             )
+            continue
         if float(min(np.min(dense_r), np.min(candidate_r))) <= 0.0:
-            raise ValueError(
-                f"FREEFORM profile{plane.name} segment {segment} produces a non-positive radius"
+            violations.append(
+                _SplineViolation(
+                    segment,
+                    f"FREEFORM profile{name} segment {segment} produces a non-positive radius",
+                )
+            )
+            continue
+
+        r0 = float(anchors[segment, 1])
+        r1 = float(anchors[segment + 1, 1])
+        lower, upper = sorted((r0, r1))
+        tolerance = max(0.05, 1.0e-3 * max(abs(lower), abs(upper)))
+        actual_min = float(min(np.min(dense_r), np.min(candidate_r)))
+        actual_max = float(max(np.max(dense_r), np.max(candidate_r)))
+        excursion = max(lower - actual_min, actual_max - upper, 0.0)
+        if excursion > tolerance:
+            violations.append(
+                _SplineViolation(
+                    segment,
+                    f"FREEFORM profile{name} segment {segment}, bounded by anchors "
+                    f"{segment} and {segment + 1}, radius overshoots its anchor range "
+                    f"[{lower:g}, {upper:g}] mm by {excursion:.6g} mm",
+                )
             )
 
-        if not overshoot_allowed:
-            r0 = float(plane.anchors[segment, 1])
-            r1 = float(plane.anchors[segment + 1, 1])
-            lower, upper = sorted((r0, r1))
-            tolerance = 1.0e-10 * max(1.0, abs(lower), abs(upper))
-            actual_min = float(min(np.min(dense_r), np.min(candidate_r)))
-            actual_max = float(max(np.max(dense_r), np.max(candidate_r)))
-            if actual_min < lower - tolerance or actual_max > upper + tolerance:
-                raise ValueError(
-                    f"FREEFORM profile{plane.name} segment {segment} radius overshoots "
-                    f"its anchor range [{lower:g}, {upper:g}] mm; set "
-                    "overshootPolicy='allow' to permit this intentionally"
-                )
+    return violations
+
+
+def _validate_plane_spline(plane: _PlaneSpline) -> None:
+    violations = _plane_spline_violations(plane.name, plane.anchors, plane.spline)
+    if violations:
+        raise ValueError(violations[0].message)
 
 
 def _build_plane_spline(
@@ -662,9 +676,6 @@ def _build_plane_spline(
     parsed: _ParsedAnchors,
     throat_angle_deg: float,
     mouth_angle_deg: float,
-    throat_scale: float,
-    mouth_scale: float,
-    overshoot_allowed: bool,
 ) -> _PlaneSpline:
     # Lazy by design: merely importing hornlab_mesher.freeform does not import scipy.
     from scipy.interpolate import CubicHermiteSpline, PchipInterpolator
@@ -676,41 +687,104 @@ def _build_plane_spline(
 
     z_pchip = PchipInterpolator(anchor_u, anchors[:, 0])
     r_pchip = PchipInterpolator(anchor_u, anchors[:, 1])
-    derivatives = np.column_stack(
+    pchip_derivatives = np.column_stack(
         (z_pchip.derivative()(anchor_u), r_pchip.derivative()(anchor_u))
     )
+    automatic_speeds = np.linalg.norm(pchip_derivatives, axis=1)
+    directions = np.zeros_like(pchip_derivatives)
+    nonzero_speed = automatic_speeds > 0.0
+    directions[nonzero_speed] = (
+        pchip_derivatives[nonzero_speed] / automatic_speeds[nonzero_speed, np.newaxis]
+    )
+    directions[~nonzero_speed, 0] = 1.0
 
-    for index, angle_deg, scale in (
-        (0, throat_angle_deg, throat_scale),
-        (-1, mouth_angle_deg, mouth_scale),
+    for index, angle_deg in (
+        (0, throat_angle_deg),
+        (-1, mouth_angle_deg),
     ):
-        automatic_speed = float(np.linalg.norm(derivatives[index]))
         angle = math.radians(angle_deg)
-        derivatives[index] = automatic_speed * scale * np.asarray(
-            [math.cos(angle), math.sin(angle)]
-        )
+        directions[index] = np.asarray([math.cos(angle), math.sin(angle)])
 
     for index in np.flatnonzero(np.isfinite(parsed.angles_deg)):
-        automatic_speed = float(
-            np.linalg.norm(
-                [
-                    z_pchip.derivative()(anchor_u[index]),
-                    r_pchip.derivative()(anchor_u[index]),
-                ]
-            )
-        )
-        strength = (
-            float(parsed.strengths[index])
-            if np.isfinite(parsed.strengths[index])
-            else 1.0
-        )
         angle = math.radians(float(parsed.angles_deg[index]))
-        derivatives[index] = automatic_speed * strength * np.asarray(
-            [math.cos(angle), math.sin(angle)]
+        directions[index] = np.asarray([math.cos(angle), math.sin(angle)])
+
+    def spline_for(factors: np.ndarray) -> Any:
+        derivatives = (
+            automatic_speeds[:, np.newaxis] * factors[:, np.newaxis] * directions
+        )
+        return CubicHermiteSpline(anchor_u, anchors, derivatives, axis=0)
+
+    def violations_for(
+        factors: np.ndarray, segments: Sequence[int] | None = None
+    ) -> list[_SplineViolation]:
+        return _plane_spline_violations(
+            name, anchors, spline_for(factors), segments=segments
         )
 
-    spline = CubicHermiteSpline(anchor_u, anchors, derivatives, axis=0)
-    inverse_u = np.unique(np.concatenate((np.linspace(0.0, 1.0, _INVERSION_SAMPLE_N), anchor_u)))
+    speed_factors = np.ones(anchors.shape[0], dtype=float)
+    violations = violations_for(speed_factors)
+    # A segment is made feasible by continuously scaling both bounding handles.
+    # Tight bisection avoids the visible geometry steps produced by discrete
+    # halving while retaining a deterministic result at constraint boundaries.
+    for _iteration in range(4 * anchors.shape[0] + 8):
+        if not violations:
+            break
+        for segment in sorted({violation.segment for violation in violations}):
+            if not violations_for(speed_factors, [segment]):
+                continue
+            feasible_scale = None
+            trial_scale = 0.5
+            for _search in range(48):
+                trial = speed_factors.copy()
+                trial[segment : segment + 2] *= trial_scale
+                if not violations_for(trial, [segment]):
+                    feasible_scale = trial_scale
+                    break
+                trial_scale *= 0.5
+            if feasible_scale is None:
+                break
+
+            lower = feasible_scale
+            upper = min(1.0, 2.0 * feasible_scale)
+            for _bisection in range(24):
+                midpoint = 0.5 * (lower + upper)
+                trial = speed_factors.copy()
+                trial[segment : segment + 2] *= midpoint
+                if violations_for(trial, [segment]):
+                    upper = midpoint
+                else:
+                    lower = midpoint
+            speed_factors[segment : segment + 2] *= lower
+        violations = violations_for(speed_factors)
+
+    if violations:
+        raise ValueError(violations[0].message)
+
+    # Recover each handle independently after the coupled reduction.  Every
+    # retained lower bound is globally feasible, and 24 bisections resolve f
+    # substantially tighter than the public continuity requirement.
+    for index in range(speed_factors.size):
+        trial = speed_factors.copy()
+        trial[index] = 1.0
+        if not violations_for(trial):
+            speed_factors[index] = 1.0
+            continue
+        lower = float(speed_factors[index])
+        upper = 1.0
+        for _bisection in range(24):
+            midpoint = 0.5 * (lower + upper)
+            trial[index] = midpoint
+            if violations_for(trial):
+                upper = midpoint
+            else:
+                lower = midpoint
+        speed_factors[index] = lower
+
+    spline = spline_for(speed_factors)
+    inverse_u = np.unique(
+        np.concatenate((np.linspace(0.0, 1.0, _INVERSION_SAMPLE_N), anchor_u))
+    )
     inverse_points = np.asarray(spline(inverse_u), dtype=float)
     plane = _PlaneSpline(
         name=name,
@@ -722,9 +796,9 @@ def _build_plane_spline(
         throat_angle_deg=throat_angle_deg,
         mouth_angle_deg=mouth_angle_deg,
         anchor_angles_deg=parsed.angles_deg.copy(),
-        anchor_strengths=parsed.strengths.copy(),
+        speed_factors=speed_factors,
     )
-    _validate_plane_spline(plane, overshoot_allowed)
+    _validate_plane_spline(plane)
     return plane
 
 
@@ -732,23 +806,29 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, (list, tuple)):
         raise ValueError("FREEFORM crossSections must be a list of 2-32 stations")
     if not (2 <= len(value) <= 32):
-        raise ValueError(f"FREEFORM crossSections requires 2-32 stations, got {len(value)}")
+        raise ValueError(
+            f"FREEFORM crossSections requires 2-32 stations, got {len(value)}"
+        )
 
     stations: list[dict[str, Any]] = []
     for index, raw_station in enumerate(value):
         if not isinstance(raw_station, Mapping):
-            raise ValueError(f"FREEFORM crossSections[{index}] must be a station mapping")
+            raise ValueError(
+                f"FREEFORM crossSections[{index}] must be a station mapping"
+            )
         t = _finite_float(raw_station.get("t"), f"crossSections[{index}].t")
         if not (0.0 <= t <= 1.0):
-            raise ValueError(f"FREEFORM crossSections[{index}].t must be in [0, 1], got {t:g}")
+            raise ValueError(
+                f"FREEFORM crossSections[{index}].t must be in [0, 1], got {t:g}"
+            )
         shape = str(raw_station.get("shape", "")).strip().lower()
         if shape not in {"circle", "ellipse", "superellipse", "rounded_rectangle"}:
             raise ValueError(
                 f"FREEFORM crossSections[{index}].shape must be circle, ellipse, "
                 f"superellipse, or rounded_rectangle; got {shape!r}"
             )
-        if shape == "circle" and index != 0:
-            raise ValueError("FREEFORM shape 'circle' is allowed only at crossSections[0]")
+        if shape == "circle":
+            shape = "ellipse"
 
         if "cornerRatio" in raw_station:
             raise ValueError(
@@ -800,15 +880,19 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
 
     if stations[0]["t"] != 0.0:
         raise ValueError("FREEFORM crossSections first station must have t == 0")
-    if stations[0]["shape"] not in {"circle", "ellipse"}:
-        raise ValueError("FREEFORM crossSections first station shape must be circle or ellipse")
+    if stations[0]["shape"] != "ellipse":
+        raise ValueError(
+            "FREEFORM crossSections first station shape must be circle or ellipse"
+        )
     if stations[-1]["t"] != 1.0:
         raise ValueError("FREEFORM crossSections last station must have t == 1")
     if any(
         float(stations[index + 1]["t"]) <= float(stations[index]["t"])
         for index in range(len(stations) - 1)
     ):
-        raise ValueError("FREEFORM crossSections station t values must be strictly increasing")
+        raise ValueError(
+            "FREEFORM crossSections station t values must be strictly increasing"
+        )
     return stations
 
 
@@ -821,9 +905,7 @@ def _station_descriptor(station: Mapping[str, Any]) -> tuple[Any, ...]:
     return ("rounded_rectangle", float(station["cornerRadiusMm"]))
 
 
-def station_corner_radius_mm(
-    station: Mapping[str, Any], a: float, b: float
-) -> float:
+def station_corner_radius_mm(station: Mapping[str, Any], a: float, b: float) -> float:
     """Return a rounded-rectangle station's effective corner radius in mm."""
     limit = min(float(a), float(b))
     corner = float(station["cornerRadiusMm"])
@@ -847,14 +929,12 @@ def active_rounded_rect_corner_radius_mm(
         station = stations[index]
         weight = blend.station_weight(index)
         if station["shape"] == "rounded_rectangle" and weight > 0.0:
-            weighted_corners.append(
-                (weight, station_corner_radius_mm(station, a, b))
-            )
+            weighted_corners.append((weight, station_corner_radius_mm(station, a, b)))
     if weighted_corners:
         total_weight = sum(weight for weight, _corner in weighted_corners)
-        return sum(
-            weight * corner for weight, corner in weighted_corners
-        ) / total_weight
+        return (
+            sum(weight * corner for weight, corner in weighted_corners) / total_weight
+        )
 
     nearest = min(
         (
@@ -962,7 +1042,11 @@ def _polyline_self_intersects_2d(points: np.ndarray, *, closed: bool) -> bool:
         return float((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
 
     def intersects(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
-        scale = max(1.0, *(abs(float(value)) for value in (a - b)), *(abs(float(value)) for value in (c - d)))
+        scale = max(
+            1.0,
+            *(abs(float(value)) for value in (a - b)),
+            *(abs(float(value)) for value in (c - d)),
+        )
         tolerance = 1.0e-10 * scale * scale
         o1 = orientation(a, b, c)
         o2 = orientation(a, b, d)
@@ -1066,7 +1150,11 @@ def convexity_violations(
     elif n_phi is not None and n_phi < 8:
         raise ValueError(f"FREEFORM convexity check requires n_phi >= 8, got {n_phi}")
     samples = np.asarray(t_samples, dtype=float).reshape(-1)
-    if not np.all(np.isfinite(samples)) or np.any(samples < 0.0) or np.any(samples > 1.0):
+    if (
+        not np.all(np.isfinite(samples))
+        or np.any(samples < 0.0)
+        or np.any(samples > 1.0)
+    ):
         raise ValueError("FREEFORM convexity t_samples must be finite values in [0, 1]")
     violations: list[float] = []
     for t in samples:
@@ -1080,9 +1168,7 @@ def convexity_violations(
                 tangency_samples=2,
             )
         else:
-            phi_values = np.linspace(
-                0.0, 2.0 * math.pi, int(n_phi), endpoint=False
-            )
+            phi_values = np.linspace(0.0, 2.0 * math.pi, int(n_phi), endpoint=False)
         radii = geometry.cross_section_radius(phi_values, float(t))
         points = np.column_stack(
             (radii * np.cos(phi_values), radii * np.sin(phi_values))
@@ -1317,10 +1403,10 @@ def _anchor_tangent_report(plane: _PlaneSpline) -> list[dict[str, float | None]]
             "z": float(anchor[0]),
             "r": float(anchor[1]),
             "angleDeg": float(angle) if math.isfinite(float(angle)) else None,
-            "strength": float(strength) if math.isfinite(float(strength)) else None,
+            "speedFactor": float(speed_factor),
         }
-        for anchor, angle, strength in zip(
-            plane.anchors, plane.anchor_angles_deg, plane.anchor_strengths
+        for anchor, angle, speed_factor in zip(
+            plane.anchors, plane.anchor_angles_deg, plane.speed_factors
         )
     ]
 
@@ -1333,9 +1419,7 @@ def _significant_inflection_spans(
     u = plane.inverse_u
     first = np.asarray(plane.spline.derivative(1)(u), dtype=float)
     second = np.asarray(plane.spline.derivative(2)(u), dtype=float)
-    signed_curvature_numerator = (
-        first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]
-    )
+    signed_curvature_numerator = first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]
     negative = signed_curvature_numerator < 0.0
     changes = np.diff(np.concatenate(([False], negative, [False])).astype(np.int8))
     starts = np.flatnonzero(changes == 1)
@@ -1344,9 +1428,7 @@ def _significant_inflection_spans(
 
     spans: list[_InflectionSpan] = []
     for start, end in zip(starts, ends):
-        tangent_drop_deg = float(
-            tangent_angles_deg[start] - tangent_angles_deg[end]
-        )
+        tangent_drop_deg = float(tangent_angles_deg[start] - tangent_angles_deg[end])
         if tangent_drop_deg <= 1.0:
             continue
         endpoints = np.asarray(plane.spline(u[[start, end]]), dtype=float)
@@ -1379,6 +1461,11 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     """Parse, validate, construct, and memoize a FREEFORM geometry definition."""
     if not isinstance(params, Mapping):
         raise ValueError("FREEFORM params must be a mapping")
+    if "overshootPolicy" in params:
+        raise ValueError(
+            "FREEFORM overshootPolicy was removed; tangent speed is now solved "
+            "automatically"
+        )
     profile_h = params.get("profileH")
     profile_v = params.get("profileV")
     if not isinstance(profile_h, Mapping):
@@ -1397,14 +1484,18 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         rel_tol=0.0,
         abs_tol=z_tolerance,
     ):
-        raise ValueError("FREEFORM profileH and profileV must share the same first anchor z")
+        raise ValueError(
+            "FREEFORM profileH and profileV must share the same first anchor z"
+        )
     if not math.isclose(
         float(anchors_h[-1, 0]),
         float(anchors_v[-1, 0]),
         rel_tol=0.0,
         abs_tol=z_tolerance,
     ):
-        raise ValueError("FREEFORM profileH and profileV must share the same last anchor z")
+        raise ValueError(
+            "FREEFORM profileH and profileV must share the same last anchor z"
+        )
     throat_difference = abs(float(anchors_h[0, 1] - anchors_v[0, 1]))
     if throat_difference > 1.0e-6:
         raise ValueError(
@@ -1423,14 +1514,6 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             stacklevel=2,
         )
 
-    overshoot_policy = (
-        str(params.get("overshootPolicy", "reject")).strip().lower()
-    )
-    if overshoot_policy not in {"reject", "allow"}:
-        raise ValueError(
-            "FREEFORM overshootPolicy must be 'reject' or 'allow', "
-            f"got {params.get('overshootPolicy')!r}"
-        )
     inflection_policy = str(params.get("inflectionPolicy", "warn")).strip().lower()
     if inflection_policy not in {"warn", "reject"}:
         raise ValueError(
@@ -1451,12 +1534,8 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         _FREEFORM_GEOMETRY_CACHE.move_to_end(key)
         return cached
 
-    plane_h = _build_plane_spline(
-        "H", parsed_h, *endpoint_h, overshoot_policy == "allow"
-    )
-    plane_v = _build_plane_spline(
-        "V", parsed_v, *endpoint_v, overshoot_policy == "allow"
-    )
+    plane_h = _build_plane_spline("H", parsed_h, *endpoint_h)
+    plane_v = _build_plane_spline("V", parsed_v, *endpoint_v)
     inflection_spans = {
         "H": _significant_inflection_spans(plane_h),
         "V": _significant_inflection_spans(plane_v),
@@ -1500,7 +1579,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             plane.inverse_z,
             plane.inverse_u,
             plane.anchor_angles_deg,
-            plane.anchor_strengths,
+            plane.speed_factors,
         ):
             array.setflags(write=False)
     _cache_store(key, geometry)
@@ -1577,13 +1656,9 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
     if _is_true(profile_params.get("athParitySampling")) or mode not in (
         uniform_modes | custom_modes
     ):
-        raise ValueError(
-            "FREEFORM samplingMode must be uniform or a custom zmap"
-        )
+        raise ValueError("FREEFORM samplingMode must be uniform or a custom zmap")
 
-    source_shape_value = eval_param(
-        profile_params.get("sourceShape"), 0.0, 1.0
-    )
+    source_shape_value = eval_param(profile_params.get("sourceShape"), 0.0, 1.0)
     if not math.isfinite(source_shape_value):
         raise ValueError(
             "FREEFORM sourceShape must be finite, "
