@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Config normalization and config-driven mesh build orchestration.
 
 This module owns the conversion from external TOML/JSON/imported ATH config
@@ -7,6 +5,8 @@ names into profile parameters, `PointGridHornGeometry`, `MeshDensity`, and the
 final `BuildResult`. The CLI imports these helpers but does not own this
 translation layer.
 """
+
+from __future__ import annotations
 
 import logging
 import math
@@ -1025,7 +1025,6 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             "profileH",
             "profileV",
             "crossSections",
-            "overshootPolicy",
             "inflectionPolicy",
         ):
             value = _pick(profile, names=(key,), default=None)
