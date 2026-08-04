@@ -147,18 +147,28 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
         expected_orientation = (
             "air-side" if surface.role in {"horn.inner", "source_cap"} else "exterior"
         )
-        assert surface.metadata == {
-            "orientation": expected_orientation,
-            "windingChecked": True,
-        }
+        assert surface.metadata["orientation"] == expected_orientation
+        assert surface.metadata["windingChecked"] is True
+        assert surface.metadata["degenerateTriangles"] >= 0
+        assert surface.metadata["orientationAbstainingTriangles"] >= surface.metadata[
+            "degenerateTriangles"
+        ]
+        assert surface.metadata["disagreeingTriangles"] == 0
+        assert surface.metadata["curvature"] in {"analytic", "planar"}
         assert preview.metadata["surface_metadata"][surface.role] == surface.metadata
         assert surface.positions.dtype == np.float64
         assert surface.normals.dtype == np.float64
         assert surface.indices.dtype == np.uint32
         assert surface.positions.shape == surface.normals.shape
+        assert surface.curvature_mean is not None
+        assert surface.curvature_principal is not None
+        assert surface.curvature_mean.shape == (len(surface.positions),)
+        assert surface.curvature_principal.shape == (len(surface.positions),)
         assert surface.positions.ndim == 2 and surface.positions.shape[1] == 3
         assert np.all(np.isfinite(surface.positions))
         assert np.all(np.isfinite(surface.normals))
+        assert np.all(np.isfinite(surface.curvature_mean))
+        assert np.all(np.isfinite(surface.curvature_principal))
         assert np.allclose(np.linalg.norm(surface.normals, axis=1), 1.0, atol=1.0e-3)
         assert surface.indices.ndim == 1 and surface.indices.size % 3 == 0
         assert int(surface.indices.max()) < len(surface.positions)
@@ -174,6 +184,10 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
             assert np.array_equal(surface.normals, np.broadcast_to(normal, surface.normals.shape))
             distances = (surface.positions - surface.positions[0]) @ normal
             assert np.max(np.abs(distances)) < 1.0e-10
+            assert np.array_equal(surface.curvature_mean, np.zeros(len(surface.positions)))
+            assert np.array_equal(
+                surface.curvature_principal, np.zeros(len(surface.positions))
+            )
         else:
             assert surface.normal_method == "analytic-parametric"
 
@@ -246,6 +260,8 @@ def test_identical_calls_have_byte_identical_arrays():
         assert left.positions.tobytes() == right.positions.tobytes()
         assert left.normals.tobytes() == right.normals.tobytes()
         assert left.indices.tobytes() == right.indices.tobytes()
+        assert left.curvature_mean.tobytes() == right.curvature_mean.tobytes()
+        assert left.curvature_principal.tobytes() == right.curvature_principal.tobytes()
 
 
 def test_stage_two_tolerance_options_are_honored_and_reported():
@@ -402,7 +418,31 @@ ORIENTATION_CASES = [
 ]
 
 
-def _analytic_side_point(role, centroid):
+def _mouth_exit_oracle(preview):
+    """Where the inner profile heads as it leaves the mouth, per rim vertex.
+
+    Built from positions only — never from the normals under test — because the
+    rim is the end face of the wall and must face the way the profile exits.
+    That is +z for a mouth that still opens forward and -z once the termination
+    rolls back, so a fixed +z oracle would ratify an inverted rim.
+    """
+
+    surfaces = {surface.role: surface for surface in preview.surfaces}
+    rim, inner = surfaces.get("mouth_rim"), surfaces.get("horn.inner")
+    if rim is None or inner is None:
+        return None
+    if rim.normal_method != "analytic-parametric":
+        # The enclosure rim is a planar annulus in the baffle, not the end face
+        # of a free-standing wall, so it faces +z regardless of the profile.
+        return None
+    n_phi = len(rim.positions) // 2
+    grid = inner.positions.reshape(-1, n_phi, 3)
+    assert np.allclose(grid[-1], rim.positions[:n_phi]), "rim is not the inner mouth ring"
+    direction = grid[-1] - grid[-2]
+    return grid[-1], direction / np.linalg.norm(direction, axis=1, keepdims=True)
+
+
+def _analytic_side_point(role, centroid, mouth_exit=None):
     """Known-side point for the centered analytic configs above, never a volume oracle."""
 
     outside = 1.0e6
@@ -414,6 +454,10 @@ def _analytic_side_point(role, centroid):
         point[:2] = (0.0, 0.0)  # the horn axis is acoustic air near the throat
     elif role in {"horn.outer", "enclosure.side"}:
         point[:2] = outside * radial / radial_length
+    elif role == "mouth_rim" and mouth_exit is not None:
+        ring, directions = mouth_exit
+        nearest = int(np.argmin(np.linalg.norm(ring - centroid, axis=1)))
+        point = centroid + outside * directions[nearest]
     elif role in {"mouth_rim", "source_cap", "enclosure.front"}:
         point[2] = outside
     elif role in {"wall.rear_cap", "enclosure.rear"}:
@@ -430,6 +474,7 @@ def _analytic_side_point(role, centroid):
 def test_orientation_and_winding_contract_across_families_modes_and_lods(config, lod):
     preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
     horn_phi = preview.metadata["actual_segment_counts"]["horn_phi"]
+    mouth_exit = _mouth_exit_oracle(preview)
 
     for surface in preview.surfaces:
         triangles = surface.indices.reshape(-1, 3)
@@ -457,7 +502,10 @@ def test_orientation_and_winding_contract_across_families_modes_and_lods(config,
         sampled_normals = average_normals[sample]
         side_agreement = np.asarray(
             [
-                np.dot(normal, _analytic_side_point(surface.role, centroid) - centroid)
+                np.dot(
+                    normal,
+                    _analytic_side_point(surface.role, centroid, mouth_exit) - centroid,
+                )
                 for normal, centroid in zip(sampled_normals, centroids, strict=True)
             ]
         )

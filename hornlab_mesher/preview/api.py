@@ -7,8 +7,9 @@ the solid exterior (the rim/front roles are front-facing). Every triangle is
 counter-clockwise from its shipped normal side: ``cross(b-a, c-a)`` has a
 strictly positive dot product with the triangle's average vertex normal.
 
-These rules are checked directly for every emitted triangle. Signed volume is
-deliberately not used because most preview roles are open shells.
+These rules are checked directly for every emitted triangle with usable area.
+Near-degenerate sampling slivers abstain from winding decisions. Signed volume
+is deliberately not used because most preview roles are open shells.
 
 ``analytic-parametric`` means finite differences of samples evaluated on the
 true analytic/canonical surface in its real axial and azimuthal parameter
@@ -44,6 +45,7 @@ from ..profiles import build_point_grid
 from ..viewport import build_viewport_geometry_from_config
 from .fidelity import (
     adaptive_grid_indices,
+    analytic_grid_curvature,
     analytic_grid_normals,
     estimate_grid_fidelity,
     resample_grid_vectors,
@@ -56,6 +58,16 @@ _METADATA_VERSION = "hornlab.preview/1.3"
 _MAX_ARC_INTERVALS = 1024
 _MAX_ANGULAR_SAMPLES = 4096
 _MAX_CANONICAL_VERTICES = 1_000_000
+_ORIENTATION_AREA_MEDIAN_FRACTION = 0.125
+_ORIENTATION_COSINE_TOLERANCE = 1.0e-10
+# A sharp morph corner has no defined offset direction, so the outer shell can
+# carry a couple of full-area facets tipped just past perpendicular there. Those
+# are singularities, not inverted patches: an inverted patch points decisively
+# the wrong way (cosine near -1) or covers real area. Tolerate only the
+# combination of "barely past perpendicular" and "negligible share of the
+# surface", and count them where they can be seen.
+_ORIENTATION_SHALLOW_COSINE = 0.25
+_ORIENTATION_SINGULAR_AREA_FRACTION = 0.005
 _ORIENTATION_BY_ROLE = {
     "horn.inner": "air-side",
     "horn.outer": "exterior",
@@ -119,6 +131,7 @@ class PreviewOptionsV1:
     include_enclosure: bool = True
     include_source_cap: bool = True
     include_rear_cap: bool = True
+    include_curvature: bool = True
     max_chord_error_mm: float | None = None
     max_normal_step_deg: float | None = None
     min_silhouette_segments: int | None = None
@@ -134,22 +147,52 @@ class PreviewSurfaceV1:
     shading: str
     normal_method: str
     closed_phi: bool
+    curvature_mean: NDArray[np.float64] | None = None
+    curvature_principal: NDArray[np.float64] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         positions = np.ascontiguousarray(self.positions, dtype=np.float64)
         normals = np.ascontiguousarray(self.normals, dtype=np.float64)
         indices = np.ascontiguousarray(self.indices, dtype=np.uint32).reshape(-1)
+        curvature_mean = (
+            None
+            if self.curvature_mean is None
+            else np.ascontiguousarray(self.curvature_mean, dtype=np.float64).reshape(-1)
+        )
+        curvature_principal = (
+            None
+            if self.curvature_principal is None
+            else np.ascontiguousarray(
+                self.curvature_principal, dtype=np.float64
+            ).reshape(-1)
+        )
         if positions.ndim != 2 or positions.shape[1] != 3:
             raise ValueError(f"{self.role}: positions must have shape (N, 3)")
         if normals.shape != positions.shape:
             raise ValueError(f"{self.role}: normals must be row-aligned with positions")
+        if (curvature_mean is None) != (curvature_principal is None):
+            raise ValueError(
+                f"{self.role}: mean and principal curvature must be provided together"
+            )
+        if curvature_mean is not None and (
+            curvature_mean.shape != (len(positions),)
+            or curvature_principal is None
+            or curvature_principal.shape != (len(positions),)
+        ):
+            raise ValueError(f"{self.role}: curvature must be row-aligned with positions")
         if indices.size % 3:
             raise ValueError(f"{self.role}: indices must contain triangles")
         if indices.size and int(indices.max()) >= len(positions):
             raise ValueError(f"{self.role}: index exceeds vertex count")
         if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(normals)):
             raise ValueError(f"{self.role}: positions and normals must be finite")
+        if curvature_mean is not None and (
+            not np.all(np.isfinite(curvature_mean))
+            or curvature_principal is None
+            or not np.all(np.isfinite(curvature_principal))
+        ):
+            raise ValueError(f"{self.role}: curvature must be finite")
         if not np.allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1.0e-3):
             raise ValueError(f"{self.role}: normals must be unit length")
         if self.shading not in {"smooth", "flat"}:
@@ -161,20 +204,14 @@ class PreviewSurfaceV1:
         orientation = _ORIENTATION_BY_ROLE.get(self.role)
         if orientation is None:
             raise ValueError(f"{self.role}: no preview orientation contract")
-        triangles = indices.reshape(-1, 3)
-        if len(triangles):
-            a = positions[triangles[:, 0]]
-            b = positions[triangles[:, 1]]
-            c = positions[triangles[:, 2]]
-            average_normal = np.mean(normals[triangles], axis=1)
-            agreement = np.einsum(
-                "ij,ij->i", np.cross(b - a, c - a), average_normal
+        orientation_check = _triangle_orientation_analysis(
+            positions, indices, normals
+        )
+        if orientation_check.negative_triangles:
+            raise ValueError(
+                f"{self.role}: {orientation_check.negative_triangles} non-degenerate "
+                "triangle windings disagree with their normals"
             )
-            if np.any(agreement <= 0.0):
-                first = int(np.flatnonzero(agreement <= 0.0)[0])
-                raise ValueError(
-                    f"{self.role}: triangle {first} winding disagrees with its normal"
-                )
         metadata = dict(self.metadata)
         if metadata.get("orientation", orientation) != orientation:
             raise ValueError(
@@ -184,13 +221,32 @@ class PreviewSurfaceV1:
             raise ValueError(f"{self.role}: windingChecked must be true")
         metadata["orientation"] = orientation
         metadata["windingChecked"] = True
+        metadata["degenerateTriangles"] = orientation_check.degenerate_triangles
+        metadata["orientationAbstainingTriangles"] = (
+            orientation_check.abstaining_triangles
+        )
+        metadata["disagreeingTriangles"] = orientation_check.negative_triangles
+        metadata["orientationSingularTriangles"] = orientation_check.singular_triangles
+        metadata["curvature"] = (
+            "absent"
+            if curvature_mean is None
+            else "planar"
+            if self.normal_method == "exact-planar"
+            else "analytic"
+        )
         _validate_finite_metadata(metadata, f"{self.role}.metadata")
         positions.setflags(write=False)
         normals.setflags(write=False)
         indices.setflags(write=False)
+        if curvature_mean is not None:
+            curvature_mean.setflags(write=False)
+            assert curvature_principal is not None
+            curvature_principal.setflags(write=False)
         object.__setattr__(self, "positions", positions)
         object.__setattr__(self, "normals", normals)
         object.__setattr__(self, "indices", indices)
+        object.__setattr__(self, "curvature_mean", curvature_mean)
+        object.__setattr__(self, "curvature_principal", curvature_principal)
         object.__setattr__(self, "metadata", metadata)
 
 
@@ -266,33 +322,136 @@ def _grid_indices(n_t: int, n_phi: int, *, closed_phi: bool) -> NDArray[np.uint3
     return np.asarray(triangles, dtype=np.uint32)
 
 
+@dataclass(frozen=True)
+class _OrientationAnalysis:
+    positive_triangles: int
+    negative_triangles: int
+    degenerate_triangles: int
+    abstaining_triangles: int
+    singular_triangles: int = 0
+
+
+@dataclass(frozen=True)
+class _OrientedIndices:
+    indices: NDArray[np.uint32]
+    degenerate_triangles: int
+    abstaining_triangles: int
+    disagreeing_triangles: int
+    singular_triangles: int = 0
+
+
+def _triangle_orientation_analysis(
+    positions: NDArray[np.float64],
+    indices: NDArray[np.uint32],
+    normals: NDArray[np.float64],
+) -> _OrientationAnalysis:
+    """Classify winding using face/normal cosine and relative triangle area.
+
+    A triangle abstains when its doubled area is at most one eighth of the
+    surface's median positive doubled area. The median supplies a robust local
+    surface scale, while the 12.5% cutoff excludes the measured corner-lattice
+    slivers without forgiving a full-area inverted face. Non-degenerate
+    face/normal cosines within ``1e-10`` of zero also abstain as numerically
+    undecidable.
+    """
+
+    triangles = np.asarray(indices, dtype=np.uint32).reshape(-1, 3)
+    if not len(triangles):
+        return _OrientationAnalysis(0, 0, 0, 0)
+    points = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    vectors = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+    a = points[triangles[:, 0]]
+    b = points[triangles[:, 1]]
+    c = points[triangles[:, 2]]
+    face_vectors = np.cross(b - a, c - a)
+    doubled_area = np.linalg.norm(face_vectors, axis=1)
+    positive_area = doubled_area[doubled_area > 0.0]
+    median_area = float(np.median(positive_area)) if len(positive_area) else 0.0
+    degenerate = doubled_area <= (
+        _ORIENTATION_AREA_MEDIAN_FRACTION * median_area
+    )
+    average_normal = np.mean(vectors[triangles], axis=1)
+    normal_length = np.linalg.norm(average_normal, axis=1)
+    denominator = doubled_area * normal_length
+    cosine = np.zeros(len(triangles), dtype=np.float64)
+    usable_denominator = denominator > 0.0
+    cosine[usable_denominator] = np.einsum(
+        "ij,ij->i", face_vectors[usable_denominator], average_normal[usable_denominator]
+    ) / denominator[usable_denominator]
+    ambiguous = (
+        ~np.isfinite(cosine)
+        | ~usable_denominator
+        | (np.abs(cosine) <= _ORIENTATION_COSINE_TOLERANCE)
+    )
+    abstaining = degenerate | ambiguous
+    positive = (~abstaining) & (cosine > _ORIENTATION_COSINE_TOLERANCE)
+    negative = (~abstaining) & (cosine < -_ORIENTATION_COSINE_TOLERANCE)
+    # Whichever side is outnumbered defines the winding the surface disagrees
+    # with; only that side can be a corner singularity rather than a fault.
+    minority = negative if np.count_nonzero(negative) <= np.count_nonzero(positive) else positive
+    singular = (
+        minority
+        & (np.abs(cosine) < _ORIENTATION_SHALLOW_COSINE)
+        & (
+            doubled_area.sum() <= 0.0
+            or doubled_area[minority].sum()
+            <= _ORIENTATION_SINGULAR_AREA_FRACTION * doubled_area.sum()
+        )
+    )
+    positive &= ~singular
+    negative &= ~singular
+    return _OrientationAnalysis(
+        positive_triangles=int(np.count_nonzero(positive)),
+        negative_triangles=int(np.count_nonzero(negative)),
+        degenerate_triangles=int(np.count_nonzero(degenerate)),
+        abstaining_triangles=int(np.count_nonzero(abstaining | singular)),
+        singular_triangles=int(np.count_nonzero(singular)),
+    )
+
+
 def _orient_indices_to_normals(
     role: str,
     positions: NDArray[np.float64],
     indices: NDArray[np.uint32],
     normals: NDArray[np.float64],
-) -> NDArray[np.uint32]:
+) -> _OrientedIndices:
     """Return one consistently wound index buffer for the shipped normals."""
 
     triangles = np.asarray(indices, dtype=np.uint32).reshape(-1, 3)
-    points = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
-    vectors = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
     if not len(triangles):
-        return triangles.reshape(-1)
-    a = points[triangles[:, 0]]
-    b = points[triangles[:, 1]]
-    c = points[triangles[:, 2]]
-    average_normal = np.mean(vectors[triangles], axis=1)
-    agreement = np.einsum("ij,ij->i", np.cross(b - a, c - a), average_normal)
-    if np.all(agreement > 0.0):
-        return triangles.reshape(-1)
-    if np.all(agreement < 0.0):
-        return triangles[:, (0, 2, 1)].reshape(-1)
-    nonpositive = int(np.count_nonzero(agreement <= 0.0))
-    raise ValueError(
-        f"{role}: inconsistent local orientation ({nonpositive}/{len(triangles)} "
-        "triangles disagree with their normals)"
+        return _OrientedIndices(triangles.reshape(-1), 0, 0, 0)
+    analysis = _triangle_orientation_analysis(positions, triangles, normals)
+    if analysis.positive_triangles and analysis.negative_triangles:
+        disagreeing = min(
+            analysis.positive_triangles, analysis.negative_triangles
+        )
+        raise ValueError(
+            f"{role}: inconsistent local orientation ({disagreeing}/{len(triangles)} "
+            "non-degenerate triangles disagree with their normals)"
+        )
+    if not analysis.positive_triangles and not analysis.negative_triangles:
+        raise ValueError(f"{role}: no non-degenerate triangles establish winding")
+    oriented = (
+        triangles.reshape(-1)
+        if analysis.positive_triangles
+        else triangles[:, (0, 2, 1)].reshape(-1)
     )
+    return _OrientedIndices(
+        indices=np.asarray(oriented, dtype=np.uint32),
+        degenerate_triangles=analysis.degenerate_triangles,
+        abstaining_triangles=analysis.abstaining_triangles,
+        disagreeing_triangles=0,
+        singular_triangles=analysis.singular_triangles,
+    )
+
+
+def _orientation_metadata(result: _OrientedIndices) -> dict[str, int]:
+    return {
+        "degenerateTriangles": result.degenerate_triangles,
+        "orientationAbstainingTriangles": result.abstaining_triangles,
+        "disagreeingTriangles": result.disagreeing_triangles,
+        "orientationSingularTriangles": result.singular_triangles,
+    }
 
 
 def _smooth_grid_surface(
@@ -306,6 +465,7 @@ def _smooth_grid_surface(
     reference_t: NDArray[np.float64] | None = None,
     reference_phi: NDArray[np.float64] | None = None,
     orientation_hint: NDArray[np.float64] | None = None,
+    include_curvature: bool = True,
 ) -> tuple[PreviewSurfaceV1, dict[str, float]]:
     ref_normals = analytic_grid_normals(
         reference,
@@ -313,10 +473,11 @@ def _smooth_grid_surface(
         t_coordinates=reference_t,
         phi_coordinates=reference_phi,
     )
-    if any(
+    resampling = any(
         value is not None
         for value in (point_t, point_phi, reference_t, reference_phi)
-    ):
+    )
+    if resampling:
         normals = resample_parametric_grid(
             ref_normals,
             points.shape[:2],
@@ -331,13 +492,43 @@ def _smooth_grid_surface(
         normals = resample_grid_vectors(
             ref_normals, points.shape[:2], closed_phi=closed_phi
         )
+    curvature_mean = curvature_principal = None
+    if include_curvature:
+        ref_mean, ref_principal = analytic_grid_curvature(
+            reference,
+            closed_phi=closed_phi,
+            t_coordinates=reference_t,
+            phi_coordinates=reference_phi,
+        )
+        if resampling:
+            curvature = resample_parametric_grid(
+                np.stack((ref_mean, ref_principal), axis=2),
+                points.shape[:2],
+                source_t=reference_t,
+                source_phi=reference_phi,
+                target_t=point_t,
+                target_phi=point_phi,
+                closed_phi=closed_phi,
+            )
+        else:
+            curvature = resample_parametric_grid(
+                np.stack((ref_mean, ref_principal), axis=2),
+                points.shape[:2],
+                closed_phi=closed_phi,
+            )
+        curvature_mean = curvature[:, :, 0]
+        curvature_principal = curvature[:, :, 1]
     if orientation_hint is not None:
         hint = np.broadcast_to(np.asarray(orientation_hint, dtype=np.float64), normals.shape)
         if float(np.median(np.sum(normals * hint, axis=2))) < 0.0:
             normals = -normals
+            if curvature_mean is not None:
+                curvature_mean = -curvature_mean
+                assert curvature_principal is not None
+                curvature_principal = -curvature_principal
     positions = points.reshape(-1, 3)
     flat_normals = normals.reshape(-1, 3)
-    indices = _orient_indices_to_normals(
+    oriented = _orient_indices_to_normals(
         role,
         positions,
         _grid_indices(*points.shape[:2], closed_phi=closed_phi),
@@ -346,11 +537,20 @@ def _smooth_grid_surface(
     surface = PreviewSurfaceV1(
         role=role,
         positions=positions,
-        indices=indices,
+        indices=oriented.indices,
         normals=flat_normals,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=closed_phi,
+        curvature_mean=(
+            None if curvature_mean is None else curvature_mean.reshape(-1)
+        ),
+        curvature_principal=(
+            None
+            if curvature_principal is None
+            else curvature_principal.reshape(-1)
+        ),
+        metadata=_orientation_metadata(oriented),
     )
     fidelity = estimate_grid_fidelity(
         points,
@@ -372,12 +572,13 @@ def _flat_strip(
     normal: tuple[float, float, float],
     *,
     closed_phi: bool,
+    include_curvature: bool = True,
 ) -> PreviewSurfaceV1:
     points = np.stack((inner, outer), axis=0)
     normals = np.broadcast_to(np.asarray(normal, dtype=np.float64), points.shape).copy()
     positions = points.reshape(-1, 3)
     flat_normals = normals.reshape(-1, 3)
-    indices = _orient_indices_to_normals(
+    oriented = _orient_indices_to_normals(
         role,
         positions,
         _grid_indices(2, points.shape[1], closed_phi=closed_phi),
@@ -386,11 +587,18 @@ def _flat_strip(
     return PreviewSurfaceV1(
         role=role,
         positions=positions,
-        indices=indices,
+        indices=oriented.indices,
         normals=flat_normals,
         shading="flat",
         normal_method="exact-planar",
         closed_phi=closed_phi,
+        curvature_mean=(
+            np.zeros(len(positions), dtype=np.float64) if include_curvature else None
+        ),
+        curvature_principal=(
+            np.zeros(len(positions), dtype=np.float64) if include_curvature else None
+        ),
+        metadata=_orientation_metadata(oriented),
     )
 
 
@@ -400,8 +608,17 @@ def _flat_cap(
     normal: tuple[float, float, float],
     *,
     closed_phi: bool,
+    include_curvature: bool = True,
 ) -> PreviewSurfaceV1:
+    ring = np.asarray(ring, dtype=np.float64)
     center = np.mean(ring, axis=0)
+    if closed_phi:
+        # A corner-refined morph lattice can contain locally out-of-order phi
+        # samples even though its boundary is star-shaped. The cap has no row
+        # correspondence to preserve, so angular ordering avoids manufacturing
+        # inverted fan faces from that sampling artifact.
+        angles = np.arctan2(ring[:, 1] - center[1], ring[:, 0] - center[0])
+        ring = ring[np.argsort(angles, kind="stable")]
     positions = np.vstack((ring, center))
     center_index = len(ring)
     triangles: list[int] = []
@@ -413,7 +630,7 @@ def _flat_cap(
         else:
             triangles.extend((center_index, ip1, ip))
     normals = np.broadcast_to(np.asarray(normal, dtype=np.float64), positions.shape).copy()
-    indices = _orient_indices_to_normals(
+    oriented = _orient_indices_to_normals(
         role,
         positions,
         np.asarray(triangles, dtype=np.uint32),
@@ -422,12 +639,37 @@ def _flat_cap(
     return PreviewSurfaceV1(
         role=role,
         positions=positions,
-        indices=indices,
+        indices=oriented.indices,
         normals=normals,
         shading="flat",
         normal_method="exact-planar",
         closed_phi=closed_phi,
+        curvature_mean=(
+            np.zeros(len(positions), dtype=np.float64) if include_curvature else None
+        ),
+        curvature_principal=(
+            np.zeros(len(positions), dtype=np.float64) if include_curvature else None
+        ),
+        metadata=_orientation_metadata(oriented),
     )
+
+
+def _mouth_exit_direction(inner: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Per-phi direction the inner profile travels as it leaves the mouth.
+
+    The rim is the end face of the wall, so this is the direction it faces. It
+    is +z only while the mouth still opens forward: a rolled-back termination
+    (R-OSSE at high ``tmax``, any strong roundover) exits backwards, and a fixed
+    +z hint would invert the whole rim rather than orient it.
+    """
+
+    if inner.shape[1] < 2:
+        return np.tile(np.asarray((0.0, 0.0, 1.0), dtype=np.float64), (len(inner), 1))
+    direction = np.asarray(inner[:, -1, :] - inner[:, -2, :], dtype=np.float64)
+    lengths = np.linalg.norm(direction, axis=1, keepdims=True)
+    direction = direction / np.where(lengths > 0.0, lengths, 1.0)
+    direction[lengths[:, 0] <= 1.0e-12] = (0.0, 0.0, 1.0)
+    return direction
 
 
 def _smooth_mouth_rim(
@@ -435,6 +677,8 @@ def _smooth_mouth_rim(
     outer: NDArray[np.float64],
     *,
     closed_phi: bool,
+    exit_direction: NDArray[np.float64],
+    include_curvature: bool,
 ) -> PreviewSurfaceV1:
     grid = np.stack((inner, outer), axis=0)
     surface, _fidelity = _smooth_grid_surface(
@@ -442,7 +686,8 @@ def _smooth_mouth_rim(
         grid,
         grid,
         closed_phi=closed_phi,
-        orientation_hint=np.asarray((0.0, 0.0, 1.0), dtype=np.float64),
+        orientation_hint=np.asarray(exit_direction, dtype=np.float64)[None, :, :],
+        include_curvature=include_curvature,
     )
     return surface
 
@@ -471,6 +716,7 @@ def _source_cap(
     radial_intervals: int,
     *,
     closed_phi: bool,
+    include_curvature: bool,
 ) -> tuple[PreviewSurfaceV1, dict[str, float] | None, dict[str, float | None]]:
     ring = np.asarray(inner[:, 0, :], dtype=np.float64)
     center = np.mean(ring, axis=0)
@@ -485,7 +731,17 @@ def _source_cap(
         "source_cap_radius_mm": float(radius) if math.isfinite(radius) else None,
     }
     if int(geometry.source_shape) == 0 or cap_height <= 1.0e-12 or not math.isfinite(radius):
-        return _flat_cap("source_cap", ring, (0.0, 0.0, 1.0), closed_phi=closed_phi), None, details
+        return (
+            _flat_cap(
+                "source_cap",
+                ring,
+                (0.0, 0.0, 1.0),
+                closed_phi=closed_phi,
+                include_curvature=include_curvature,
+            ),
+            None,
+            details,
+        )
 
     radius = max(float(radius), throat_radius * 1.001)
     sign = -1.0 if int(geometry.source_curv) == -1 else 1.0
@@ -529,7 +785,7 @@ def _source_cap(
 
     normal_array = np.asarray(normals, dtype=np.float64)
     position_array = np.asarray(positions, dtype=np.float64)
-    index_array = _orient_indices_to_normals(
+    oriented = _orient_indices_to_normals(
         "source_cap",
         position_array,
         np.asarray(triangles, dtype=np.uint32),
@@ -538,11 +794,24 @@ def _source_cap(
     surface = PreviewSurfaceV1(
         role="source_cap",
         positions=position_array,
-        indices=index_array,
+        indices=oriented.indices,
         normals=normal_array,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=closed_phi,
+        curvature_mean=(
+            -np.sum((position_array - sphere_center) * normal_array, axis=1)
+            / (radius * radius)
+            if include_curvature
+            else None
+        ),
+        curvature_principal=(
+            -np.sum((position_array - sphere_center) * normal_array, axis=1)
+            / (radius * radius)
+            if include_curvature
+            else None
+        ),
+        metadata=_orientation_metadata(oriented),
     )
     angular_step = 2.0 * math.pi / n_phi if closed_phi else math.pi / max(n_phi - 1, 1)
     polar_step = rim_angle / radial_intervals
@@ -827,6 +1096,8 @@ def _roundover_piece(
     output_grid: NDArray[np.float64],
     reference_grid: NDArray[np.float64],
     center_xy: NDArray[np.float64],
+    *,
+    include_curvature: bool,
 ) -> tuple[PreviewSurfaceV1, dict[str, float]]:
     # Ring zero is ray-aligned to the horn; subsequent rings retain the canonical
     # enclosure plan. The first stitch is therefore the unequal-ring zipper used
@@ -838,6 +1109,25 @@ def _roundover_piece(
     first_ref_normals = resample_grid_vectors(
         native_normals[:2], (2, len(first_ring)), closed_phi=True
     )[0]
+    output_mean = output_principal = first_ref_mean = first_ref_principal = None
+    if include_curvature:
+        native_mean, native_principal = analytic_grid_curvature(
+            reference_grid, closed_phi=True
+        )
+        output_curvature = resample_parametric_grid(
+            np.stack((native_mean, native_principal), axis=2),
+            output_grid.shape[:2],
+            closed_phi=True,
+        )
+        first_curvature = resample_parametric_grid(
+            np.stack((native_mean[:2], native_principal[:2]), axis=2),
+            (2, len(first_ring)),
+            closed_phi=True,
+        )[0]
+        output_mean = output_curvature[:, :, 0]
+        output_principal = output_curvature[:, :, 1]
+        first_ref_mean = first_curvature[:, 0]
+        first_ref_principal = first_curvature[:, 1]
     native_hint = output_grid.copy()
     native_hint[:, :, 0] -= center_xy[0]
     native_hint[:, :, 1] -= center_xy[1]
@@ -845,8 +1135,25 @@ def _roundover_piece(
     if float(np.median(np.sum(output_normals * native_hint, axis=2))) < 0.0:
         output_normals = -output_normals
         first_ref_normals = -first_ref_normals
+        if output_mean is not None:
+            output_mean = -output_mean
+            output_principal = -output_principal
+            first_ref_mean = -first_ref_mean
+            first_ref_principal = -first_ref_principal
     positions = [first_ring, *list(output_grid[1:])]
     normals = [first_ref_normals, *list(output_normals[1:])]
+    curvature_mean = (
+        None
+        if first_ref_mean is None or output_mean is None
+        else np.concatenate((first_ref_mean, output_mean[1:].reshape(-1)))
+    )
+    curvature_principal = (
+        None
+        if first_ref_principal is None or output_principal is None
+        else np.concatenate(
+            (first_ref_principal, output_principal[1:].reshape(-1))
+        )
+    )
     offsets = [0]
     for ring in positions[:-1]:
         offsets.append(offsets[-1] + len(ring))
@@ -860,7 +1167,7 @@ def _roundover_piece(
             triangles.extend((a0, a1, b1, a0, b1, b0))
     position_array = np.vstack(positions)
     normal_array = np.vstack(normals)
-    index_array = _orient_indices_to_normals(
+    oriented = _orient_indices_to_normals(
         role,
         position_array,
         np.asarray(triangles, dtype=np.uint32),
@@ -869,11 +1176,14 @@ def _roundover_piece(
     surface = PreviewSurfaceV1(
         role=role,
         positions=position_array,
-        indices=index_array,
+        indices=oriented.indices,
         normals=normal_array,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=True,
+        curvature_mean=curvature_mean,
+        curvature_principal=curvature_principal,
+        metadata=_orientation_metadata(oriented),
     )
     fidelity = estimate_grid_fidelity(
         output_grid, reference_grid, output_normals, closed_phi=True
@@ -885,11 +1195,16 @@ def _combine_surfaces(role: str, parts: list[PreviewSurfaceV1]) -> PreviewSurfac
     positions: list[NDArray[np.float64]] = []
     normals: list[NDArray[np.float64]] = []
     indices: list[NDArray[np.uint32]] = []
+    curvature_mean: list[NDArray[np.float64]] = []
+    curvature_principal: list[NDArray[np.float64]] = []
     offset = 0
     for part in parts:
         positions.append(part.positions)
         normals.append(part.normals)
         indices.append(part.indices + np.uint32(offset))
+        if part.curvature_mean is not None and part.curvature_principal is not None:
+            curvature_mean.append(part.curvature_mean)
+            curvature_principal.append(part.curvature_principal)
         offset += len(part.positions)
     return PreviewSurfaceV1(
         role=role,
@@ -899,11 +1214,22 @@ def _combine_surfaces(role: str, parts: list[PreviewSurfaceV1]) -> PreviewSurfac
         shading=parts[0].shading,
         normal_method=parts[0].normal_method,
         closed_phi=all(part.closed_phi for part in parts),
+        curvature_mean=(
+            np.concatenate(curvature_mean) if len(curvature_mean) == len(parts) else None
+        ),
+        curvature_principal=(
+            np.concatenate(curvature_principal)
+            if len(curvature_principal) == len(parts)
+            else None
+        ),
     )
 
 
 def _hard_side_surface(
-    front: NDArray[np.float64], back: NDArray[np.float64]
+    front: NDArray[np.float64],
+    back: NDArray[np.float64],
+    *,
+    include_curvature: bool,
 ) -> PreviewSurfaceV1:
     """Build one planar quad per plan edge, duplicating every hard seam."""
 
@@ -920,6 +1246,7 @@ def _hard_side_surface(
                 back[[index, next_index]],
                 tuple(float(value) for value in outward),
                 closed_phi=False,
+                include_curvature=include_curvature,
             )
         )
     return _combine_surfaces("enclosure.side", parts)
@@ -932,6 +1259,7 @@ def _enclosure_surfaces(
     plan_corner_intervals: int,
     *,
     include_rear: bool,
+    include_curvature: bool,
 ) -> tuple[list[PreviewSurfaceV1], dict[str, dict[str, float]]]:
     bounds = enclosure["bounds"]
     depth = float(enclosure["edge_depth"])
@@ -946,9 +1274,21 @@ def _enclosure_surfaces(
     front_aligned = _ray_aligned_ring(front_native, mouth)
     middle = 0.5 * (mouth + front_aligned)
     surfaces = [
-        _flat_strip("mouth_rim", mouth, middle, (0.0, 0.0, 1.0), closed_phi=True),
         _flat_strip(
-            "enclosure.front", middle, front_aligned, (0.0, 0.0, 1.0), closed_phi=True
+            "mouth_rim",
+            mouth,
+            middle,
+            (0.0, 0.0, 1.0),
+            closed_phi=True,
+            include_curvature=include_curvature,
+        ),
+        _flat_strip(
+            "enclosure.front",
+            middle,
+            front_aligned,
+            (0.0, 0.0, 1.0),
+            closed_phi=True,
+            include_curvature=include_curvature,
         ),
     ]
     fidelity: dict[str, dict[str, float]] = {}
@@ -997,13 +1337,23 @@ def _enclosure_surfaces(
         front_out = front_grid(edge_intervals)
         front_ref = front_grid(edge_intervals)
         front_surface, front_fidelity = _roundover_piece(
-            "enclosure.roundover", front_aligned, front_out, front_ref, center_xy
+            "enclosure.roundover",
+            front_aligned,
+            front_out,
+            front_ref,
+            center_xy,
+            include_curvature=include_curvature,
         )
 
         back_out = back_grid(edge_intervals)
         back_ref = back_grid(edge_intervals)
         back_surface, back_fidelity = _roundover_piece(
-            "enclosure.roundover", back_out[0], back_out, back_ref, center_xy
+            "enclosure.roundover",
+            back_out[0],
+            back_out,
+            back_ref,
+            center_xy,
+            include_curvature=include_curvature,
         )
         surfaces.append(_combine_surfaces("enclosure.roundover", [front_surface, back_surface]))
         fidelity["enclosure.roundover"] = {
@@ -1028,7 +1378,9 @@ def _enclosure_surfaces(
         axis=0,
     )
     if int(enclosure["edge_type"]) == 2:
-        side_surface = _hard_side_surface(side_front, side_back)
+        side_surface = _hard_side_surface(
+            side_front, side_back, include_curvature=include_curvature
+        )
         side_fidelity = _plan_fidelity(enclosure, plan_corner_intervals)
     else:
         side_surface, side_fidelity = _smooth_grid_surface(
@@ -1044,12 +1396,21 @@ def _enclosure_surfaces(
                 ),
                 axis=2,
             ),
+            include_curvature=include_curvature,
         )
     surfaces.append(side_surface)
     fidelity["enclosure.side"] = side_fidelity
     if include_rear:
         rear_ring = back_out[-1] if depth > 0.0 else side_back
-        surfaces.append(_flat_cap("enclosure.rear", rear_ring, (0.0, 0.0, -1.0), closed_phi=True))
+        surfaces.append(
+            _flat_cap(
+                "enclosure.rear",
+                rear_ring,
+                (0.0, 0.0, -1.0),
+                closed_phi=True,
+                include_curvature=include_curvature,
+            )
+        )
     return surfaces, fidelity
 
 
@@ -1140,12 +1501,24 @@ def _grid_surface_from_selection(
     *,
     closed_phi: bool,
     normal_sign: float = 1.0,
+    curvature_mean: NDArray[np.float64] | None = None,
+    curvature_principal: NDArray[np.float64] | None = None,
 ) -> PreviewSurfaceV1:
     selected_points = points[np.ix_(t_indices, phi_indices)]
     selected_normals = normal_sign * normals[np.ix_(t_indices, phi_indices)]
     positions = selected_points.reshape(-1, 3)
     flat_normals = selected_normals.reshape(-1, 3)
-    indices = _orient_indices_to_normals(
+    selected_mean = (
+        None
+        if curvature_mean is None
+        else normal_sign * curvature_mean[np.ix_(t_indices, phi_indices)]
+    )
+    selected_principal = (
+        None
+        if curvature_principal is None
+        else normal_sign * curvature_principal[np.ix_(t_indices, phi_indices)]
+    )
+    oriented = _orient_indices_to_normals(
         role,
         positions,
         _grid_indices(*selected_points.shape[:2], closed_phi=closed_phi),
@@ -1154,11 +1527,16 @@ def _grid_surface_from_selection(
     return PreviewSurfaceV1(
         role=role,
         positions=positions,
-        indices=indices,
+        indices=oriented.indices,
         normals=flat_normals,
         shading="smooth",
         normal_method="analytic-parametric",
         closed_phi=closed_phi,
+        curvature_mean=(None if selected_mean is None else selected_mean.reshape(-1)),
+        curvature_principal=(
+            None if selected_principal is None else selected_principal.reshape(-1)
+        ),
+        metadata=_orientation_metadata(oriented),
     )
 
 
@@ -1226,15 +1604,28 @@ def _intervals_for_arc(
 
 def _configuration_has_corners(config: Mapping[str, Any]) -> bool:
     profile = config.get("profile")
-    if not isinstance(profile, Mapping):
-        return False
+    profile = profile if isinstance(profile, Mapping) else {}
     if str(config.get("formula", "OSSE")).strip().upper() == "FREEFORM":
         return any(
             isinstance(station, Mapping)
             and str(station.get("shape", "")).strip().lower() == "rounded_rectangle"
             for station in profile.get("crossSections", ())
         )
-    target = profile.get("morph_target", profile.get("morphTarget", 0))
+    morph = config.get("morph", config.get("MORPH"))
+    morph = morph if isinstance(morph, Mapping) else {}
+    target = morph.get(
+        "morph_target",
+        morph.get(
+            "morphTarget",
+            config.get(
+                "morph_target",
+                config.get(
+                    "morphTarget",
+                    profile.get("morph_target", profile.get("morphTarget", 0)),
+                ),
+            ),
+        ),
+    )
     return isinstance(target, (int, float)) and int(round(float(target))) == 1
 
 
@@ -1406,6 +1797,14 @@ def build_preview_geometry(
         t_coordinates=master_t,
         phi_coordinates=master_phi,
     )
+    inner_curvature_mean = inner_curvature_principal = None
+    if options.include_curvature and options.include_inner:
+        inner_curvature_mean, inner_curvature_principal = analytic_grid_curvature(
+            inner_master,
+            closed_phi=closed_phi,
+            t_coordinates=master_t,
+            phi_coordinates=master_phi,
+        )
     semantic_t, semantic_inserted, semantic_unavailable = _semantic_t_stations(
         config, output, master_t
     )
@@ -1447,6 +1846,8 @@ def build_preview_geometry(
                 phi_indices,
                 closed_phi=closed_phi,
                 normal_sign=-1.0,
+                curvature_mean=inner_curvature_mean,
+                curvature_principal=inner_curvature_principal,
             )
         )
         fidelity["horn.inner"] = _fidelity_record(
@@ -1470,6 +1871,16 @@ def build_preview_geometry(
                 t_coordinates=master_t,
                 phi_coordinates=master_phi,
             )
+            outer_curvature_mean = outer_curvature_principal = None
+            if options.include_curvature:
+                outer_curvature_mean, outer_curvature_principal = (
+                    analytic_grid_curvature(
+                        outer_master,
+                        closed_phi=closed_phi,
+                        t_coordinates=master_t,
+                        phi_coordinates=master_phi,
+                    )
+                )
             surfaces.append(
                 _grid_surface_from_selection(
                     "horn.outer",
@@ -1478,6 +1889,8 @@ def build_preview_geometry(
                     t_indices,
                     phi_indices,
                     closed_phi=closed_phi,
+                    curvature_mean=outer_curvature_mean,
+                    curvature_principal=outer_curvature_principal,
                 )
             )
             fidelity["horn.outer"] = _fidelity_record(
@@ -1491,6 +1904,8 @@ def build_preview_geometry(
                     selected_inner[:, -1, :],
                     selected_outer[:, -1, :],
                     closed_phi=closed_phi,
+                    exit_direction=_mouth_exit_direction(selected_inner),
+                    include_curvature=options.include_curvature,
                 )
             )
             fidelity["mouth_rim"] = _fidelity_record(
@@ -1512,9 +1927,19 @@ def build_preview_geometry(
                 t_coordinates=master_t[t_indices],
                 phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
             )
+            selected_outer_mean = selected_outer_principal = None
+            if options.include_curvature:
+                selected_outer_mean, selected_outer_principal = (
+                    analytic_grid_curvature(
+                        selected_outer_master,
+                        closed_phi=closed_phi,
+                        t_coordinates=master_t[t_indices],
+                        phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
+                    )
+                )
             outer_positions = selected_outer_master.reshape(-1, 3)
             outer_flat_normals = selected_outer_normals.reshape(-1, 3)
-            outer_indices = _orient_indices_to_normals(
+            outer_oriented = _orient_indices_to_normals(
                 "horn.outer",
                 outer_positions,
                 _grid_indices(
@@ -1526,11 +1951,22 @@ def build_preview_geometry(
                 PreviewSurfaceV1(
                     role="horn.outer",
                     positions=outer_positions,
-                    indices=outer_indices,
+                    indices=outer_oriented.indices,
                     normals=outer_flat_normals,
                     shading="smooth",
                     normal_method="analytic-parametric",
                     closed_phi=closed_phi,
+                    curvature_mean=(
+                        None
+                        if selected_outer_mean is None
+                        else selected_outer_mean.reshape(-1)
+                    ),
+                    curvature_principal=(
+                        None
+                        if selected_outer_principal is None
+                        else selected_outer_principal.reshape(-1)
+                    ),
+                    metadata=_orientation_metadata(outer_oriented),
                 )
             )
             fidelity["horn.outer"] = _fidelity_record(
@@ -1544,6 +1980,8 @@ def build_preview_geometry(
                     selected_inner[:, -1, :],
                     selected_outer[:, -1, :],
                     closed_phi=closed_phi,
+                    exit_direction=_mouth_exit_direction(selected_inner),
+                    include_curvature=options.include_curvature,
                 )
             )
             fidelity["mouth_rim"] = _fidelity_record(
@@ -1568,6 +2006,7 @@ def build_preview_geometry(
                 output["formula"],
                 cap_intervals,
                 closed_phi=closed_phi,
+                include_curvature=options.include_curvature,
             )
             passes = cap_fidelity is None or (
                 cap_fidelity["max_chord_error_mm"] <= chord_target
@@ -1671,6 +2110,7 @@ def build_preview_geometry(
             roundover_intervals,
             plan_corner_intervals,
             include_rear=options.include_rear_cap,
+            include_curvature=options.include_curvature,
         )
         surfaces.extend(enclosure_surfaces)
         plan_measurement = _plan_fidelity(
@@ -1720,6 +2160,7 @@ def build_preview_geometry(
                 selected_outer[:, 0, :],
                 (0.0, 0.0, -1.0),
                 closed_phi=closed_phi,
+                include_curvature=options.include_curvature,
             )
         )
         fidelity["wall.rear_cap"] = _fidelity_record(

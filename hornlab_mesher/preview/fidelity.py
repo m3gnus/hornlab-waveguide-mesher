@@ -304,6 +304,83 @@ def _normalise(vectors: NDArray[np.float64]) -> NDArray[np.float64]:
     return vectors / lengths
 
 
+def _phi_derivative(
+    values: NDArray[np.float64],
+    *,
+    closed_phi: bool,
+    phi_coordinates: NDArray[np.float64] | None,
+) -> NDArray[np.float64]:
+    """Differentiate ``(t, phi, ...)`` values along their azimuth rows."""
+
+    samples = np.asarray(values, dtype=np.float64)
+    n_t, n_phi = samples.shape[:2]
+    if phi_coordinates is None:
+        if closed_phi:
+            step = math.tau / n_phi
+            return (np.roll(samples, -1, axis=1) - np.roll(samples, 1, axis=1)) / (
+                2.0 * step
+            )
+        coordinates = np.linspace(0.0, 1.0, n_phi, dtype=np.float64)
+        return np.gradient(samples, coordinates, axis=1, edge_order=2)
+
+    phi = np.asarray(phi_coordinates, dtype=np.float64)
+    if phi.shape != (n_t, n_phi):
+        raise ValueError("azimuth coordinates do not match the surface grid")
+    if closed_phi:
+        unwrapped = np.unwrap(phi, axis=1)
+        previous_phi = np.roll(unwrapped, 1, axis=1)
+        previous_phi[:, 0] -= math.tau
+        next_phi = np.roll(unwrapped, -1, axis=1)
+        next_phi[:, -1] += math.tau
+        h_previous = unwrapped - previous_phi
+        h_next = next_phi - unwrapped
+        if (
+            np.any(~np.isfinite(h_previous))
+            or np.any(~np.isfinite(h_next))
+            or np.any(h_previous <= 0.0)
+            or np.any(h_next <= 0.0)
+        ):
+            raise ValueError("azimuth coordinates must be finite and increasing")
+        coefficient_previous = -h_next / (
+            h_previous * (h_previous + h_next)
+        )
+        coefficient_center = (h_next - h_previous) / (h_previous * h_next)
+        coefficient_next = h_previous / (h_next * (h_previous + h_next))
+        trailing = (1,) * (samples.ndim - 2)
+        return (
+            coefficient_previous.reshape((n_t, n_phi) + trailing)
+            * np.roll(samples, 1, axis=1)
+            + coefficient_center.reshape((n_t, n_phi) + trailing) * samples
+            + coefficient_next.reshape((n_t, n_phi) + trailing)
+            * np.roll(samples, -1, axis=1)
+        )
+    derivative = np.empty_like(samples)
+    for jt in range(n_t):
+        derivative[jt] = np.gradient(
+            samples[jt], phi[jt], axis=0, edge_order=2
+        )
+    return derivative
+
+
+def _t_derivative(
+    values: NDArray[np.float64], t_coordinates: NDArray[np.float64] | None
+) -> NDArray[np.float64]:
+    samples = np.asarray(values, dtype=np.float64)
+    coordinates = (
+        np.asarray(t_coordinates, dtype=np.float64)
+        if t_coordinates is not None
+        else np.arange(samples.shape[0], dtype=np.float64)
+    )
+    if coordinates.shape != (samples.shape[0],):
+        raise ValueError("axial coordinates do not match the surface grid")
+    return np.gradient(
+        samples,
+        coordinates,
+        axis=0,
+        edge_order=2 if samples.shape[0] >= 3 else 1,
+    )
+
+
 def analytic_grid_normals(
     reference: NDArray[np.float64],
     *,
@@ -325,40 +402,90 @@ def analytic_grid_normals(
     if points.shape[0] < 2 or points.shape[1] < 3:
         raise ValueError("reference surface needs at least 2x3 parameter samples")
 
-    if closed_phi and phi_coordinates is None:
-        d_phi = 0.5 * (np.roll(points, -1, axis=1) - np.roll(points, 1, axis=1))
-    elif closed_phi:
-        phi = np.asarray(phi_coordinates, dtype=np.float64)
-        d_phi = np.empty_like(points)
-        for jt in range(points.shape[0]):
-            unwrapped = np.unwrap(phi[jt])
-            extended_phi = np.concatenate(
-                ([unwrapped[-1] - math.tau], unwrapped, [unwrapped[0] + math.tau])
-            )
-            extended_points = np.vstack((points[jt, -1], points[jt], points[jt, 0]))
-            d_phi[jt] = np.gradient(
-                extended_points, extended_phi, axis=0, edge_order=2
-            )[1:-1]
-    elif phi_coordinates is None:
-        d_phi = np.gradient(points, axis=1, edge_order=2)
-    else:
-        phi = np.asarray(phi_coordinates, dtype=np.float64)
-        if phi.shape != points.shape[:2]:
-            raise ValueError("azimuth coordinates do not match the surface grid")
-        d_phi = np.empty_like(points)
-        for jt in range(points.shape[0]):
-            d_phi[jt] = np.gradient(
-                points[jt], phi[jt], axis=0, edge_order=2
-            )
-    t_axis = (
-        np.asarray(t_coordinates, dtype=np.float64)
-        if t_coordinates is not None
-        else np.arange(points.shape[0], dtype=np.float64)
+    d_phi = _phi_derivative(
+        points, closed_phi=closed_phi, phi_coordinates=phi_coordinates
     )
-    d_t = np.gradient(
-        points, t_axis, axis=0, edge_order=2 if points.shape[0] >= 3 else 1
-    )
+    d_t = _t_derivative(points, t_coordinates)
     return _normalise(np.cross(d_phi, d_t))
+
+
+def analytic_grid_curvature(
+    reference: NDArray[np.float64],
+    *,
+    closed_phi: bool,
+    t_coordinates: NDArray[np.float64] | None = None,
+    phi_coordinates: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return signed mean and largest-magnitude principal curvature in 1/mm.
+
+    Input order is ``(t, phi, xyz)``. The first and second fundamental forms
+    use the same ``dP/dphi x dP/dt`` normal convention as
+    :func:`analytic_grid_normals`; reversing that normal reverses both returned
+    signs. ``curvaturePrincipal`` is whichever of ``H +/- sqrt(H^2-K)`` has the
+    larger magnitude (the FRAME-SPEC section 5 ``f32[V]`` convention).
+
+    Central differences are used internally, with periodic azimuth derivatives
+    for closed grids and second-order one-sided endpoint derivatives where the
+    sample count permits. Degenerate metric determinants emit 0.0, never NaN or
+    infinity.
+    """
+
+    points = np.asarray(reference, dtype=np.float64)
+    if points.ndim != 3 or points.shape[2] != 3:
+        raise ValueError("reference surface must have shape (n_t, n_phi, 3)")
+    if points.shape[0] < 2 or points.shape[1] < 3:
+        raise ValueError("reference surface needs at least 2x3 parameter samples")
+
+    d_t = _t_derivative(points, t_coordinates)
+    d_phi = _phi_derivative(
+        points, closed_phi=closed_phi, phi_coordinates=phi_coordinates
+    )
+    normals = _normalise(np.cross(d_phi, d_t))
+    d_tt = _t_derivative(d_t, t_coordinates)
+    d_phi_phi = _phi_derivative(
+        d_phi, closed_phi=closed_phi, phi_coordinates=phi_coordinates
+    )
+    # Averaging the two finite-difference orders makes the discrete mixed term
+    # symmetric without changing the analytic quantity they approximate.
+    d_t_phi = 0.5 * (
+        _phi_derivative(
+            d_t, closed_phi=closed_phi, phi_coordinates=phi_coordinates
+        )
+        + _t_derivative(d_phi, t_coordinates)
+    )
+
+    e = np.einsum("...i,...i->...", d_t, d_t)
+    f = np.einsum("...i,...i->...", d_t, d_phi)
+    g = np.einsum("...i,...i->...", d_phi, d_phi)
+    l = np.einsum("...i,...i->...", d_tt, normals)
+    m = np.einsum("...i,...i->...", d_t_phi, normals)
+    n = np.einsum("...i,...i->...", d_phi_phi, normals)
+    determinant = e * g - f * f
+    determinant_scale = np.maximum(e * g, f * f)
+    valid = (
+        np.isfinite(determinant)
+        & np.isfinite(determinant_scale)
+        & (determinant > 64.0 * np.finfo(np.float64).eps * determinant_scale)
+    )
+    mean = np.zeros(points.shape[:2], dtype=np.float64)
+    gaussian = np.zeros_like(mean)
+    mean[valid] = (
+        e[valid] * n[valid]
+        - 2.0 * f[valid] * m[valid]
+        + g[valid] * l[valid]
+    ) / (2.0 * determinant[valid])
+    gaussian[valid] = (
+        l[valid] * n[valid] - m[valid] * m[valid]
+    ) / determinant[valid]
+    root = np.sqrt(np.maximum(0.0, mean * mean - gaussian))
+    first = mean + root
+    second = mean - root
+    principal = np.where(np.abs(first) >= np.abs(second), first, second)
+    mean[~np.isfinite(mean)] = 0.0
+    principal[~np.isfinite(principal)] = 0.0
+    mean[np.abs(mean) <= 64.0 * np.finfo(np.float64).eps] = 0.0
+    principal[np.abs(principal) <= 64.0 * np.finfo(np.float64).eps] = 0.0
+    return mean, principal
 
 
 def _coordinate_grid(
@@ -433,7 +560,7 @@ def resample_parametric_grid(
     """Interpolate a grid by its true coordinates, periodically when closed."""
 
     values = np.asarray(source, dtype=np.float64)
-    src_t, src_phi_count, _ = values.shape
+    src_t, src_phi_count, components = values.shape
     out_t, out_phi_count = out_shape
     source_t_values, source_phi_values = _coordinate_grid(
         src_t, src_phi_count, source_t, source_phi, closed_phi=closed_phi
@@ -441,7 +568,7 @@ def resample_parametric_grid(
     target_t_values, target_phi_values = _coordinate_grid(
         out_t, out_phi_count, target_t, target_phi, closed_phi=closed_phi
     )
-    result = np.empty((out_t, out_phi_count, 3), dtype=np.float64)
+    result = np.empty((out_t, out_phi_count, components), dtype=np.float64)
     for jt, t_value in enumerate(target_t_values):
         upper = int(np.searchsorted(source_t_values, t_value, side="right"))
         upper = min(max(upper, 1), src_t - 1)
@@ -582,6 +709,7 @@ def estimate_grid_fidelity(
 
 
 __all__ = [
+    "analytic_grid_curvature",
     "analytic_grid_normals",
     "estimate_grid_fidelity",
     "resample_parametric_grid",
