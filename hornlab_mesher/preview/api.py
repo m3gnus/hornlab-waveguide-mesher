@@ -61,6 +61,9 @@ _MAX_ARC_INTERVALS = 1024
 # above it; see ``_plan_ring``.
 _PLAN_CORNER_FLOOR_MM = 0.1
 _FACETED_CORNER_FLOOR_MM = 2.0e-3
+# A ruled-band column whose ring chord is below this is a floored-corner
+# artifact, not geometry: collapse it to the corner triangle the solver builds.
+_DEGENERATE_COLUMN_MM = 1.0e-2
 _MAX_ANGULAR_SAMPLES = 4096
 _MAX_CANONICAL_VERTICES = 1_000_000
 _ORIENTATION_AREA_MEDIAN_FRACTION = 0.125
@@ -607,6 +610,80 @@ def _flat_strip(
     )
 
 
+def _flat_triangle(
+    role: str,
+    points: NDArray[np.float64],
+    normal: tuple[float, float, float],
+    *,
+    include_curvature: bool = True,
+) -> PreviewSurfaceV1:
+    positions = np.asarray(points, dtype=np.float64).reshape(3, 3)
+    flat_normals = np.broadcast_to(
+        np.asarray(normal, dtype=np.float64), positions.shape
+    ).copy()
+    oriented = _orient_indices_to_normals(
+        role,
+        positions,
+        np.asarray((0, 1, 2), dtype=np.uint32),
+        flat_normals,
+    )
+    return PreviewSurfaceV1(
+        role=role,
+        positions=positions,
+        indices=oriented.indices,
+        normals=flat_normals,
+        shading="flat",
+        normal_method="exact-planar",
+        closed_phi=False,
+        curvature_mean=(
+            np.zeros(len(positions), dtype=np.float64) if include_curvature else None
+        ),
+        curvature_principal=(
+            np.zeros(len(positions), dtype=np.float64) if include_curvature else None
+        ),
+        metadata=_orientation_metadata(oriented),
+    )
+
+
+def _simplify_planar_ring(
+    ring: NDArray[np.float64], tolerance: float
+) -> NDArray[np.float64]:
+    """Drop ring vertices whose removal moves the boundary less than ``tolerance``.
+
+    A cap fans every boundary chord against a center a couple of hundred mm
+    away, so a floored plan corner (a 2 um chamfer chord, a fillet's 0.1 mm
+    inner arc walked in thirty samples) turns into fan slivers tens of
+    thousands to one. The cap has no ring-correspondence obligation, so it may
+    simplify its own boundary; the band it abuts stays within ``tolerance`` of
+    the simplified polygon.
+    """
+
+    points = [np.asarray(p, dtype=np.float64) for p in ring]
+    changed = True
+    while changed and len(points) > 3:
+        changed = False
+        for index in range(len(points)):
+            previous = points[index - 1]
+            candidate = points[index]
+            following = points[(index + 1) % len(points)]
+            edge = following - previous
+            edge_len = float(np.linalg.norm(edge))
+            if edge_len <= 1.0e-12:
+                deviation = float(np.linalg.norm(candidate - previous))
+            else:
+                fraction = float(
+                    np.clip(np.dot(candidate - previous, edge) / edge_len**2, 0.0, 1.0)
+                )
+                deviation = float(
+                    np.linalg.norm(candidate - (previous + fraction * edge))
+                )
+            if deviation < tolerance:
+                points.pop(index)
+                changed = True
+                break
+    return np.asarray(points, dtype=np.float64)
+
+
 def _flat_cap(
     role: str,
     ring: NDArray[np.float64],
@@ -614,8 +691,11 @@ def _flat_cap(
     *,
     closed_phi: bool,
     include_curvature: bool = True,
+    simplify_tolerance: float | None = None,
 ) -> PreviewSurfaceV1:
     ring = np.asarray(ring, dtype=np.float64)
+    if simplify_tolerance is not None and closed_phi:
+        ring = _simplify_planar_ring(ring, simplify_tolerance)
     center = np.mean(ring, axis=0)
     if closed_phi:
         # A corner-refined morph lattice can contain locally out-of-order phi
@@ -1048,6 +1128,31 @@ def _adaptive_plan_intervals(
     return left, False
 
 
+def _ray_cast(
+    plan: NDArray[np.float64], center: NDArray[np.float64], direction: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    best: tuple[float, NDArray[np.float64]] | None = None
+    for j, a in enumerate(plan):
+        b = plan[(j + 1) % len(plan)]
+        segment = b[:2] - a[:2]
+        denominator = direction[0] * segment[1] - direction[1] * segment[0]
+        if abs(denominator) <= 1.0e-12:
+            continue
+        offset = a[:2] - center
+        ray_t = (offset[0] * segment[1] - offset[1] * segment[0]) / denominator
+        seg_t = (offset[0] * direction[1] - offset[1] * direction[0]) / denominator
+        if ray_t >= -1.0e-9 and -1.0e-9 <= seg_t <= 1.0 + 1.0e-9:
+            hit = a + np.clip(seg_t, 0.0, 1.0) * (b - a)
+            if best is None or ray_t < best[0]:
+                best = (ray_t, hit)
+    if best is None:
+        angles = np.arctan2(plan[:, 1] - center[1], plan[:, 0] - center[0])
+        target = math.atan2(direction[1], direction[0])
+        delta = np.abs(np.angle(np.exp(1j * (angles - target))))
+        return plan[int(np.argmin(delta))]
+    return best[1]
+
+
 def _ray_aligned_ring(
     plan: NDArray[np.float64], reference: NDArray[np.float64]
 ) -> NDArray[np.float64]:
@@ -1056,28 +1161,130 @@ def _ray_aligned_ring(
     for index, point in enumerate(reference):
         direction = point[:2] - center
         direction /= max(float(np.linalg.norm(direction)), 1.0e-14)
-        best: tuple[float, NDArray[np.float64]] | None = None
-        for j, a in enumerate(plan):
-            b = plan[(j + 1) % len(plan)]
-            segment = b[:2] - a[:2]
-            denominator = direction[0] * segment[1] - direction[1] * segment[0]
-            if abs(denominator) <= 1.0e-12:
-                continue
-            offset = a[:2] - center
-            ray_t = (offset[0] * segment[1] - offset[1] * segment[0]) / denominator
-            seg_t = (offset[0] * direction[1] - offset[1] * direction[0]) / denominator
-            if ray_t >= -1.0e-9 and -1.0e-9 <= seg_t <= 1.0 + 1.0e-9:
-                hit = a + np.clip(seg_t, 0.0, 1.0) * (b - a)
-                if best is None or ray_t < best[0]:
-                    best = (ray_t, hit)
-        if best is None:
-            angles = np.arctan2(plan[:, 1] - center[1], plan[:, 0] - center[0])
-            target = math.atan2(direction[1], direction[0])
-            delta = np.abs(np.angle(np.exp(1j * (angles - target))))
-            result[index] = plan[int(np.argmin(delta))]
-        else:
-            result[index] = best[1]
+        result[index] = _ray_cast(plan, center, direction)
     return result
+
+
+def _plan_corner_angles(
+    plan: NDArray[np.float64], center: NDArray[np.float64]
+) -> list[float]:
+    """Angles (about ``center``) at which the plan breaks tangency.
+
+    A ray-aligned ring only preserves the plan where a ray happens to sample
+    it: between two rays that straddle a convex corner, the aligned polyline
+    chord-cuts the corner. These are the directions that must become columns
+    of their own. A run of tangent breaks packed inside a floored corner
+    radius (the 2 um chamfer chord, a fillet's 0.1 mm inner arc) collapses to
+    its centroid -- one column, not thirty needles.
+    """
+
+    edges = np.roll(plan[:, :2], -1, axis=0) - plan[:, :2]
+    lengths = np.linalg.norm(edges, axis=1)
+    directions = edges / np.where(lengths > 1.0e-12, lengths, 1.0)[:, None]
+    dots = np.clip(
+        np.sum(directions * np.roll(directions, 1, axis=0), axis=1), -1.0, 1.0
+    )
+    turn_deg = np.degrees(np.arccos(dots))
+    flagged = np.flatnonzero((turn_deg > 1.0) & (lengths > 0.0))
+    if len(flagged) == 0:
+        return []
+    # Group cyclically-consecutive flagged vertices.
+    groups: list[list[int]] = [[int(flagged[0])]]
+    for index in flagged[1:]:
+        if int(index) == groups[-1][-1] + 1:
+            groups[-1].append(int(index))
+        else:
+            groups.append([int(index)])
+    if len(groups) > 1 and groups[0][0] == 0 and groups[-1][-1] == len(plan) - 1:
+        groups[0] = groups.pop() + groups[0]
+    angles: list[float] = []
+    for group in groups:
+        points = plan[group, :2]
+        extent = float(
+            np.max(np.linalg.norm(points - points.mean(axis=0), axis=1))
+        )
+        if extent <= 0.5:
+            probes = [points.mean(axis=0)]
+        else:
+            probes = [points[k] for k in range(len(points))]
+        for probe in probes:
+            angles.append(
+                math.atan2(float(probe[1] - center[1]), float(probe[0] - center[0]))
+            )
+    return angles
+
+
+def _insert_corner_columns(
+    mouth: NDArray[np.float64],
+    aligned: NDArray[np.float64],
+    plan: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Add a column at every plan corner the mouth stations miss.
+
+    The baffle strip and the aligned ring stay column-matched; the inserted
+    mouth points interpolate the (smooth) mouth curve, and the inserted
+    aligned points are exact ray hits, which land on the plan's corner. A
+    corner that already coincides with a mouth station (the symmetric default
+    box puts all eight at power-of-two angles) inserts nothing.
+    """
+
+    center = np.mean(mouth[:, :2], axis=0)
+    corner_angles = _plan_corner_angles(plan, center)
+    if not corner_angles:
+        return mouth, aligned
+    mouth_theta = np.arctan2(mouth[:, 1] - center[1], mouth[:, 0] - center[0])
+    n = len(mouth)
+    aligned = np.array(aligned, dtype=np.float64)
+    insertions: list[tuple[int, float, NDArray[np.float64], NDArray[np.float64]]] = []
+    taken: list[float] = []
+    for theta in corner_angles:
+        if any(abs(float(np.angle(np.exp(1j * (theta - t))))) < 1.0e-3 for t in taken):
+            continue
+        offsets = np.abs(np.angle(np.exp(1j * (mouth_theta - theta))))
+        nearest = int(np.argmin(offsets))
+        if float(offsets[nearest]) < 1.0e-3:
+            # A corner that (nearly) coincides with a mouth station gets no
+            # column of its own -- that would rule a hair-width baffle quad
+            # against the station. Move the station's outer point onto the
+            # corner instead: the mouth-side weld is untouched, and the
+            # residual chord-cut at fine LOD (0.1 mm for a station 1 mrad off
+            # the corner) goes with it.
+            direction = np.asarray(
+                (math.cos(theta), math.sin(theta)), dtype=np.float64
+            )
+            aligned[nearest] = _ray_cast(plan, center, direction)
+            taken.append(theta)
+            continue
+        slot = None
+        for i in range(n):
+            span = float(np.angle(np.exp(1j * (mouth_theta[(i + 1) % n] - mouth_theta[i]))))
+            local = float(np.angle(np.exp(1j * (theta - mouth_theta[i]))))
+            if abs(span) < 1.0e-12:
+                continue
+            fraction = local / span
+            if 0.0 < fraction < 1.0 and abs(local) <= abs(span):
+                slot = (i, fraction)
+                break
+        if slot is None:
+            continue
+        i, fraction = slot
+        mouth_point = mouth[i] + fraction * (mouth[(i + 1) % n] - mouth[i])
+        direction = np.asarray((math.cos(theta), math.sin(theta)), dtype=np.float64)
+        aligned_point = _ray_cast(plan, center, direction)
+        taken.append(theta)
+        insertions.append((i, fraction, mouth_point, aligned_point))
+    if not insertions:
+        return mouth, aligned
+    insertions.sort(key=lambda item: (item[0], item[1]))
+    mouth_out = list(map(np.asarray, mouth))
+    aligned_out = list(map(np.asarray, aligned))
+    for i, _fraction, mouth_point, aligned_point in reversed(insertions):
+        mouth_out.insert(i + 1, mouth_point)
+        aligned_out.insert(i + 1, aligned_point)
+    return (
+        np.asarray(mouth_out, dtype=np.float64),
+        np.asarray(aligned_out, dtype=np.float64),
+    )
 
 
 def _ring_angle_table(
@@ -1313,9 +1520,27 @@ def _faceted_band(
     parts: list[PreviewSurfaceV1] = []
     for index in range(len(near)):
         next_index = (index + 1) % len(near)
-        tangent = near[next_index] - near[index]
-        ruling = far[index] - near[index]
-        normal = np.cross(tangent, ruling)
+        near_edge = near[next_index] - near[index]
+        far_edge = far[next_index] - far[index]
+        near_len = float(np.linalg.norm(near_edge))
+        far_len = float(np.linalg.norm(far_edge))
+        # A corner column carries the plan sampler's floored corner radius: a
+        # micron-scale chord on one ring against the real corner facet on the
+        # other. The solver builds a single corner *triangle* there
+        # (``build_sector``'s chamfer is two side parallelograms plus one
+        # corner triangle per quadrant), and emitting the trapezoid instead
+        # split it into that triangle plus a ~10000:1 sliver.
+        if near_len < _DEGENERATE_COLUMN_MM and far_len >= _DEGENERATE_COLUMN_MM:
+            apex = 0.5 * (near[index] + near[next_index])
+            triangle = np.stack((apex, far[index], far[next_index]))
+            normal = np.cross(far_edge, apex - far[index])
+        elif far_len < _DEGENERATE_COLUMN_MM and near_len >= _DEGENERATE_COLUMN_MM:
+            apex = 0.5 * (far[index] + far[next_index])
+            triangle = np.stack((near[index], near[next_index], apex))
+            normal = np.cross(near_edge, apex - near[index])
+        else:
+            triangle = None
+            normal = np.cross(near_edge, far[index] - near[index])
         length = float(np.linalg.norm(normal))
         if length <= 1.0e-12:
             # A collapsed column (coincident plan samples, or a ruling parallel
@@ -1325,16 +1550,26 @@ def _faceted_band(
         centroid = 0.25 * (near[index] + near[next_index] + far[index] + far[next_index])
         if float(np.dot(normal, centroid - center)) < 0.0:
             normal = -normal
-        parts.append(
-            _flat_strip(
-                role,
-                near[[index, next_index]],
-                far[[index, next_index]],
-                tuple(float(value) for value in normal),
-                closed_phi=False,
-                include_curvature=include_curvature,
+        if triangle is not None:
+            parts.append(
+                _flat_triangle(
+                    role,
+                    triangle,
+                    tuple(float(value) for value in normal),
+                    include_curvature=include_curvature,
+                )
             )
-        )
+        else:
+            parts.append(
+                _flat_strip(
+                    role,
+                    near[[index, next_index]],
+                    far[[index, next_index]],
+                    tuple(float(value) for value in normal),
+                    closed_phi=False,
+                    include_curvature=include_curvature,
+                )
+            )
     if not parts:
         raise ValueError(f"{role}: every faceted column collapsed")
     return _combine_surfaces(role, parts)
@@ -1360,6 +1595,13 @@ def _enclosure_surfaces(
         enclosure, z_front, 0.0, corner_intervals=plan_corner_intervals
     )
     front_aligned = _ray_aligned_ring(front_native, mouth)
+    # The aligned ring only preserves the plan where the mouth stations sample
+    # it. On an asymmetric box the plan corners fall between stations, the
+    # aligned polyline chord-cuts them, and the flat baffle plane between that
+    # chord and the corner is covered by neither the baffle nor the edge band:
+    # a real hole (chamfer) or an off-surface ruling (fillet). Give every
+    # missed corner its own column in both rings.
+    mouth, front_aligned = _insert_corner_columns(mouth, front_aligned, front_native)
     # One annulus, not two. An enclosure horn has no wall end face to name --
     # ``config_builder`` forces wall thickness to zero and ``HornEnclosure``
     # forbids outer points, so the baffle runs unbroken from the mouth to the
@@ -1537,6 +1779,11 @@ def _enclosure_surfaces(
                 (0.0, 0.0, -1.0),
                 closed_phi=True,
                 include_curvature=include_curvature,
+                # The rear ring carries the sampler's floored corners (a 2 um
+                # chamfer chord; a fillet's 0.1 mm arc in dozens of samples).
+                # Fanned against a center hundreds of mm away they become
+                # 50000:1 slivers. The real rear face corner is sharp.
+                simplify_tolerance=0.15,
             )
         )
     return surfaces, fidelity
@@ -2399,7 +2646,13 @@ def build_preview_geometry(
             "corner_arc_rows": len(set(phi_indices).intersection(corner_rows)),
             "flat_side_rows": len(phi_indices)
             - len(set(phi_indices).intersection(corner_rows)),
-            "uses_zipper_indices": bool(output.get("enclosure") is not None),
+            # The faceted chamfer band rules per plan column and never
+            # zippers; only the curved fillet path still stitches unequal
+            # rings.
+            "uses_zipper_indices": bool(
+                output.get("enclosure") is not None
+                and not _faceted_edge(output["enclosure"])
+            ),
         },
         "vertex_accounting": {
             surface.role: {

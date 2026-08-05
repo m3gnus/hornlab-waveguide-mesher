@@ -237,3 +237,109 @@ def test_chamfer_reports_no_discretisation_error(lod):
         fillet.metadata["fidelity"]["enclosure.roundover"]["max_chord_error_mm_achieved"]
         > 0.0
     )
+
+
+def polyline_gap(points, ring):
+    """Directed Hausdorff from 2D points to a closed 2D polyline."""
+
+    starts = ring
+    ends = np.roll(ring, -1, axis=0)
+    edges = ends - starts
+    lengths = np.maximum(np.einsum("ij,ij->i", edges, edges), 1.0e-300)
+    worst = 0.0
+    for point in points:
+        t = np.clip(
+            np.einsum("ij,ij->i", edges, point[None, :] - starts) / lengths, 0.0, 1.0
+        )
+        closest = starts + t[:, None] * edges
+        worst = max(worst, float(np.min(np.linalg.norm(closest - point, axis=1))))
+    return worst
+
+
+@pytest.mark.parametrize("edge_type", [1, 2])
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_asymmetric_box_leaves_no_gap_at_plan_corners(edge_type, lod):
+    """The baffle and the edge band must share every plan corner.
+
+    The aligned baffle ring only preserves the plan where a mouth-station ray
+    samples it. The default test box is a square centred on a circular mouth,
+    which parks all eight corners exactly on power-of-two station angles and
+    hid the defect: with asymmetric margins the corners fall between stations,
+    the baffle chord-cuts them, and up to 5.5 mm of the flat front plane was
+    covered by neither surface (chamfer) or ruled off the solver's surface
+    (fillet).
+    """
+
+    cfg = config(edge_type=edge_type, space_t_mm=47.0, space_r_mm=33.0)
+    surfaces = preview(cfg, lod=lod)
+    baffle = np.asarray(surfaces["enclosure.front"].positions, dtype=np.float64)
+    baffle = baffle.reshape(2, -1, 3)
+    outer = baffle[1]
+    band = np.asarray(
+        surfaces["enclosure.roundover"].positions, dtype=np.float64
+    ).reshape(-1, 3)
+    z_front = float(outer[0, 2])
+    band_front = band[np.abs(band[:, 2] - z_front) < 1.0e-6][:, :2]
+    assert len(band_front) >= 8
+    # Both boundaries lie on each other: no hole, no overlap beyond the
+    # floored-corner chord.
+    assert polyline_gap(band_front, outer[:, :2]) < 0.01
+    assert polyline_gap(outer[:, :2], band_front) < 0.01
+
+
+@pytest.mark.parametrize("edge_type", [1, 2])
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_rear_cap_has_no_slivers(edge_type, lod):
+    """The rear cap must not fan micron chords against a distant centroid.
+
+    The rear ring carries the plan sampler's floored corners -- a 2 um chamfer
+    chord, or a fillet's 0.1 mm arc walked in dozens of samples -- and fanning
+    them from the cap centre produced triangles beyond 50000:1. The solver's
+    rear face corner is sharp; the cap simplifies its boundary and stays a
+    plain rectangle fan.
+    """
+
+    cap = triangles(preview(config(edge_type=edge_type), lod=lod)["enclosure.rear"])
+    edge_a = cap[:, 1] - cap[:, 0]
+    edge_b = cap[:, 2] - cap[:, 0]
+    edge_c = cap[:, 2] - cap[:, 1]
+    doubled_area = np.linalg.norm(np.cross(edge_a, edge_b), axis=1)
+    assert np.all(doubled_area > 1.0e-9)
+    longest = np.max(
+        np.stack(
+            [
+                np.linalg.norm(edge_a, axis=1),
+                np.linalg.norm(edge_b, axis=1),
+                np.linalg.norm(edge_c, axis=1),
+            ]
+        ),
+        axis=0,
+    )
+    assert np.max(longest**2 / doubled_area) < 50.0
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_chamfer_band_corner_is_a_triangle_not_a_sliver(lod):
+    """Each corner column collapses to the solver's single corner triangle.
+
+    The floored corner chord (2 um) used to survive as one side of a ruled
+    quad: the real corner triangle plus a 10000:1 sliver across the chord.
+    """
+
+    band = triangles(preview(config(edge_type=2), lod=lod)["enclosure.roundover"])
+    edge_a = band[:, 1] - band[:, 0]
+    edge_b = band[:, 2] - band[:, 0]
+    edge_c = band[:, 2] - band[:, 1]
+    doubled_area = np.linalg.norm(np.cross(edge_a, edge_b), axis=1)
+    assert np.all(doubled_area > 1.0e-9)
+    longest = np.max(
+        np.stack(
+            [
+                np.linalg.norm(edge_a, axis=1),
+                np.linalg.norm(edge_b, axis=1),
+                np.linalg.norm(edge_c, axis=1),
+            ]
+        ),
+        axis=0,
+    )
+    assert np.max(longest**2 / doubled_area) < 50.0
