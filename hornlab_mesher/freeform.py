@@ -1038,34 +1038,48 @@ def _polyline_self_intersects_2d(points: np.ndarray, *, closed: bool) -> bool:
         return False
     segment_count = pts.shape[0] if closed else pts.shape[0] - 1
 
-    def orientation(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-        return float((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    starts = pts[:segment_count]
+    ends = pts[np.arange(1, segment_count + 1) % pts.shape[0]]
+    lower = np.minimum(starts, ends)
+    upper = np.maximum(starts, ends)
 
-    def intersects(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
-        scale = max(
-            1.0,
-            *(abs(float(value)) for value in (a - b)),
-            *(abs(float(value)) for value in (c - d)),
-        )
-        tolerance = 1.0e-10 * scale * scale
-        o1 = orientation(a, b, c)
-        o2 = orientation(a, b, d)
-        o3 = orientation(c, d, a)
-        o4 = orientation(c, d, b)
-        return o1 * o2 < -tolerance and o3 * o4 < -tolerance
-
-    for first in range(segment_count):
-        a = pts[first]
-        b = pts[(first + 1) % pts.shape[0]]
-        for second in range(first + 1, segment_count):
-            if second == first + 1:
+    # A sweep over the segments' x extents keeps the exact orientation test but
+    # avoids comparing every pair in Python.  Dense FREEFORM preview grids can
+    # contain hundreds of points in hundreds of meridians/rings; the previous
+    # nested loop made this safety guard dominate a preview for tens of seconds
+    # even when the ordinary, non-intersecting segments were nowhere near one
+    # another.
+    order = np.argsort(lower[:, 0], kind="stable")
+    active: list[int] = []
+    for first in order:
+        x_min = lower[first, 0]
+        active = [second for second in active if upper[second, 0] >= x_min]
+        a = starts[first]
+        b = ends[first]
+        for second in active:
+            if abs(int(first) - second) == 1:
                 continue
-            if closed and first == 0 and second == segment_count - 1:
+            if closed and {int(first), second} == {0, segment_count - 1}:
                 continue
-            c = pts[second]
-            d = pts[(second + 1) % pts.shape[0]]
-            if intersects(a, b, c, d):
+            if upper[second, 1] < lower[first, 1] or upper[first, 1] < lower[second, 1]:
+                continue
+            c = starts[second]
+            d = ends[second]
+            scale = max(
+                1.0,
+                float(np.max(np.abs(a - b))),
+                float(np.max(np.abs(c - d))),
+            )
+            tolerance = 1.0e-10 * scale * scale
+            ab = b - a
+            cd = d - c
+            o1 = float(ab[0] * (c[1] - a[1]) - ab[1] * (c[0] - a[0]))
+            o2 = float(ab[0] * (d[1] - a[1]) - ab[1] * (d[0] - a[0]))
+            o3 = float(cd[0] * (a[1] - c[1]) - cd[1] * (a[0] - c[0]))
+            o4 = float(cd[0] * (b[1] - c[1]) - cd[1] * (b[0] - c[0]))
+            if o1 * o2 < -tolerance and o3 * o4 < -tolerance:
                 return True
+        active.append(int(first))
     return False
 
 

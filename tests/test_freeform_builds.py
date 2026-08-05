@@ -16,7 +16,11 @@ from hornlab_mesher.config_builder import (
     circsym_rejection_reasons,
 )
 from hornlab_mesher.config_parser import ConfigError
-from hornlab_mesher.freeform import build_freeform_geometry, validate_outer_offset_grid
+from hornlab_mesher.freeform import (
+    _polyline_self_intersects_2d,
+    build_freeform_geometry,
+    validate_outer_offset_grid,
+)
 from hornlab_mesher.normals import validate_orientation
 from hornlab_mesher.profile_sampling import build_point_grid
 
@@ -229,6 +233,21 @@ def test_generated_outer_offset_grid_guard_rejects_a_normal_flip():
 
     with pytest.raises(ValueError, match="outer offset grid has a normal flip"):
         validate_outer_offset_grid(inner, outer, full_circle=True)
+
+
+@pytest.mark.parametrize(
+    "points,closed,expected",
+    [
+        ([[0.0, 0.0], [1.0, 1.0], [0.0, 1.0], [1.0, 0.0]], False, True),
+        ([[0.0, 0.0], [1.0, 1.0], [0.0, 1.0], [1.0, 0.0]], True, True),
+        ([[0.0, 0.0], [1.0, 0.2], [2.0, 0.5], [3.0, 1.0]], False, False),
+        ([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], True, False),
+    ],
+)
+def test_polyline_intersection_sweep_preserves_strict_crossing_contract(
+    points, closed, expected
+):
+    assert _polyline_self_intersects_2d(np.asarray(points), closed=closed) is expected
 
 
 def test_freeform_circsym_eligibility_tracks_actual_azimuthal_span():
