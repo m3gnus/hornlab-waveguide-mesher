@@ -56,6 +56,11 @@ from .fidelity import (
 _API_VERSION = "hornlab.preview/1"
 _METADATA_VERSION = "hornlab.preview/1.3"
 _MAX_ARC_INTERVALS = 1024
+# Plan corner radius floors. ``sample_rounded_rect`` treats anything at or below
+# 1e-3 mm as a sharp box and emits a different vertex count, so both floors stay
+# above it; see ``_plan_ring``.
+_PLAN_CORNER_FLOOR_MM = 0.1
+_FACETED_CORNER_FLOOR_MM = 2.0e-3
 _MAX_ANGULAR_SAMPLES = 4096
 _MAX_CANONICAL_VERTICES = 1_000_000
 _ORIENTATION_AREA_MEDIAN_FRACTION = 0.125
@@ -835,6 +840,18 @@ def _ccw_ring(points: NDArray[np.float64]) -> NDArray[np.float64]:
     return ring if area2 >= 0.0 else ring[::-1].copy()
 
 
+def _faceted_edge(enclosure: Mapping[str, Any]) -> bool:
+    """True when the plan is polygonal at every inset, so its edge is planes.
+
+    ``sample_rounded_rect`` walks ``edge_type == 2`` corners along the straight
+    chord between the arc endpoints, so a chamfered rounded rectangle is a
+    polygon at every ``radial_t`` and the band it sweeps is a fan of planes.
+    Ellipse and superellipse plans stay curved and keep the smooth path.
+    """
+
+    return int(enclosure["plan_type"]) == 1 and int(enclosure["edge_type"]) == 2
+
+
 def _plan_ring(
     enclosure: Mapping[str, Any],
     z: float,
@@ -845,7 +862,18 @@ def _plan_ring(
     bounds = enclosure["bounds"]
     edge = float(enclosure["edge_mm"])
     d = edge * (1.0 - radial_t)
-    radius = max(0.1, edge * radial_t)
+    # The inset ring of an edge treatment has a genuinely sharp plan corner, but
+    # ``sample_rounded_rect`` switches to its four-corner path below 1e-3 mm and
+    # would then emit a different vertex count than the outer ring, so the
+    # radius is floored rather than zeroed. A chamfer's band is ruled column by
+    # column between the two rings, and 0.1 mm of floor there put the emitted
+    # corner 0.05 mm off the plane the solver builds -- right at the finest LOD's
+    # whole chord budget. Faceted plans keep the smallest floor that stays on the
+    # rounded path.
+    radius = max(
+        _FACETED_CORNER_FLOOR_MM if _faceted_edge(enclosure) else _PLAN_CORNER_FLOOR_MM,
+        edge * radial_t,
+    )
     plan_type = int(enclosure["plan_type"])
     if plan_type in {2, 3}:
         count = max(4, 4 * int(corner_intervals))
@@ -891,6 +919,16 @@ def _plan_fidelity(
 
     plan_type = int(enclosure["plan_type"])
     if plan_type == 1:
+        if _faceted_edge(enclosure):
+            # Straight chords, sampled on the chord: the emitted polygon IS the
+            # plan at every subdivision. Modelling it as a 90 degree arc bought
+            # dozens of collinear samples per corner and reported a chord error
+            # the geometry never had.
+            return {
+                "max_chord_error_mm": 0.0,
+                "max_normal_step_deg": 0.0,
+                "reference_density_multiplier": 1,
+            }
         radius = float(enclosure.get("edge_mm", 0.1))
         return {
             "max_chord_error_mm": max(
@@ -961,6 +999,8 @@ def _adaptive_plan_intervals(
     floor: int,
 ) -> tuple[int, bool]:
     if int(enclosure["plan_type"]) == 1:
+        if _faceted_edge(enclosure):
+            return max(1, int(floor)), False
         intervals = _intervals_for_arc(
             float(enclosure.get("edge_mm", 0.1)),
             90.0,
@@ -1252,6 +1292,54 @@ def _hard_side_surface(
     return _combine_surfaces("enclosure.side", parts)
 
 
+def _faceted_band(
+    role: str,
+    near: NDArray[np.float64],
+    far: NDArray[np.float64],
+    center: NDArray[np.float64],
+    *,
+    include_curvature: bool,
+) -> PreviewSurfaceV1:
+    """Build one planar quad per plan segment across a ruled band.
+
+    A chamfer is not a curved surface being approximated -- it is a finite set
+    of planes meeting at real tangent breaks. Ruling it in the plan sampler's
+    own parameterisation keeps every column inside a single plane, so each quad
+    carries that plane's exact normal and the band hard-shades correctly however
+    unevenly the plan itself is sampled. ``center`` is any interior point; it
+    only picks the outward sign.
+    """
+
+    parts: list[PreviewSurfaceV1] = []
+    for index in range(len(near)):
+        next_index = (index + 1) % len(near)
+        tangent = near[next_index] - near[index]
+        ruling = far[index] - near[index]
+        normal = np.cross(tangent, ruling)
+        length = float(np.linalg.norm(normal))
+        if length <= 1.0e-12:
+            # A collapsed column (coincident plan samples, or a ruling parallel
+            # to the plan edge) spans no area and cannot orient itself.
+            continue
+        normal = normal / length
+        centroid = 0.25 * (near[index] + near[next_index] + far[index] + far[next_index])
+        if float(np.dot(normal, centroid - center)) < 0.0:
+            normal = -normal
+        parts.append(
+            _flat_strip(
+                role,
+                near[[index, next_index]],
+                far[[index, next_index]],
+                tuple(float(value) for value in normal),
+                closed_phi=False,
+                include_curvature=include_curvature,
+            )
+        )
+    if not parts:
+        raise ValueError(f"{role}: every faceted column collapsed")
+    return _combine_surfaces(role, parts)
+
+
 def _enclosure_surfaces(
     enclosure: Mapping[str, Any],
     mouth: NDArray[np.float64],
@@ -1272,19 +1360,17 @@ def _enclosure_surfaces(
         enclosure, z_front, 0.0, corner_intervals=plan_corner_intervals
     )
     front_aligned = _ray_aligned_ring(front_native, mouth)
-    middle = 0.5 * (mouth + front_aligned)
+    # One annulus, not two. An enclosure horn has no wall end face to name --
+    # ``config_builder`` forces wall thickness to zero and ``HornEnclosure``
+    # forbids outer points, so the baffle runs unbroken from the mouth to the
+    # edge treatment. Splitting it at the midpoint used to emit half of it as
+    # ``mouth_rim``, which the renderer paints in the horn material and outlines
+    # in edge mode: a hard colour seam and a drawn feature line partway across a
+    # surface that is flat and continuous.
     surfaces = [
         _flat_strip(
-            "mouth_rim",
-            mouth,
-            middle,
-            (0.0, 0.0, 1.0),
-            closed_phi=True,
-            include_curvature=include_curvature,
-        ),
-        _flat_strip(
             "enclosure.front",
-            middle,
+            mouth,
             front_aligned,
             (0.0, 0.0, 1.0),
             closed_phi=True,
@@ -1335,31 +1421,73 @@ def _enclosure_surfaces(
 
         edge_intervals = roundover_intervals if rounded_edge else 1
         front_out = front_grid(edge_intervals)
-        front_ref = front_grid(edge_intervals)
-        front_surface, front_fidelity = _roundover_piece(
-            "enclosure.roundover",
-            front_aligned,
-            front_out,
-            front_ref,
-            center_xy,
-            include_curvature=include_curvature,
-        )
-
         back_out = back_grid(edge_intervals)
-        back_ref = back_grid(edge_intervals)
-        back_surface, back_fidelity = _roundover_piece(
-            "enclosure.roundover",
-            back_out[0],
-            back_out,
-            back_ref,
-            center_xy,
-            include_curvature=include_curvature,
-        )
-        surfaces.append(_combine_surfaces("enclosure.roundover", [front_surface, back_surface]))
-        fidelity["enclosure.roundover"] = {
-            key: max(front_fidelity[key], back_fidelity[key])
-            for key in ("max_chord_error_mm", "max_normal_step_deg")
-        } | {"reference_density_multiplier": 4}
+        if _faceted_edge(enclosure):
+            # A rounded-rectangle chamfer is a ruled band between two
+            # piecewise-linear plans, so it is exactly a fan of planes. Rule it
+            # in the plan's own parameterisation -- the ray-aligned front ring
+            # was welded to the baffle but forced an unequal-ring zipper that
+            # fanned dozens of mouth stations onto one plan sample, and the
+            # resulting slivers were then smooth-shaded across tangent breaks
+            # that are real. The inner boundary still lands on the baffle's
+            # outer edge, now as coincident points along it rather than shared
+            # ones.
+            center_xyz = np.asarray(
+                (center_xy[0], center_xy[1], 0.5 * (z_front + z_back)), dtype=np.float64
+            )
+            surfaces.append(
+                _combine_surfaces(
+                    "enclosure.roundover",
+                    [
+                        _faceted_band(
+                            "enclosure.roundover",
+                            front_out[0],
+                            front_out[-1],
+                            center_xyz,
+                            include_curvature=include_curvature,
+                        ),
+                        _faceted_band(
+                            "enclosure.roundover",
+                            back_out[-1],
+                            back_out[0],
+                            center_xyz,
+                            include_curvature=include_curvature,
+                        ),
+                    ],
+                )
+            )
+            # Planes, exactly represented. The 45 degree steps between adjacent
+            # facets are the geometry itself, not a sampling error, and no
+            # subdivision reduces them.
+            fidelity["enclosure.roundover"] = {
+                "max_chord_error_mm": 0.0,
+                "max_normal_step_deg": 0.0,
+                "reference_density_multiplier": 1,
+            }
+        else:
+            front_surface, front_fidelity = _roundover_piece(
+                "enclosure.roundover",
+                front_aligned,
+                front_out,
+                front_grid(edge_intervals),
+                center_xy,
+                include_curvature=include_curvature,
+            )
+            back_surface, back_fidelity = _roundover_piece(
+                "enclosure.roundover",
+                back_out[0],
+                back_out,
+                back_grid(edge_intervals),
+                center_xy,
+                include_curvature=include_curvature,
+            )
+            surfaces.append(
+                _combine_surfaces("enclosure.roundover", [front_surface, back_surface])
+            )
+            fidelity["enclosure.roundover"] = {
+                key: max(front_fidelity[key], back_fidelity[key])
+                for key in ("max_chord_error_mm", "max_normal_step_deg")
+            } | {"reference_density_multiplier": 4}
         side_front = front_out[-1]
         side_back = back_out[0]
     else:
@@ -2069,7 +2197,6 @@ def build_preview_geometry(
                     else 4 * plan_intervals
                 )
                 estimates = {
-                    "mouth_rim": 2 * len(phi_indices),
                     "enclosure.front": 2 * len(phi_indices),
                     "enclosure.side": (
                         4 * plan_vertices
@@ -2126,10 +2253,18 @@ def build_preview_geometry(
                 corner_intervals=plan_corner_intervals,
             )
         )
-        round_chord = float(enclosure_payload.get("edge_depth", 0.0)) * (
-            1.0 - math.cos(math.pi / (4.0 * roundover_intervals))
-        )
-        round_normal = 90.0 / roundover_intervals
+        # The roundover arc model only describes a fillet. A chamfer sweeps one
+        # ruled interval between two polygons and discretises nothing, so
+        # charging it a fillet's chord error and normal step reported an error
+        # the emitted band does not carry.
+        if _faceted_edge(enclosure_payload):
+            round_chord = 0.0
+            round_normal = 0.0
+        else:
+            round_chord = float(enclosure_payload.get("edge_depth", 0.0)) * (
+                1.0 - math.cos(math.pi / (4.0 * roundover_intervals))
+            )
+            round_normal = 90.0 / roundover_intervals
         for surface in enclosure_surfaces:
             measured = enclosure_fidelity.get(surface.role, {})
             if surface.role == "enclosure.roundover":

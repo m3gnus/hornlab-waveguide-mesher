@@ -103,8 +103,9 @@ FAMILIES = [
     pytest.param(
         ROSSE_ENCLOSURE,
         {
+            # No mouth_rim: an enclosure horn has no wall end face, so the baffle
+            # is one unbroken annulus from the mouth to the edge treatment.
             "horn.inner",
-            "mouth_rim",
             "source_cap",
             "enclosure.front",
             "enclosure.roundover",
