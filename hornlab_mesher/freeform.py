@@ -3,7 +3,7 @@
 The design contract is that every cross-section outline hits the horizontal and
 vertical profile axes exactly, station joins are C1 or better (the shape blend is
 C2), and both meridians share one axial ``z`` span.  The implementation follows
-``/Users/magnus/Code/hornlab-workspace/Waveguide Generator/docs/plans/260801-freeform-hv-spline-profiles.md``
+``https://github.com/m3gnus/waveguide-generator/blob/v1/docs/plans/260801-freeform-hv-spline-profiles.md``
 (especially sections 2.1, 2.2, 2.3, and 2.5).
 
 Profile anchors accept ``[z, r]`` or ``[z, r, angleDeg]``.  A per-anchor
