@@ -343,3 +343,174 @@ def test_chamfer_band_corner_is_a_triangle_not_a_sliver(lod):
         axis=0,
     )
     assert np.max(longest**2 / doubled_area) < 50.0
+
+
+def fillet_deviation_mm(cfg, points):
+    """Distance from each point to the rounded box the solver actually builds.
+
+    A rounded-rectangle fillet keeps every corner arc on the same centre,
+    ``edge`` in from the box corner, so the whole band is the set of points at
+    ``(d/edge)^2 + (h/depth)^2 == 1``, where ``d`` is the planar distance to the
+    sharp inset rectangle the fillet is tangent to and ``h`` the drop from the
+    face. That implicit form covers the four cylinder sides and the four
+    spheroid corners at once, so it needs no tessellation to compare against.
+    """
+
+    enclosure = build_viewport_geometry_from_config(cfg)["enclosure"]
+    bounds = enclosure["bounds"]
+    edge = float(enclosure["edge_mm"])
+    depth = float(enclosure["edge_depth"])
+    x1 = float(bounds["bx1"]) - edge
+    x0 = float(bounds["bx0"]) + edge
+    y1 = float(bounds["by1"]) - edge
+    y0 = float(bounds["by0"]) + edge
+
+    points = np.asarray(points, dtype=np.float64)
+    z_front, z_back = float(bounds["z_front"]), float(bounds["z_back"])
+    front = np.abs(points[:, 2] - z_front) < np.abs(points[:, 2] - z_back)
+    apex = np.where(front, z_front - depth, z_back + depth)
+
+    # Planar distance to the inset rectangle (points never fall inside it).
+    dx = np.maximum(np.maximum(x0 - points[:, 0], points[:, 0] - x1), 0.0)
+    dy = np.maximum(np.maximum(y0 - points[:, 1], points[:, 1] - y1), 0.0)
+    d = np.hypot(dx, dy)
+    h = np.abs(points[:, 2] - apex)
+
+    theta = np.arctan2(d / edge, h / depth)
+    return np.hypot(d - edge * np.sin(theta), h - depth * np.cos(theta))
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_fillet_band_and_its_interiors_stay_on_the_rounded_box(lod):
+    """Vertices *and* triangle interiors sit on the analytic fillet.
+
+    Vertices alone would pass even for the band the first ``_zipper`` used to
+    emit: it fanned mouth stations that do lie on the plan onto a ring
+    carrying one sample per straight side, and the 157 mm needles between them
+    cut clean across the corner. Sampling each triangle's interior is what
+    distinguishes an exactly ruled quad from a needle.
+    """
+
+    cfg = config(edge_type=1)
+    band = triangles(preview(cfg, lod=lod)["enclosure.roundover"])
+    budget = build_preview_geometry(cfg, PreviewOptionsV1(lod=lod)).metadata[
+        "fidelity"
+    ]["enclosure.roundover"]["max_chord_error_mm_requested"]
+
+    weights = np.asarray(
+        [(1, 0, 0), (0, 1, 0), (0, 0, 1), (0.5, 0.5, 0), (0.5, 0, 0.5),
+         (0, 0.5, 0.5), (1 / 3, 1 / 3, 1 / 3)],
+        dtype=np.float64,
+    )
+    samples = np.einsum("kw,twj->ktj", weights, band).reshape(-1, 3)
+    assert float(np.max(fillet_deviation_mm(cfg, samples))) <= budget
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_fillet_band_normals_are_the_analytic_surface_normals(lod):
+    """Every shipped normal is the closed-form one, not a grid difference."""
+
+    cfg = config(edge_type=1)
+    surface = preview(cfg, lod=lod)["enclosure.roundover"]
+    enclosure = build_viewport_geometry_from_config(cfg)["enclosure"]
+    bounds = enclosure["bounds"]
+    edge = float(enclosure["edge_mm"])
+    depth = float(enclosure["edge_depth"])
+    x1, x0 = float(bounds["bx1"]) - edge, float(bounds["bx0"]) + edge
+    y1, y0 = float(bounds["by1"]) - edge, float(bounds["by0"]) + edge
+
+    points = np.asarray(surface.positions, dtype=np.float64)
+    z_front, z_back = float(bounds["z_front"]), float(bounds["z_back"])
+    front = np.abs(points[:, 2] - z_front) < np.abs(points[:, 2] - z_back)
+    apex = np.where(front, z_front - depth, z_back + depth)
+    # Gradient of the implicit form: planar part along the outward offset from
+    # the inset rectangle, axial part along the drop from the face.
+    ox = np.clip(points[:, 0], x0, x1)
+    oy = np.clip(points[:, 1], y0, y1)
+    planar = np.stack((points[:, 0] - ox, points[:, 1] - oy), axis=1)
+    span = np.linalg.norm(planar, axis=1)
+    planar = planar / np.maximum(span, 1.0e-12)[:, None]
+    expected = np.stack(
+        (
+            planar[:, 0] * span / edge**2,
+            planar[:, 1] * span / edge**2,
+            (points[:, 2] - apex) / depth**2,
+        ),
+        axis=1,
+    )
+    expected /= np.linalg.norm(expected, axis=1, keepdims=True)
+    shipped = np.asarray(surface.normals, dtype=np.float64)
+    aligned = np.abs(np.einsum("ij,ij->i", shipped, expected))
+    # Compared as a dot product: arccos near 1 amplifies its own round-off far
+    # past the agreement being measured.
+    assert float(1.0 - aligned.min()) < 1.0e-12
+
+
+def test_fillet_fidelity_responds_to_density():
+    """The reported chord error must be a measurement, not a self-comparison.
+
+    It used to compare the emitted grid against a reference built at the same
+    interval count -- identical arrays, so the number it published described
+    resampling noise and never moved with the tessellation.
+    """
+
+    cfg = config(edge_type=1)
+    reported = [
+        build_preview_geometry(cfg, PreviewOptionsV1(lod=lod)).metadata["fidelity"][
+            "enclosure.roundover"
+        ]
+        for lod in ("coarse", "fine", "inspection")
+    ]
+    achieved = [record["max_chord_error_mm_achieved"] for record in reported]
+    assert achieved[0] > achieved[1] > achieved[2] > 0.0
+    for record in reported:
+        assert record["max_chord_error_mm_achieved"] <= record[
+            "max_chord_error_mm_requested"
+        ]
+        assert record["max_normal_step_deg_achieved"] <= record[
+            "max_normal_step_deg_requested"
+        ]
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_fillet_band_has_no_corner_needles(lod):
+    """The corner collapses to a pole instead of sweeping a floored radius.
+
+    Every ring used to spend ``corner_intervals`` samples on the corner even at
+    the 0.1 mm floor, so adjacent corner samples sat microns apart while the
+    ring step was most of a millimetre. Triangles that touch a corner are now
+    fan triangles off the pole and stay well conditioned; the long quads that
+    remain are the exactly ruled straight sides.
+    """
+
+    cfg = config(edge_type=1)
+    surfaces = preview(cfg, lod=lod)
+    band = triangles(surfaces["enclosure.roundover"])
+    enclosure = build_viewport_geometry_from_config(cfg)["enclosure"]
+    bounds = enclosure["bounds"]
+    edge = float(enclosure["edge_mm"])
+    x1, x0 = float(bounds["bx1"]) - edge, float(bounds["bx0"]) + edge
+    y1, y0 = float(bounds["by1"]) - edge, float(bounds["by0"]) + edge
+
+    centroids = band.mean(axis=1)
+    corner = (
+        (centroids[:, 0] > x1) | (centroids[:, 0] < x0)
+    ) & ((centroids[:, 1] > y1) | (centroids[:, 1] < y0))
+    assert corner.sum() > 0
+
+    edge_a = band[:, 1] - band[:, 0]
+    edge_b = band[:, 2] - band[:, 0]
+    edge_c = band[:, 2] - band[:, 1]
+    doubled_area = np.linalg.norm(np.cross(edge_a, edge_b), axis=1)
+    longest = np.max(
+        np.stack(
+            [
+                np.linalg.norm(edge_a, axis=1),
+                np.linalg.norm(edge_b, axis=1),
+                np.linalg.norm(edge_c, axis=1),
+            ]
+        ),
+        axis=0,
+    )
+    assert np.all(doubled_area > 1.0e-9)
+    assert float(np.max((longest**2 / doubled_area)[corner])) < 30.0

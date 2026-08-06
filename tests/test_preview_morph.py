@@ -69,13 +69,18 @@ def test_rounded_rectangle_morph_builds_at_every_lod(lod, corner_radius):
 
     preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
 
-    assert {surface.role for surface in preview.surfaces} == {
+    roles = {surface.role for surface in preview.surfaces}
+    required = {
         "horn.inner",
         "horn.outer",
         "mouth_rim",
         "source_cap",
         "wall.rear_cap",
     }
+    # The squared-off throat ships as its own hard-shaded role wherever the
+    # emitted mesh breaks tangency there and the two rows can be wound on their
+    # own; a sharp morph corner's singular facets can cost it the second.
+    assert required <= roles <= required | {"wall.throat_band"}
     assert preview.metadata["angular_sampling"]["strategy"] == (
         "stable-union-corner-grid"
     )

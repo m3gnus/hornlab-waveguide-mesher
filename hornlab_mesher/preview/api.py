@@ -64,6 +64,9 @@ _FACETED_CORNER_FLOOR_MM = 2.0e-3
 # A ruled-band column whose ring chord is below this is a floored-corner
 # artifact, not geometry: collapse it to the corner triangle the solver builds.
 _DEGENERATE_COLUMN_MM = 1.0e-2
+# Dihedral angle across the emitted throat band above which it and the offset
+# shell are two faces rather than one curved surface; see _outer_shell_surfaces.
+_THROAT_JOG_CREASE_DEG = 15.0
 _MAX_ANGULAR_SAMPLES = 4096
 _MAX_CANONICAL_VERTICES = 1_000_000
 _ORIENTATION_AREA_MEDIAN_FRACTION = 0.125
@@ -79,6 +82,7 @@ _ORIENTATION_SINGULAR_AREA_FRACTION = 0.005
 _ORIENTATION_BY_ROLE = {
     "horn.inner": "air-side",
     "horn.outer": "exterior",
+    "wall.throat_band": "exterior",
     "mouth_rim": "exterior",
     "source_cap": "air-side",
     "wall.rear_cap": "exterior",
@@ -1575,12 +1579,368 @@ def _faceted_band(
     return _combine_surfaces(role, parts)
 
 
+def _analytic_fillet(enclosure: Mapping[str, Any]) -> bool:
+    """True when the fillet is a rounded box edge with a closed-form model.
+
+    A rounded-rectangle fillet sweeps its plan by ``inset = edge*(1-sin(theta))``
+    and ``radius = edge*sin(theta)`` while dropping ``depth*(1-cos(theta))``, so
+    every corner arc keeps the *same* centre, ``edge`` in from the box corner.
+    That makes each corner exactly one octant of the spheroid with semi-axes
+    ``(edge, edge, depth)`` about that centre and each side exactly one quarter
+    of an elliptic cylinder -- see :func:`_fillet_pieces`. Ellipse and
+    superellipse plans have no such fixed centres and keep the sampled path.
+    """
+
+    return int(enclosure["plan_type"]) == 1 and int(enclosure["edge_type"]) == 1
+
+
+def _fillet_corner_frames(
+    enclosure: Mapping[str, Any]
+) -> list[tuple[float, float, float]]:
+    """The four corner-arc centres and the phi each octant starts at."""
+
+    bounds = enclosure["bounds"]
+    edge = float(enclosure["edge_mm"])
+    x1 = float(bounds["bx1"]) - edge
+    x0 = float(bounds["bx0"]) + edge
+    y1 = float(bounds["by1"]) - edge
+    y0 = float(bounds["by0"]) + edge
+    return [
+        (x1, y1, 0.0),
+        (x0, y1, 0.5 * math.pi),
+        (x0, y0, math.pi),
+        (x1, y0, 1.5 * math.pi),
+    ]
+
+
+def _fillet_inset_rectangle(
+    enclosure: Mapping[str, Any], z: float
+) -> NDArray[np.float64]:
+    """The sharp rectangle a rounded-box fillet is tangent to.
+
+    ``_plan_ring`` floors its corner radius at 0.1 mm because
+    ``sample_rounded_rect`` changes vertex count below 1e-3 mm, but the fillet
+    genuinely runs out to a sharp corner there -- that is where the solver
+    starts its roundover, and where :func:`_fillet_pieces` puts each octant's
+    pole. The baffle has to end on the same curve, or the 0.041 mm between the
+    floored arc and the corner belongs to neither surface.
+    """
+
+    return np.asarray(
+        [(x, y, float(z)) for x, y, _phi in _fillet_corner_frames(enclosure)],
+        dtype=np.float64,
+    )
+
+
+def _fillet_phi_intervals(
+    theta: float, edge: float, depth: float, chord: float, normal_deg: float, cap: int
+) -> int:
+    """How many phi intervals a spheroid octant's row at ``theta`` really needs.
+
+    The octant's unit normal is proportional to ``(sin(theta) cos(phi)/edge,
+    sin(theta) sin(phi)/edge, cos(theta)/depth)``: turning ``phi`` rotates only
+    the tangential part, so the normal step closes on zero towards the pole
+    exactly as the arc radius ``edge*sin(theta)`` does. Spending the equator's
+    sample count on every row -- what one fixed ``corner_intervals`` does -- is
+    what put thirty-two samples on a 0.1 mm arc and then fanned them onto the
+    next ring. Zero intervals means the row is the pole itself.
+    """
+
+    radius = edge * math.sin(theta)
+    if radius <= 0.0:
+        return 0
+    by_chord = 1
+    if radius > chord:
+        half = math.acos(float(np.clip(1.0 - chord / radius, -1.0, 1.0)))
+        by_chord = int(math.ceil(0.5 * math.pi / max(2.0 * half, 1.0e-12)))
+    tangential = math.sin(theta) / edge
+    axial = math.cos(theta) / depth
+    by_normal = 1
+    scale = tangential * tangential + axial * axial
+    if tangential > 0.0:
+        cosine = 1.0 - (1.0 - math.cos(math.radians(normal_deg))) * scale / (
+            tangential * tangential
+        )
+        if cosine > -1.0:
+            step = math.acos(float(np.clip(cosine, -1.0, 1.0)))
+            by_normal = int(math.ceil(0.5 * math.pi / max(step, 1.0e-12)))
+    return max(1, min(int(cap), max(by_chord, by_normal)))
+
+
+def _fillet_patch(
+    role: str,
+    rows: list[NDArray[np.float64]],
+    normals: list[NDArray[np.float64]],
+    params: list[NDArray[np.float64]],
+    curvature: list[NDArray[np.float64]] | None,
+) -> PreviewSurfaceV1:
+    """Stitch rows that may hold different sample counts into one patch.
+
+    Rows carry a shared parameter, so the stitch is a two-pointer merge on it:
+    a row that collapses to a single sample (the octant's pole) becomes a fan
+    rather than a column of needles, and a row that gains samples over its
+    neighbour picks them up one triangle at a time.
+    """
+
+    offsets = [0]
+    for row in rows[:-1]:
+        offsets.append(offsets[-1] + len(row))
+    triangles: list[int] = []
+    for level in range(len(rows) - 1):
+        lower, upper = params[level], params[level + 1]
+        base_l, base_u = offsets[level], offsets[level + 1]
+        i = j = 0
+        while i < len(lower) - 1 or j < len(upper) - 1:
+            take_lower = j >= len(upper) - 1 or (
+                i < len(lower) - 1 and lower[i + 1] <= upper[j + 1]
+            )
+            if take_lower:
+                triangles.extend((base_l + i, base_l + i + 1, base_u + j))
+                i += 1
+            else:
+                triangles.extend((base_l + i, base_u + j + 1, base_u + j))
+                j += 1
+    positions = np.vstack(rows)
+    normal_array = np.vstack(normals)
+    oriented = _orient_indices_to_normals(
+        role, positions, np.asarray(triangles, dtype=np.uint32), normal_array
+    )
+    return PreviewSurfaceV1(
+        role=role,
+        positions=positions,
+        indices=oriented.indices,
+        normals=normal_array,
+        shading="smooth",
+        normal_method="analytic-parametric",
+        closed_phi=False,
+        curvature_mean=(None if curvature is None else np.concatenate(curvature[0])),
+        curvature_principal=(
+            None if curvature is None else np.concatenate(curvature[1])
+        ),
+        metadata=_orientation_metadata(oriented),
+    )
+
+
+def _fillet_pieces(
+    enclosure: Mapping[str, Any],
+    *,
+    z_ref: float,
+    axial_sign: float,
+    rows: int,
+    corner_cap: int,
+    chord_target: float,
+    normal_target: float,
+    include_curvature: bool,
+) -> tuple[list[PreviewSurfaceV1], dict[str, float]]:
+    """Emit a rounded-box fillet as four cylinder strips and four octants.
+
+    ``axial_sign`` is +1 for the front band (which drops away from ``z_ref``
+    towards the sides) and -1 for the back one. Positions and normals are the
+    closed-form surface, not differences of a sampled grid, so the returned
+    fidelity is a measurement of the emitted triangles against that surface
+    rather than against a resampling of themselves.
+    """
+
+    edge = float(enclosure["edge_mm"])
+    depth = float(enclosure["edge_depth"])
+    frames = _fillet_corner_frames(enclosure)
+    theta = np.linspace(0.0, 0.5 * math.pi, rows + 1)
+    # A patch bows away from its chords in both parameters at once and both
+    # bows point the same way, so the two budgets add rather than compete. The
+    # row count is fixed by the caller and is normal-step bound at every LOD,
+    # which leaves the whole chord budget to be split; giving phi half of it
+    # keeps the measured total inside what was asked for.
+    phi_chord_target = 0.5 * chord_target
+    intervals = [
+        _fillet_phi_intervals(
+            float(value), edge, depth, phi_chord_target, normal_target, corner_cap
+        )
+        for value in theta
+    ]
+    intervals[-1] = int(corner_cap)
+    for index in range(1, len(intervals)):
+        intervals[index] = max(intervals[index], intervals[index - 1])
+
+    def surface_point(cx: float, cy: float, t: float, phi: float) -> NDArray[np.float64]:
+        radius = edge * math.sin(t)
+        return np.asarray(
+            (
+                cx + radius * math.cos(phi),
+                cy + radius * math.sin(phi),
+                z_ref - axial_sign * depth * (1.0 - math.cos(t)),
+            ),
+            dtype=np.float64,
+        )
+
+    def surface_normal(t: float, phi: float) -> NDArray[np.float64]:
+        vector = np.asarray(
+            (
+                math.sin(t) * math.cos(phi) / edge,
+                math.sin(t) * math.sin(phi) / edge,
+                axial_sign * math.cos(t) / depth,
+            ),
+            dtype=np.float64,
+        )
+        return vector / np.linalg.norm(vector)
+
+    def curvatures(t: float, *, ruled: bool) -> tuple[float, float]:
+        # Meridian and parallel curvature of the spheroid of revolution with
+        # profile ``(edge sin t, depth cos t)``; a side strip is the same
+        # meridian swept along a straight ruling, so its parallel curvature is
+        # zero. Positive is convex towards the outward normal above.
+        root = math.hypot(edge * math.cos(t), depth * math.sin(t))
+        meridian = edge * depth / max(root**3, 1.0e-30)
+        parallel = 0.0 if ruled else depth / max(edge * root, 1.0e-30)
+        mean = 0.5 * (meridian + parallel)
+        principal = meridian if abs(meridian) >= abs(parallel) else parallel
+        return mean, principal
+
+    pieces: list[PreviewSurfaceV1] = []
+    for index, (cx, cy, phi0) in enumerate(frames):
+        corner_rows: list[NDArray[np.float64]] = []
+        corner_normals: list[NDArray[np.float64]] = []
+        corner_params: list[NDArray[np.float64]] = []
+        corner_mean: list[NDArray[np.float64]] = []
+        corner_principal: list[NDArray[np.float64]] = []
+        for level, t in enumerate(theta):
+            count = intervals[level]
+            fractions = (
+                np.zeros(1, dtype=np.float64)
+                if count == 0
+                else np.linspace(0.0, 1.0, count + 1)
+            )
+            phis = phi0 + fractions * 0.5 * math.pi
+            corner_rows.append(
+                np.asarray(
+                    [surface_point(cx, cy, float(t), float(p)) for p in phis],
+                    dtype=np.float64,
+                )
+            )
+            corner_normals.append(
+                np.asarray(
+                    [surface_normal(float(t), float(p)) for p in phis],
+                    dtype=np.float64,
+                )
+            )
+            corner_params.append(fractions)
+            mean, principal = curvatures(float(t), ruled=False)
+            corner_mean.append(np.full(len(phis), mean, dtype=np.float64))
+            corner_principal.append(np.full(len(phis), principal, dtype=np.float64))
+        pieces.append(
+            _fillet_patch(
+                "enclosure.roundover",
+                corner_rows,
+                corner_normals,
+                corner_params,
+                (corner_mean, corner_principal) if include_curvature else None,
+            )
+        )
+
+        # The side that leaves this corner: a quarter of an elliptic cylinder
+        # ruled between this octant's end tangent line and the next octant's
+        # start tangent line. Two columns describe it exactly.
+        nx, ny, next_phi0 = frames[(index + 1) % len(frames)]
+        side_rows: list[NDArray[np.float64]] = []
+        side_normals: list[NDArray[np.float64]] = []
+        side_params: list[NDArray[np.float64]] = []
+        side_mean: list[NDArray[np.float64]] = []
+        side_principal: list[NDArray[np.float64]] = []
+        for t in theta:
+            end_phi = phi0 + 0.5 * math.pi
+            side_rows.append(
+                np.stack(
+                    (
+                        surface_point(cx, cy, float(t), end_phi),
+                        surface_point(nx, ny, float(t), next_phi0),
+                    )
+                )
+            )
+            normal = surface_normal(float(t), end_phi)
+            side_normals.append(np.stack((normal, normal)))
+            side_params.append(np.asarray((0.0, 1.0), dtype=np.float64))
+            mean, principal = curvatures(float(t), ruled=True)
+            side_mean.append(np.full(2, mean, dtype=np.float64))
+            side_principal.append(np.full(2, principal, dtype=np.float64))
+        pieces.append(
+            _fillet_patch(
+                "enclosure.roundover",
+                side_rows,
+                side_normals,
+                side_params,
+                (side_mean, side_principal) if include_curvature else None,
+            )
+        )
+
+    # Measure the emitted band against the closed-form surface it was built
+    # from. All four octants are congruent and the sides share their meridian,
+    # so one meridian and one octant bound the whole band; a chord is deepest
+    # at its parameter midpoint. This replaces comparing the grid against a
+    # reference built at the same interval count, which measured nothing.
+    def angle_between(
+        first: NDArray[np.float64], second: NDArray[np.float64]
+    ) -> float:
+        return math.degrees(
+            math.acos(float(np.clip(np.dot(first, second), -1.0, 1.0)))
+        )
+
+    origin = frames[0]
+    meridian_chord = 0.0
+    normal_step = 0.0
+    for level in range(rows):
+        lower, upper = float(theta[level]), float(theta[level + 1])
+        emitted = 0.5 * (
+            surface_point(origin[0], origin[1], lower, origin[2])
+            + surface_point(origin[0], origin[1], upper, origin[2])
+        )
+        meridian_chord = max(
+            meridian_chord,
+            float(
+                np.linalg.norm(
+                    surface_point(
+                        origin[0], origin[1], 0.5 * (lower + upper), origin[2]
+                    )
+                    - emitted
+                )
+            ),
+        )
+        normal_step = max(
+            normal_step,
+            angle_between(surface_normal(lower, 0.0), surface_normal(upper, 0.0)),
+        )
+    arc_chord = 0.0
+    for level, count in enumerate(intervals):
+        if count <= 0:
+            continue
+        step = 0.5 * math.pi / count
+        arc_chord = max(
+            arc_chord,
+            edge * math.sin(float(theta[level])) * (1.0 - math.cos(0.5 * step)),
+        )
+        normal_step = max(
+            normal_step,
+            angle_between(
+                surface_normal(float(theta[level]), 0.0),
+                surface_normal(float(theta[level]), step),
+            ),
+        )
+    fidelity = {
+        "max_chord_error_mm": max(
+            meridian_chord + arc_chord, float(np.finfo(np.float64).eps)
+        ),
+        "max_normal_step_deg": normal_step,
+        "reference_density_multiplier": 4,
+    }
+    return pieces, fidelity
+
+
 def _enclosure_surfaces(
     enclosure: Mapping[str, Any],
     mouth: NDArray[np.float64],
     roundover_intervals: int,
     plan_corner_intervals: int,
     *,
+    chord_target: float,
+    normal_target: float,
     include_rear: bool,
     include_curvature: bool,
 ) -> tuple[list[PreviewSurfaceV1], dict[str, dict[str, float]]]:
@@ -1591,8 +1951,11 @@ def _enclosure_surfaces(
     z_back = float(bounds["z_back"])
     center_xy = np.asarray((float(bounds["cx"]), float(bounds["cy"])), dtype=np.float64)
 
-    front_native = _plan_ring(
-        enclosure, z_front, 0.0, corner_intervals=plan_corner_intervals
+    analytic_fillet = depth > 0.0 and _analytic_fillet(enclosure)
+    front_native = (
+        _fillet_inset_rectangle(enclosure, z_front)
+        if analytic_fillet
+        else _plan_ring(enclosure, z_front, 0.0, corner_intervals=plan_corner_intervals)
     )
     front_aligned = _ray_aligned_ring(front_native, mouth)
     # The aligned ring only preserves the plan where the mouth stations sample
@@ -1706,12 +2069,54 @@ def _enclosure_surfaces(
                 "max_normal_step_deg": 0.0,
                 "reference_density_multiplier": 1,
             }
+        elif analytic_fillet:
+            # A rounded-box fillet has a closed form, so it does not need the
+            # ray-aligned first ring and the unequal-ring zipper that welded it
+            # to the baffle. That stitch fanned the mouth's evenly spread
+            # stations onto a ring carrying one sample per straight side, which
+            # is where the band's 7000:1 needles came from; the plan sampler
+            # then spent a full corner_intervals on every ring, including the
+            # 0.1 mm floored one. The band's inner boundary still lands on the
+            # baffle's outer edge -- as coincident points along the same inset
+            # rectangle rather than shared ones, exactly as the chamfer does.
+            front_pieces, front_fidelity = _fillet_pieces(
+                enclosure,
+                z_ref=z_front,
+                axial_sign=1.0,
+                rows=edge_intervals,
+                corner_cap=plan_corner_intervals,
+                chord_target=chord_target,
+                normal_target=normal_target,
+                include_curvature=include_curvature,
+            )
+            back_pieces, back_fidelity = _fillet_pieces(
+                enclosure,
+                z_ref=z_back,
+                axial_sign=-1.0,
+                rows=edge_intervals,
+                corner_cap=plan_corner_intervals,
+                chord_target=chord_target,
+                normal_target=normal_target,
+                include_curvature=include_curvature,
+            )
+            surfaces.append(
+                _combine_surfaces(
+                    "enclosure.roundover", [*front_pieces, *back_pieces]
+                )
+            )
+            fidelity["enclosure.roundover"] = {
+                key: max(front_fidelity[key], back_fidelity[key])
+                for key in ("max_chord_error_mm", "max_normal_step_deg")
+            } | {"reference_density_multiplier": 4}
         else:
+            # An ellipse or superellipse plan has no fixed corner centres, so
+            # its roundover stays a sampled grid. Its reference must be denser
+            # than the emitted grid or the comparison measures nothing.
             front_surface, front_fidelity = _roundover_piece(
                 "enclosure.roundover",
                 front_aligned,
                 front_out,
-                front_grid(edge_intervals),
+                front_grid(2 * edge_intervals),
                 center_xy,
                 include_curvature=include_curvature,
             )
@@ -1719,7 +2124,7 @@ def _enclosure_surfaces(
                 "enclosure.roundover",
                 back_out[0],
                 back_out,
-                back_grid(edge_intervals),
+                back_grid(2 * edge_intervals),
                 center_xy,
                 include_curvature=include_curvature,
             )
@@ -1771,7 +2176,13 @@ def _enclosure_surfaces(
     surfaces.append(side_surface)
     fidelity["enclosure.side"] = side_fidelity
     if include_rear:
-        rear_ring = back_out[-1] if depth > 0.0 else side_back
+        if analytic_fillet:
+            # Same sharp tangent rectangle the back band's poles sit on.
+            rear_ring = _fillet_inset_rectangle(enclosure, z_back)
+        elif depth > 0.0:
+            rear_ring = back_out[-1]
+        else:
+            rear_ring = side_back
         surfaces.append(
             _flat_cap(
                 "enclosure.rear",
@@ -1797,6 +2208,172 @@ def _even_indices(size: int, count: int, *, closed: bool) -> list[int]:
     return sorted(
         {int(round(index * (size - 1) / (count - 1))) for index in range(count)}
     )
+
+
+def _band_dihedral_deg(
+    rings: list[NDArray[np.float64]], *, closed_phi: bool
+) -> float:
+    """Median dihedral angle between the two bands three consecutive rings span.
+
+    Measured on the rings that are actually emitted, not on the canonical
+    reference: a tangent break the shipped mesh does not resolve cannot shade
+    wrong, and one it does resolve must not be smoothed over. This is the same
+    criterion the renderer uses to decide a feature edge.
+    """
+
+    def band_normals(
+        near: NDArray[np.float64], far: NDArray[np.float64]
+    ) -> NDArray[np.float64]:
+        along = (
+            np.roll(near, -1, axis=0) - near
+            if closed_phi
+            else np.diff(near, axis=0, append=near[-1:])
+        )
+        normals = np.cross(along, far - near)
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        return normals / np.where(lengths > 1.0e-12, lengths, 1.0)
+
+    lower = band_normals(rings[0], rings[1])
+    upper = band_normals(rings[1], rings[2])
+    return float(
+        np.median(
+            np.degrees(
+                np.arccos(np.clip(np.abs(np.sum(lower * upper, axis=1)), -1.0, 1.0))
+            )
+        )
+    )
+
+
+def _outer_shell_surfaces(
+    master: NDArray[np.float64],
+    t_indices: NDArray[np.int64],
+    phi_indices: NDArray[np.int64],
+    *,
+    closed_phi: bool,
+    t_coordinates: NDArray[np.float64] | None,
+    phi_coordinates: NDArray[np.float64] | None,
+    include_curvature: bool,
+) -> list[PreviewSurfaceV1]:
+    """Build the outer wall, splitting the shading at the throat jog.
+
+    ``_outer_offset_shell`` does not put the shell's first station on the
+    offset surface: it squares the throat off into a flat rear face, radius
+    ``r0 + wall`` at ``z0 - wall``. The band that ring forms with the next
+    station therefore meets the offset surface at a real crease, and a station
+    on a crease needs two normals -- one per face. Shipping one, taken from a
+    central difference straddling the crease, put that ring up to 83 degrees
+    off both faces it borders and drew a shading ring around the throat.
+
+    Overriding the ring's normal cannot fix it; whichever face it is made to
+    agree with, the other still disagrees. So the jog band becomes its own role
+    and carries its own copy of the crease ring, which is where this module
+    puts every other hard boundary (``mouth_rim``, ``wall.rear_cap``): the
+    normals inside each role stay smooth and the crease falls between them.
+    """
+
+    def normals_for(rows: slice) -> NDArray[np.float64]:
+        return analytic_grid_normals(
+            master[rows],
+            closed_phi=closed_phi,
+            t_coordinates=None if t_coordinates is None else t_coordinates[rows],
+            phi_coordinates=(
+                None if phi_coordinates is None else phi_coordinates[rows]
+            ),
+        )
+
+    def curvature_for(rows: slice) -> tuple[
+        NDArray[np.float64] | None, NDArray[np.float64] | None
+    ]:
+        if not include_curvature:
+            return None, None
+        return analytic_grid_curvature(
+            master[rows],
+            closed_phi=closed_phi,
+            t_coordinates=None if t_coordinates is None else t_coordinates[rows],
+            phi_coordinates=(
+                None if phi_coordinates is None else phi_coordinates[rows]
+            ),
+        )
+
+    def unsplit() -> list[PreviewSurfaceV1]:
+        mean, principal = curvature_for(slice(None))
+        return [
+            _grid_surface_from_selection(
+                "horn.outer",
+                master,
+                normals_for(slice(None)),
+                t_indices,
+                phi_indices,
+                closed_phi=closed_phi,
+                curvature_mean=mean,
+                curvature_principal=principal,
+            )
+        ]
+
+    crease = 0.0
+    if len(master) >= 4 and len(t_indices) >= 3:
+        rings = [master[np.ix_([int(t_indices[k])], phi_indices)][0] for k in range(3)]
+        crease = _band_dihedral_deg(rings, closed_phi=closed_phi)
+    if crease < _THROAT_JOG_CREASE_DEG:
+        return unsplit()
+
+    band_rows = np.asarray(t_indices[:2], dtype=np.int64)
+    band_master = master[band_rows]
+    band_normals = analytic_grid_normals(
+        band_master,
+        closed_phi=closed_phi,
+        t_coordinates=None if t_coordinates is None else t_coordinates[band_rows],
+        phi_coordinates=(
+            None if phi_coordinates is None else phi_coordinates[band_rows]
+        ),
+    )
+    band_mean = band_principal = None
+    if include_curvature:
+        # Two stations carry no second difference in t, so the band's meridian
+        # curvature is reported as the straight ruling it is emitted as.
+        band_mean = np.zeros(band_master.shape[:2], dtype=np.float64)
+        band_principal = np.zeros(band_master.shape[:2], dtype=np.float64)
+    shell_mean, shell_principal = curvature_for(slice(1, None))
+    shell_normals = np.array(normals_for(slice(None)), dtype=np.float64)
+    shell_normals[1:] = normals_for(slice(1, None))
+    padded_mean = padded_principal = None
+    if shell_mean is not None and shell_principal is not None:
+        padded_mean = np.zeros(master.shape[:2], dtype=np.float64)
+        padded_principal = np.zeros(master.shape[:2], dtype=np.float64)
+        padded_mean[1:] = shell_mean
+        padded_principal[1:] = shell_principal
+    try:
+        return [
+            _grid_surface_from_selection(
+                "horn.outer",
+                master,
+                shell_normals,
+                np.asarray(t_indices[1:], dtype=np.int64),
+                phi_indices,
+                closed_phi=closed_phi,
+                curvature_mean=padded_mean,
+                curvature_principal=padded_principal,
+            ),
+            _grid_surface_from_selection(
+                "wall.throat_band",
+                band_master,
+                band_normals,
+                np.asarray((0, 1), dtype=np.int64),
+                phi_indices,
+                closed_phi=closed_phi,
+                curvature_mean=band_mean,
+                curvature_principal=band_principal,
+            ),
+        ]
+    except ValueError:
+        # A sharp morph corner has no defined offset direction, so the shell
+        # can carry a few facets tipped just past perpendicular there. The
+        # whole shell forgives them as the negligible share of its area they
+        # are; two rows cut out of it do not have the area to. Splitting is a
+        # shading improvement, never a reason to lose the surface, so a band
+        # that cannot be wound consistently on its own gives the shading back
+        # to the shell it came from.
+        return unsplit()
 
 
 def _nearest_indices(values: NDArray[np.float64], targets: list[float]) -> list[int]:
@@ -2240,40 +2817,22 @@ def build_preview_geometry(
         selected_outer = outer_canonical[np.ix_(phi_indices, t_indices)]
         if options.include_outer:
             outer_master = _surface_grid(outer_canonical)
-            outer_normals = analytic_grid_normals(
+            for outer_surface in _outer_shell_surfaces(
                 outer_master,
+                t_indices,
+                phi_indices,
                 closed_phi=closed_phi,
                 t_coordinates=master_t,
                 phi_coordinates=master_phi,
-            )
-            outer_curvature_mean = outer_curvature_principal = None
-            if options.include_curvature:
-                outer_curvature_mean, outer_curvature_principal = (
-                    analytic_grid_curvature(
-                        outer_master,
-                        closed_phi=closed_phi,
-                        t_coordinates=master_t,
-                        phi_coordinates=master_phi,
-                    )
+                include_curvature=options.include_curvature,
+            ):
+                surfaces.append(outer_surface)
+                fidelity[outer_surface.role] = _fidelity_record(
+                    horn_achieved,
+                    chord_target=chord_target,
+                    normal_target=normal_target,
+                    silhouette_target=silhouette_target,
                 )
-            surfaces.append(
-                _grid_surface_from_selection(
-                    "horn.outer",
-                    outer_master,
-                    outer_normals,
-                    t_indices,
-                    phi_indices,
-                    closed_phi=closed_phi,
-                    curvature_mean=outer_curvature_mean,
-                    curvature_principal=outer_curvature_principal,
-                )
-            )
-            fidelity["horn.outer"] = _fidelity_record(
-                horn_achieved,
-                chord_target=chord_target,
-                normal_target=normal_target,
-                silhouette_target=silhouette_target,
-            )
             surfaces.append(
                 _smooth_mouth_rim(
                     selected_inner[:, -1, :],
@@ -2296,60 +2855,24 @@ def build_preview_geometry(
         outer_canonical = selected_outer
         if options.include_outer:
             selected_outer_master = _surface_grid(selected_outer)
-            selected_outer_normals = analytic_grid_normals(
+            # The deferred-wall shell is already the selected grid, so its rows
+            # are its own stations.
+            for outer_surface in _outer_shell_surfaces(
                 selected_outer_master,
+                np.arange(selected_outer_master.shape[0], dtype=np.int64),
+                np.arange(selected_outer_master.shape[1], dtype=np.int64),
                 closed_phi=closed_phi,
                 t_coordinates=master_t[t_indices],
                 phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
-            )
-            selected_outer_mean = selected_outer_principal = None
-            if options.include_curvature:
-                selected_outer_mean, selected_outer_principal = (
-                    analytic_grid_curvature(
-                        selected_outer_master,
-                        closed_phi=closed_phi,
-                        t_coordinates=master_t[t_indices],
-                        phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
-                    )
+                include_curvature=options.include_curvature,
+            ):
+                surfaces.append(outer_surface)
+                fidelity[outer_surface.role] = _fidelity_record(
+                    horn_achieved,
+                    chord_target=chord_target,
+                    normal_target=normal_target,
+                    silhouette_target=silhouette_target,
                 )
-            outer_positions = selected_outer_master.reshape(-1, 3)
-            outer_flat_normals = selected_outer_normals.reshape(-1, 3)
-            outer_oriented = _orient_indices_to_normals(
-                "horn.outer",
-                outer_positions,
-                _grid_indices(
-                    *selected_outer_master.shape[:2], closed_phi=closed_phi
-                ),
-                outer_flat_normals,
-            )
-            surfaces.append(
-                PreviewSurfaceV1(
-                    role="horn.outer",
-                    positions=outer_positions,
-                    indices=outer_oriented.indices,
-                    normals=outer_flat_normals,
-                    shading="smooth",
-                    normal_method="analytic-parametric",
-                    closed_phi=closed_phi,
-                    curvature_mean=(
-                        None
-                        if selected_outer_mean is None
-                        else selected_outer_mean.reshape(-1)
-                    ),
-                    curvature_principal=(
-                        None
-                        if selected_outer_principal is None
-                        else selected_outer_principal.reshape(-1)
-                    ),
-                    metadata=_orientation_metadata(outer_oriented),
-                )
-            )
-            fidelity["horn.outer"] = _fidelity_record(
-                horn_achieved,
-                chord_target=chord_target,
-                normal_target=normal_target,
-                silhouette_target=silhouette_target,
-            )
             surfaces.append(
                 _smooth_mouth_rim(
                     selected_inner[:, -1, :],
@@ -2483,6 +3006,8 @@ def build_preview_geometry(
             selected_inner[:, -1, :],
             roundover_intervals,
             plan_corner_intervals,
+            chord_target=chord_target,
+            normal_target=normal_target,
             include_rear=options.include_rear_cap,
             include_curvature=options.include_curvature,
         )

@@ -132,7 +132,11 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
     preview = build_preview_geometry(config)
     by_role = {surface.role: surface for surface in preview.surfaces}
 
-    assert set(by_role) == expected_roles
+    # ``wall.throat_band`` carries the wall's squared-off throat when -- and
+    # only when -- the emitted mesh actually breaks tangency there, so it is
+    # the one optional role; everything else is required of every family.
+    assert expected_roles <= set(by_role)
+    assert set(by_role) <= expected_roles | {"wall.throat_band"}
     assert preview.metadata["api_version"] == "hornlab.preview/1"
     assert preview.metadata["metadata_version"] == "hornlab.preview/1.3"
     assert preview.metadata["units"] == "mm"
@@ -453,7 +457,7 @@ def _analytic_side_point(role, centroid, mouth_exit=None):
 
     if role == "horn.inner":
         point[:2] = (0.0, 0.0)  # the horn axis is acoustic air near the throat
-    elif role in {"horn.outer", "enclosure.side"}:
+    elif role in {"horn.outer", "wall.throat_band", "enclosure.side"}:
         point[:2] = outside * radial / radial_length
     elif role == "mouth_rim" and mouth_exit is not None:
         ring, directions = mouth_exit
@@ -511,3 +515,63 @@ def test_orientation_and_winding_contract_across_families_modes_and_lods(config,
             ]
         )
         assert np.all(side_agreement > 0.0), surface.role
+
+
+
+def _vertex_versus_face_deg(surface):
+    """Worst angle between a shipped vertex normal and a face that uses it."""
+
+    points = np.asarray(surface.positions, dtype=np.float64)
+    normals = np.asarray(surface.normals, dtype=np.float64)
+    triangles = np.asarray(surface.indices, dtype=np.int64).reshape(-1, 3)
+    corners = points[triangles]
+    faces = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    lengths = np.linalg.norm(faces, axis=1)
+    keep = lengths > 1.0e-12
+    faces = faces[keep] / lengths[keep, None]
+    shipped = normals[triangles[keep]]
+    shipped = shipped / np.maximum(
+        np.linalg.norm(shipped, axis=2), 1.0e-15
+    )[:, :, None]
+    cosine = np.abs(np.einsum("fcj,fj->fc", shipped, faces))
+    return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))).max())
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+@pytest.mark.parametrize(
+    "config", [OSSE_FREESTANDING, FREEFORM_FREESTANDING], ids=["osse", "freeform"]
+)
+def test_wall_throat_jog_is_shaded_as_its_own_face(config, lod):
+    """No station carries a normal that belongs to neither face it borders.
+
+    ``_outer_offset_shell`` squares the throat off to a flat rear face instead
+    of putting that ring on the offset surface, so the band it forms with the
+    next station meets the shell at a real crease. Smoothing one normal across
+    it left the crease ring up to 83 degrees off both faces -- a shading ring
+    around the throat -- and no single normal can fix that, so the band ships
+    as its own role with its own copy of the ring.
+    """
+
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
+    by_role = {surface.role: surface for surface in preview.surfaces}
+    assert "wall.throat_band" in by_role
+
+    for role in ("horn.outer", "wall.throat_band"):
+        assert _vertex_versus_face_deg(by_role[role]) < 8.0, role
+
+    # The band hands the shell its first ring: no station is dropped between
+    # them, and none is drawn twice.
+    band = np.asarray(by_role["wall.throat_band"].positions, dtype=np.float64)
+    shell = np.asarray(by_role["horn.outer"].positions, dtype=np.float64)
+    n_phi = preview.metadata["actual_segment_counts"]["horn_phi"]
+    assert np.allclose(band[n_phi : 2 * n_phi], shell[:n_phi], atol=1.0e-12)
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
+def test_wall_throat_band_is_omitted_when_the_mesh_stays_tangent(lod):
+    """An enclosure horn has no outer shell at all, so no band is invented."""
+
+    preview = build_preview_geometry(ROSSE_ENCLOSURE, PreviewOptionsV1(lod=lod))
+    assert "wall.throat_band" not in {
+        surface.role for surface in preview.surfaces
+    }
