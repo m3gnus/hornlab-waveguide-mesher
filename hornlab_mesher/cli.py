@@ -75,6 +75,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Explicitly allow the generated mesh to exceed mesh.max_triangles",
     )
+    parser.add_argument(
+        "--step",
+        metavar="PATH",
+        help=(
+            "Write the CAD model to a .step/.stp file for Fusion 360, Onshape, "
+            "etc. Skips the mesh build unless -o/--output is also given."
+        ),
+    )
+    parser.add_argument(
+        "--step-keep-throat",
+        action="store_true",
+        help="Keep the driver membrane in the STEP body instead of opening the bore",
+    )
     return parser
 
 
@@ -83,6 +96,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
+        if args.step:
+            from .cad import write_step_from_config
+
+            step_path, cad = write_step_from_config(
+                config, args.step, open_throat=not args.step_keep_throat
+            )
+            volume = (
+                f", {cad.volume_mm3:,.0f} mm^3"
+                if cad.volume_mm3 is not None
+                else ""
+            )
+            print(
+                f"Wrote {step_path} ({cad.body}, {cad.n_faces} faces{volume}, "
+                f"units={cad.units})"
+            )
+            if not args.output:
+                return 0
         output = args.output or _pick(
             _section(config, "output"),
             config,

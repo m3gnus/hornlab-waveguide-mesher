@@ -2465,12 +2465,33 @@ def _build_acoustic_sampling_grid(
     )
 
 
-def build_from_config(
+@dataclass(frozen=True)
+class ResolvedGeometry:
+    """What a config resolves to before anything is meshed or exported.
+
+    Meshing and CAD export share every step up to this point, so they share the
+    code that produces it -- a STEP file and a solve therefore describe the same
+    waveguide by construction rather than by two implementations agreeing.
+    """
+
+    geometry: PointGridHornGeometry
+    density: MeshDensity
+    formula: str
+    mode: str
+    quadrants: str
+    native_symmetry_plane: str | None
+    scale_to_metres: bool
+    sampling_metadata: dict[str, Any] = field(default_factory=dict)
+    freeform_report: dict[str, Any] | None = None
+
+
+def resolve_geometry(
     config: Mapping[str, Any],
-    output_path: str | Path,
     *,
     allow_large_mesh: bool | None = None,
-) -> BuildResult:
+) -> ResolvedGeometry:
+    """Build the point-grid geometry a config describes, without meshing it."""
+
     params, formula, mode = build_geometry_params(config)
     _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
@@ -2578,26 +2599,50 @@ def build_from_config(
     scale_to_metres = _bool(
         mesh, names=("scale_to_metres", "scaleToMetres"), default=True
     )
-    mesh_path, info = build_mesh_with_info(
-        geometry, density, output_path, scale_to_metres=scale_to_metres
-    )
-    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
-    return BuildResult(
-        mesh_path=mesh_path,
+    return ResolvedGeometry(
+        geometry=geometry,
+        density=density,
         formula=formula,
         mode=mode,
+        quadrants=quadrants,
+        native_symmetry_plane=native_plane,
+        scale_to_metres=scale_to_metres,
+        sampling_metadata=geometry_sampling_metadata,
+        freeform_report=freeform_report,
+    )
+
+
+def build_from_config(
+    config: Mapping[str, Any],
+    output_path: str | Path,
+    *,
+    allow_large_mesh: bool | None = None,
+) -> BuildResult:
+    resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
+    mesh_path, info = build_mesh_with_info(
+        resolved.geometry,
+        resolved.density,
+        output_path,
+        scale_to_metres=resolved.scale_to_metres,
+    )
+    mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
+    freeform_report = resolved.freeform_report
+    return BuildResult(
+        mesh_path=mesh_path,
+        formula=resolved.formula,
+        mode=resolved.mode,
         n_vertices=info.n_vertices,
         n_triangles=info.n_triangles,
         units=info.units,
         physical_groups=info.physical_groups,
-        quadrants=quadrants,
-        native_symmetry_plane=native_plane,
-        native_check_open_edges=_native_check_open_edges_for_mode(mode),
+        quadrants=resolved.quadrants,
+        native_symmetry_plane=resolved.native_symmetry_plane,
+        native_check_open_edges=_native_check_open_edges_for_mode(resolved.mode),
         mesh_report=mesh_report,
         solve_cost=cost.estimate_solve_cost(info.n_triangles).to_dict(),
         metadata={
             **info.metadata,
-            **geometry_sampling_metadata,
+            **resolved.sampling_metadata,
             **({"freeformReport": freeform_report} if freeform_report is not None else {}),
         },
     )
@@ -2606,7 +2651,9 @@ def build_from_config(
 __all__ = [
     "BuildResult",
     "MeridianBuildResult",
+    "ResolvedGeometry",
     "build_from_config",
+    "resolve_geometry",
     "build_geometry_params",
     "build_meridian",
     "_bool",

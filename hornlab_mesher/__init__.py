@@ -28,6 +28,7 @@ from .cost import (
     estimate_solve_cost,
     estimate_triangle_count,
 )
+from .cad import CadInfo, write_step, write_step_from_config
 from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
 from .tags import PhysicalGroup
 
@@ -63,6 +64,7 @@ def load_config(*args, **kwargs):
 
 
 __all__ = [
+    "CadInfo",
     "CrossSection",
     "Enclosure",
     "HornEnclosure",
@@ -87,4 +89,6 @@ __all__ = [
     "compute_rosse_profile_points",
     "load_config",
     "load_mesh",
+    "write_step",
+    "write_step_from_config",
 ]

@@ -78,19 +78,40 @@ hornlab-waveguide examples/osse-freestanding.toml -o runs/scratch/osse.msh
 hornlab-waveguide examples/rosse-enclosure.toml -o runs/scratch/rosse.msh
 ```
 
+## Export CAD (STEP)
+
+The same OpenCASCADE model the solver meshes can be written out for CAD, so a
+STEP file and a solve describe the same waveguide by construction:
+
+```bash
+hornlab-waveguide examples/osse-freestanding.toml --step runs/scratch/osse.step
+```
+
+Designs with wall thickness or a rear enclosure export as a **closed B-rep
+solid** in millimetres, ready to import into Fusion 360, Onshape, or FreeCAD
+with no thicken or cap step. The driver membrane is not material, so it is cut
+away and the bore runs through. A design with no wall thickness has nothing to
+enclose and exports as a surface body instead.
+
+Two things differ from the mesh path on purpose: the acoustic level-of-detail
+pass is skipped, so a fillet too small for the mesh to resolve still rounds the
+part; and a symmetry-reduced design is reopened to all four quadrants, because a
+part cannot be a quarter of itself.
+
 ## Python API
 
 ```python
-from hornlab_mesher import build_from_config
+from hornlab_mesher import build_from_config, write_step_from_config
 
-build_from_config(
-    {
-        "formula": "OSSE",
-        "profile": {"L_mm": 120, "r0_mm": 12.7, "a_deg": 60, "a0_deg": 15.5},
-        "mesh": {"angular_segments": 64, "length_segments": 32},
-    },
-    "waveguide.msh",
-)
+config = {
+    "formula": "OSSE",
+    "profile": {"L_mm": 120, "r0_mm": 12.7, "a_deg": 60, "a0_deg": 15.5},
+    "mesh": {"angular_segments": 64, "length_segments": 32, "wall_thickness_mm": 6.0},
+}
+
+build_from_config(config, "waveguide.msh")
+path, info = write_step_from_config(config, "waveguide.step")
+print(info.body, info.volume_mm3)  # -> solid 973743.4...
 ```
 
 ## Repository Map
@@ -108,6 +129,8 @@ build_from_config(
 - `hornlab_mesher/density.py`: mesh-size fields and per-surface density rules.
 - `hornlab_mesher/mesher.py`: build orchestration, physical groups, postprocess,
   orientation repair/validation, and final `.msh` write.
+- `hornlab_mesher/cad.py`: STEP export of the same OCC model, sewn into a solid
+  with the driver membrane cut away.
 - `hornlab_mesher/tags.py`: physical tag numbers and ABEC-compatible names.
 - `docs/config-schema.md`: accepted config sections, aliases, defaults, and ATH
   text import boundary.
