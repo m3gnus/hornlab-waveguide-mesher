@@ -384,6 +384,16 @@ def _postprocess_mesh(
             symmetry_snap_axes=symmetry_snap_axes,
             symmetry_snap_tol_mm=symmetry_snap_tol_mm,
         )
+    # Runs before the vertical offset, while the cut planes are still on the
+    # coordinate axes.
+    _validate_closed_shell_contract(
+        points,
+        triangles,
+        phys,
+        symmetry_snap_axes=symmetry_snap_axes,
+        symmetry_snap_tol_mm=symmetry_snap_tol_mm,
+        is_open_shell=open_shell_wall_points_mm is not None,
+    )
     points, triangles = _compact_unused_vertices(points, triangles)
     if vertical_offset_mm:
         # Mesh.VerticalOffset: rigid +y placement of the finished reduced/full
@@ -656,6 +666,131 @@ def _compact_unused_vertices(
 
 
 _SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25
+
+# Interface surfaces (ATH ``Mesh.SubdomainSlices``) are internal partitions
+# authored on their own points, so their base rim is free by construction. They
+# are the one tag the closure contract cannot judge; see the note in
+# ``_validate_closed_shell_contract``.
+#
+# Do not "fix" this by making the interface skirt share the wall's slice lines.
+# That was tried and measured: it produces 56 NON-MANIFOLD edges, because an
+# interior slice line then carries three faces (wall above, wall below, skirt).
+# That is not a bug in the interface -- a real ABEC subdomain interface *is*
+# non-manifold by definition -- it is a mismatch with this validator, which
+# assumes a manifold single-domain surface and has no way to express a
+# three-face edge. So a conforming interface cannot be represented here today,
+# and the rim-sharing change was reverted. Exempting the tag is the honest
+# option until the contract itself learns about subdomains.
+_CONTRACT_EXEMPT_TAGS = frozenset({int(PhysicalGroup.INTERFACE)})
+
+
+def _validate_closed_shell_contract(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    phys: np.ndarray,
+    *,
+    symmetry_snap_axes: tuple[str, ...],
+    symmetry_snap_tol_mm: float,
+    is_open_shell: bool,
+) -> None:
+    """Refuse to emit a closed-shell mesh with a hole in it.
+
+    A reduced domain is legitimately open along its cut planes -- the solver's
+    mirror closes those. A free edge anywhere else is a hole, and a hole in an
+    enclosure is a box that radiates out of its own back: the solve returns a
+    confident, wrong, near-omnidirectional answer with nothing to show for it.
+
+    Nothing used to catch that. ``validate_orientation`` runs with
+    ``require_watertight=False`` for every mode, because bare open shells and
+    reduced domains both legitimately have free edges, so the one check that
+    could have caught it was disabled for everyone. Splitting "open along a
+    declared cut plane" from "open anywhere else" is what makes the check
+    affordable again.
+
+    Bare open shells are not exempt, only held to a weaker rule: their mouth rim
+    is the model, so they may keep exactly one free-edge loop. A second loop is
+    a torn throat seam, which is how an independently authored source cap fails.
+    """
+
+    if len(triangles) == 0:
+        return
+    axis_index = {"x": 0, "y": 1, "z": 2}
+    axes = tuple(
+        axis_index[axis] for axis in symmetry_snap_axes if axis in axis_index
+    )
+    # Snapped cut-plane vertices are set exactly to zero; allow the snap
+    # tolerance anyway so a caller that widens it cannot turn its own seam into
+    # a reported hole.
+    tolerance = max(float(symmetry_snap_tol_mm), 1.0e-9)
+
+    counts: dict[tuple[int, int], int] = {}
+    owner: dict[tuple[int, int], int] = {}
+    for index, triangle in enumerate(triangles):
+        a, b, c = (int(triangle[0]), int(triangle[1]), int(triangle[2]))
+        for start, end in ((a, b), (b, c), (c, a)):
+            edge = (min(start, end), max(start, end))
+            counts[edge] = counts.get(edge, 0) + 1
+            owner.setdefault(edge, index)
+
+    holes = [
+        edge
+        for edge, count in counts.items()
+        if count == 1
+        and int(phys[owner[edge]]) not in _CONTRACT_EXEMPT_TAGS
+        and not any(
+            abs(points[edge[0], axis]) <= tolerance
+            and abs(points[edge[1], axis]) <= tolerance
+            for axis in axes
+        )
+    ]
+    if not holes:
+        return
+
+    # A bare shell keeps its mouth rim. Group the free edges into connected
+    # loops rather than measuring where they sit: a mouth rim need not be
+    # planar, so "one boundary" is the honest test and an axial-extreme test
+    # would reject legitimate non-planar mouths.
+    allowed_boundaries = 1 if is_open_shell else 0
+    boundaries = _count_edge_components(holes)
+    if boundaries <= allowed_boundaries:
+        return
+
+    tags = sorted({int(phys[owner[edge]]) for edge in holes})
+    sample = points[holes[0][0]]
+    planes = ", ".join(f"{axis}=0" for axis in symmetry_snap_axes) or "none"
+    shell = "open-shell" if is_open_shell else "closed-shell"
+    detail = (
+        f"{boundaries} separate free-edge loops where an open shell may have "
+        "only its mouth rim"
+        if is_open_shell
+        else f"{len(holes)} free edges"
+    )
+    raise MesherError(
+        f"{shell} mesh has {detail} away from its symmetry cut planes "
+        f"({planes}) on surface tags {tags}; the model is not closed. "
+        f"First gap near ({sample[0]:.3f}, {sample[1]:.3f}, {sample[2]:.3f}) mm."
+    )
+
+
+def _count_edge_components(edges: list[tuple[int, int]]) -> int:
+    """Count connected components of an undirected edge set (union-find)."""
+
+    parent: dict[int, int] = {}
+
+    def find(node: int) -> int:
+        parent.setdefault(node, node)
+        root = node
+        while parent[root] != root:
+            root = parent[root]
+        while parent[node] != root:
+            parent[node], node = root, parent[node]
+        return root
+
+    for start, end in edges:
+        a, b = find(start), find(end)
+        if a != b:
+            parent[a] = b
+    return len({find(node) for node in parent})
 
 
 def _remove_symmetry_plane_slivers(

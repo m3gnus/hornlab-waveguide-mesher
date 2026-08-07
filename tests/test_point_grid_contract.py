@@ -1219,6 +1219,175 @@ def test_point_grid_enclosure_mesh_has_canonical_tags(tmp_path):
     assert {1, 2}.issubset(set(tags))
 
 
+@pytest.mark.parametrize("plan_type", [2, 3])
+def test_closed_ellipse_plans_are_refused_up_front_not_deep_in_the_baffle(
+    plan_type, tmp_path
+):
+    """Only the rounded rectangle has a watertight closed-enclosure builder.
+
+    The ellipse (2) and superellipse (3) plans fall to the generic ring loft,
+    whose single-plane front baffle makes OCC re-author the mouth hole and
+    leaves a slit all the way round it -- the closed box then solves as an open
+    one. ``_require_baffle_keeps_mouth_curves`` does catch that, but only after
+    the whole enclosure has been lofted, and it reports as an OCC curve-sharing
+    failure. Reject the combination at the top of the builder instead, where
+    the message can name the actual limitation.
+    """
+
+    # build_mesh re-raises every builder failure as MesherError; the guard's
+    # own NotImplementedError is asserted directly further down.
+    with pytest.raises(MesherError) as excinfo:
+        build_mesh(
+            PointGridHornGeometry(
+                inner_points=_make_point_grid(n_phi=24, n_length=10, r1=90.0),
+                closed=True,
+                preserve_grid=True,
+                enclosure=HornEnclosure(
+                    depth_mm=220.0,
+                    space_l_mm=45.0,
+                    space_t_mm=35.0,
+                    space_r_mm=45.0,
+                    space_b_mm=35.0,
+                    edge_mm=8.0,
+                    edge_type=1,
+                    plan_type=plan_type,
+                    plan_n=2.0 if plan_type == 2 else 6.0,
+                    depth_margin_mm=12.0,
+                ),
+            ),
+            MeshDensity(throat_res_mm=8.0, mouth_res_mm=18.0, rear_res_mm=30.0),
+            tmp_path / "ellipse-enclosure.msh",
+        )
+
+    assert isinstance(excinfo.value.__cause__, NotImplementedError)
+    message = str(excinfo.value)
+    assert f"plan_type={plan_type}" in message
+    assert "closed enclosures" in message
+    assert "plan_type=1" in message
+    # Not the downstream guard's OCC-shaped wording.
+    assert "dropped horn mouth curves" not in message
+
+
+def test_rounded_rectangle_is_still_the_supported_closed_plan():
+    """The guard must be about plan_type 2/3, not about enclosures at all."""
+
+    from hornlab_mesher.builders.enclosure import build_enclosure_box
+
+    enclosure = HornEnclosure(
+        depth_mm=220.0,
+        space_l_mm=45.0,
+        space_t_mm=35.0,
+        space_r_mm=45.0,
+        space_b_mm=35.0,
+        edge_mm=8.0,
+        edge_type=1,
+        plan_type=1,
+        plan_n=2.0,
+        depth_margin_mm=12.0,
+    )
+    # plan_type=1 gets past the plan guard and fails on the next check instead.
+    with pytest.raises(ValueError, match="non-empty inner_dimtags"):
+        build_enclosure_box(
+            inner_dimtags=[],
+            inner_points=_make_point_grid(n_phi=8, n_length=4),
+            enclosure=enclosure,
+            closed=True,
+        )
+
+
+def _contract(points, triangles, tags, *, axes=(), is_open_shell=False):
+    from hornlab_mesher.mesher import _validate_closed_shell_contract
+
+    _validate_closed_shell_contract(
+        np.asarray(points, dtype=np.float64),
+        np.asarray(triangles, dtype=np.int64),
+        np.asarray(tags, dtype=np.int32),
+        symmetry_snap_axes=axes,
+        symmetry_snap_tol_mm=1.0e-6,
+        is_open_shell=is_open_shell,
+    )
+
+
+def test_closure_contract_allows_cut_planes_and_one_open_mouth_rim():
+    """The contract has to tell three open things apart.
+
+    A reduced domain's cut boundary and a bare shell's mouth rim are the model;
+    a hole is a defect. Nothing distinguished them before, which is why
+    ``validate_orientation`` had ``require_watertight=False`` for every mode and
+    an enclosure could ship with a slit around its mouth.
+    """
+
+    points = [[0, 0, 0], [10, 0, 0], [5, 0, 10], [5, 20, 5], [40, 0, 0], [50, 0, 0], [45, 0, 9]]
+    on_plane = [[0, 1, 2]]
+    _contract(points, on_plane, [1], axes=("y",))
+
+    with pytest.raises(MesherError, match="closed-shell mesh has 3 free edges"):
+        _contract(points, on_plane, [1])
+
+    _contract(points, on_plane, [1], is_open_shell=True)
+
+    with pytest.raises(MesherError, match="2 separate free-edge loops"):
+        _contract(points, on_plane + [[4, 5, 6]], [1, 1], is_open_shell=True)
+
+    _contract(points, on_plane, [4])
+
+
+@pytest.mark.parametrize("edge_type", (1, 2))
+def test_closed_enclosure_baffle_shares_the_wall_mouth_rim(tmp_path, edge_type):
+    """A closed box must not re-discretise the mouth rim on the front baffle.
+
+    The generic ring-loft front baffle fills a single plane surface with the
+    mouth as an inner loop, and OCC keeps only one of the wall's four mouth
+    curves on that face. The baffle then meshes its own coarser rim and leaves
+    a slit around the whole mouth, so the closed domain solves as an open box.
+    The trigger is the resolution step ATH configs actually ask for -- a baffle
+    metres-coarse next to a fine mouth rim -- so the panel resolutions here are
+    the ones that matter, not the mouth aspect or the roundover size.
+    """
+
+    mouth_scale = np.array([1.0, 1.75, 1.0])
+    inner = _make_point_grid(n_phi=32, n_length=10, r1=90.0) * mouth_scale
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=inner,
+            closed=True,
+            enclosure=HornEnclosure(
+                depth_mm=220.0,
+                space_l_mm=19.0,
+                space_t_mm=19.0,
+                space_r_mm=19.0,
+                space_b_mm=19.0,
+                edge_mm=18.0,
+                edge_type=edge_type,
+                plan_type=1,
+                plan_n=2.0,
+                depth_margin_mm=12.0,
+            ),
+        ),
+        MeshDensity(
+            throat_res_mm=8.0,
+            mouth_res_mm=10.0,
+            rear_res_mm=30.0,
+            enc_front_res_mm="10,10,20,25",
+            enc_back_res_mm="40,40,40,40",
+        ),
+        tmp_path / f"closed_edge_{edge_type}.msh",
+    )
+
+    mesh = meshio.read(msh_path)
+    triangles, _tags = _triangles_and_tags(mesh)
+    counts: dict[tuple[int, int], int] = {}
+    for triangle in triangles:
+        for start, end in ((0, 1), (1, 2), (2, 0)):
+            key = (
+                min(int(triangle[start]), int(triangle[end])),
+                max(int(triangle[start]), int(triangle[end])),
+            )
+            counts[key] = counts.get(key, 0) + 1
+    free_edges = [edge for edge, count in counts.items() if count == 1]
+    assert not free_edges, f"closed enclosure left {len(free_edges)} free edges"
+
+
 def test_point_grid_enclosure_edge_may_equal_margin_and_clamps_above_it(tmp_path):
     for edge_type in (1, 2):
         for edge_mm in (8.0, 12.0):

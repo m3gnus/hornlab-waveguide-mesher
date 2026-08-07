@@ -5,7 +5,11 @@ import math
 import numpy as np
 
 from ..geometry import PointGridHornGeometry
-from ._occ import extreme_boundary_loop_curves, require_gmsh
+from ._occ import (
+    extreme_boundary_loop_curves,
+    make_planar_fill_from_boundary,
+    require_gmsh,
+)
 from .point_grid_surfaces import (
     _GeoSurfaceBuilder,
     _SharedSurfaceBuilder,
@@ -310,6 +314,19 @@ def _add_occ_source_cap_surfaces(
             throat_use_min=throat_use_min,
             source_axis_sign=source_axis_sign,
         )
+
+    if geometry.closed and cap_height <= 1.0e-12 and wall_dimtags is not None:
+        # A flat closed cap has no pole to fan to, so the fan below would author
+        # a fresh throat rim through the wall's own coordinates. That rim is a
+        # different OCC curve, meshes its own nodes, and leaves a slit at the
+        # throat -- the source boundary stops sealing to the wall. Fill on the
+        # wall's boundary instead, as the bare flat-disc path already does.
+        require_gmsh().model.occ.synchronize()
+        filled = make_planar_fill_from_boundary(
+            wall_dimtags, source_axis="z", use_min=throat_use_min, closed=True
+        )
+        if filled:
+            return filled
 
     pole = np.array(center, dtype=np.float64)
     pole[2] += sign * cap_height

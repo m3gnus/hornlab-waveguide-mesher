@@ -347,51 +347,75 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         if not throat:
             throat = make_planar_fill_from_ring(inner_points[:, 0, :])
     else:
-        wall = build_surface_from_points(
-            inner_points,
-            closed=geometry.closed,
-            preserve_grid=geometry.preserve_grid,
-        )
-        require_gmsh().model.occ.synchronize()
-
-        if source_shape == SOURCE_SHAPE_ROUNDED_CAP:
-            cap_builder = _SharedSurfaceBuilder()
-            cap_builder.add_grid("inner", inner_points)
-            # Closed grids fill the cap on the wall's own throat edge. Open
-            # grids re-author the rim, which must span the wall patch's full
-            # angular row so both rims mesh identical 1D nodes and weld.
-            throat = _add_occ_source_cap_surfaces(
+        cap_builder = _SharedSurfaceBuilder()
+        cap_builder.add_grid("inner", inner_points)
+        if geometry.preserve_grid:
+            # Wall and cap on one builder, and the faceted cap to match the
+            # faceted wall -- the pairing the enclosure branch above already
+            # uses. Building the wall through ``build_surface_from_points``
+            # kept its points and lines in a private cache, so the cap could
+            # not reuse the wall's rim however it was authored: it re-created
+            # the rim, and the two coincident rims meshed different node counts
+            # (a quarter grid: cap 3 segments against the wall's 8), leaving a
+            # free-edge ring right at the source. ``_add_grid_wall_surfaces``
+            # emits the identical quads, on the shared cache.
+            wall = _add_grid_wall_surfaces(
                 cap_builder,
+                "inner",
+                n_phi=inner_points.shape[0],
+                n_len=inner_points.shape[1],
+                closed=geometry.closed,
+            )
+            require_gmsh().model.occ.synchronize()
+            throat = _add_source_surfaces(
+                cap_builder, inner_points, geometry, wall_dimtags=wall
+            )
+        else:
+            wall = build_surface_from_points(
                 inner_points,
-                geometry,
-                boundary_phi_groups=(
-                    None if geometry.closed else [list(range(inner_points.shape[0]))]
-                ),
-                wall_dimtags=wall,
+                closed=geometry.closed,
+                preserve_grid=False,
             )
-        elif source_shape == SOURCE_SHAPE_FLAT_DISC and geometry.closed:
-            throat = make_planar_fill_from_boundary(
-                wall,
-                source_axis="z",
-                use_min=True,
-                closed=True,
-            )
-            if not throat:
-                throat = make_planar_fill_from_ring(inner_points[:, 0, :])
-        elif source_shape == SOURCE_SHAPE_FLAT_DISC:
-            throat = make_planar_sector_fill_from_ring(
-                inner_points[:, 0, :],
-                source_axis="z",
-            )
-            if not throat:
+            require_gmsh().model.occ.synchronize()
+
+            if source_shape == SOURCE_SHAPE_ROUNDED_CAP:
+                # Closed grids fill the cap on the wall's own throat edge. Open
+                # grids re-author the rim, which must span the wall patch's full
+                # angular row so both rims mesh identical 1D nodes and weld.
+                throat = _add_occ_source_cap_surfaces(
+                    cap_builder,
+                    inner_points,
+                    geometry,
+                    boundary_phi_groups=(
+                        None
+                        if geometry.closed
+                        else [list(range(inner_points.shape[0]))]
+                    ),
+                    wall_dimtags=wall,
+                )
+            elif source_shape == SOURCE_SHAPE_FLAT_DISC and geometry.closed:
                 throat = make_planar_fill_from_boundary(
                     wall,
                     source_axis="z",
                     use_min=True,
-                    closed=False,
+                    closed=True,
                 )
-        else:
-            raise AssertionError(f"unhandled source shape {source_shape!r}")
+                if not throat:
+                    throat = make_planar_fill_from_ring(inner_points[:, 0, :])
+            elif source_shape == SOURCE_SHAPE_FLAT_DISC:
+                throat = make_planar_sector_fill_from_ring(
+                    inner_points[:, 0, :],
+                    source_axis="z",
+                )
+                if not throat:
+                    throat = make_planar_fill_from_boundary(
+                        wall,
+                        source_axis="z",
+                        use_min=True,
+                        closed=False,
+                    )
+            else:
+                raise AssertionError(f"unhandled source shape {source_shape!r}")
 
     wall_tags = [tag for _, tag in wall]
     throat_tags = [tag for _, tag in throat]

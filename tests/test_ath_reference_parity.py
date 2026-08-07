@@ -278,10 +278,19 @@ def test_solana_point_grid_matches_ath_reference_exports(case: str):
     ("case", "expected_groups"),
     [
         (
+            # Acoustic mode, so these are the collapsed counts and not ATH's.
+            # ATH's own decomposition -- SD1G0 = 72 surfaces and
+            # SD1D1001 = {22,44,66,88}, four quadrant planes for the throat --
+            # stays pinned in the legacy-mode test above, which still asserts
+            # inner 160 / throat_disc 4 for a full domain. This test kept ATH's
+            # throat count after ``inner`` had already been collapsed 72 -> 4,
+            # which made it the one site not updated when the modes split; the
+            # sibling acoustic test has asserted a collapsed
+            # ``throat_disc: 1`` on a full four-quadrant case all along.
             "250728solana",
             {
                 "inner": 4,
-                "throat_disc": 4,
+                "throat_disc": 1,
                 "interface": 12,
                 "enclosure": 44,
                 "enclosure_edges_front": 12,

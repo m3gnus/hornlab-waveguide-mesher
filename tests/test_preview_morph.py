@@ -99,10 +99,12 @@ def test_rounded_rectangle_morph_builds_with_implicit_extents():
 def test_rounded_rectangle_morph_builds_when_shrinkage_sharpens_the_corner():
     """A target smaller than the mouth leaves a genuinely sharp corner.
 
-    Offsetting a sharp corner has no defined direction there, so the outer shell
-    carries two full-area facets tipped a few degrees past perpendicular. That is
-    a singularity in the surface, not an inverted patch, and it must not cost the
-    user every surface in the preview.
+    Offsetting a sharp corner has no defined direction there. Averaging the
+    incident face normals used to resolve it a few degrees past perpendicular
+    and leave two full-area singular facets in the outer shell; differentiating
+    the parameterisation instead lands on the corner bisector, so the shell now
+    comes through clean. Neither shape costs the user a surface in the preview,
+    but a singular facet reappearing here means the offset normals regressed.
     """
 
     config = copy.deepcopy(ROUNDED_RECT_MORPH)
@@ -112,7 +114,7 @@ def test_rounded_rectangle_morph_builds_when_shrinkage_sharpens_the_corner():
 
     outer = next(surface for surface in preview.surfaces if surface.role == "horn.outer")
     assert outer.metadata["disagreeingTriangles"] == 0
-    assert 0 < outer.metadata["orientationSingularTriangles"] <= 8
+    assert outer.metadata["orientationSingularTriangles"] == 0
 
 
 def _tiled_plane(rows: int, columns: int) -> tuple[np.ndarray, np.ndarray]:

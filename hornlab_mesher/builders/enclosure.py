@@ -615,6 +615,47 @@ def _ordered_curve_loop(curve_tags: list[int]) -> list[int]:
     raise RuntimeError("could not order curves into a closed loop")
 
 
+def _require_baffle_keeps_mouth_curves(
+    front_tag: int, mouth_curves: list[int]
+) -> None:
+    """Fail if OCC re-authored the baffle's mouth hole instead of using it.
+
+    ``addPlaneSurface`` accepts a "curve loop" whose curves do not chain
+    end-to-end and then quietly keeps one of them, rebuilding the rest. The
+    wall's patch boundaries do not share endpoint vertices, so a multi-curve
+    mouth is exactly that case. The face still looks right -- it traces the same
+    rim -- but it is meshed on its own coarser nodes, leaving a slit around the
+    whole mouth that only shows up as a wrong, near-omnidirectional solve.
+
+    Checked here rather than left to the mesh-level contract so the error names
+    the surface that lost the rim.
+    """
+
+    if len(mouth_curves) < 2:
+        return
+    gmsh = require_gmsh()
+    gmsh.model.occ.synchronize()
+    kept = {
+        abs(int(tag))
+        for dim, tag in gmsh.model.getBoundary(
+            [(2, int(front_tag))], oriented=False, combined=False
+        )
+        if int(dim) == 1
+    }
+    dropped = [int(c) for c in mouth_curves if abs(int(c)) not in kept]
+    if dropped:
+        raise RuntimeError(
+            "front baffle dropped horn mouth curves "
+            f"{dropped} of {[int(c) for c in mouth_curves]}: OCC rebuilt the "
+            "mouth hole instead of sharing the wall's rim, which leaves a slit "
+            "around the mouth and solves the closed box as an open one. Only "
+            "the rounded-rectangle plan (enclosure plan_type=1) has the "
+            "per-sector front baffle that shares the wall's mouth curves; use "
+            "it, or give the wall mouth curves that chain end to end (shared "
+            "endpoint vertices) so the generic baffle can keep them."
+        )
+
+
 def _add_ruled_section(loop_a: int, loop_b: int) -> list[tuple[int, int]]:
     gmsh = require_gmsh()
     return list(
@@ -966,10 +1007,10 @@ def build_enclosure_box(
         }
 
     Raises ``NotImplementedError`` for unsupported plan/edge/open-domain
-    combinations. Implemented plan values are ``1`` rounded rectangle,
-    ``2`` ellipse, and ``3`` superellipse; implemented edge values are ``1``
-    rounded fillet and ``2`` chamfer. Open-domain support currently requires
-    rounded-rectangle plan geometry.
+    combinations. Implemented edge values are ``1`` rounded fillet and ``2``
+    chamfer. Plan values ``2`` ellipse and ``3`` superellipse are recognised
+    but have no watertight enclosure builder: only ``1`` rounded rectangle is
+    buildable, for both closed and open (reduced) domains.
     """
 
     if int(enclosure.plan_type) not in (1, 2, 3):
@@ -981,6 +1022,26 @@ def build_enclosure_box(
         raise NotImplementedError(
             f"HornEnclosure.edge_type={enclosure.edge_type} not yet supported "
             "by hornlab-mesher (only edge_type ∈ {1, 2} implemented)."
+        )
+    if closed and int(enclosure.plan_type) in (2, 3):
+        # Only the rounded rectangle has a watertight closed-enclosure builder.
+        # Its four-sector route shares the wall's own mouth curves per quadrant;
+        # every other plan falls to the generic ring loft, whose single-plane
+        # front baffle makes OCC re-author the mouth hole and leaves a slit all
+        # the way round it (measured: 246 free edges up to 1.1 mm on a 242x396
+        # chamfered box), so the closed domain silently solves as an open one.
+        # ``_require_baffle_keeps_mouth_curves`` catches that downstream, but a
+        # deep OCC-shaped failure is not the message this caller needs.
+        #
+        # Generalising ``_build_rounded_rectangle_enclosure_sector`` is not the
+        # fix: it hardcodes rectangular axis and corner geometry throughout.
+        raise NotImplementedError(
+            f"HornEnclosure.plan_type={enclosure.plan_type} is not supported for "
+            "closed enclosures by hornlab-mesher: only the rounded-rectangle "
+            "plan (plan_type=1) has a watertight closed-enclosure builder today. "
+            "The ellipse (2) and superellipse (3) plans would leave a slit "
+            "around the horn mouth and solve the closed box as an open one. Use "
+            "plan_type=1, or build without an enclosure."
         )
     if not inner_dimtags:
         raise ValueError("build_enclosure_box requires non-empty inner_dimtags")
@@ -1059,7 +1120,21 @@ def build_enclosure_box(
             for key in present
         ]
         return _merge_enclosure_parts(parts, bounds)
-    if int(enclosure.plan_type) == 1 and int(enclosure.edge_type) == 1:
+    # Both rounded-rectangle edge styles take the four-sector route. The generic
+    # ring-loft path below fills the front baffle with a single plane surface
+    # carrying the mouth as an inner loop, and OCC drops all but one of the
+    # wall's four mouth curves from that face: the baffle then re-discretises
+    # the rim on its own coarser nodes and leaves a slit around the whole mouth
+    # (a 242x396 mm chamfered box: 246 free edges, up to 1.1 mm wide), so the
+    # closed domain solves as an open box. The sector builder shares the wall's
+    # mouth curves per quadrant, and already rules the chamfer (edge_type 2) as
+    # a straight bevel, which is why every reduced domain is watertight today.
+    #
+    # The early plan_type guard above already rejected the closed ellipse and
+    # superellipse plans for exactly this reason, so the fall-through below is
+    # now only reached by a plan_type=1 mouth that did not group into all four
+    # quadrants -- a single-curve mouth, which OCC can keep intact.
+    if int(enclosure.plan_type) == 1 and int(enclosure.edge_type) in (1, 2):
         grouped: dict[tuple[float, float], list[int]] = {
             (1.0, 1.0): [],
             (-1.0, 1.0): [],
@@ -1115,6 +1190,7 @@ def build_enclosure_box(
     ring0_wire, ring0_curves, _ring0_eps = _make_wire(ring0_pts, closed=True)
     ring0_loop = int(gmsh.model.occ.addCurveLoop([int(c) for c in ring0_curves]))
     front_tag = int(gmsh.model.occ.addPlaneSurface([ring0_loop, mouth_loop]))
+    _require_baffle_keeps_mouth_curves(front_tag, mouth_curves)
 
     generated: list[tuple[int, int]] = [(2, front_tag)]
     front_edges: list[tuple[int, int]] = []

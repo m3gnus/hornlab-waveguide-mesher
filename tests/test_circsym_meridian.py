@@ -321,6 +321,37 @@ def test_freestanding_circsym_requires_positive_wall_thickness():
         build_meridian(config)
 
 
+def test_circsym_rejects_bare_open_shell_before_the_solver_does():
+    """A bare shell's meridian ends in mid-air at the mouth rim.
+
+    metal-bem's one-trace formulation rejects it at solve time, so the
+    eligibility gate has to reject it first or auto-mode routes the design
+    into a sweep that cannot start.
+    """
+
+    config = _round_osse_config(mode="bare", mesh={"wallThickness": 0.0})
+
+    reasons = circsym_rejection_reasons(config)
+    assert any("bare mode" in reason for reason in reasons)
+    with pytest.raises(ConfigError, match="bare mode"):
+        build_meridian(config)
+
+
+def test_circsym_meridian_endpoints_are_closed_on_the_axis():
+    """Every eligible meridian satisfies the solver's one-trace contract."""
+
+    for config in (
+        _round_osse_config(),
+        _round_osse_config(mode="infinite-baffle", mesh={"wallThickness": 0.0}),
+    ):
+        meridian = build_meridian(config)
+        if meridian.baffle_z is not None:
+            continue
+        assert meridian.metadata["closedOnAxis"]
+        assert abs(float(meridian.nodes[0, 0])) <= 1.0e-12
+        assert abs(float(meridian.nodes[-1, 0])) <= 1.0e-12
+
+
 def test_rosse_freestanding_lip_closure_matches_ath_semicircle_nodes():
     config = {
         "formula": "R-OSSE",
@@ -357,18 +388,35 @@ def test_rosse_freestanding_lip_closure_matches_ath_semicircle_nodes():
         ]
         * 1000.0
     )
-    # ATH V2025-12 nodes 257..262 from the supplied R-OSSE CircSym project.
-    expected_z_r_mm = np.asarray(
-        [
-            [97.692, 250.000],
-            [96.216, 249.542],
-            [95.292, 248.303],
-            [95.272, 246.758],
-            [96.164, 245.497],
-            [97.627, 245.000],
-        ],
-        dtype=np.float64,
+    # The lip caps a 5 mm wall between r=250 and r=245, and the rollback leaves
+    # the mouth rim tangent within 0.01 deg of the axis -- so the closure is a
+    # half circle of radius 2.5 mm about r=247.5, swept in equal angular steps
+    # and sitting in a plane of constant z. Asserting the construction rather
+    # than six pasted coordinates keeps the check meaningful if the sample map
+    # or segment count ever moves.
+    #
+    # This used to compare against nodes labelled "ATH V2025-12 nodes 257..262",
+    # which put the outer end 0.065 mm behind the inner one -- a rim normal
+    # tilted 0.741 deg off radial. That tilt is the offset-normal artifact fixed
+    # in profile_sampling._grid_surface_normals (the old face-normal average was
+    # off by 0.885 deg here, so it matched by erring the same way), and no
+    # project in the ATH reference archive has this R, wall or segment count.
+    # The mesher no longer reproduces it; ATH's own nodes miss a true semicircle
+    # by 0.065 mm.
+    assert rim_count == 5
+
+    centre_r_mm = 247.5
+    radius_mm = 2.5
+    angles = np.linspace(0.0, np.pi, rim_count + 1)
+    expected_z_r_mm = np.column_stack(
+        (
+            actual_z_r_mm[0, 0] - radius_mm * np.sin(angles),
+            centre_r_mm + radius_mm * np.cos(angles),
+        )
     )
 
-    assert rim_count == 5
-    assert np.allclose(actual_z_r_mm, expected_z_r_mm, rtol=0.0, atol=0.02)
+    assert np.allclose(actual_z_r_mm, expected_z_r_mm, rtol=0.0, atol=2.0e-3)
+    # Anchored to the inner rim, so the arc cannot drift off the horn with it.
+    assert abs(float(actual_z_r_mm[0, 0]) - 97.692) <= 0.02
+    assert abs(float(actual_z_r_mm[0, 1]) - 250.0) <= 1.0e-6
+    assert abs(float(actual_z_r_mm[-1, 1]) - 245.0) <= 1.0e-6

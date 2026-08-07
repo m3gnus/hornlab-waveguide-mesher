@@ -40,6 +40,10 @@ from ..profile_sampling import (
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
     _outer_offset_shell,
 )
+from ..profile_formulas import (
+    osse_coverage_saturation,
+    osse_coverage_saturation_probe,
+)
 from ..profiles import eval_param
 from ..profiles import build_point_grid
 from ..viewport import build_viewport_geometry_from_config
@@ -2605,6 +2609,93 @@ def _replace_grid_with_corner_refinement(
     output["grid"] = grid
 
 
+# Azimuths screened for an unreachable guiding curve. The guiding curve, the
+# coverage angle and the termination may all be per-azimuth expressions, so a
+# single phi=0 probe would miss a mouth that only goes off-target off-axis.
+#
+# The step was 15 degrees while each azimuth cost a full coverage inversion,
+# and that was demonstrably too coarse: gcurveWidth="1000 - 900*sin(12*p)^2"
+# is reachable at every multiple of 15 and saturated at 7.5, so the preview
+# said nothing at all. Screening with the bracket probe instead of the full
+# inversion (osse_coverage_saturation_probe: 2 radius evaluations, not 26)
+# buys the resolution back. Measured, healthy OSSE geometry with a reachable
+# type-1 guiding curve (36 us per azimuth by inversion, 5 us by probe):
+#
+#     15 deg / full inversion  (24 azimuths)   0.85 ms   <- was
+#      1 deg / full inversion  (360 azimuths) 12.88 ms
+#      1 deg / bracket probe   (360 azimuths)  1.79 ms   <- is
+#
+# The whole preview build for that config is 96 ms coarse / 554 ms fine, so
+# 15x the angular resolution costs +0.94 ms, about 1% of a coarse frame. A
+# naive tightening without the probe would have cost 12x that.
+#
+# STILL BEST-EFFORT. One degree resolves anything up to about a 180th-order
+# azimuthal term, which is far past any guiding curve a person writes by hand,
+# but a sufficiently spiky expression can still hide between probes and no
+# fixed step can rule that out. The absence of a warning is therefore not a
+# guarantee that the guiding curve is met; the step is published in the
+# preview metadata as ``guiding_curve_probe.step_deg`` so a caller can say how
+# much the silence is worth.
+_GUIDING_CURVE_PROBE_STEP_DEG = 1.0
+_GUIDING_CURVE_PROBE_AZIMUTHS = tuple(
+    math.radians(index * _GUIDING_CURVE_PROBE_STEP_DEG)
+    for index in range(int(round(360.0 / _GUIDING_CURVE_PROBE_STEP_DEG)))
+)
+
+
+def _guiding_curve_warnings(
+    params: Mapping[str, Any], formula: Any
+) -> list[str]:
+    """Warn when the OSSE coverage solver cannot reach the guiding curve.
+
+    The solver clamps to its bracket instead of failing, which reads to the
+    user as "the parameters stopped doing anything" — the mouth is no longer on
+    the guiding curve and no further edit to the coverage angle can put it
+    back. Reported once with the worst-offending azimuth rather than once per
+    probe, so a fully unreachable curve does not emit 360 near-identical lines.
+
+    Screened with the bracket probe rather than the full inversion. The probe
+    returns the same saturated result the inversion would, so ranking the
+    azimuths on it is exact; only the reported azimuth pays for a full solve,
+    and even that one returns from the probe branch without bisecting.
+    """
+
+    if str(formula).strip().upper() != "OSSE":
+        return []
+    worst_phi: float | None = None
+    worst_error = -1.0
+    saturated = 0
+    for phi in _GUIDING_CURVE_PROBE_AZIMUTHS:
+        try:
+            solved = osse_coverage_saturation_probe(params, phi)
+        except (ValueError, ZeroDivisionError, OverflowError):
+            # A malformed guiding curve is the config validator's error to
+            # raise; a preview warning must not mask it with its own failure.
+            return []
+        if solved is None or solved.saturated is None:
+            continue
+        saturated += 1
+        error = abs(solved.achieved_radius - solved.target_radius)
+        if not math.isfinite(error):
+            error = math.inf
+        # A rotationally symmetric guiding curve misses every azimuth by the
+        # same amount up to rounding, so only a materially worse azimuth may
+        # displace the incumbent. Otherwise the reported phi is whichever
+        # probe happened to accumulate more floating-point error.
+        if error > worst_error * (1.0 + 1.0e-9) + 1.0e-9:
+            worst_error = error
+            worst_phi = phi
+    if worst_phi is None:
+        return []
+    location = (
+        "every probed azimuth"
+        if saturated == len(_GUIDING_CURVE_PROBE_AZIMUTHS)
+        else None
+    )
+    reason = osse_coverage_saturation(params, worst_phi, location=location)
+    return [reason] if reason is not None else []
+
+
 def build_preview_geometry(
     config: Mapping[str, Any], options: PreviewOptionsV1 = PreviewOptionsV1()
 ) -> PreviewGeometryV1:
@@ -2710,6 +2801,7 @@ def build_preview_geometry(
         config, angular_master, axial_master, power=axial_power
     )
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
+    warnings.extend(_guiding_curve_warnings(parsed_params, _parsed_formula))
     deferred_wall = 0.0
     if has_corners and str(_parsed_mode) == "freestanding":
         deferred_wall = float(eval_param(parsed_params.get("wallThickness"), 0.0, 0.0))
@@ -2850,7 +2942,11 @@ def build_preview_geometry(
             )
     elif deferred_wall > 0.0:
         selected_outer = _outer_offset_shell(
-            selected_inner, deferred_wall, full_circle=closed_phi
+            selected_inner,
+            deferred_wall,
+            full_circle=closed_phi,
+            t_coordinates=master_t[t_indices],
+            phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
         )
         outer_canonical = selected_outer
         if options.include_outer:
@@ -2928,6 +3024,23 @@ def build_preview_geometry(
     else:
         source_details = {}
         cap_intervals = 0
+
+    if output.get("enclosure") is not None:
+        # The preview draws every implemented plan, but only the rounded
+        # rectangle has a watertight enclosure builder -- ``build_enclosure_box``
+        # raises NotImplementedError for the ellipse and superellipse plans in
+        # the closed domain, and its open-domain route accepts plan_type=1 only.
+        # Say so here rather than let the shape look finished until build time.
+        # The toggle above is a display filter, not a config change, so this
+        # warning does not depend on it.
+        preview_plan_type = int(output["enclosure"].get("plan_type", 1))
+        if preview_plan_type in (2, 3):
+            warnings.append(
+                f"enclosure plan_type={preview_plan_type} is previewed but not "
+                "buildable: only the rounded-rectangle plan (plan_type=1) has a "
+                "watertight closed-enclosure builder, and the open (reduced) "
+                "domain supports plan_type=1 only"
+            )
 
     if output.get("enclosure") is not None and options.include_enclosure:
         enclosure_payload = dict(output["enclosure"])
@@ -3160,6 +3273,15 @@ def build_preview_geometry(
         },
         "fidelity": fidelity,
         "warnings": warnings,
+        # How finely the guiding-curve saturation screen actually looked. A
+        # fixed step can always be out-resolved by a spiky enough expression,
+        # so publish it rather than let the absence of a warning read as a
+        # proof that the guiding curve is met everywhere.
+        "guiding_curve_probe": {
+            "step_deg": _GUIDING_CURVE_PROBE_STEP_DEG,
+            "azimuths": len(_GUIDING_CURVE_PROBE_AZIMUTHS),
+            "best_effort": True,
+        },
         "requested_fidelity": {
             "max_chord_error_mm": chord_target,
             "max_normal_step_deg": normal_target,

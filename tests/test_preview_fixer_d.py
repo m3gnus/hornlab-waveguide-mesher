@@ -83,6 +83,57 @@ def test_m1_ellipse_and_superellipse_plans_adapt_and_measure_emitted_plan(
     assert achieved["max_normal_step_deg_achieved"] <= 6.0
 
 
+@pytest.mark.parametrize(("plan_type", "plan_n"), [(2, 2.0), (3, 6.0)])
+def test_unbuildable_enclosure_plans_are_previewed_with_a_warning(plan_type, plan_n):
+    """The ellipse/superellipse plans still draw, but say they cannot be built.
+
+    ``build_enclosure_box`` refuses both of them -- NotImplementedError in the
+    closed domain, and the open-domain route takes plan_type=1 only. Without a
+    warning the viewport is the only thing the user sees before the build.
+    """
+
+    config = copy.deepcopy(ROSSE_ENCLOSURE)
+    config["enclosure"].update({"plan_type": plan_type, "plan_n": plan_n})
+
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+
+    assert any(
+        surface.role.startswith("enclosure.") for surface in preview.surfaces
+    ), "the preview should still render the shape"
+    warning = [
+        text
+        for text in preview.metadata["warnings"]
+        if f"plan_type={plan_type}" in text
+    ]
+    assert len(warning) == 1, preview.metadata["warnings"]
+    assert "not" in warning[0] and "buildable" in warning[0]
+    assert "plan_type=1" in warning[0]
+
+
+def test_buildable_enclosure_plan_is_previewed_without_the_warning():
+    preview = build_preview_geometry(ROSSE_ENCLOSURE, PreviewOptionsV1(lod="coarse"))
+
+    assert not [
+        text for text in preview.metadata["warnings"] if "buildable" in text
+    ]
+
+
+def test_unbuildable_enclosure_plan_warns_even_when_not_rendered():
+    """The toggle hides the surfaces; it does not make the config buildable."""
+
+    config = copy.deepcopy(ROSSE_ENCLOSURE)
+    config["enclosure"].update({"plan_type": 2, "plan_n": 2.0})
+
+    preview = build_preview_geometry(
+        config, PreviewOptionsV1(lod="coarse", include_enclosure=False)
+    )
+
+    assert not [
+        surface for surface in preview.surfaces if surface.role.startswith("enclosure.")
+    ]
+    assert any("plan_type=2" in text for text in preview.metadata["warnings"])
+
+
 def test_amended_m1_4_analytic_parametric_definition_is_published():
     preview = build_preview_geometry(
         OSSE_FREESTANDING,

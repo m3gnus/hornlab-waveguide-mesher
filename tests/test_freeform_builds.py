@@ -252,6 +252,10 @@ def test_polyline_intersection_sweep_preserves_strict_crossing_contract(
 
 def test_freeform_circsym_eligibility_tracks_actual_azimuthal_span():
     axisymmetric = _owner_config()
+    # A closed body of revolution: bare mode is rejected on topology alone, so
+    # it would mask the azimuthal-span check this test exists for.
+    axisymmetric["mode"] = "freestanding"
+    axisymmetric["mesh"]["wall_thickness_mm"] = 5.0
     axisymmetric["profile"]["profileV"] = copy.deepcopy(
         axisymmetric["profile"]["profileH"]
     )

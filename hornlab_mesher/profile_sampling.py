@@ -430,23 +430,6 @@ def _normalise3(vec: np.ndarray, fallback: tuple[float, float, float] = (0.0, -1
     return vec / length
 
 
-def _horn_indices(n_phi: int, n_length: int, *, full_circle: bool) -> np.ndarray:
-    radial_steps = n_phi if full_circle else max(0, n_phi - 1)
-    if n_length <= 0 or radial_steps <= 0:
-        return np.empty((0, 3), dtype=np.int64)
-    j = np.repeat(np.arange(n_length, dtype=np.int64), radial_steps)
-    i = np.tile(np.arange(radial_steps, dtype=np.int64), n_length)
-    row1 = j * n_phi
-    row2 = row1 + n_phi
-    i2 = (i + 1) % n_phi if full_circle else i + 1
-    first = np.stack([row1 + i, row1 + i2, row2 + i2], axis=1)
-    second = np.stack([row1 + i, row2 + i2, row2 + i], axis=1)
-    indices = np.empty((first.shape[0] * 2, 3), dtype=np.int64)
-    indices[0::2] = first
-    indices[1::2] = second
-    return indices
-
-
 def _fill_missing_normals(normals: np.ndarray, vertices: np.ndarray, n_phi: int, n_length: int) -> None:
     def has_normal(index: int) -> bool:
         return float(np.linalg.norm(normals[index])) > 1.0e-12
@@ -476,7 +459,110 @@ def _fill_missing_normals(normals: np.ndarray, vertices: np.ndarray, n_phi: int,
         normals[index] = total
 
 
-def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) -> np.ndarray:
+def _grid_phi_derivative(
+    points: np.ndarray, *, full_circle: bool, phi_coordinates: np.ndarray | None
+) -> np.ndarray:
+    """Differentiate a ``(t, phi, xyz)`` grid along its azimuth rows."""
+
+    n_t, n_phi = points.shape[:2]
+    phi = None
+    if phi_coordinates is not None:
+        candidate = np.asarray(phi_coordinates, dtype=np.float64)
+        if candidate.shape == (n_t, n_phi) and np.all(np.isfinite(candidate)):
+            phi = candidate
+
+    if full_circle:
+        if phi is None:
+            step = math.tau / n_phi
+            return (np.roll(points, -1, axis=1) - np.roll(points, 1, axis=1)) / (
+                2.0 * step
+            )
+        unwrapped = np.unwrap(phi, axis=1)
+        previous = np.roll(unwrapped, 1, axis=1)
+        previous[:, 0] -= math.tau
+        following = np.roll(unwrapped, -1, axis=1)
+        following[:, -1] += math.tau
+        h_previous = unwrapped - previous
+        h_next = following - unwrapped
+        if np.any(h_previous <= 0.0) or np.any(h_next <= 0.0):
+            step = math.tau / n_phi
+            return (np.roll(points, -1, axis=1) - np.roll(points, 1, axis=1)) / (
+                2.0 * step
+            )
+        weight_previous = (-h_next / (h_previous * (h_previous + h_next)))[..., None]
+        weight_center = ((h_next - h_previous) / (h_previous * h_next))[..., None]
+        weight_next = (h_previous / (h_next * (h_previous + h_next)))[..., None]
+        return (
+            weight_previous * np.roll(points, 1, axis=1)
+            + weight_center * points
+            + weight_next * np.roll(points, -1, axis=1)
+        )
+
+    if phi is None or np.any(np.diff(phi, axis=1) <= 0.0):
+        phi = np.broadcast_to(
+            np.linspace(0.0, 1.0, n_phi, dtype=np.float64), (n_t, n_phi)
+        )
+    derivative = np.empty_like(points)
+    edge_order = 2 if n_phi >= 3 else 1
+    for row in range(n_t):
+        derivative[row] = np.gradient(
+            points[row], phi[row], axis=0, edge_order=edge_order
+        )
+    return derivative
+
+
+def _grid_surface_normals(
+    points: np.ndarray,
+    *,
+    full_circle: bool,
+    t_coordinates: np.ndarray | None = None,
+    phi_coordinates: np.ndarray | None = None,
+) -> np.ndarray:
+    """Unnormalised ``dP/dphi x dP/dt`` at every node of a ``(t, phi, xyz)`` grid.
+
+    Averaging the incident face normals instead is area-weighted, so it leans
+    towards whichever neighbouring row is further away. The throat- and
+    mouth-clustered axial maps make consecutive intervals differ several-fold
+    right where an R-OSSE rollback is still turning, and the mouth row only has
+    neighbours on one side at all. The resulting few-hundredths-of-a-degree tilt
+    is harmless on the flare but not at the rim, where a rollback compresses the
+    offset's arc length by ``(R_curvature - wall) / R_curvature``: the last
+    interval is then short enough that a micron of normal error walks the offset
+    backwards and reverses ``dP/dt`` for the whole ring. Differentiating the
+    parameterisation keeps the rim normal honest.
+    """
+
+    n_t, n_phi = points.shape[:2]
+    if n_t < 2 or n_phi < 2:
+        return np.zeros_like(points)
+
+    t = None
+    if t_coordinates is not None:
+        candidate = np.asarray(t_coordinates, dtype=np.float64)
+        if (
+            candidate.shape == (n_t,)
+            and np.all(np.isfinite(candidate))
+            and np.all(np.diff(candidate) > 0.0)
+        ):
+            t = candidate
+    if t is None:
+        t = np.arange(n_t, dtype=np.float64)
+
+    d_t = np.gradient(points, t, axis=0, edge_order=2 if n_t >= 3 else 1)
+    d_phi = _grid_phi_derivative(
+        points, full_circle=full_circle, phi_coordinates=phi_coordinates
+    )
+    return np.cross(d_phi, d_t)
+
+
+def _outer_offset_shell(
+    inner: np.ndarray,
+    wall: float,
+    *,
+    full_circle: bool,
+    t_coordinates: np.ndarray | None = None,
+    phi_coordinates: np.ndarray | None = None,
+) -> np.ndarray:
     n_phi, n_cols, _ = inner.shape
     n_length = n_cols - 1
     # Grid order is (phi, column); flatten to column-major vertex rows with
@@ -485,13 +571,15 @@ def _outer_offset_shell(inner: np.ndarray, wall: float, *, full_circle: bool) ->
         inner[:, :, (0, 2, 1)].transpose(1, 0, 2).reshape(n_phi * n_cols, 3)
     )
 
-    normals = np.zeros_like(vertices)
-    tris = _horn_indices(n_phi, n_length, full_circle=full_circle)
-    if tris.shape[0]:
-        ab = vertices[tris[:, 1]] - vertices[tris[:, 0]]
-        ac = vertices[tris[:, 2]] - vertices[tris[:, 0]]
-        face_normals = np.cross(ab, ac)
-        np.add.at(normals, tris.ravel(), np.repeat(face_normals, 3, axis=0))
+    # The swap above leaves ``vertices`` in exactly the (t, phi, xyz) order the
+    # derivatives want; the reflection it introduces flips the cross product's
+    # handedness, which ``offset_sign`` below resolves either way.
+    normals = _grid_surface_normals(
+        vertices.reshape(n_cols, n_phi, 3),
+        full_circle=full_circle,
+        t_coordinates=t_coordinates,
+        phi_coordinates=phi_coordinates,
+    ).reshape(n_phi * n_cols, 3)
     _fill_missing_normals(normals, vertices, n_phi, n_length)
 
     sample_idx = np.arange(0, vertices.shape[0], max(1, vertices.shape[0] // 64))
@@ -1140,7 +1228,22 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
     if enc_depth <= 0.0 and wall > 0.0:
-        outer = _outer_offset_shell(inner, wall, full_circle=full_circle)
+        outer = _outer_offset_shell(
+            inner,
+            wall,
+            full_circle=full_circle,
+            t_coordinates=np.asarray(t_values, dtype=np.float64),
+            # ``phi_grid`` is (phi, t); the derivative helper wants (t, phi).
+            # Outside FREEFORM only the morph angle list is non-uniform, but it
+            # is non-uniform exactly where the corner arc turns fastest.
+            phi_coordinates=(
+                phi_grid.T
+                if phi_grid is not None
+                else np.broadcast_to(
+                    np.asarray(angles, dtype=np.float64), inner.shape[1::-1]
+                )
+            ),
+        )
         if formula == "FREEFORM":
             validate_outer_offset_grid(inner, outer, full_circle=full_circle)
 

@@ -517,6 +517,60 @@ def test_orientation_and_winding_contract_across_families_modes_and_lods(config,
         assert np.all(side_agreement > 0.0), surface.role
 
 
+_ROLLBACK_ROSSE = {
+    "formula": "R-OSSE",
+    "mode": "freestanding",
+    "profile": {
+        "R_mm": 140.0,
+        "r0_mm": 12.7,
+        "a0_deg": 15.5,
+        "a_deg": 40.0,
+        "k": 2.0,
+        "q": 3.4,
+        "m": 0.85,
+        "r": 0.4,
+        "b": 0.2,
+        "tmax": 1.0,
+    },
+}
+
+
+@pytest.mark.parametrize("wall_mm", [5.0, 5.1, 5.5, 6.0, 6.5, 7.0, 7.5])
+def test_rollback_mouth_rim_offset_does_not_hook_backwards(wall_mm):
+    """The rim ring of an R-OSSE rollback used to reverse against its own profile.
+
+    A rollback compresses the offset's arc length by (R_curvature - wall) /
+    R_curvature, so the outermost interval of the outer shell is short enough
+    that a micron of normal error walks it backwards. That reverses dP/dt for
+    the whole ring: the orientation guard rejected the surface outright over
+    roughly 5.1-6.0 mm of wall, and above that the ring rendered inside out
+    quietly, because the chord normal had flipped to match.
+    """
+
+    config = copy.deepcopy(_ROLLBACK_ROSSE)
+    config["mesh"] = {"wall_thickness_mm": wall_mm}
+
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+
+    outer = next(surface for surface in preview.surfaces if surface.role == "horn.outer")
+    assert outer.metadata["disagreeingTriangles"] == 0
+
+    # The rim ring's normals must still point the same way as the ring before
+    # it; a reversed dP/dt shows up as an inverted radial component there.
+    positions = np.asarray(outer.positions, dtype=np.float64).reshape(-1, 3)
+    normals = np.asarray(outer.normals, dtype=np.float64).reshape(-1, 3)
+    n_phi = int(outer.metadata["gridPhi"]) if "gridPhi" in outer.metadata else None
+    if n_phi is None:
+        n_phi = int(np.sum(np.isclose(positions[:, 2], positions[0, 2])))
+    radial = positions[:, :2] / np.linalg.norm(positions[:, :2], axis=1, keepdims=True)
+    radial_component = np.einsum("ij,ij->i", normals[:, :2], radial)
+    rim = radial_component[-n_phi:]
+    previous = radial_component[-2 * n_phi : -n_phi]
+    assert np.all(np.sign(rim) == np.sign(previous)), (
+        f"mouth rim normals reversed against the ring before them at "
+        f"wall={wall_mm} mm"
+    )
+
 
 def _vertex_versus_face_deg(surface):
     """Worst angle between a shipped vertex normal and a face that uses it."""

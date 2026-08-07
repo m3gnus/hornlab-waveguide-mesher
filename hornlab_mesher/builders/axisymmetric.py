@@ -8,7 +8,9 @@ from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
     build_bspline_surface_from_rings,
+    make_planar_fill_from_boundary,
     make_planar_fill_from_ring,
+    require_gmsh,
     superellipse_ring,
 )
 
@@ -42,7 +44,15 @@ def _build_axisymmetric(
     grid = np.stack(rings, axis=1)
 
     wall = build_bspline_surface_from_rings(grid)
-    throat = make_planar_fill_from_ring(grid[:, 0, :])
+    # Fill on the wall's own throat curve. Authoring a fresh ring through the
+    # same coordinates gives the cap its own 1D mesh, so the throat seam comes
+    # out as a slit rather than a join -- the source boundary stops sealing to
+    # the wall. Keep the ring author as a fallback for a wall whose boundary
+    # cannot be resolved.
+    require_gmsh().model.occ.synchronize()  # getBoundary needs the wall published
+    throat = make_planar_fill_from_boundary(
+        wall, source_axis="z", use_min=True, closed=True
+    ) or make_planar_fill_from_ring(grid[:, 0, :])
     wall_points, wall_normals = open_shell_wall_orientation_references(
         grid, closed=True
     )

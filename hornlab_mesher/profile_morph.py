@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Literal, Mapping, NamedTuple
 
 import numpy as np
 
@@ -63,6 +63,103 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
     return math.hypot(r_norm * cos_p * sx, r_norm * sin_p * sy)
 
 
+_COVERAGE_ANGLE_MIN = 0.5
+_COVERAGE_ANGLE_MAX = 89.0
+
+
+class CoverageInversion(NamedTuple):
+    """Result of solving the OSSE coverage angle against a guiding curve.
+
+    ``saturated`` names the bracket end the target fell outside of, or is
+    ``None`` when the guiding curve was actually met. The bisection is over a
+    fixed ``[0.5, 89]`` degree bracket, and ``_osse_radius`` is monotonically
+    increasing in the coverage angle, so a target outside ``[r(0.5), r(89)]``
+    is unreachable: the solver then returns the nearest bracket end and the
+    mouth silently lands somewhere other than the guiding curve. Callers that
+    can report to the user should surface :func:`coverage_angle_saturation`
+    instead of letting that pass unnoticed.
+    """
+
+    angle_deg: float
+    saturated: Literal["min", "max"] | None
+    achieved_radius: float
+    target_radius: float
+    #: Axial station the inversion was solved at. Equals the main length only
+    #: when ``gcurveDist`` puts the guiding curve at the mouth, so the achieved
+    #: radius is NOT a mouth radius in general.
+    station_z: float = 0.0
+    at_mouth: bool = True
+
+
+def _probe_osse_coverage_bracket(
+    target_radius: float,
+    z_main: float,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    a0_deg: float,
+    r0_main: float,
+    at_mouth: bool = True,
+) -> CoverageInversion | None:
+    """Bracket-end verdict for the coverage inversion, without the bisection.
+
+    Returns a saturated :class:`CoverageInversion` when the requested radius
+    falls strictly outside ``[r(0.5), r(89)]``, and ``None`` when it does not
+    -- either because the target is reachable, or because the radius is
+    undefined at a bracket end and no verdict is supportable. ``None`` is
+    therefore "nothing to report", not "reachable".
+
+    Two radius evaluations instead of the full inversion's 26. The saturated
+    branch of :func:`_invert_osse_coverage_angle` never bisects either, so this
+    loses nothing there; what it saves is the *healthy* case, which is the one
+    a sweep pays for on every frame. Measured: 5 us per azimuth against 36 us
+    for the full inversion, which is what makes a fine-grained azimuth sweep
+    affordable in the preview.
+    """
+
+    r_low = _osse_radius_or_nan(
+        _COVERAGE_ANGLE_MIN, z_main, p, params, a0_deg=a0_deg, r0_main=r0_main
+    )
+    r_high = _osse_radius_or_nan(
+        _COVERAGE_ANGLE_MAX, z_main, p, params, a0_deg=a0_deg, r0_main=r0_main
+    )
+    if not math.isfinite(r_low) or not math.isfinite(r_high):
+        return None
+    # Strict comparisons: a target exactly equal to a bracket end is reachable
+    # AT that end, not outside it.
+    if target_radius < r_low:
+        return CoverageInversion(
+            _COVERAGE_ANGLE_MIN, "min", r_low, target_radius, z_main, at_mouth
+        )
+    if target_radius > r_high:
+        return CoverageInversion(
+            _COVERAGE_ANGLE_MAX, "max", r_high, target_radius, z_main, at_mouth
+        )
+    return None
+
+
+def _osse_radius_or_nan(
+    a_deg: float,
+    z_main: float,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    a0_deg: float,
+    r0_main: float,
+) -> float:
+    # A negative radicand inside _osse_radius (reachable with a negative a0
+    # at a small coverage angle) raises rather than returning a non-finite
+    # value. The JS engine gets NaN there and abandons the step, so swallow
+    # it to the same NaN instead of turning a probe into a crash: the probe
+    # visits angles the bisection alone would never have reached.
+    try:
+        return _osse_radius(
+            z_main, p, params, r0=r0_main, a_deg=a_deg, a0_deg=a0_deg
+        )
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return math.nan
+
+
 def _invert_osse_coverage_angle(
     target_radius: float,
     z_main: float,
@@ -71,27 +168,74 @@ def _invert_osse_coverage_angle(
     *,
     a0_deg: float,
     r0_main: float,
-) -> float:
-    low = 0.5
-    high = 89.0
-    for _ in range(24):
-        mid = 0.5 * (low + high)
-        radius = _osse_radius(z_main, p, params, r0=r0_main, a_deg=mid, a0_deg=a0_deg)
-        if radius < target_radius:
-            low = mid
-        else:
-            high = mid
-    return 0.5 * (low + high)
+    at_mouth: bool = True,
+) -> CoverageInversion:
+    def radius_at(a_deg: float) -> float:
+        return _osse_radius_or_nan(
+            a_deg, z_main, p, params, a0_deg=a0_deg, r0_main=r0_main
+        )
+
+    def bisect(low: float, high: float) -> float:
+        for _ in range(24):
+            mid = 0.5 * (low + high)
+            radius = radius_at(mid)
+            if not math.isfinite(radius):
+                break
+            if radius < target_radius:
+                low = mid
+            else:
+                high = mid
+        return 0.5 * (low + high)
+
+    low = _COVERAGE_ANGLE_MIN
+    high = _COVERAGE_ANGLE_MAX
+    # Probe the bracket ends before bisecting: the bisection alone cannot tell
+    # "converged onto the target" from "ran into the bracket end", and the
+    # latter is wrong geometry rather than an approximation of the requested
+    # one. Two extra evaluations per azimuth, hoisted with the inversion.
+    #
+    # A None here means either "reachable" or "undefined at a bracket end". In
+    # the second case the probe supports no verdict at all, so falling through
+    # to the plain bisection and reporting no diagnosis is right for both:
+    # claiming saturation off the back of a NaN would put one in front of the
+    # user.
+    saturated = _probe_osse_coverage_bracket(
+        target_radius,
+        z_main,
+        p,
+        params,
+        a0_deg=a0_deg,
+        r0_main=r0_main,
+        at_mouth=at_mouth,
+    )
+    if saturated is not None:
+        return saturated
+
+    angle = bisect(low, high)
+    return CoverageInversion(
+        angle, None, radius_at(angle), target_radius, z_main, at_mouth
+    )
 
 
-def _coverage_angle_from_guiding_curve(
+def _solve_coverage_from_guiding_curve(
     p: float,
     params: Mapping[str, Any],
     *,
     main_length: float,
     a0_deg: float,
     r0_main: float,
-) -> float | None:
+    probe_only: bool = False,
+) -> CoverageInversion | None:
+    """Solve the coverage angle against the guiding curve at azimuth ``p``.
+
+    ``probe_only`` skips the bisection and answers only "is the guiding curve
+    out of reach here": it returns a saturated result or ``None``, never a
+    solved angle. Callers that sweep many azimuths purely to look for
+    saturation should use it -- it is the difference between 36 us and 5 us per
+    azimuth, because the bisection is paid on exactly the healthy azimuths that
+    have nothing to report.
+    """
+
     if not _guiding_curve_active(params, p):
         return None
     target_radius = _guiding_curve_target_radius(p, params)
@@ -102,13 +246,78 @@ def _coverage_angle_from_guiding_curve(
     if target_z <= 0.0 or not math.isfinite(target_z):
         target_z = main_length
     target_z = min(main_length, target_z)
-    return _invert_osse_coverage_angle(
+    solve = (
+        _probe_osse_coverage_bracket if probe_only else _invert_osse_coverage_angle
+    )
+    return solve(
         target_radius,
         target_z,
         p,
         params,
         a0_deg=a0_deg,
         r0_main=r0_main,
+        at_mouth=math.isclose(target_z, main_length, rel_tol=1e-12, abs_tol=1e-9),
+    )
+
+
+def _coverage_angle_from_guiding_curve(
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    main_length: float,
+    a0_deg: float,
+    r0_main: float,
+) -> float | None:
+    solved = _solve_coverage_from_guiding_curve(
+        p, params, main_length=main_length, a0_deg=a0_deg, r0_main=r0_main
+    )
+    return None if solved is None else solved.angle_deg
+
+
+def coverage_angle_saturation(
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    main_length: float,
+    a0_deg: float,
+    r0_main: float,
+    location: str | None = None,
+) -> str | None:
+    """Human-readable reason the guiding curve could not be met at ``p``.
+
+    ``None`` when there is no guiding curve or the mouth lands on it. The
+    message names the actionable direction, because the failure mode users hit
+    is a length that has grown past the point where any coverage angle can
+    still reach the requested mouth: past that point every other parameter
+    stops changing the mouth at all.
+
+    ``location`` overrides the "at phi=N deg" clause for callers that probed
+    several azimuths and know the miss is not confined to this one.
+    """
+
+    solved = _solve_coverage_from_guiding_curve(
+        p, params, main_length=main_length, a0_deg=a0_deg, r0_main=r0_main
+    )
+    if solved is None or solved.saturated is None:
+        return None
+    where = location or f"phi={math.degrees(p) % 360.0:.1f} deg"
+    if solved.saturated == "min":
+        remedy = "shorten the horn (Length), reduce the termination shape s, or widen the guiding curve"
+    else:
+        remedy = "lengthen the horn (Length) or narrow the guiding curve"
+    # The inversion is solved where the guiding curve sits, which is the mouth
+    # only when GCurve.Dist is 1. Naming the mid-horn radius a "mouth radius"
+    # would send the user chasing a number they cannot measure -- and the v1
+    # schema still defaults GCurve.Dist to 0.5, so that is the common case.
+    if solved.at_mouth:
+        station = "the mouth radius"
+    else:
+        station = f"the radius at the guiding-curve distance (z={solved.station_z:.1f} mm)"
+    return (
+        f"guiding curve unreachable at {where}: the coverage angle "
+        f"is pinned at {solved.angle_deg:g} deg, so {station} is "
+        f"{solved.achieved_radius:.1f} mm instead of the requested "
+        f"{solved.target_radius:.1f} mm; {remedy}"
     )
 
 

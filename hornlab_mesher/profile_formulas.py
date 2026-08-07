@@ -15,7 +15,12 @@ from .profile_common import (
     _osse_radius,
     eval_param,
 )
-from .profile_morph import _coverage_angle_from_guiding_curve
+from .profile_morph import (
+    CoverageInversion,
+    _coverage_angle_from_guiding_curve,
+    _solve_coverage_from_guiding_curve,
+    coverage_angle_saturation,
+)
 
 if (
     TYPE_CHECKING
@@ -104,6 +109,81 @@ def osse_coverage_angle(params: Mapping[str, Any], p: float) -> float | None:
         main_length=L,
         a0_deg=a0_deg,
         r0_main=r0_base,
+    )
+
+
+def osse_coverage_inversion(
+    params: Mapping[str, Any], p: float
+) -> CoverageInversion | None:
+    """Full coverage-inversion result at ``p``, or ``None`` without a guiding curve.
+
+    Companion to :func:`osse_coverage_angle` for callers that need to know
+    whether the guiding curve was actually met, and by how much it was missed.
+    """
+
+    L, _, _ext_len, _slot_len = osse_length_config(params, p)
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    a0_deg = eval_param(params.get("a0"), p, 15.5)
+    main_params = {**params, "L": L}
+    return _solve_coverage_from_guiding_curve(
+        p,
+        main_params,
+        main_length=L,
+        a0_deg=a0_deg,
+        r0_main=r0_base,
+    )
+
+
+def osse_coverage_saturation_probe(
+    params: Mapping[str, Any], p: float
+) -> CoverageInversion | None:
+    """Saturation-only screen at ``p``: a saturated result, or ``None``.
+
+    The cheap half of :func:`osse_coverage_inversion` -- it answers "is the
+    guiding curve out of reach here" without bisecting for the angle that
+    reaches it. ``None`` means "nothing to report" (reachable, no guiding
+    curve, or a radius undefined at a bracket end), never "solved".
+
+    The saturated result it returns is identical to the full inversion's, so a
+    caller screening many azimuths can rank them on it and only pay the full
+    inversion for the one it actually reports.
+    """
+
+    L, _, _ext_len, _slot_len = osse_length_config(params, p)
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    a0_deg = eval_param(params.get("a0"), p, 15.5)
+    main_params = {**params, "L": L}
+    return _solve_coverage_from_guiding_curve(
+        p,
+        main_params,
+        main_length=L,
+        a0_deg=a0_deg,
+        r0_main=r0_base,
+        probe_only=True,
+    )
+
+
+def osse_coverage_saturation(
+    params: Mapping[str, Any], p: float, *, location: str | None = None
+) -> str | None:
+    """Reason the guiding curve is unreachable at ``p``, or ``None`` if it is met.
+
+    The coverage bisection clamps to its bracket rather than failing, so
+    without this check an unreachable guiding curve produces a mouth that is
+    silently off-target while every other parameter appears to stop responding.
+    """
+
+    L, _, _ext_len, _slot_len = osse_length_config(params, p)
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    a0_deg = eval_param(params.get("a0"), p, 15.5)
+    main_params = {**params, "L": L}
+    return coverage_angle_saturation(
+        p,
+        main_params,
+        main_length=L,
+        a0_deg=a0_deg,
+        r0_main=r0_base,
+        location=location,
     )
 
 

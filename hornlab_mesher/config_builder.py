@@ -1425,6 +1425,16 @@ def _axisymmetric_rejection_reasons(
     if enclosure_obj is not None or mode == "enclosure":
         depth = getattr(enclosure_obj, "depth_mm", params.get("encDepth", None))
         reasons.append(f"enclosure depth is {float(depth):g} mm")
+    if mode == "bare":
+        # A bare shell has no outer wall or rear cap, so its meridian ends in
+        # mid-air at the mouth rim. The one-trace CircSym formulation needs a
+        # closed body of revolution; an open trace needs an open-screen
+        # formulation the solver does not implement.
+        reasons.append(
+            "bare mode is an open zero-thickness shell with no closed "
+            "body-of-revolution meridian; set Mesh.WallThickness > 0, an "
+            "enclosure, or infinite-baffle mode"
+        )
     if _number_list(params.get("subdomainSlices")) or _number_list(
         params.get("interfaceOffset")
     ):
@@ -1961,6 +1971,19 @@ def build_meridian(
     source_swept_area_mm2 = float(np.sum(2.0 * math.pi * source_rho * source_length))
     if source_segment_count <= 0 or source_swept_area_mm2 <= 1.0e-12:
         raise ConfigError("CircSym driven source has zero swept surface measure")
+
+    # Structural backstop for the solver's one-trace contract. metal-bem's
+    # _validate_closed_or_baffled_meridian rejects any trace whose two free
+    # endpoints are not both on the axis; enforcing the same invariant here
+    # keeps circsym_rejection_reasons an honest predicate instead of letting
+    # auto-mode route a design that only fails once the sweep starts.
+    if baffle_z_mm is None and not (nodes[0, 0] <= 1.0e-9 and nodes[-1, 0] <= 1.0e-9):
+        raise ConfigError(
+            "CircSym meridian is not closed on the symmetry axis "
+            f"(endpoint radii {float(nodes[0, 0]):.6g} mm and "
+            f"{float(nodes[-1, 0]):.6g} mm); the one-trace formulation "
+            "requires a closed body of revolution"
+        )
 
     nodes_m = nodes * 0.001
     baffle_z = None if baffle_z_mm is None else float(baffle_z_mm) * 0.001
