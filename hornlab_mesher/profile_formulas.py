@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import math
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .freeform import build_freeform_geometry
 from .profile_common import (
@@ -13,6 +14,7 @@ from .profile_common import (
     _deg,
     _normalise_formula,
     _osse_radius,
+    _osse_radius_curve,
     eval_param,
 )
 from .profile_morph import (
@@ -28,15 +30,20 @@ if (
     from .icw import ICWCurve
 
 
-def _circular_arc_radius(
-    z_main: float,
+def _circular_arc_center(
     p: float,
     params: Mapping[str, Any],
     *,
     r0_main: float,
     mouth_radius: float,
     length: float,
-) -> float:
+) -> tuple[tuple[float, float] | None, float]:
+    """Solve the terminating arc's centre and radius, which do not vary with z.
+
+    Split out of :func:`_circular_arc_radius` so a whole meridian shares one
+    solve instead of repeating it per axial station.
+    """
+
     p1 = (0.0, r0_main)
     p2 = (length, mouth_radius)
     center: tuple[float, float] | None = None
@@ -78,6 +85,21 @@ def _circular_arc_radius(
             arc_radius = -((dx * dx + dy * dy) / (2.0 * dot))
             center = (p2[0] + nx * arc_radius, p2[1] + ny * arc_radius)
 
+    return center, arc_radius
+
+
+def _circular_arc_radius(
+    z_main: float,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    r0_main: float,
+    mouth_radius: float,
+    length: float,
+) -> float:
+    center, arc_radius = _circular_arc_center(
+        p, params, r0_main=r0_main, mouth_radius=mouth_radius, length=length
+    )
     if center is None or not math.isfinite(arc_radius) or arc_radius == 0.0:
         return mouth_radius
 
@@ -88,6 +110,32 @@ def _circular_arc_radius(
 
     sign = 1.0 if mouth_radius - center[1] >= 0.0 else -1.0
     return center[1] + sign * math.sqrt(under)
+
+
+def _circular_arc_radius_curve(
+    z_main: NDArray[np.float64],
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    r0_main: float,
+    mouth_radius: float,
+    length: float,
+) -> NDArray[np.float64]:
+    """Array form of :func:`_circular_arc_radius` for one azimuth."""
+
+    center, arc_radius = _circular_arc_center(
+        p, params, r0_main=r0_main, mouth_radius=mouth_radius, length=length
+    )
+    radius = np.full_like(z_main, mouth_radius)
+    if center is None or not math.isfinite(arc_radius) or arc_radius == 0.0:
+        return radius
+
+    dx_center = z_main - center[0]
+    under = arc_radius * arc_radius - dx_center * dx_center
+    on_arc = under >= 0.0
+    sign = 1.0 if mouth_radius - center[1] >= 0.0 else -1.0
+    radius[on_arc] = center[1] + sign * np.sqrt(under[on_arc])
+    return radius
 
 
 def osse_coverage_angle(params: Mapping[str, Any], p: float) -> float | None:
@@ -257,6 +305,83 @@ def calculate_osse(
     return x, y
 
 
+def calculate_osse_curve(
+    z_values: Any,
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    coverage_angle: float | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """``calculate_osse`` over a whole axial station array at one azimuth.
+
+    Returns ``(z, radius)`` arrays.  The scalar entry point stays the public
+    single-point API and the differential oracle for this one; the grid
+    builders call this so the parameter set, the coverage inversion and the
+    terminating-arc solve are each paid once per meridian.
+    """
+
+    z = np.asarray(z_values, dtype=np.float64)
+    L, _total, ext_len, slot_len = osse_length_config(params, p)
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
+    r0_main = r0_base
+    r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
+    a_deg = eval_param(params.get("a"), p, 60.0)
+    a0_deg = eval_param(params.get("a0"), p, 15.5)
+
+    radius = np.empty_like(z)
+    in_ext = z <= ext_len
+    in_slot = ~in_ext & (z <= ext_len + slot_len)
+    in_main = ~(in_ext | in_slot)
+    radius[in_ext] = r0_throat + z[in_ext] * math.tan(ext_angle)
+    radius[in_slot] = r0_main
+    if in_main.any():
+        main_z = z[in_main] - ext_len - slot_len
+        main_params = {**params, "L": L}
+        active_a_deg = coverage_angle
+        if active_a_deg is None:
+            active_a_deg = _coverage_angle_from_guiding_curve(
+                p,
+                main_params,
+                main_length=L,
+                a0_deg=a0_deg,
+                r0_main=r0_main,
+            )
+        if active_a_deg is None:
+            active_a_deg = a_deg
+        throat_profile = int(
+            eval_param(
+                params.get("throatProfile", params.get("throat_profile")), p, 1.0
+            )
+            or 1
+        )
+        if throat_profile == 3:
+            mouth_radius = r0_main + L * math.tan(math.radians(active_a_deg))
+            radius[in_main] = _circular_arc_radius_curve(
+                main_z,
+                p,
+                main_params,
+                r0_main=r0_main,
+                mouth_radius=mouth_radius,
+                length=L,
+            )
+        else:
+            radius[in_main] = _osse_radius_curve(
+                main_z, p, main_params, r0=r0_main, a_deg=active_a_deg, a0_deg=a0_deg
+            )
+
+    x = z
+    y = radius
+    rot_deg = eval_param(params.get("rot"), p, 0.0)
+    if math.isfinite(rot_deg) and rot_deg != 0.0:
+        rot = math.radians(rot_deg)
+        dx = x
+        dy = y - r0_base
+        x = dx * math.cos(rot) - dy * math.sin(rot)
+        y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+    return x, y
+
+
 def osse_length_config(
     params: Mapping[str, Any], p: float = 0.0
 ) -> tuple[float, float, float, float]:
@@ -325,9 +450,31 @@ def rosse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
     return ext_len + slot_len + _rosse_length(params, p)
 
 
-def _calculate_rosse_main(
-    t: float, p: float, params: Mapping[str, Any]
-) -> tuple[float, float]:
+class _RosseMainCoefficients(NamedTuple):
+    """Everything in the main R-OSSE curve that does not depend on ``t``.
+
+    Splitting these out is what lets a whole meridian be evaluated with one
+    parameter resolution instead of one per axial station: the grid builder
+    walks ``t`` for a fixed azimuth, and every one of these terms -- including
+    the ``_rosse_length`` solve and both tangents -- is constant along it.
+    """
+
+    R: float
+    r0: float
+    k: float
+    q: float
+    m: float
+    r: float
+    b: float
+    L: float
+    c1: float
+    c2: float
+    c3: float
+
+
+def _rosse_main_coefficients(
+    p: float, params: Mapping[str, Any]
+) -> _RosseMainCoefficients:
     R = eval_param(params.get("R"), p, 150.0)
     r0 = eval_param(params.get("r0"), p, 12.7)
     k = eval_param(params.get("k"), p, _DEFAULTS["k"])
@@ -338,15 +485,55 @@ def _calculate_rosse_main(
     a = _deg(params.get("a"), p, 60.0)
     a0 = _deg(params.get("a0"), p, 15.5)
     L = _rosse_length(params, p)
-    c1 = (k * r0) ** 2
-    c2 = 2 * k * r0 * math.tan(a0)
-    c3 = math.tan(a) ** 2
+    return _RosseMainCoefficients(
+        R=R,
+        r0=r0,
+        k=k,
+        q=q,
+        m=m,
+        r=r,
+        b=b,
+        L=L,
+        c1=(k * r0) ** 2,
+        c2=2 * k * r0 * math.tan(a0),
+        c3=math.tan(a) ** 2,
+    )
+
+
+def _calculate_rosse_main(
+    t: float, p: float, params: Mapping[str, Any]
+) -> tuple[float, float]:
+    c = _rosse_main_coefficients(p, params)
+    R, r0, k, q, m, r, b, L, c1, c2, c3 = c
 
     x = L * (math.sqrt(r**2 + m**2) - math.sqrt(r**2 + (t - m) ** 2))
     x += b * L * (math.sqrt(r**2 + (1 - m) ** 2) - math.sqrt(r**2 + m**2)) * (t**2)
     throat_r = math.sqrt(c1 + c2 * L * t + c3 * (L * t) ** 2) + r0 * (1 - k)
     mouth_r = max(0.0, R + L * (1 - math.sqrt(1 + c3 * (t - 1) ** 2)))
     y = (1 - t**q) * throat_r + (t**q) * mouth_r
+    return x, y
+
+
+def _rosse_main_curve(
+    t: NDArray[np.float64], c: _RosseMainCoefficients
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Array form of :func:`_calculate_rosse_main` for one azimuth.
+
+    Same expressions in the same association order, so the only arithmetic
+    that can differ from the scalar path is the squaring: NumPy squares by
+    multiplication (which is correctly rounded) while CPython's ``x ** 2``
+    goes through the platform ``pow``, which on macOS is occasionally one ulp
+    wide of it. ``tests/test_profile_vectorization.py`` pins that bound.
+    """
+
+    R, r0, k, q, m, r, b, L, c1, c2, c3 = c
+
+    x = L * (math.sqrt(r**2 + m**2) - np.sqrt(r**2 + (t - m) ** 2))
+    x += b * L * (math.sqrt(r**2 + (1 - m) ** 2) - math.sqrt(r**2 + m**2)) * (t**2)
+    throat_r = np.sqrt(c1 + c2 * L * t + c3 * (L * t) ** 2) + r0 * (1 - k)
+    mouth_r = np.maximum(0.0, R + L * (1 - np.sqrt(1 + c3 * (t - 1) ** 2)))
+    t_q = t**q
+    y = (1 - t_q) * throat_r + t_q * mouth_r
     return x, y
 
 
@@ -382,6 +569,57 @@ def calculate_rosse(
     main_t = (axial_pos - ext_len - slot_len) / main_length
     x, y = _calculate_rosse_main(main_t, p, params)
     return x + ext_len + slot_len, y
+
+
+def calculate_rosse_curve(
+    t_values: Any, p: float, params: Mapping[str, Any]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """``calculate_rosse`` over a whole axial station array at one azimuth.
+
+    Returns ``(z, radius)`` arrays.  The scalar entry point stays the public
+    single-point API and the differential oracle for this one; the grid
+    builders call this because resolving the parameter set once per meridian
+    rather than once per grid point is the whole cost of an R-OSSE preview.
+    """
+
+    t = np.asarray(t_values, dtype=np.float64)
+    r0_base = eval_param(params.get("r0"), p, 12.7)
+    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
+    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
+    ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
+    r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
+    main_length = _rosse_length(params, p)
+
+    if ext_len <= 0.0 and slot_len <= 0.0:
+        return _rosse_main_curve(t, _rosse_main_coefficients(p, params))
+
+    full_length = ext_len + slot_len + main_length
+    if full_length <= 1.0e-12:
+        return np.zeros_like(t), np.full_like(t, r0_base)
+
+    axial_pos = np.maximum(0.0, t) * full_length
+    in_ext = axial_pos <= ext_len
+    in_slot = ~in_ext & (axial_pos <= ext_len + slot_len)
+    in_main = ~(in_ext | in_slot)
+
+    x = np.empty_like(t)
+    y = np.empty_like(t)
+    x[in_ext] = axial_pos[in_ext]
+    y[in_ext] = r0_throat + axial_pos[in_ext] * math.tan(ext_angle)
+    x[in_slot] = axial_pos[in_slot]
+    y[in_slot] = r0_base
+    if main_length <= 1.0e-12:
+        x[in_main] = ext_len + slot_len
+        y[in_main] = r0_base
+    elif in_main.any():
+        # Only the main-section stations enter the curve: a negative ``main_t``
+        # from an extension station would take ``t ** q`` to NaN for the
+        # fractional exponents R-OSSE actually uses.
+        main_t = (axial_pos[in_main] - ext_len - slot_len) / main_length
+        main_x, main_y = _rosse_main_curve(main_t, _rosse_main_coefficients(p, params))
+        x[in_main] = main_x + ext_len + slot_len
+        y[in_main] = main_y
+    return x, y
 
 
 # ============================================================================

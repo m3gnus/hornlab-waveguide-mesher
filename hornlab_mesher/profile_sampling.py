@@ -21,8 +21,8 @@ from .profile_common import (
 )
 from .profile_formulas import (
     build_icw_curve,
-    calculate_osse,
-    calculate_rosse,
+    calculate_osse_curve,
+    calculate_rosse_curve,
     icw_meridian_points,
     osse_coverage_angle,
     osse_length_config,
@@ -665,6 +665,9 @@ def _raw_radial_grid(
     max_fixed_len = 0.0
     max_total_len = 0.0
     lookup_curve = _lookup_curve(params, t_unit_values) if formula == "LOOKUP" else None
+    lookup_meridian = (
+        np.asarray(lookup_curve, dtype=np.float64) if lookup_curve is not None else None
+    )
     # ICW is phi-independent in Phase 1 (no guiding curve / no per-phi
     # expressions), so the curvature curve is solved/fit ONCE here, before the
     # per-phi loop, and its meridian is reused for every azimuth. The
@@ -674,10 +677,14 @@ def _raw_radial_grid(
         icw_meridian_points(icw_curve, t_values) if icw_curve is not None else None
     )
     osse_bulge_profile = (
-        tuple(math.sin(float(t_unit) * math.pi) for t_unit in t_unit_values)
+        np.sin(np.asarray(t_unit_values, dtype=np.float64) * math.pi)
         if formula == "OSSE"
-        else ()
+        else None
     )
+    # Both formula families evaluate a whole meridian per azimuth rather than a
+    # point per grid node: their parameter sets, length solves and coverage
+    # inversions are all constant along t, and paying them per node is what
+    # made a preview build spend ~90% of its time in the profile formulas.
     for i, phi in enumerate(angles):
         phi_value = float(phi)
         scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
@@ -685,9 +692,11 @@ def _raw_radial_grid(
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
             # cross-section (superellipse scale) and morph are layered on top
             # exactly as for OSSE, so the base curve is phi-independent.
-            curve = lookup_curve
+            curve_z = lookup_meridian[:, 0]
+            curve_radius = lookup_meridian[:, 1]
         elif formula == "ICW":
-            curve = list(zip(icw_meridian[:, 0], icw_meridian[:, 1]))
+            curve_z = icw_meridian[:, 0]
+            curve_radius = icw_meridian[:, 1]
         elif formula == "OSSE":
             _main_len, total, ext_len, slot_len = osse_length_config(params, phi_value)
             max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
@@ -696,29 +705,19 @@ def _raw_radial_grid(
             # The guiding-curve inversion depends only on phi; hoist it out of
             # the per-z loop (a 24-step bisection per grid point otherwise).
             coverage_angle = osse_coverage_angle(params, phi_value)
-            curve = [
-                (
-                    z,
-                    radius + h_bulge * bulge_factor,
-                )
-                for bulge_factor, (z, radius) in zip(
-                    osse_bulge_profile,
-                    (
-                        calculate_osse(
-                            float(t) * total,
-                            phi_value,
-                            params,
-                            coverage_angle=coverage_angle,
-                        )
-                        for t in t_values
-                    ),
-                )
-            ]
+            curve_z, curve_radius = calculate_osse_curve(
+                t_values * total,
+                phi_value,
+                params,
+                coverage_angle=coverage_angle,
+            )
+            curve_radius = curve_radius + h_bulge * osse_bulge_profile
         else:
-            curve = [calculate_rosse(float(t), phi_value, params) for t in t_values]
-        for j, (z, radius) in enumerate(curve):
-            raw_radials[i, j] = float(radius) * scale
-            z_values[i, j] = float(z)
+            curve_z, curve_radius = calculate_rosse_curve(
+                t_values, phi_value, params
+            )
+        raw_radials[i] = curve_radius * scale
+        z_values[i] = curve_z
     return raw_radials, z_values, max_fixed_len, max_total_len
 
 

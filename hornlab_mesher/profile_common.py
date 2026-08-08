@@ -7,6 +7,9 @@ import re
 from functools import lru_cache
 from typing import Any, Callable, Literal, Mapping
 
+import numpy as np
+from numpy.typing import NDArray
+
 
 _DEFAULTS = {
     "k": 1.0,
@@ -232,6 +235,51 @@ def _osse_radius(z: float, p: float, params: Mapping[str, Any], *, r0: float, a_
     else:
         term = (s * L / q) * (1 - (1 - z_norm**n) ** (1 / n))
     return base + term
+
+
+def _osse_radius_curve(
+    z: NDArray[np.float64],
+    p: float,
+    params: Mapping[str, Any],
+    *,
+    r0: float,
+    a_deg: float,
+    a0_deg: float,
+) -> NDArray[np.float64]:
+    """Array form of :func:`_osse_radius` along one meridian.
+
+    Same expressions in the same association order.  The two ``z``-dependent
+    branches are evaluated on their own stations rather than everywhere and
+    selected afterwards, because the superellipse term's ``(1 - z_norm**n)``
+    is negative past saturation and would raise on the stations it does not
+    apply to.
+    """
+
+    L = eval_param(params.get("L"), p, 120.0)
+    k = eval_param(params.get("k"), p, _DEFAULTS["k"])
+    n = eval_param(params.get("n"), p, _DEFAULTS["n"])
+    q = eval_param(params.get("q"), p, _DEFAULTS["q"])
+    s = eval_param(params.get("s"), p, 0.0)
+    a = math.radians(a_deg)
+    a0 = math.radians(a0_deg)
+
+    base = np.sqrt(
+        (k * r0) ** 2 + 2 * k * r0 * z * math.tan(a0) + (z**2) * (math.tan(a) ** 2)
+    )
+    base += r0 * (1 - k)
+    if n <= 0 or q <= 0 or L <= 0:
+        return base
+    flared = z > 0
+    if not flared.any():
+        return base
+    z_norm = q * z[flared] / L
+    saturated = z_norm > 1.0
+    term = np.full(z_norm.shape, s * L / q)
+    below = ~saturated
+    if below.any():
+        term[below] = (s * L / q) * (1 - (1 - z_norm[below] ** n) ** (1 / n))
+    base[flared] += term
+    return base
 
 
 def _parse_number_list(
