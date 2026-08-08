@@ -101,16 +101,57 @@ def _intervals(indices: list[int], size: int, closed: bool) -> list[tuple[int, i
     return result
 
 
+class _IntervalErrors:
+    """Memo of one refinement's interval measurements.
+
+    Refinement re-measures every interval after every round, but a round only
+    changes the intervals it split -- the rest return the same numbers, since
+    the candidate grid and both parameter coordinate arrays are fixed for the
+    whole call. On the seed R-OSSE design roughly two of every three
+    measurements were repeats of one already taken.
+    """
+
+    def __init__(
+        self,
+        points: NDArray[np.float64],
+        normals: NDArray[np.float64],
+        *,
+        t_coordinates: NDArray[np.float64] | None,
+        phi_coordinates: NDArray[np.float64] | None,
+    ) -> None:
+        self._points = points
+        self._normals = normals
+        self._coordinates = (t_coordinates, phi_coordinates)
+        self._cache: dict[tuple[int, int, int, bool], tuple[float, float, int | None, bool]] = {}
+
+    def __call__(
+        self, axis: int, first: int, last: int, *, closed: bool
+    ) -> tuple[float, float, int | None, bool]:
+        key = (axis, first, last, closed)
+        measurement = self._cache.get(key)
+        if measurement is None:
+            measurement = _axis_interval_error(
+                self._points,
+                self._normals,
+                first,
+                last,
+                axis=axis,
+                wrapped_length=self._points.shape[axis] if closed else None,
+                coordinates=self._coordinates[axis],
+            )
+            self._cache[key] = measurement
+        return measurement
+
+
 def _worst_axis_interval(
     points: NDArray[np.float64],
-    normals: NDArray[np.float64],
+    measure: "_IntervalErrors",
     indices: list[int],
     *,
     axis: int,
     closed: bool,
     chord_target: float,
     normal_target: float,
-    coordinates: NDArray[np.float64] | None = None,
 ) -> tuple[float, float, float, int | None, int]:
     worst_score = -1.0
     worst_chord = 0.0
@@ -119,15 +160,7 @@ def _worst_axis_interval(
     unmeasured = 0
     size = points.shape[axis]
     for first, last in _intervals(indices, size, closed):
-        chord, normal, split, measured = _axis_interval_error(
-            points,
-            normals,
-            first,
-            last,
-            axis=axis,
-            wrapped_length=size if closed else None,
-            coordinates=coordinates,
-        )
+        chord, normal, split, measured = measure(axis, first, last, closed=closed)
         if not measured:
             unmeasured += 1
         score = max(chord / max(chord_target, 1.0e-15), normal / normal_target)
@@ -194,6 +227,12 @@ def adaptive_grid_indices(
     # Directional chord bounds add under bilinear interpolation, hence each
     # direction receives half the requested surface-error allowance.
     directional_chord = max_chord_error_mm * 0.5
+    measure = _IntervalErrors(
+        sample_points,
+        sample_normals,
+        t_coordinates=axial_parameter,
+        phi_coordinates=azimuth_parameter,
+    )
     while True:
         candidates: list[tuple[float, int, int | None]] = []
         saw_unmeasured = False
@@ -202,14 +241,8 @@ def adaptive_grid_indices(
             (1, phi_indices, closed_phi),
         ):
             for first, last in _intervals(indices, sample_points.shape[axis], closed):
-                chord, normal, split, measured = _axis_interval_error(
-                    sample_points,
-                    sample_normals,
-                    first,
-                    last,
-                    axis=axis,
-                    wrapped_length=sample_points.shape[axis] if closed else None,
-                    coordinates=axial_parameter if axis == 0 else azimuth_parameter,
+                chord, normal, split, measured = measure(
+                    axis, first, last, closed=closed
                 )
                 saw_unmeasured = saw_unmeasured or not measured
                 score = max(
@@ -249,23 +282,21 @@ def adaptive_grid_indices(
 
     t_error = _worst_axis_interval(
         sample_points,
-        sample_normals,
+        measure,
         t_indices,
         axis=0,
         closed=False,
         chord_target=directional_chord,
         normal_target=max_normal_step_deg,
-        coordinates=axial_parameter,
     )
     phi_error = _worst_axis_interval(
         sample_points,
-        sample_normals,
+        measure,
         phi_indices,
         axis=1,
         closed=closed_phi,
         chord_target=directional_chord,
         normal_target=max_normal_step_deg,
-        coordinates=azimuth_parameter,
     )
     unmeasured_intervals = int(t_error[4] + phi_error[4])
     measurement_complete = unmeasured_intervals == 0

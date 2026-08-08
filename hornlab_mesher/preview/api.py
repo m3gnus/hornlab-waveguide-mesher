@@ -39,13 +39,13 @@ from ..profile_sampling import (
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
     _outer_offset_shell,
+    build_point_grid_arrays,
 )
 from ..profile_formulas import (
     osse_coverage_saturation,
     osse_coverage_saturation_probe,
 )
 from ..profiles import eval_param
-from ..profiles import build_point_grid
 from ..viewport import build_viewport_geometry_from_config
 from .fidelity import (
     adaptive_grid_indices,
@@ -315,10 +315,6 @@ def _adaptive_lod_config(
     return result
 
 
-def _grid(raw: Any, n_phi: int, n_length: int) -> NDArray[np.float64]:
-    return np.asarray(raw, dtype=np.float64).reshape(n_phi, n_length + 1, 3)
-
-
 def _surface_grid(points: NDArray[np.float64]) -> NDArray[np.float64]:
     """Convert canonical ``(phi,t,xyz)`` to surface ``(t,phi,xyz)``."""
 
@@ -326,16 +322,23 @@ def _surface_grid(points: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def _grid_indices(n_t: int, n_phi: int, *, closed_phi: bool) -> NDArray[np.uint32]:
-    triangles: list[int] = []
+    """Two triangles per quad, in the same order the scalar loop emitted."""
+
     phi_intervals = n_phi if closed_phi else n_phi - 1
-    for jt in range(n_t - 1):
-        row0 = jt * n_phi
-        row1 = (jt + 1) * n_phi
-        for ip in range(phi_intervals):
-            ip1 = (ip + 1) % n_phi
-            triangles.extend((row0 + ip, row0 + ip1, row1 + ip1))
-            triangles.extend((row0 + ip, row1 + ip1, row1 + ip))
-    return np.asarray(triangles, dtype=np.uint32)
+    if n_t < 2 or phi_intervals < 1:
+        return np.empty(0, dtype=np.uint32)
+    row0 = (np.arange(n_t - 1, dtype=np.uint32) * n_phi)[:, None]
+    row1 = row0 + n_phi
+    ip = np.arange(phi_intervals, dtype=np.uint32)[None, :]
+    ip1 = (ip + 1) % n_phi
+    triangles = np.empty((n_t - 1, phi_intervals, 6), dtype=np.uint32)
+    triangles[:, :, 0] = row0 + ip
+    triangles[:, :, 1] = row0 + ip1
+    triangles[:, :, 2] = row1 + ip1
+    triangles[:, :, 3] = row0 + ip
+    triangles[:, :, 4] = row1 + ip1
+    triangles[:, :, 5] = row1 + ip
+    return triangles.reshape(-1)
 
 
 @dataclass(frozen=True)
@@ -2425,9 +2428,7 @@ def _semantic_t_stations(
     # Rollback extrema are available additively from the canonical candidate
     # grid even though the profile evaluator does not publish named stations.
     master_grid = output["grid"]
-    n_phi = int(master_grid["grid_n_phi"])
-    n_length = int(master_grid["grid_n_length"])
-    points = _grid(master_grid["inner_points"], n_phi, n_length)
+    points = master_grid["inner_grid"]
     radius = np.mean(np.linalg.norm(points[:, :, :2], axis=2), axis=0)
     slope = np.diff(radius)
     extrema = np.flatnonzero(slope[:-1] * slope[1:] <= 0.0) + 1
@@ -2594,17 +2595,13 @@ def _replace_grid_with_corner_refinement(
     )
     if str(params.get("type", "")).strip().upper() == "FREEFORM":
         params[FREEFORM_CONTINUOUS_COLLAPSE_KEY] = True
-    grid = build_point_grid(params)
+    grid = build_point_grid_arrays(params)
     vertical_offset = float(grid.get("vertical_offset_mm", 0.0) or 0.0)
     if vertical_offset:
-        n_phi = int(grid["grid_n_phi"])
-        n_length = int(grid["grid_n_length"])
-        for key in ("inner_points", "outer_points"):
+        for key in ("inner_grid", "outer_grid"):
             if grid.get(key) is None:
                 continue
-            values = _grid(grid[key], n_phi, n_length)
-            values[:, :, 1] += vertical_offset
-            grid[key] = values.reshape(-1).tolist()
+            grid[key][:, :, 1] += vertical_offset
     output["params"] = params
     output["grid"] = grid
 
@@ -2811,8 +2808,10 @@ def build_preview_geometry(
             for alias in ("wallThickness", "wall_thickness", "WallThickness"):
                 mesh.pop(alias, None)
             sampling_config["mesh"] = mesh
+    # The preview never spells the grid's flat vertex lists: it reads the
+    # arrays they would be built from.
     output = build_viewport_geometry_from_config(
-        sampling_config
+        sampling_config, point_lists=False
     )
     if has_corners:
         _replace_grid_with_corner_refinement(output, corner_intervals)
@@ -2822,9 +2821,8 @@ def build_preview_geometry(
 
     grid_data = output["grid"]
     n_phi = int(grid_data["grid_n_phi"])
-    n_length = int(grid_data["grid_n_length"])
     closed_phi = bool(grid_data.get("full_circle", True))
-    inner_canonical = _grid(grid_data["inner_points"], n_phi, n_length)
+    inner_canonical = grid_data["inner_grid"]
     inner_master = _surface_grid(inner_canonical)
     master_t = np.asarray(grid_data.get("slice_map"), dtype=np.float64)
     master_phi = (
@@ -2904,8 +2902,8 @@ def build_preview_geometry(
     selected_inner = inner_canonical[np.ix_(phi_indices, t_indices)]
     outer_canonical = None
     selected_outer = None
-    if grid_data.get("outer_points") is not None:
-        outer_canonical = _grid(grid_data["outer_points"], n_phi, n_length)
+    if grid_data.get("outer_grid") is not None:
+        outer_canonical = grid_data["outer_grid"]
         selected_outer = outer_canonical[np.ix_(phi_indices, t_indices)]
         if options.include_outer:
             outer_master = _surface_grid(outer_canonical)

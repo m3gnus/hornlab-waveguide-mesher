@@ -36,6 +36,7 @@ from hornlab_mesher.profile_formulas import (
     calculate_rosse,
     calculate_rosse_curve,
 )
+from hornlab_mesher.profile_morph import _morph_factor, _morph_factors
 
 _TOLERANCE_EPS = 64.0
 _EPS = float(np.finfo(np.float64).eps)
@@ -204,6 +205,47 @@ def test_circular_arc_radius_curve_matches_the_scalar_oracle() -> None:
         for z in z_values
     ]
     _assert_agrees(actual, expected, "circular_arc")
+
+
+_MORPH_CASES = {
+    "rounded_rect": {
+        "morphTarget": 1.0,
+        "morphWidth": 300.0,
+        "morphHeight": 200.0,
+        "morphCorner": 40.0,
+        "morphRate": 3.0,
+        "morphFixed": 0.0,
+    },
+    "square_rate": {"morphTarget": 1.0, "morphWidth": 300.0, "morphRate": 2.0},
+    "root_rate": {"morphTarget": 1.0, "morphWidth": 300.0, "morphRate": 0.5},
+    "late_start": {"morphTarget": 1.0, "morphWidth": 300.0, "morphFixed": 0.6},
+    "superellipse": {"morphTarget": 2.0, "morphWidth": 300.0, "morphHeight": 200.0},
+    "inactive": {"morphTarget": 0.0, "morphWidth": 300.0},
+    "azimuthal_rate": {
+        "morphTarget": 1.0,
+        "morphWidth": 300.0,
+        "morphRate": "3 + 2*cos(p)^2",
+    },
+}
+
+
+@pytest.mark.parametrize("case", sorted(_MORPH_CASES))
+@pytest.mark.parametrize("phi", _AZIMUTHS)
+@pytest.mark.parametrize("morph_start", [None, 0.0, 0.35])
+def test_morph_factors_match_the_scalar_oracle(
+    case: str, phi: float, morph_start: float | None
+) -> None:
+    params = _MORPH_CASES[case]
+    t_values = np.linspace(0.0, 1.0, 401)
+    actual = _morph_factors(t_values, phi, params, morph_start=morph_start)
+    expected = [
+        _morph_factor(float(t), phi, params, morph_start=morph_start)
+        for t in t_values
+    ]
+    # ``** 2`` and ``** 0.5`` are the two exponents NumPy reroutes away from
+    # the platform pow, so those two rates are exactly where a factor can land
+    # one ulp off; the bound covers them.
+    _assert_agrees(actual, expected, f"morph/{case}")
 
 
 def test_rosse_curve_rejects_an_impossible_throat_extension() -> None:

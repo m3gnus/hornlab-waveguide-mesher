@@ -453,6 +453,37 @@ def _morph_factor(
     return min(1.0, max(0.0, (t - morph_start) / denom)) ** rate
 
 
+def _morph_factors(
+    t_values: Any,
+    phi: float,
+    params: Mapping[str, Any],
+    *,
+    morph_start: float | None = None,
+) -> np.ndarray:
+    """Array form of :func:`_morph_factor` along one meridian.
+
+    Only ``t`` varies here: whether the morph is active at all, its rate and
+    its start are properties of the azimuth, so the grid builder resolves them
+    once per meridian instead of once per grid point.
+    """
+
+    t = np.asarray(t_values, dtype=np.float64)
+    if not _morph_active(params, phi):
+        return np.zeros_like(t)
+    if morph_start is None:
+        morph_start = eval_param(params.get("morphFixed"), phi, 0.0)
+    rate = eval_param(params.get("morphRate"), phi, 3.0)
+    denom = max(1.0e-9, 1.0 - morph_start)
+    factors = np.zeros_like(t)
+    blending = t > morph_start
+    if blending.any():
+        factors[blending] = (
+            np.minimum(1.0, np.maximum(0.0, (t[blending] - morph_start) / denom))
+            ** rate
+        )
+    return factors
+
+
 def _apply_morphing(
     current_radius: float,
     mouth_radius: float,

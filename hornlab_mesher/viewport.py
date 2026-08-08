@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 from .builders.enclosure import enclosure_box_bounds, sample_enclosure_plan
 from .config_builder import _enclosure_from_config, _section, build_geometry_params
 from .geometry import HornEnclosure
-from .profiles import build_point_grid
+from .profile_sampling import build_point_grid_arrays
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,19 @@ def _reshape_grid(raw: Any, n_phi: int, n_length: int, name: str) -> NDArray[np.
     if arr.size != expected:
         raise ValueError(f"{name} has {arr.size} values; expected {expected}")
     return arr.reshape(n_phi, n_length + 1, 3)
+
+
+def _grid_with_point_lists(grid: dict[str, Any]) -> dict[str, Any]:
+    """Swap the ``*_grid`` arrays for the published flat-list keys."""
+
+    rest = dict(grid)
+    inner = rest.pop("inner_grid")
+    outer = rest.pop("outer_grid")
+    return {
+        "inner_points": inner.reshape(-1).tolist(),
+        "outer_points": None if outer is None else outer.reshape(-1).tolist(),
+        **rest,
+    }
 
 
 def build_enclosure_viewport_grid(
@@ -159,18 +172,24 @@ def build_enclosure_viewport_grid(
     }
 
 
-def build_viewport_geometry_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Build point-grid horn and optional enclosure viewport data from config."""
+def build_viewport_geometry_from_config(
+    config: Mapping[str, Any], *, point_lists: bool = True
+) -> dict[str, Any]:
+    """Build point-grid horn and optional enclosure viewport data from config.
+
+    ``point_lists`` spells the grid's vertices as the published flat
+    ``inner_points``/``outer_points`` lists.  A caller that stays in-process
+    can pass ``False`` and read the ``inner_grid``/``outer_grid`` arrays
+    instead, which is the same data without a list round trip per surface.
+    """
 
     params, formula, mode = build_geometry_params(config)
     mesh = _section(config, "mesh")
     enclosure_cfg = _section(config, "enclosure")
     enclosure = _enclosure_from_config(config, mesh, enclosure_cfg)
-    grid = build_point_grid(params)
+    grid = build_point_grid_arrays(params)
 
-    n_phi = int(grid["grid_n_phi"])
-    n_length = int(grid["grid_n_length"])
-    inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    inner_points = grid["inner_grid"]
     # build_point_grid emits the grid at the origin and reports Mesh.VerticalOffset
     # as metadata; re-apply it here as a rigid +y placement so the preview (grid and
     # enclosure alike) matches the finished mesh. The enclosure is then built from
@@ -179,11 +198,10 @@ def build_viewport_geometry_from_config(config: Mapping[str, Any]) -> dict[str, 
     vertical_offset_mm = float(grid.get("vertical_offset_mm", 0.0) or 0.0)
     if vertical_offset_mm:
         inner_points[:, :, 1] += vertical_offset_mm
-        grid = {**grid, "inner_points": inner_points.reshape(-1).tolist()}
-        if grid.get("outer_points") is not None:
-            outer_points = _reshape_grid(grid["outer_points"], n_phi, n_length, "outer_points")
-            outer_points[:, :, 1] += vertical_offset_mm
-            grid["outer_points"] = outer_points.reshape(-1).tolist()
+        if grid["outer_grid"] is not None:
+            grid["outer_grid"][:, :, 1] += vertical_offset_mm
+    if point_lists:
+        grid = _grid_with_point_lists(grid)
     enclosure_grid = None
     if enclosure is not None:
         enclosure_grid = build_enclosure_viewport_grid(

@@ -28,10 +28,11 @@ from .profile_formulas import (
     osse_length_config,
 )
 from .profile_morph import (
-    _apply_morphing,
     _guiding_curve_type,
     _guiding_curve_active,
     _morph_active,
+    _morph_factors,
+    _morph_target_radius_at_angle,
     _morph_target_shape,
     _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
@@ -1044,6 +1045,28 @@ def _freeform_raw_radial_grid(
 
 
 def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Point grid with the vertex data as the published flat lists."""
+
+    grid = build_point_grid_arrays(params)
+    inner = grid.pop("inner_grid")
+    outer = grid.pop("outer_grid")
+    return {
+        "inner_points": inner.reshape(-1).tolist(),
+        "outer_points": None if outer is None else outer.reshape(-1).tolist(),
+        **grid,
+    }
+
+
+def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The same grid, with the vertices left as ``(phi, t, xyz)`` arrays.
+
+    ``inner_points``/``outer_points`` are a flat-list wire contract, and every
+    in-process consumer immediately reshapes them back into the arrays they
+    were built from.  On a fine preview each of those round trips costs about
+    13 ms to spell the list and 16 ms to parse it back, three times over, so
+    the preview path takes ``inner_grid``/``outer_grid`` and never spells them.
+    """
+
     formula = _normalise_formula(params.get("type", "OSSE"))
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
     symmetry_planes = _symmetry_planes_for_quadrants(quadrants)
@@ -1166,43 +1189,43 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
 
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     if formula == "FREEFORM":
-        for i in range(len(angles)):
-            for j in range(n_length + 1):
-                phi_value = float(phi_grid[i, j])
-                radial = float(raw_radials[i, j])
-                inner[i, j] = (
-                    radial * math.cos(phi_value),
-                    radial * math.sin(phi_value),
-                    float(z_values[i, j]),
-                )
+        inner[:, :, 0] = raw_radials * np.cos(phi_grid)
+        inner[:, :, 1] = raw_radials * np.sin(phi_grid)
+        inner[:, :, 2] = z_values
     else:
-        for i, phi in enumerate(angles):
-            phi_value = float(phi)
-            cos_phi = math.cos(phi_value)
-            sin_phi = math.sin(phi_value)
-            mouth_radial = float(raw_radials[i, -1])
-            for j in range(n_length + 1):
-                radial = float(raw_radials[i, j])
-                # Morph progress is the global normalized axial position (z / L
-                # for OSSE), identical for every azimuth: ATH does not shift the
-                # blend by the per-azimuth slot length.
-                morph_t = float(t_values[j])
-                if morph_possible:
-                    radial = _apply_morphing(
-                        radial,
-                        mouth_radial,
-                        morph_t,
-                        phi_value,
-                        params,
-                        morph_start=snapped_morph_start,
-                        implicit_half_width=resolved_half_width,
-                        implicit_half_height=resolved_half_height,
-                    )
-                inner[i, j] = (
-                    radial * cos_phi,
-                    radial * sin_phi,
-                    float(z_values[i, j]),
+        radials = raw_radials
+        if morph_possible:
+            # The morph is a directional target-mouth rule whose target radius
+            # and blend rate depend on the azimuth alone; only the blend factor
+            # varies along t. Resolving the target once per meridian replaces
+            # n_phi * n_length target solves with n_phi of them. Morph progress
+            # is the global normalized axial position (z / L for OSSE),
+            # identical for every azimuth: ATH does not shift the blend by the
+            # per-azimuth slot length.
+            radials = raw_radials.copy()
+            for i, phi in enumerate(angles):
+                phi_value = float(phi)
+                factors = _morph_factors(
+                    t_values, phi_value, params, morph_start=snapped_morph_start
                 )
+                blended = factors > 0.0
+                if not blended.any():
+                    continue
+                mouth_radial = float(raw_radials[i, -1])
+                target_radius = _morph_target_radius_at_angle(
+                    mouth_radial,
+                    phi_value,
+                    params,
+                    implicit_half_width=resolved_half_width,
+                    implicit_half_height=resolved_half_height,
+                )
+                radials[i, blended] = (
+                    raw_radials[i, blended]
+                    + (target_radius - mouth_radial) * factors[blended]
+                )
+        inner[:, :, 0] = radials * np.cos(angles)[:, None]
+        inner[:, :, 1] = radials * np.sin(angles)[:, None]
+        inner[:, :, 2] = z_values
 
     # ATH's global Scale multiplies every linear geometry dimension after the
     # profile (and morph-target ceil) is evaluated.
@@ -1247,8 +1270,8 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
             validate_outer_offset_grid(inner, outer, full_circle=full_circle)
 
     return {
-        "inner_points": inner.reshape(-1).tolist(),
-        "outer_points": None if outer is None else outer.reshape(-1).tolist(),
+        "inner_grid": inner,
+        "outer_grid": outer,
         "grid_n_phi": int(inner.shape[0]),
         "grid_n_length": int(n_length),
         "full_circle": bool(full_circle),
