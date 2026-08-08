@@ -253,6 +253,25 @@ def test_morph_factors_match_the_scalar_oracle(
     _assert_agrees(actual, expected, f"morph/{case}")
 
 
+def test_morph_factors_leave_a_dormant_rate_expression_unevaluated() -> None:
+    """The array path keeps the scalar path's lazy pre-morph behavior."""
+
+    params = {
+        "morphTarget": 1.0,
+        "morphWidth": 300.0,
+        "morphRate": "unsupported_function(p)",
+    }
+    t_values = np.linspace(0.0, 1.0, 17)
+
+    actual = _morph_factors(t_values, 0.0, params, morph_start=1.0)
+    expected = [
+        _morph_factor(float(t), 0.0, params, morph_start=1.0)
+        for t in t_values
+    ]
+
+    assert np.array_equal(actual, expected)
+
+
 def test_rosse_curve_rejects_an_impossible_throat_extension() -> None:
     params = {**_ROSSE_SEED, "throatExtLength": 400.0, "throatExtAngle": 45.0}
     with pytest.raises(ValueError):

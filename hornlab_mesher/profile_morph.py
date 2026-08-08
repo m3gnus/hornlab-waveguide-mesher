@@ -529,15 +529,19 @@ def _morph_factors(
         return np.zeros_like(t)
     if morph_start is None:
         morph_start = eval_param(params.get("morphFixed"), phi, 0.0)
-    rate = eval_param(params.get("morphRate"), phi, 3.0)
-    denom = max(1.0e-9, 1.0 - morph_start)
     factors = np.zeros_like(t)
     blending = t > morph_start
-    if blending.any():
-        factors[blending] = (
-            np.minimum(1.0, np.maximum(0.0, (t[blending] - morph_start) / denom))
-            ** rate
-        )
+    if not blending.any():
+        # Preserve the scalar function's lazy contract: a dormant morph never
+        # evaluates morphRate. Imported ATH files can therefore retain a stale
+        # or unsupported rate expression when morphFixed covers every sample.
+        return factors
+    rate = eval_param(params.get("morphRate"), phi, 3.0)
+    denom = max(1.0e-9, 1.0 - morph_start)
+    factors[blending] = (
+        np.minimum(1.0, np.maximum(0.0, (t[blending] - morph_start) / denom))
+        ** rate
+    )
     return factors
 
 
