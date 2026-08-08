@@ -389,14 +389,27 @@ def _triangle_orientation_analysis(
     degenerate = doubled_area <= (
         _ORIENTATION_AREA_MEDIAN_FRACTION * median_area
     )
-    average_normal = np.mean(vectors[triangles], axis=1)
+    # Summed rather than np.mean'd: the (n,3,3) gather np.mean needs costs
+    # about three times the three (n,3) gathers, for the same three-term
+    # sequential sum and the same bits. This runs twice per surface -- once to
+    # choose the winding, once to check the buffer that was chosen -- so it is
+    # the largest single item in a coarse preview.
+    average_normal = (
+        vectors[triangles[:, 0]] + vectors[triangles[:, 1]] + vectors[triangles[:, 2]]
+    ) / 3.0
     normal_length = np.linalg.norm(average_normal, axis=1)
     denominator = doubled_area * normal_length
     cosine = np.zeros(len(triangles), dtype=np.float64)
     usable_denominator = denominator > 0.0
-    cosine[usable_denominator] = np.einsum(
-        "ij,ij->i", face_vectors[usable_denominator], average_normal[usable_denominator]
-    ) / denominator[usable_denominator]
+    if usable_denominator.all():
+        # No masked copies to make, and no division by zero to avoid.
+        cosine = np.einsum("ij,ij->i", face_vectors, average_normal) / denominator
+    else:
+        cosine[usable_denominator] = np.einsum(
+            "ij,ij->i",
+            face_vectors[usable_denominator],
+            average_normal[usable_denominator],
+        ) / denominator[usable_denominator]
     ambiguous = (
         ~np.isfinite(cosine)
         | ~usable_denominator
@@ -846,45 +859,49 @@ def _source_cap(
     rim_angle = math.asin(np.clip(throat_radius / radius, -1.0, 1.0))
     directions = radial / radii[:, None]
 
-    positions: list[NDArray[np.float64]] = []
-    normals: list[NDArray[np.float64]] = []
-    pole = sphere_center.copy()
-    pole[2] += sign * radius
-    positions.append(pole)
-    normals.append(np.asarray((0.0, 0.0, sign), dtype=np.float64))
-    for level in range(1, radial_intervals + 1):
-        theta = rim_angle * level / radial_intervals
-        rho = radius * math.sin(theta)
-        z = sphere_center[2] + sign * radius * math.cos(theta)
-        for direction in directions:
-            point = np.asarray(
-                (center[0] + rho * direction[0], center[1] + rho * direction[1], z),
-                dtype=np.float64,
-            )
-            positions.append(point)
-            normals.append(sign * (point - sphere_center) / radius)
-
-    triangles: list[int] = []
+    # Pole first, then one ring of ``directions`` per polar level: the same
+    # order the per-vertex loop emitted, built as arrays.
     n_phi = len(ring)
-    limit = n_phi if closed_phi else n_phi - 1
-    first_ring = 1
-    for ip in range(limit):
-        ip1 = (ip + 1) % n_phi
-        triangles.extend((0, first_ring + ip, first_ring + ip1))
-    for level in range(1, radial_intervals):
-        row0 = 1 + (level - 1) * n_phi
-        row1 = 1 + level * n_phi
-        for ip in range(limit):
-            ip1 = (ip + 1) % n_phi
-            triangles.extend((row0 + ip, row1 + ip, row1 + ip1))
-            triangles.extend((row0 + ip, row1 + ip1, row0 + ip1))
+    theta = rim_angle * np.arange(1, radial_intervals + 1, dtype=np.float64)
+    theta /= radial_intervals
+    rho = radius * np.sin(theta)
+    level_z = sphere_center[2] + sign * radius * np.cos(theta)
+    position_array = np.empty((1 + radial_intervals * n_phi, 3), dtype=np.float64)
+    position_array[0] = sphere_center
+    position_array[0, 2] += sign * radius
+    rings = position_array[1:].reshape(radial_intervals, n_phi, 3)
+    rings[:, :, 0] = center[0] + rho[:, None] * directions[None, :, 0]
+    rings[:, :, 1] = center[1] + rho[:, None] * directions[None, :, 1]
+    rings[:, :, 2] = level_z[:, None]
+    normal_array = np.empty_like(position_array)
+    normal_array[0] = (0.0, 0.0, sign)
+    normal_array[1:] = sign * (position_array[1:] - sphere_center) / radius
 
-    normal_array = np.asarray(normals, dtype=np.float64)
-    position_array = np.asarray(positions, dtype=np.float64)
+    limit = n_phi if closed_phi else n_phi - 1
+    ip = np.arange(limit, dtype=np.uint32)
+    ip1 = (ip + 1) % n_phi
+    fan = np.empty((limit, 3), dtype=np.uint32)
+    fan[:, 0] = 0
+    fan[:, 1] = 1 + ip
+    fan[:, 2] = 1 + ip1
+    if radial_intervals > 1:
+        row0 = (1 + np.arange(radial_intervals - 1, dtype=np.uint32) * n_phi)[:, None]
+        row1 = row0 + n_phi
+        bands = np.empty((radial_intervals - 1, limit, 6), dtype=np.uint32)
+        bands[:, :, 0] = row0 + ip
+        bands[:, :, 1] = row1 + ip
+        bands[:, :, 2] = row1 + ip1
+        bands[:, :, 3] = row0 + ip
+        bands[:, :, 4] = row1 + ip1
+        bands[:, :, 5] = row0 + ip1
+        indices = np.concatenate((fan.reshape(-1), bands.reshape(-1)))
+    else:
+        indices = fan.reshape(-1)
+
     oriented = _orient_indices_to_normals(
         "source_cap",
         position_array,
-        np.asarray(triangles, dtype=np.uint32),
+        indices,
         normal_array,
     )
     surface = PreviewSurfaceV1(
