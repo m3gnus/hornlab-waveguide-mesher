@@ -31,7 +31,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .profile_common import _is_true, eval_param
-from .profile_morph import _rounded_rect_radius
+from .profile_morph import _rounded_rect_radii
 
 
 _INVERSION_SAMPLE_N = 4001
@@ -959,21 +959,12 @@ def _station_radius(
         return np.asarray(term ** (-1.0 / exponent), dtype=float)
 
     corner_radius = station_corner_radius_mm(station, a, b)
-    flat_phi = phi.reshape(-1)
-    result = np.fromiter(
-        (
-            _rounded_rect_radius(
-                float(angle),
-                half_width=a,
-                half_height=b,
-                corner_radius=corner_radius,
-            )
-            for angle in flat_phi
-        ),
-        dtype=float,
-        count=flat_phi.size,
+    return _rounded_rect_radii(
+        phi,
+        half_width=a,
+        half_height=b,
+        corner_radius=corner_radius,
     )
-    return result.reshape(phi.shape)
 
 
 def _surface_points(

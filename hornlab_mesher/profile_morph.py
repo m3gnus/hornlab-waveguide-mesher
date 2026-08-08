@@ -357,6 +357,63 @@ def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corn
     return (-b + math.sqrt(disc)) / 2.0
 
 
+def _rounded_rect_radii(
+    phi: np.ndarray, half_width: float, half_height: float, corner_radius: float
+) -> np.ndarray:
+    """The array form of :func:`_rounded_rect_radius` over a whole ring.
+
+    The semi-axes and the corner radius are properties of the axial station, so
+    only ``phi`` varies here. Every branch of the scalar function is evaluated
+    as a mask and the same four cases are selected in the same priority order,
+    which makes the two bit-identical: the arithmetic is the same expression in
+    the same association, and the degenerate-axis branches are chosen rather
+    than computed.
+
+    The two quotients divide by a denominator clamped to 1.0 where the scalar
+    would have returned before dividing. That keeps a near-zero cosine from
+    raising a spurious overflow whose value is discarded anyway; where the
+    quotient is selected, its denominator is untouched.
+    """
+
+    angles = np.asarray(phi, dtype=np.float64)
+    abs_cos = np.abs(np.cos(angles))
+    abs_sin = np.abs(np.sin(angles))
+
+    cos_degenerate = abs_cos < 1.0e-9
+    sin_degenerate = abs_sin < 1.0e-9
+    safe_cos = np.where(cos_degenerate, 1.0, abs_cos)
+    safe_sin = np.where(sin_degenerate, 1.0, abs_sin)
+
+    width_over_cos = half_width / safe_cos
+    height_over_sin = half_height / safe_sin
+
+    r = min(max(corner_radius, 0.0), half_width, half_height)
+    if r <= 1.0e-9:
+        result = np.minimum(width_over_cos, height_over_sin)
+    else:
+        cx = half_width - r
+        cy = half_height - r
+        b = -2.0 * (abs_cos * cx + abs_sin * cy)
+        c = cx * cx + cy * cy - r * r
+        disc = np.maximum(0.0, b * b - 4.0 * c)
+        corner_arc = (-b + np.sqrt(disc)) / 2.0
+
+        y_at_x = (half_width * abs_sin) / safe_cos
+        x_at_y = (half_height * abs_cos) / safe_sin
+        result = np.where(
+            y_at_x <= half_height - r + 1.0e-9,
+            width_over_cos,
+            np.where(
+                x_at_y <= half_width - r + 1.0e-9, height_over_sin, corner_arc
+            ),
+        )
+
+    # Applied last, and cosine last of all, so that the priority matches the
+    # scalar's two leading returns.
+    result = np.where(sin_degenerate, half_width, result)
+    return np.where(cos_degenerate, half_height, result)
+
+
 def _configured_morph_half_dimension(
     value: Any,
     phi: float,

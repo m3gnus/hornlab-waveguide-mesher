@@ -36,7 +36,12 @@ from hornlab_mesher.profile_formulas import (
     calculate_rosse,
     calculate_rosse_curve,
 )
-from hornlab_mesher.profile_morph import _morph_factor, _morph_factors
+from hornlab_mesher.profile_morph import (
+    _morph_factor,
+    _morph_factors,
+    _rounded_rect_radii,
+    _rounded_rect_radius,
+)
 
 _TOLERANCE_EPS = 64.0
 _EPS = float(np.finfo(np.float64).eps)
@@ -263,3 +268,101 @@ def test_rosse_curve_handles_a_degenerate_zero_length_design() -> None:
     scalar = [calculate_rosse(float(t), 0.0, params) for t in t_values]
     _assert_agrees(z, [point[0] for point in scalar], "degenerate/z")
     _assert_agrees(radius, [point[1] for point in scalar], "degenerate/r")
+
+
+# --- FREEFORM cross-sections ------------------------------------------------
+#
+# ``_rounded_rect_radius`` answers one azimuth; a FREEFORM ring needs the whole
+# row, and the semi-axes and corner radius are fixed for the ring.  Unlike the
+# OSSE/R-OSSE curves above there is no squaring on this path -- every branch is
+# a quotient, a product or one ``sqrt`` -- so the bound here is exact equality
+# rather than a tolerance.
+
+_ROUNDED_RECT_GEOMETRIES = {
+    # a sharp rectangle: the corner-arc branch is unreachable
+    "sharp": (130.0, 80.0, 0.0),
+    "typical": (130.0, 80.0, 12.0),
+    # r == min(a, b): the flat-side branches are unreachable, all arc
+    "stadium": (100.0, 100.0, 100.0),
+    "near_sharp": (100.0, 100.0, 1.0e-12),
+    "tall_sliver": (5.0, 200.0, 4.9),
+    "wide_sliver": (200.0, 5.0, 5.0),
+    # a negative radius must clamp to zero exactly as the scalar clamps it
+    "negative_corner": (80.0, 80.0, -3.0),
+    "tiny": (1.0e-6, 1.0e-6, 1.0e-7),
+}
+
+
+def _rounded_rect_angles() -> np.ndarray:
+    """Several turns, both cardinals, and either side of a degenerate axis."""
+
+    rng = np.random.default_rng(20260808)
+    return np.concatenate(
+        (
+            np.linspace(-4.0 * math.pi, 4.0 * math.pi, 2001),
+            # the two branches that return before dividing
+            np.array(
+                [
+                    0.0,
+                    math.pi / 2.0,
+                    math.pi,
+                    3.0 * math.pi / 2.0,
+                    -math.pi / 2.0,
+                    math.tau,
+                ]
+            ),
+            # just inside and just outside the 1e-9 degeneracy cutoff
+            np.array(
+                [
+                    1.0e-12,
+                    -1.0e-12,
+                    1.0e-10,
+                    1.0e-8,
+                    math.pi / 2.0 - 1.0e-12,
+                    math.pi / 2.0 + 1.0e-12,
+                    math.pi / 2.0 - 1.0e-8,
+                ]
+            ),
+            rng.uniform(-10.0, 10.0, 2000),
+        )
+    )
+
+
+@pytest.mark.parametrize("case", sorted(_ROUNDED_RECT_GEOMETRIES))
+def test_rounded_rect_radii_match_the_scalar_oracle(case: str) -> None:
+    half_width, half_height, corner_radius = _ROUNDED_RECT_GEOMETRIES[case]
+    angles = _rounded_rect_angles()
+    actual = _rounded_rect_radii(angles, half_width, half_height, corner_radius)
+    expected = np.array(
+        [
+            _rounded_rect_radius(float(angle), half_width, half_height, corner_radius)
+            for angle in angles
+        ]
+    )
+    assert actual.shape == expected.shape
+    assert np.array_equal(actual, expected), (
+        f"{case}: {int(np.count_nonzero(actual != expected))} of {angles.size} "
+        f"azimuths differ from the scalar oracle, worst "
+        f"{float(np.abs(actual - expected).max()):.3e} mm"
+    )
+
+
+def test_rounded_rect_radii_keep_the_input_shape() -> None:
+    """A FREEFORM ring grid arrives 2-D; the scalar path flattened and rebuilt."""
+
+    angles = np.linspace(0.0, math.tau, 24, endpoint=False).reshape(4, 6)
+    actual = _rounded_rect_radii(angles, 130.0, 80.0, 12.0)
+    assert actual.shape == angles.shape
+    expected = np.array(
+        [_rounded_rect_radius(float(a), 130.0, 80.0, 12.0) for a in angles.reshape(-1)]
+    ).reshape(angles.shape)
+    assert np.array_equal(actual, expected)
+
+
+def test_rounded_rect_radii_do_not_warn_on_a_degenerate_axis() -> None:
+    """The clamped denominators exist so a cardinal azimuth cannot overflow."""
+
+    angles = np.array([0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0])
+    with np.errstate(all="raise"):
+        actual = _rounded_rect_radii(angles, 130.0, 80.0, 12.0)
+    assert np.array_equal(actual, np.array([130.0, 80.0, 130.0, 80.0]))
