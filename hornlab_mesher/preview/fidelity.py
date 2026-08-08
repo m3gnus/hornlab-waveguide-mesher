@@ -10,7 +10,14 @@ from numpy.typing import NDArray
 
 def _angle_degrees(left: NDArray[np.float64], right: NDArray[np.float64]) -> float:
     dots = np.sum(left * right, axis=-1)
-    return float(np.degrees(np.arccos(np.clip(np.min(dots), -1.0, 1.0))))
+    minimum_dot = float(np.min(dots))
+    if minimum_dot < -1.0:
+        clipped = -1.0
+    elif minimum_dot > 1.0:
+        clipped = 1.0
+    else:
+        clipped = minimum_dot
+    return math.degrees(math.acos(clipped))
 
 
 def _axis_interval_error(
@@ -54,7 +61,7 @@ def _axis_interval_error(
         chord = points[first][None, :, :] * (1.0 - weights) + points[endpoint_last][
             None, :, :
         ] * weights
-        deviations = np.linalg.norm(points[candidates] - chord, axis=2)
+        deltas = points[candidates] - chord
     else:
         normal_step = _angle_degrees(normals[:, first], normals[:, endpoint_last])
         if not len(candidates):
@@ -83,14 +90,18 @@ def _axis_interval_error(
         chord = points[:, first][:, None, :] * (1.0 - weights) + points[:, endpoint_last][
             :, None, :
         ] * weights
-        deviations = np.linalg.norm(points[:, candidates] - chord, axis=2)
+        deltas = points[:, candidates] - chord
 
-    flat_index = int(np.argmax(deviations))
-    candidate_axis = np.unravel_index(flat_index, deviations.shape)[axis]
+    squared_deviations = (deltas * deltas).sum(axis=-1)
+    flat_index = int(np.argmax(squared_deviations))
+    maximum_deviation = float(
+        np.sqrt(squared_deviations.reshape(-1)[flat_index])
+    )
+    candidate_axis = np.unravel_index(flat_index, squared_deviations.shape)[axis]
     split = int(candidates[candidate_axis])
-    if normal_step > 0.0 and float(np.max(deviations)) <= 1.0e-14:
+    if normal_step > 0.0 and maximum_deviation <= 1.0e-14:
         split = int(candidates[len(candidates) // 2])
-    return float(np.max(deviations)), normal_step, split, True
+    return maximum_deviation, normal_step, split, True
 
 
 def _intervals(indices: list[int], size: int, closed: bool) -> list[tuple[int, int]]:
@@ -348,9 +359,17 @@ def _phi_derivative(
     if phi_coordinates is None:
         if closed_phi:
             step = math.tau / n_phi
-            return (np.roll(samples, -1, axis=1) - np.roll(samples, 1, axis=1)) / (
-                2.0 * step
-            )
+            derivative = np.empty_like(samples)
+            if samples.flags.c_contiguous:
+                flat_samples = samples.reshape((-1,) + samples.shape[2:])
+                flat_derivative = derivative.reshape((-1,) + samples.shape[2:])
+                flat_derivative[1:-1] = flat_samples[2:] - flat_samples[:-2]
+            else:
+                derivative[:, 1:-1] = samples[:, 2:] - samples[:, :-2]
+            derivative[:, 0] = samples[:, 1] - samples[:, -1]
+            derivative[:, -1] = samples[:, 0] - samples[:, -2]
+            derivative /= 2.0 * step
+            return derivative
         coordinates = np.linspace(0.0, 1.0, n_phi, dtype=np.float64)
         return np.gradient(samples, coordinates, axis=1, edge_order=2)
 
@@ -359,12 +378,13 @@ def _phi_derivative(
         raise ValueError("azimuth coordinates do not match the surface grid")
     if closed_phi:
         unwrapped = np.unwrap(phi, axis=1)
-        previous_phi = np.roll(unwrapped, 1, axis=1)
-        previous_phi[:, 0] -= math.tau
-        next_phi = np.roll(unwrapped, -1, axis=1)
-        next_phi[:, -1] += math.tau
-        h_previous = unwrapped - previous_phi
-        h_next = next_phi - unwrapped
+        steps = unwrapped[:, 1:] - unwrapped[:, :-1]
+        h_previous = np.empty_like(unwrapped)
+        h_previous[:, 1:] = steps
+        h_previous[:, 0] = unwrapped[:, 0] - (unwrapped[:, -1] - math.tau)
+        h_next = np.empty_like(unwrapped)
+        h_next[:, :-1] = steps
+        h_next[:, -1] = (unwrapped[:, 0] + math.tau) - unwrapped[:, -1]
         if (
             np.any(~np.isfinite(h_previous))
             or np.any(~np.isfinite(h_next))
@@ -378,13 +398,38 @@ def _phi_derivative(
         coefficient_center = (h_next - h_previous) / (h_previous * h_next)
         coefficient_next = h_previous / (h_next * (h_previous + h_next))
         trailing = (1,) * (samples.ndim - 2)
-        return (
-            coefficient_previous.reshape((n_t, n_phi) + trailing)
-            * np.roll(samples, 1, axis=1)
-            + coefficient_center.reshape((n_t, n_phi) + trailing) * samples
-            + coefficient_next.reshape((n_t, n_phi) + trailing)
-            * np.roll(samples, -1, axis=1)
+        previous = coefficient_previous.reshape((n_t, n_phi) + trailing)
+        center = coefficient_center.reshape((n_t, n_phi) + trailing)
+        following = coefficient_next.reshape((n_t, n_phi) + trailing)
+        derivative = np.empty_like(samples)
+        if samples.flags.c_contiguous:
+            flat_samples = samples.reshape((-1,) + samples.shape[2:])
+            flat_derivative = derivative.reshape((-1,) + samples.shape[2:])
+            flat_previous = previous.reshape((-1,) + trailing)
+            flat_center = center.reshape((-1,) + trailing)
+            flat_following = following.reshape((-1,) + trailing)
+            flat_derivative[1:-1] = (
+                flat_previous[1:-1] * flat_samples[:-2]
+                + flat_center[1:-1] * flat_samples[1:-1]
+                + flat_following[1:-1] * flat_samples[2:]
+            )
+        else:
+            derivative[:, 1:-1] = (
+                previous[:, 1:-1] * samples[:, :-2]
+                + center[:, 1:-1] * samples[:, 1:-1]
+                + following[:, 1:-1] * samples[:, 2:]
+            )
+        derivative[:, 0] = (
+            previous[:, 0] * samples[:, -1]
+            + center[:, 0] * samples[:, 0]
+            + following[:, 0] * samples[:, 1]
         )
+        derivative[:, -1] = (
+            previous[:, -1] * samples[:, -2]
+            + center[:, -1] * samples[:, -1]
+            + following[:, -1] * samples[:, 0]
+        )
+        return derivative
     derivative = np.empty_like(samples)
     for jt in range(n_t):
         derivative[jt] = np.gradient(
@@ -634,23 +679,29 @@ def resample_grid_vectors(
     else:
         phi_coords = np.linspace(0.0, src_phi - 1.0, out_phi)
 
-    result = np.empty((out_t, out_phi, 3), dtype=np.float64)
-    for jt, t_coord in enumerate(t_coords):
-        t0 = min(int(math.floor(t_coord)), src_t - 1)
-        t1 = min(t0 + 1, src_t - 1)
-        wt = t_coord - t0
-        for ip, phi_coord in enumerate(phi_coords):
-            p0 = int(math.floor(phi_coord))
-            if closed_phi:
-                p0 %= src_phi
-                p1 = (p0 + 1) % src_phi
-            else:
-                p0 = min(p0, src_phi - 1)
-                p1 = min(p0 + 1, src_phi - 1)
-            wp = phi_coord - math.floor(phi_coord)
-            a = source[t0, p0] * (1.0 - wp) + source[t0, p1] * wp
-            b = source[t1, p0] * (1.0 - wp) + source[t1, p1] * wp
-            result[jt, ip] = a * (1.0 - wt) + b * wt
+    t0 = np.minimum(np.floor(t_coords).astype(np.int64), src_t - 1)
+    t1 = np.minimum(t0 + 1, src_t - 1)
+    wt = t_coords - t0
+    phi_floor = np.floor(phi_coords)
+    p0 = phi_floor.astype(np.int64)
+    if closed_phi:
+        p0 %= src_phi
+        p1 = (p0 + 1) % src_phi
+    else:
+        p0 = np.minimum(p0, src_phi - 1)
+        p1 = np.minimum(p0 + 1, src_phi - 1)
+    wp = phi_coords - phi_floor
+    phi_weight = wp[None, :, None]
+    a = (
+        source[t0[:, None], p0[None, :]] * (1.0 - phi_weight)
+        + source[t0[:, None], p1[None, :]] * phi_weight
+    )
+    b = (
+        source[t1[:, None], p0[None, :]] * (1.0 - phi_weight)
+        + source[t1[:, None], p1[None, :]] * phi_weight
+    )
+    t_weight = wt[:, None, None]
+    result = a * (1.0 - t_weight) + b * t_weight
     return _normalise(result)
 
 
@@ -669,25 +720,29 @@ def _bilinear_coarse_points(
         phi_coords = np.arange(ref_phi, dtype=np.float64) * coarse_phi / ref_phi
     else:
         phi_coords = np.linspace(0.0, coarse_phi - 1.0, ref_phi)
-    out = np.empty((ref_t, ref_phi, 3), dtype=np.float64)
-    for jt, t_coord in enumerate(t_coords):
-        t0 = min(int(math.floor(t_coord)), coarse_t - 1)
-        t1 = min(t0 + 1, coarse_t - 1)
-        wt = t_coord - t0
-        for ip, phi_coord in enumerate(phi_coords):
-            p_floor = math.floor(phi_coord)
-            p0 = int(p_floor)
-            if closed_phi:
-                p0 %= coarse_phi
-                p1 = (p0 + 1) % coarse_phi
-            else:
-                p0 = min(p0, coarse_phi - 1)
-                p1 = min(p0 + 1, coarse_phi - 1)
-            wp = phi_coord - p_floor
-            a = coarse[t0, p0] * (1.0 - wp) + coarse[t0, p1] * wp
-            b = coarse[t1, p0] * (1.0 - wp) + coarse[t1, p1] * wp
-            out[jt, ip] = a * (1.0 - wt) + b * wt
-    return out
+    t0 = np.minimum(np.floor(t_coords).astype(np.int64), coarse_t - 1)
+    t1 = np.minimum(t0 + 1, coarse_t - 1)
+    wt = t_coords - t0
+    phi_floor = np.floor(phi_coords)
+    p0 = phi_floor.astype(np.int64)
+    if closed_phi:
+        p0 %= coarse_phi
+        p1 = (p0 + 1) % coarse_phi
+    else:
+        p0 = np.minimum(p0, coarse_phi - 1)
+        p1 = np.minimum(p0 + 1, coarse_phi - 1)
+    wp = phi_coords - phi_floor
+    phi_weight = wp[None, :, None]
+    a = (
+        coarse[t0[:, None], p0[None, :]] * (1.0 - phi_weight)
+        + coarse[t0[:, None], p1[None, :]] * phi_weight
+    )
+    b = (
+        coarse[t1[:, None], p0[None, :]] * (1.0 - phi_weight)
+        + coarse[t1[:, None], p1[None, :]] * phi_weight
+    )
+    t_weight = wt[:, None, None]
+    return a * (1.0 - t_weight) + b * t_weight
 
 
 def estimate_grid_fidelity(

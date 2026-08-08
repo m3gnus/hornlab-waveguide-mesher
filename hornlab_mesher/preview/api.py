@@ -22,6 +22,7 @@ symbolic differentiation implementation.
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 import time
 from dataclasses import dataclass, field
@@ -83,6 +84,11 @@ _ORIENTATION_COSINE_TOLERANCE = 1.0e-10
 # surface", and count them where they can be seen.
 _ORIENTATION_SHALLOW_COSINE = 0.25
 _ORIENTATION_SINGULAR_AREA_FRACTION = 0.005
+# Internal orientation evidence travels under an identity key so ordinary
+# caller metadata cannot accidentally opt out of PreviewSurfaceV1's contract
+# check.  The proof itself is also single-use and bound to the exact arrays the
+# builder checked; see _OrientationCheckProof.
+_ORIENTATION_PROOF_KEY = object()
 _ORIENTATION_BY_ROLE = {
     "horn.inner": "air-side",
     "horn.outer": "exterior",
@@ -220,15 +226,23 @@ class PreviewSurfaceV1:
         orientation = _ORIENTATION_BY_ROLE.get(self.role)
         if orientation is None:
             raise ValueError(f"{self.role}: no preview orientation contract")
-        orientation_check = _triangle_orientation_analysis(
-            positions, indices, normals
+        metadata = dict(self.metadata)
+        proof = metadata.pop(_ORIENTATION_PROOF_KEY, None)
+        proven_orientation = (
+            proof.consume(self.positions, self.indices, self.normals)
+            if isinstance(proof, _OrientationCheckProof)
+            else None
+        )
+        orientation_check = (
+            proven_orientation
+            if proven_orientation is not None
+            else _triangle_orientation_analysis(positions, indices, normals)
         )
         if orientation_check.negative_triangles:
             raise ValueError(
                 f"{self.role}: {orientation_check.negative_triangles} non-degenerate "
                 "triangle windings disagree with their normals"
             )
-        metadata = dict(self.metadata)
         if metadata.get("orientation", orientation) != orientation:
             raise ValueError(
                 f"{self.role}: orientation must be {orientation!r}"
@@ -350,6 +364,72 @@ class _OrientationAnalysis:
     singular_triangles: int = 0
 
 
+@dataclass
+class _OrientationCheckProof:
+    """Single-use evidence for an unchanged, internally checked index buffer."""
+
+    positions: NDArray[np.float64]
+    indices: NDArray[np.uint32]
+    normals: NDArray[np.float64]
+    analysis: _OrientationAnalysis
+    digest: bytes
+    _used: bool = field(default=False, init=False, repr=False)
+
+    def consume(
+        self,
+        positions: NDArray[np.float64],
+        indices: NDArray[np.uint32],
+        normals: NDArray[np.float64],
+    ) -> _OrientationAnalysis | None:
+        if (
+            self._used
+            or positions is not self.positions
+            or indices is not self.indices
+            or normals is not self.normals
+            or not _orientation_buffer_is_contiguous(positions, indices, normals)
+            or _orientation_buffer_digest(positions, indices, normals) != self.digest
+        ):
+            return None
+        self._used = True
+        return self.analysis
+
+
+def _orientation_buffer_is_contiguous(
+    positions: NDArray[np.float64],
+    indices: NDArray[np.uint32],
+    normals: NDArray[np.float64],
+) -> bool:
+    return bool(
+        positions.dtype == np.dtype(np.float64)
+        and indices.dtype == np.dtype(np.uint32)
+        and normals.dtype == np.dtype(np.float64)
+        and positions.ndim == 2
+        and positions.shape[1:] == (3,)
+        and normals.shape == positions.shape
+        and indices.ndim == 1
+        and positions.flags.c_contiguous
+        and indices.flags.c_contiguous
+        and normals.flags.c_contiguous
+    )
+
+
+def _orientation_buffer_digest(
+    positions: NDArray[np.float64],
+    indices: NDArray[np.uint32],
+    normals: NDArray[np.float64],
+) -> bytes:
+    """Bind orientation evidence to exact array type, shape, and bytes."""
+
+    digest = hashlib.blake2b(digest_size=32)
+    for value in (positions, indices, normals):
+        array = np.asarray(value)
+        descriptor = repr((array.dtype.str, array.shape)).encode("ascii")
+        digest.update(len(descriptor).to_bytes(4, "little"))
+        digest.update(descriptor)
+        digest.update(memoryview(array).cast("B"))
+    return digest.digest()
+
+
 @dataclass(frozen=True)
 class _OrientedIndices:
     indices: NDArray[np.uint32]
@@ -357,6 +437,9 @@ class _OrientedIndices:
     abstaining_triangles: int
     disagreeing_triangles: int
     singular_triangles: int = 0
+    proof: _OrientationCheckProof | None = field(
+        default=None, compare=False, repr=False
+    )
 
 
 def _triangle_orientation_analysis(
@@ -391,9 +474,10 @@ def _triangle_orientation_analysis(
     )
     # Summed rather than np.mean'd: the (n,3,3) gather np.mean needs costs
     # about three times the three (n,3) gathers, for the same three-term
-    # sequential sum and the same bits. This runs twice per surface -- once to
-    # choose the winding, once to check the buffer that was chosen -- so it is
-    # the largest single item in a coarse preview.
+    # sequential sum and the same bits. Internal buffers that already have
+    # positive winding reuse this analysis in PreviewSurfaceV1. A flipped
+    # buffer is deliberately analysed again because swapping two indices
+    # reassociates this floating-point sum.
     average_normal = (
         vectors[triangles[:, 0]] + vectors[triangles[:, 1]] + vectors[triangles[:, 2]]
     ) / 3.0
@@ -463,27 +547,51 @@ def _orient_indices_to_normals(
         )
     if not analysis.positive_triangles and not analysis.negative_triangles:
         raise ValueError(f"{role}: no non-degenerate triangles establish winding")
+    already_oriented = bool(analysis.positive_triangles)
     oriented = (
         triangles.reshape(-1)
-        if analysis.positive_triangles
+        if already_oriented
         else triangles[:, (0, 2, 1)].reshape(-1)
     )
+    oriented_indices = np.asarray(oriented, dtype=np.uint32)
+    can_prove = already_oriented and _orientation_buffer_is_contiguous(
+        positions, oriented_indices, normals
+    )
     return _OrientedIndices(
-        indices=np.asarray(oriented, dtype=np.uint32),
+        indices=oriented_indices,
         degenerate_triangles=analysis.degenerate_triangles,
         abstaining_triangles=analysis.abstaining_triangles,
         disagreeing_triangles=0,
         singular_triangles=analysis.singular_triangles,
+        proof=(
+            _OrientationCheckProof(
+                positions=positions,
+                indices=oriented_indices,
+                normals=normals,
+                analysis=analysis,
+                digest=_orientation_buffer_digest(
+                    positions, oriented_indices, normals
+                ),
+            )
+            if can_prove
+            else None
+        ),
     )
 
 
-def _orientation_metadata(result: _OrientedIndices) -> dict[str, int]:
-    return {
+def _orientation_metadata(result: _OrientedIndices) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
         "degenerateTriangles": result.degenerate_triangles,
         "orientationAbstainingTriangles": result.abstaining_triangles,
         "disagreeingTriangles": result.disagreeing_triangles,
         "orientationSingularTriangles": result.singular_triangles,
     }
+    if result.proof is not None:
+        # This internal object key deliberately falls outside the public
+        # string-key metadata type. PreviewSurfaceV1 removes it before metadata
+        # validation or publication.
+        metadata[_ORIENTATION_PROOF_KEY] = result.proof  # type: ignore[index]
+    return metadata
 
 
 def _smooth_grid_surface(

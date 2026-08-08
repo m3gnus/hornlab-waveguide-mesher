@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import math
 from typing import Any, Mapping
 
@@ -81,13 +82,16 @@ _ATH_T_20 = np.asarray(
 )
 
 def _mirror_quadrant_angles(q1: np.ndarray) -> np.ndarray:
-    q = [float(v) for v in q1]
-    full: list[float] = []
-    full.extend(q)
-    full.extend(math.pi - v for v in reversed(q[:-1]))
-    full.extend(math.pi + v for v in q[1:])
-    full.extend(math.tau - v for v in reversed(q[1:-1]))
-    return np.asarray(full, dtype=np.float64)
+    q = np.asarray(q1, dtype=np.float64)
+    count = len(q)
+    if count < 2:
+        return q.copy()
+    full = np.empty(4 * count - 4, dtype=np.float64)
+    full[:count] = q
+    full[count : 2 * count - 1] = math.pi - q[-2::-1]
+    full[2 * count - 1 : 3 * count - 2] = math.pi + q[1:]
+    full[3 * count - 2 :] = math.tau - q[-2:0:-1]
+    return full
 
 
 def _morph_corner_arc_subdivision(params: Mapping[str, Any]) -> int:
@@ -467,10 +471,20 @@ def _grid_phi_derivative(
 
     n_t, n_phi = points.shape[:2]
     phi = None
+    shared_phi = False
     if phi_coordinates is not None:
         candidate = np.asarray(phi_coordinates, dtype=np.float64)
-        if candidate.shape == (n_t, n_phi) and np.all(np.isfinite(candidate)):
-            phi = candidate
+        if candidate.shape == (n_t, n_phi):
+            # The ordinary and morph grids broadcast one azimuth row along t.
+            # Validate and unwrap that row once instead of materialising the
+            # same coordinate work for every axial station. FREEFORM's moving
+            # tangencies have a genuine 2-D grid and retain the general path.
+            # The open-domain branch below delegates each row to np.gradient
+            # and therefore still requires the full 2-D coordinate shape.
+            shared_phi = full_circle and candidate.strides[0] == 0
+            finite_candidate = candidate[0] if shared_phi else candidate
+            if np.all(np.isfinite(finite_candidate)):
+                phi = finite_candidate
 
     if full_circle:
         if phi is None:
@@ -478,11 +492,11 @@ def _grid_phi_derivative(
             return (np.roll(points, -1, axis=1) - np.roll(points, 1, axis=1)) / (
                 2.0 * step
             )
-        unwrapped = np.unwrap(phi, axis=1)
-        previous = np.roll(unwrapped, 1, axis=1)
-        previous[:, 0] -= math.tau
-        following = np.roll(unwrapped, -1, axis=1)
-        following[:, -1] += math.tau
+        unwrapped = np.unwrap(phi, axis=-1)
+        previous = np.roll(unwrapped, 1, axis=-1)
+        previous[..., 0] -= math.tau
+        following = np.roll(unwrapped, -1, axis=-1)
+        following[..., -1] += math.tau
         h_previous = unwrapped - previous
         h_next = following - unwrapped
         if np.any(h_previous <= 0.0) or np.any(h_next <= 0.0):
@@ -553,7 +567,11 @@ def _grid_surface_normals(
     d_phi = _grid_phi_derivative(
         points, full_circle=full_circle, phi_coordinates=phi_coordinates
     )
-    return np.cross(d_phi, d_t)
+    normals = np.empty_like(points)
+    normals[..., 0] = d_phi[..., 1] * d_t[..., 2] - d_phi[..., 2] * d_t[..., 1]
+    normals[..., 1] = d_phi[..., 2] * d_t[..., 0] - d_phi[..., 0] * d_t[..., 2]
+    normals[..., 2] = d_phi[..., 0] * d_t[..., 1] - d_phi[..., 1] * d_t[..., 0]
+    return normals
 
 
 def _outer_offset_shell(
@@ -581,13 +599,21 @@ def _outer_offset_shell(
         t_coordinates=t_coordinates,
         phi_coordinates=phi_coordinates,
     ).reshape(n_phi * n_cols, 3)
-    _fill_missing_normals(normals, vertices, n_phi, n_length)
+    # Most valid grids have no missing derivative normal. Reuse this norm for
+    # sign selection and unit normalization instead of scanning the full grid
+    # once in _fill_missing_normals and then reducing it all over again here.
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    degenerate = lengths[:, 0] <= 1.0e-12
+    if np.any(degenerate):
+        _fill_missing_normals(normals, vertices, n_phi, n_length)
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        degenerate = lengths[:, 0] <= 1.0e-12
 
     sample_idx = np.arange(0, vertices.shape[0], max(1, vertices.shape[0] // 64))
     sample_x = vertices[sample_idx, 0]
     sample_z = vertices[sample_idx, 2]
     radial_len = np.hypot(sample_x, sample_z)
-    normal_len = np.linalg.norm(normals[sample_idx], axis=1)
+    normal_len = lengths[sample_idx, 0]
     valid = (radial_len > 1.0e-9) & (normal_len > 1.0e-12)
     dot_sum = float(
         np.sum(
@@ -598,10 +624,11 @@ def _outer_offset_shell(
     offset_sign = -1.0 if not np.any(valid) or dot_sum < 0.0 else 1.0
 
     # Unit normals with the _normalise3 fallback for degenerate rows.
-    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-    degenerate = lengths[:, 0] <= 1.0e-12
-    unit = np.divide(normals, np.where(lengths > 1.0e-12, lengths, 1.0))
-    unit[degenerate] = (0.0, -1.0, 0.0)
+    if np.all(lengths > 1.0e-12):
+        unit = np.divide(normals, lengths)
+    else:
+        unit = np.divide(normals, np.where(lengths > 1.0e-12, lengths, 1.0))
+        unit[degenerate] = (0.0, -1.0, 0.0)
 
     outer_vertices = vertices + offset_sign * wall * unit
     # Throat ring (row 0) is offset radially in the xz plane only.
@@ -742,6 +769,31 @@ def _freeform_quadrant_angles(
     return full, True
 
 
+@functools.lru_cache(maxsize=128)
+def _freeform_rounded_rect_static_basis(
+    side1_segments: int,
+    side2_segments: int,
+    arc_subdivision: int,
+) -> tuple[np.ndarray, tuple[tuple[float, float], ...]]:
+    """Ring-invariant uniform angles and scalar-math corner-arc trig."""
+
+    arc_segments = 3 * max(1, int(arc_subdivision))
+    total_segments = int(side1_segments) + arc_segments + int(side2_segments)
+    uniform_angles = np.linspace(0.0, math.pi / 2.0, total_segments + 1)
+    # Keep math.sin/cos and the expression order used by the per-ring scalar
+    # loop. NumPy trig moves a few low bits on some platforms, while these
+    # values feed a byte-stable preview contract.
+    arc_trig = tuple(
+        (
+            math.sin(index * math.pi / (2.0 * arc_segments)),
+            math.cos(index * math.pi / (2.0 * arc_segments)),
+        )
+        for index in range(1, arc_segments + 1)
+    )
+    uniform_angles.flags.writeable = False
+    return uniform_angles, arc_trig
+
+
 def _freeform_rounded_rect_quadrant_angles(
     *,
     half_width: float,
@@ -766,50 +818,78 @@ def _freeform_rounded_rect_quadrant_angles(
     corner = min(max(float(corner_radius), 0.0), a, b)
     theta1 = math.atan2(b - corner, a)
     theta2 = math.atan2(b, a - corner)
-    arc_segments = 3 * max(1, int(arc_subdivision))
     side1_segments = int(side1_segments)
     side2_segments = int(side2_segments)
+    arc_subdivision = max(1, int(arc_subdivision))
+    arc_segments = 3 * arc_subdivision
     total_segments = side1_segments + arc_segments + side2_segments
-    base_layout = _rounded_rect_quadrant_layout(
-        side1_segments + side2_segments + 3,
-        a,
-        b,
-        corner,
+    uniform_angles, arc_trig = _freeform_rounded_rect_static_basis(
+        side1_segments,
+        side2_segments,
+        arc_subdivision,
     )
-    uniform_angles = np.linspace(0.0, math.pi / 2.0, total_segments + 1)
     if corner >= b and corner >= a:
-        return uniform_angles
+        # The cached basis is read-only and shared across builds; retain the
+        # old function's fresh-array ownership on its direct-return branch.
+        return uniform_angles.copy()
 
     span1 = theta1
     span2 = math.pi / 2.0 - theta2
-    arc_segments = (
-        3 if base_layout is None else int(base_layout.arc_segments)
-    ) * max(1, int(arc_subdivision))
+    # With either fixed wall budget present, _rounded_rect_quadrant_layout can
+    # only select ATH's canonical three arc intervals. The sole exception is a
+    # zero-wall-budget, one-side collapse; keep its old low-budget resolution
+    # (and consequent shape validation) without re-solving every normal ring.
+    if (
+        side1_segments + side2_segments == 0
+        and corner > 1.0e-9
+        and (corner >= a or corner >= b)
+    ):
+        base_layout = _rounded_rect_quadrant_layout(3, a, b, corner)
+        arc_segments = (
+            3 if base_layout is None else int(base_layout.arc_segments)
+        ) * arc_subdivision
 
-    angles: list[float] = []
+    structural_angles = np.empty(
+        side1_segments + arc_segments + side2_segments + 1,
+        dtype=np.float64,
+    )
+    cursor = 0
     if side1_segments:
-        angles.extend(np.linspace(0.0, theta1, side1_segments + 1).tolist())
+        structural_angles[: side1_segments + 1] = np.linspace(
+            0.0, theta1, side1_segments + 1
+        )
+        cursor = side1_segments + 1
     else:
-        angles.append(theta1)
+        structural_angles[0] = theta1
+        cursor = 1
     cx = a - corner
     cy = b - corner
-    for index in range(1, arc_segments + 1):
-        arc_phi = index * math.pi / (2.0 * arc_segments)
-        angles.append(
-            math.atan2(
-                cy + corner * math.sin(arc_phi),
-                cx + corner * math.cos(arc_phi),
-            )
-        )
-    if side2_segments:
-        angles.extend(
+    # The rare two-interval compatibility branch above cannot use the cached
+    # three-interval basis. It is an invalid zero-wall-budget input in current
+    # callers, but evaluating it the old way preserves its exception behavior.
+    if len(arc_trig) != arc_segments:
+        active_arc_trig = tuple(
             (
+                math.sin(index * math.pi / (2.0 * arc_segments)),
+                math.cos(index * math.pi / (2.0 * arc_segments)),
+            )
+            for index in range(1, arc_segments + 1)
+        )
+    else:
+        active_arc_trig = arc_trig
+    for arc_sin, arc_cos in active_arc_trig:
+        structural_angles[cursor] = math.atan2(
+            cy + corner * arc_sin,
+            cx + corner * arc_cos,
+        )
+        cursor += 1
+    if side2_segments:
+        for index in range(1, side2_segments + 1):
+            structural_angles[cursor] = (
                 theta2
                 + (math.pi / 2.0 - theta2) * index / side2_segments
-                for index in range(1, side2_segments + 1)
             )
-        )
-    structural_angles = np.asarray(angles, dtype=np.float64)
+            cursor += 1
     # The fixed mouth budgets preserve exact tangencies once both walls are
     # developed, but squeezing those fixed rows onto a vanishing wall would
     # duplicate angles. Blend continuously from the fully reassigned uniform
@@ -984,22 +1064,6 @@ def _freeform_raw_radial_grid(
                 raise ValueError(
                     f"FREEFORM ring {ring_index} azimuths must be strictly increasing"
                 )
-            required_cardinals = {
-                "1": (0.0, math.pi / 2.0),
-                "12": (0.0, math.pi / 2.0, math.pi),
-                "14": (-math.pi / 2.0, 0.0, math.pi / 2.0),
-            }.get(
-                quadrants,
-                (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0),
-            )
-            for cardinal in required_cardinals:
-                if not np.any(
-                    np.isclose(reduced, cardinal, rtol=0.0, atol=1.0e-12)
-                ):
-                    raise ValueError(
-                        f"FREEFORM ring {ring_index} azimuths omit required "
-                        f"cardinal {cardinal:g} rad"
-                    )
             ring_angles.append(reduced)
             span = rounded_rect_corner_arc_span(
                 points_per_quadrant,
@@ -1017,6 +1081,39 @@ def _freeform_raw_radial_grid(
                 "FREEFORM per-ring azimuth grids must have a constant row count"
             )
         phi_grid = np.column_stack(ring_angles)
+        required_cardinals = np.asarray(
+            {
+                "1": (0.0, math.pi / 2.0),
+                "12": (0.0, math.pi / 2.0, math.pi),
+                "14": (-math.pi / 2.0, 0.0, math.pi / 2.0),
+            }.get(
+                quadrants,
+                (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0),
+            ),
+            dtype=np.float64,
+        )
+        # One broadcast comparison keeps the full reduced-domain contract --
+        # including protection against a future mirroring regression -- while
+        # replacing thousands of tiny np.isclose calls per fine preview. The
+        # (ring, cardinal) matrix is row-major so argwhere retains the old first
+        # missing ring, then first required-cardinal error ordering.
+        has_cardinal = np.any(
+            np.isclose(
+                phi_grid[:, :, None],
+                required_cardinals[None, None, :],
+                rtol=0.0,
+                atol=1.0e-12,
+            ),
+            axis=0,
+        )
+        missing = np.argwhere(~has_cardinal)
+        if len(missing):
+            ring_index, cardinal_index = (int(value) for value in missing[0])
+            cardinal = float(required_cardinals[cardinal_index])
+            raise ValueError(
+                f"FREEFORM ring {ring_index} azimuths omit required "
+                f"cardinal {cardinal:g} rad"
+            )
     else:
         angles, full_circle = _angle_list(params)
         phi_grid = np.repeat(angles[:, np.newaxis], len(t_values), axis=1)

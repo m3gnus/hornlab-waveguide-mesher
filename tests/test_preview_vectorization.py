@@ -12,7 +12,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hornlab_mesher.preview.api import _grid_indices, _triangle_orientation_analysis
+import hornlab_mesher.preview.api as preview_api
+from hornlab_mesher.preview.api import (
+    PreviewSurfaceV1,
+    _grid_indices,
+    _orient_indices_to_normals,
+    _orientation_metadata,
+    _triangle_orientation_analysis,
+)
 
 
 def _grid_indices_oracle(n_t: int, n_phi: int, *, closed_phi: bool) -> np.ndarray:
@@ -131,3 +138,174 @@ def test_orientation_analysis_takes_the_masked_path_when_a_denominator_is_zero()
     with np.errstate(all="raise"):
         analysis = _triangle_orientation_analysis(points, indices, normals)
     assert analysis.abstaining_triangles > 0
+
+
+def test_only_an_internal_unchanged_buffer_reuses_its_orientation_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The builder proof saves one pass without weakening public construction."""
+
+    positions = np.asarray(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+    )
+    indices = np.asarray((0, 1, 2), dtype=np.uint32)
+    normals = np.tile((0.0, 0.0, 1.0), (3, 1))
+    calls = 0
+    original = preview_api._triangle_orientation_analysis
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(preview_api, "_triangle_orientation_analysis", counted)
+    oriented = _orient_indices_to_normals(
+        "horn.outer", positions, indices, normals
+    )
+    assert calls == 1
+    internal_metadata = _orientation_metadata(oriented)
+
+    # Equal values in a different positions array do not satisfy the proof.
+    PreviewSurfaceV1(
+        role="horn.outer",
+        positions=positions.copy(),
+        indices=oriented.indices,
+        normals=normals,
+        shading="smooth",
+        normal_method="analytic-parametric",
+        closed_phi=False,
+        metadata=internal_metadata,
+    )
+    assert calls == 2
+
+    surface = PreviewSurfaceV1(
+        role="horn.outer",
+        positions=positions,
+        indices=oriented.indices,
+        normals=normals,
+        shading="smooth",
+        normal_method="analytic-parametric",
+        closed_phi=False,
+        metadata=internal_metadata,
+    )
+    assert calls == 2
+    assert all(isinstance(key, str) for key in surface.metadata)
+
+    # Without the private object-keyed proof, the public constructor always
+    # performs its own final-buffer check, even for the same array objects.
+    PreviewSurfaceV1(
+        role="horn.outer",
+        positions=positions,
+        indices=oriented.indices,
+        normals=normals,
+        shading="smooth",
+        normal_method="analytic-parametric",
+        closed_phi=False,
+    )
+    assert calls == 3
+
+
+def test_internal_orientation_proof_rejects_same_object_mutation() -> None:
+    """Identity alone cannot establish that a mutable ndarray is unchanged."""
+
+    positions = np.asarray(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+    )
+    indices = np.asarray((0, 1, 2), dtype=np.uint32)
+    normals = np.tile((0.0, 0.0, 1.0), (3, 1))
+    oriented = _orient_indices_to_normals(
+        "horn.outer", positions, indices, normals
+    )
+
+    # Keep the exact same ndarray objects, but reverse the triangle's winding
+    # after the proof was issued. The final constructor must reclassify the
+    # changed bytes and reject them.
+    positions[2] = (0.0, -1.0, 0.0)
+    with pytest.raises(ValueError, match="windings disagree with their normals"):
+        PreviewSurfaceV1(
+            role="horn.outer",
+            positions=positions,
+            indices=oriented.indices,
+            normals=normals,
+            shading="smooth",
+            normal_method="analytic-parametric",
+            closed_phi=False,
+            metadata=_orientation_metadata(oriented),
+        )
+
+
+def test_a_flipped_buffer_is_rechecked_after_normal_sum_reassociation() -> None:
+    """Flipping swaps two summands, which can change a near-cancelling sum."""
+
+    positions = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.11420311234311552, 0.9934574219014853, 0.0),
+        )
+    )
+    indices = np.asarray((0, 1, 2), dtype=np.uint32)
+    normals = np.asarray(
+        (
+            (1.0, 1.2878587085651816e-14, 0.0),
+            (-0.49999999999998829, 0.86602540378444548, 0.0),
+            (-0.50000000000000888, -0.86602540378443349, 0.0),
+        )
+    )
+
+    original = _triangle_orientation_analysis(positions, indices, normals)
+    assert original.negative_triangles == 1
+    oriented = _orient_indices_to_normals(
+        "horn.outer", positions, indices, normals
+    )
+    assert np.array_equal(oriented.indices, (0, 2, 1))
+    flipped = _triangle_orientation_analysis(positions, oriented.indices, normals)
+    assert flipped.negative_triangles == 1
+
+    # No proof is issued when indices move. The public surface check therefore
+    # catches the still-negative final buffer instead of trusting pass one.
+    with pytest.raises(ValueError, match="windings disagree with their normals"):
+        PreviewSurfaceV1(
+            role="horn.outer",
+            positions=positions,
+            indices=oriented.indices,
+            normals=normals,
+            shading="smooth",
+            normal_method="analytic-parametric",
+            closed_phi=False,
+            metadata=_orientation_metadata(oriented),
+        )
+
+
+def test_a_combined_surface_still_runs_its_global_orientation_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Part-level evidence cannot replace the combined surface's classifier."""
+
+    positions = np.asarray(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+    )
+    indices = np.asarray((0, 1, 2), dtype=np.uint32)
+    normals = np.tile((0.0, 0.0, 1.0), (3, 1))
+    part = PreviewSurfaceV1(
+        role="horn.outer",
+        positions=positions,
+        indices=indices,
+        normals=normals,
+        shading="smooth",
+        normal_method="analytic-parametric",
+        closed_phi=False,
+    )
+    calls = 0
+    original = preview_api._triangle_orientation_analysis
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(preview_api, "_triangle_orientation_analysis", counted)
+    combined = preview_api._combine_surfaces("horn.outer", [part, part])
+
+    assert calls == 1
+    assert combined.metadata["windingChecked"] is True
