@@ -389,3 +389,47 @@ def test_failed_export_leaves_no_temporary_file_behind(tmp_path):
     with pytest.raises(MesherError):
         write_step(geometry)
     assert set(Path(tmp_path).iterdir()) == before
+
+
+def test_enclosure_throat_does_not_bore_through_the_back(tmp_path):
+    """The membrane must not become a tunnel out of the cabinet.
+
+    Regression for the defect found 2026-08-08 opening a Tritonia-V export in
+    Fusion: the source cap was swept backwards by the whole model extent and
+    cut, drilling a 25.4 mm hole from the throat plane through the back face.
+    An enclosure is a solid block with a blind horn pocket, so the material
+    behind the throat has to survive.
+    """
+
+    geometry = PointGridHornGeometry(
+        inner_points=_inner_grid(),
+        enclosure=HornEnclosure(depth_mm=200.0, edge_mm=18.0),
+    )
+
+    path, info = write_step(geometry, tmp_path / "enclosure.step")
+
+    assert info.body == "solid"
+    # Nothing was cut away, so the export reports the membrane as still closed.
+    assert info.throat_opened is False
+    # Probe on the axis, behind the throat plane, comfortably inside the box.
+    # The fixture's mouth is at z = 140 and the enclosure is 200 mm deep, so
+    # the back face is at z = -60: probe to -50, not -60, because a point
+    # exactly on a face is classified by tolerance rather than by geometry.
+    lo, hi = info.bounding_box_mm
+    assert lo[2] < -55.0, f"fixture moved; back face at {lo[2]}"
+    assert _points_inside(path, [(0.0, 0.0, -20.0), (0.0, 0.0, -50.0)]) == [
+        True,
+        True,
+    ]
+    # And just beyond the back face there is nothing, which is what makes the
+    # probes above meaningful rather than vacuous.
+    assert _points_inside(path, [(0.0, 0.0, lo[2] - 5.0)]) == [False]
+
+
+def test_freestanding_throat_still_opens(tmp_path):
+    """The enclosure fix must not close the bore where it genuinely opens."""
+
+    path, info = write_step(_freestanding(), tmp_path / "freestanding.step")
+
+    assert info.throat_opened is True
+    assert _points_inside(path, [(0.0, 0.0, -5.0)]) == [False]

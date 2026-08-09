@@ -59,7 +59,15 @@ _MIN_SOLID_VOLUME_MM3 = 1.0e-6
 
 @dataclass(frozen=True)
 class CadInfo:
-    """What was written, and what shape it turned out to be."""
+    """What was written, and what shape it turned out to be.
+
+    ``throat_opened`` reports the effective OUTCOME, not the request. An
+    enclosure build always reports ``False`` even for ``open_throat=True``: the
+    waveguide is a blind pocket in a solid block, so there is no bore to open
+    and cutting would tunnel out through the back face. Callers that record
+    what a part looks like should read this field rather than echo the flag
+    they passed in.
+    """
 
     path: Path
     body: CadBody
@@ -139,10 +147,33 @@ def _entity_closure(gmsh, dimtags: list[tuple[int, int]]) -> set[tuple[int, int]
     return keep
 
 
+def _throat_opens_to_free_space(geometry: HornGeometry) -> bool:
+    """Is there actually free space behind the driver membrane?
+
+    Only a freestanding shell has any. In an enclosure build the waveguide is a
+    blind pocket carved out of a solid block, so there is material behind the
+    throat however the cap is treated -- the membrane is not plugging anything.
+
+    Sweeping the cap backwards there does not open a bore, it drills a tunnel
+    through the entire enclosure and out through the back face. Measured on
+    Tritonia-V: a 25.4 mm hole 185 mm long, removing 93,706 mm^3 of the back of
+    the cabinet. A blind horn-shaped pocket is the correct part.
+    """
+
+    mode = getattr(geometry, "build_mode", None)
+    return mode is not PointGridBuildMode.ENCLOSURE
+
+
 def _open_throat(
     gmsh, volume: int, built: BuiltGeometry, cap_tags: list[int]
 ) -> int:
-    """Cut the driver membrane out of the sewn solid, opening the bore."""
+    """Cut the driver membrane out of the sewn solid, opening the bore.
+
+    The sweep depth spans the whole model deliberately: it must clear whatever
+    material sits behind the cap. That is safe only where the caller has
+    established there is free space behind it -- see
+    ``_throat_opens_to_free_space``.
+    """
 
     if not cap_tags:
         return volume
@@ -249,7 +280,9 @@ def write_step(
             excluded = _role_tags(built, *_NON_MATERIAL_ROLES)
             cap_tags = sorted(_role_tags(built, _SOURCE_ROLE))
             body: CadBody = "solid" if _solid_capable(geometry) else "surface"
-            throat_opened = bool(open_throat and cap_tags)
+            throat_opened = bool(
+                open_throat and cap_tags and _throat_opens_to_free_space(geometry)
+            )
             if body == "surface" and open_throat:
                 # A solid needs the cap to close its shell before cutting it
                 # away; a surface body has nothing to close, so the membrane is
