@@ -76,6 +76,11 @@ def test_rounded_rectangle_morph_builds_at_every_lod(lod, corner_radius):
         "mouth_rim",
         "source_cap",
         "wall.rear_cap",
+        # The axial band from the outer throat ring back to the rear plate. The
+        # mesh has always built it by prepending the rear ring to the outer
+        # shell; the preview emits it as its own role because its shell is
+        # already assembled by the time the rear plane is known.
+        "wall.rear_return",
     }
     # The squared-off throat ships as its own hard-shaded role wherever the
     # emitted mesh breaks tangency there and the two rows can be wound on their

@@ -1075,16 +1075,25 @@ def _polyline_self_intersects_2d(points: np.ndarray, *, closed: bool) -> bool:
 
 
 def validate_outer_offset_grid(
-    inner_points: Any, outer_points: Any, *, full_circle: bool
+    inner_points: Any,
+    outer_points: Any,
+    *,
+    full_circle: bool,
+    label: str = "FREEFORM",
 ) -> None:
-    """Reject folds or intersections in FREEFORM's generated offset shell."""
+    """Reject folds or intersections in a generated offset shell.
+
+    ``label`` names the caller in the message. Any formula can fold: a wall
+    thicker than the throat's concave curvature radius self-intersects
+    whatever drew the profile.
+    """
 
     inner = np.asarray(inner_points, dtype=float)
     outer = np.asarray(outer_points, dtype=float)
     if inner.shape != outer.shape or inner.ndim != 3 or inner.shape[2] != 3:
-        raise ValueError("FREEFORM outer offset grid does not match the inner grid")
+        raise ValueError(f"{label} outer offset grid does not match the inner grid")
     if not np.all(np.isfinite(outer)):
-        raise ValueError("FREEFORM outer offset grid contains non-finite coordinates")
+        raise ValueError(f"{label} outer offset grid contains non-finite coordinates")
 
     phi_count = inner.shape[0] if full_circle else inner.shape[0] - 1
     for i in range(phi_count):
@@ -1103,7 +1112,7 @@ def validate_outer_offset_grid(
         if np.any(flipped):
             ring = int(np.flatnonzero(flipped)[0])
             raise ValueError(
-                "FREEFORM generated outer offset grid has a normal flip "
+                f"{label} generated outer offset grid has a normal flip "
                 f"near azimuth row {i}, axial interval {ring}"
             )
 
@@ -1115,7 +1124,7 @@ def validate_outer_offset_grid(
         )
         if _polyline_self_intersects_2d(meridian, closed=False):
             raise ValueError(
-                "FREEFORM generated outer offset grid self-intersects "
+                f"{label} generated outer offset grid self-intersects "
                 f"near azimuth row {i}"
             )
 
@@ -1125,7 +1134,7 @@ def validate_outer_offset_grid(
         xy = outer[:, j, :2]
         if _polyline_self_intersects_2d(xy, closed=full_circle):
             raise ValueError(
-                "FREEFORM generated outer offset grid self-intersects "
+                f"{label} generated outer offset grid self-intersects "
                 f"on axial ring {j}"
             )
 

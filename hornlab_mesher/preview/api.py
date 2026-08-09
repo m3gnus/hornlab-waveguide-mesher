@@ -96,6 +96,11 @@ _ORIENTATION_BY_ROLE = {
     "mouth_rim": "exterior",
     "source_cap": "air-side",
     "wall.rear_cap": "exterior",
+    # The axial band from the outer throat ring back to the rear rim. The mesh
+    # has always built this (it prepends the rear ring to the outer shell); the
+    # preview only needs it as its own role because its shell is already
+    # emitted by the time the rear plane is known.
+    "wall.rear_return": "exterior",
     "enclosure.front": "exterior",
     "enclosure.roundover": "exterior",
     "enclosure.side": "exterior",
@@ -2924,6 +2929,10 @@ def build_preview_geometry(
     )
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
     warnings.extend(_guiding_curve_warnings(parsed_params, _parsed_formula))
+    # The wall thickness as configured. ``deferred_wall`` below is only set on
+    # the corner-refinement path, where the outer shell is rebuilt here instead
+    # of by the sampler, so it is not a reliable thickness on its own.
+    wall_mm = float(eval_param(parsed_params.get("wallThickness"), 0.0, 0.0))
     deferred_wall = 0.0
     if has_corners and str(_parsed_mode) == "freestanding":
         deferred_wall = float(eval_param(parsed_params.get("wallThickness"), 0.0, 0.0))
@@ -3297,10 +3306,53 @@ def build_preview_geometry(
                 cap_limited=enclosure_cap_limited,
             )
     elif selected_outer is not None and options.include_rear_cap:
+        # The rear plate sits on the plane the MESH puts it on, which is not a
+        # property of the outer ring at all:
+        #     rear_z = mean(inner throat z) - wall
+        # See ``point_grid_freestanding.py`` (rear_z) and ``_rear_rim_points``,
+        # which keeps x/y and moves only z.
+        #
+        # Under the old throat clamp the outer throat ring happened to sit on
+        # that same plane, so capping straight off it matched the mesh BY
+        # ACCIDENT. Now that row 0 lies on the offset surface it does not, and
+        # deriving the plane from the ring put the previewed rear face ~4.4 mm
+        # forward of the real one and silently dropped the whole rear return.
+        rear_z = float(np.mean(selected_inner[:, 0, 2]) - wall_mm)
+        rear_ring = np.array(selected_outer[:, 0, :], dtype=np.float64, copy=True)
+        rear_ring[:, 2] = rear_z
+
+        # The band between the outer throat ring and the rear rim IS the rear
+        # return. The mesh builds it by prepending this ring to the outer shell;
+        # the preview has already emitted its shell, so ship the band on its own.
+        if options.include_outer:
+            # (t, phi, xyz), rear rim first, exactly as the mesh orders it.
+            return_master = np.stack(
+                (rear_ring, selected_outer[:, 0, :]), axis=0
+            )
+            # A straight axial extrusion of the throat ring, so its meridian
+            # curvature is zero; the hoop term is carried by the ring itself.
+            return_curvature = (
+                np.zeros(return_master.shape[:2], dtype=np.float64)
+                if options.include_curvature
+                else None
+            )
+            surfaces.append(
+                _grid_surface_from_selection(
+                    "wall.rear_return",
+                    return_master,
+                    analytic_grid_normals(return_master, closed_phi=closed_phi),
+                    np.asarray((0, 1), dtype=np.int64),
+                    np.arange(return_master.shape[1], dtype=np.int64),
+                    closed_phi=closed_phi,
+                    curvature_mean=return_curvature,
+                    curvature_principal=return_curvature,
+                )
+            )
+
         surfaces.append(
             _flat_cap(
                 "wall.rear_cap",
-                selected_outer[:, 0, :],
+                rear_ring,
                 (0.0, 0.0, -1.0),
                 closed_phi=closed_phi,
                 include_curvature=options.include_curvature,

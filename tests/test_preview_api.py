@@ -8,6 +8,7 @@ import time
 import numpy as np
 import pytest
 
+from hornlab_mesher.config_builder import resolve_geometry
 from hornlab_mesher.preview import PreviewOptionsV1, build_preview_geometry
 
 
@@ -97,7 +98,8 @@ FREEFORM_FREESTANDING = {
 FAMILIES = [
     pytest.param(
         OSSE_FREESTANDING,
-        {"horn.inner", "horn.outer", "mouth_rim", "source_cap", "wall.rear_cap"},
+        {"horn.inner", "horn.outer", "mouth_rim", "source_cap", "wall.rear_cap",
+         "wall.rear_return"},
         id="osse-freestanding",
     ),
     pytest.param(
@@ -116,12 +118,14 @@ FAMILIES = [
     ),
     pytest.param(
         ICW_FLAT_BAFFLE,
-        {"horn.inner", "horn.outer", "mouth_rim", "source_cap", "wall.rear_cap"},
+        {"horn.inner", "horn.outer", "mouth_rim", "source_cap", "wall.rear_cap",
+         "wall.rear_return"},
         id="icw-flat-baffle",
     ),
     pytest.param(
         FREEFORM_FREESTANDING,
-        {"horn.inner", "horn.outer", "mouth_rim", "source_cap", "wall.rear_cap"},
+        {"horn.inner", "horn.outer", "mouth_rim", "source_cap", "wall.rear_cap",
+         "wall.rear_return"},
         id="freeform",
     ),
 ]
@@ -457,7 +461,13 @@ def _analytic_side_point(role, centroid, mouth_exit=None):
 
     if role == "horn.inner":
         point[:2] = (0.0, 0.0)  # the horn axis is acoustic air near the throat
-    elif role in {"horn.outer", "wall.throat_band", "enclosure.side"}:
+    elif role in {
+        "horn.outer",
+        "wall.throat_band",
+        "wall.rear_return",
+        "enclosure.side",
+    }:
+        # The rear return is a side wall like any other: outward is radial.
         point[:2] = outside * radial / radial_length
     elif role == "mouth_rim" and mouth_exit is not None:
         ring, directions = mouth_exit
@@ -595,30 +605,25 @@ def _vertex_versus_face_deg(surface):
 @pytest.mark.parametrize(
     "config", [OSSE_FREESTANDING, FREEFORM_FREESTANDING], ids=["osse", "freeform"]
 )
-def test_wall_throat_jog_is_shaded_as_its_own_face(config, lod):
-    """No station carries a normal that belongs to neither face it borders.
+def test_outer_wall_has_no_throat_crease(config, lod):
+    """The outer shell runs smoothly onto the throat -- no crease, no band.
 
-    ``_outer_offset_shell`` squares the throat off to a flat rear face instead
-    of putting that ring on the offset surface, so the band it forms with the
-    next station meets the shell at a real crease. Smoothing one normal across
-    it left the crease ring up to 83 degrees off both faces -- a shading ring
-    around the throat -- and no single normal can fix that, so the band ships
-    as its own role with its own copy of the ring.
+    Inverted 2026-08-09. This test used to assert the OPPOSITE: that a separate
+    ``wall.throat_band`` role existed to shade a real crease, because
+    ``_outer_offset_shell`` squared the throat off to a flat rear face instead
+    of putting that ring on the offset surface. The crease reached 83 degrees
+    and the band was a workaround for it.
+
+    The cause is gone -- every row now offsets along the true surface normal --
+    so the band has nothing to shade and must not be invented. Guarding the fix
+    rather than the workaround is the point of the inversion.
     """
 
     preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
     by_role = {surface.role: surface for surface in preview.surfaces}
-    assert "wall.throat_band" in by_role
 
-    for role in ("horn.outer", "wall.throat_band"):
-        assert _vertex_versus_face_deg(by_role[role]) < 8.0, role
-
-    # The band hands the shell its first ring: no station is dropped between
-    # them, and none is drawn twice.
-    band = np.asarray(by_role["wall.throat_band"].positions, dtype=np.float64)
-    shell = np.asarray(by_role["horn.outer"].positions, dtype=np.float64)
-    n_phi = preview.metadata["actual_segment_counts"]["horn_phi"]
-    assert np.allclose(band[n_phi : 2 * n_phi], shell[:n_phi], atol=1.0e-12)
+    assert "wall.throat_band" not in by_role
+    assert _vertex_versus_face_deg(by_role["horn.outer"]) < 8.0
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
@@ -629,3 +634,37 @@ def test_wall_throat_band_is_omitted_when_the_mesh_stays_tangent(lod):
     assert "wall.throat_band" not in {
         surface.role for surface in preview.surfaces
     }
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine"])
+def test_preview_rear_plate_sits_on_the_mesh_rear_plane(lod):
+    """The previewed rear face must be where the built part's rear face is.
+
+    Regression for a bug shipped and caught in review on 2026-08-09. The rear
+    cap used to be derived from the outer throat ring, which only landed on the
+    rear plane because row 0 was clamped there. Once row 0 moved onto the offset
+    surface the previewed rear face jumped ~4.4 mm forward and the whole rear
+    return vanished -- and no test noticed, because none asserted the plane.
+
+    The mesh rule is ``mean(inner throat z) - wall`` (see
+    ``builders/point_grid_freestanding.py``), and it is the only rule.
+    """
+
+    config = OSSE_FREESTANDING
+    geometry = resolve_geometry(config).geometry
+    expected = float(
+        np.mean(geometry.inner_points[:, 0, 2]) - geometry.wall_thickness_mm
+    )
+
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
+    by_role = {surface.role: surface for surface in preview.surfaces}
+
+    cap = np.asarray(by_role["wall.rear_cap"].positions, dtype=np.float64)
+    assert np.allclose(cap[:, 2], expected, atol=1.0e-9)
+
+    # And the shell reaches it: the rear return spans from the plate up to the
+    # outer throat ring, leaving no gap for the eye to fall through.
+    band = np.asarray(by_role["wall.rear_return"].positions, dtype=np.float64)
+    assert np.isclose(band[:, 2].min(), expected, atol=1.0e-9)
+    outer_throat_z = float(band[:, 2].max())
+    assert outer_throat_z > expected + 1.0

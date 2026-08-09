@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import math
 from typing import Any, Mapping
 
@@ -42,6 +43,8 @@ from .profile_morph import (
 
 # Private params key: acoustic-only corner-arc subdivision (see
 # ``_morph_corner_arc_subdivision``). Never set by user configs.
+logger = logging.getLogger(__name__)
+
 ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY = "_acousticCornerArcSubdivision"
 FREEFORM_CONTINUOUS_COLLAPSE_KEY = "_freeformContinuousCollapse"
 
@@ -630,22 +633,26 @@ def _outer_offset_shell(
         unit = np.divide(normals, np.where(lengths > 1.0e-12, lengths, 1.0))
         unit[degenerate] = (0.0, -1.0, 0.0)
 
+    # One rule, every row: offset along the true surface normal.
+    #
+    # Row 0 used to be special-cased to a purely radial in-plane offset with its
+    # z clamped to ``inner_z - wall``, leaving the meshed throat point off the
+    # offset surface and creasing the outer wall one ring in. Every other row
+    # was already an exact normal offset. The crease was known, but recorded as
+    # a shading problem and worked around with its own render role rather than
+    # fixed.
+    #
+    # Nothing required it: ATH places the outer throat point on the exact normal
+    # offset too. Note this does NOT make the offset globally safe -- a throat
+    # whose meridian curvature radius is smaller than the wall self-intersects
+    # whatever row 0 does, which is what ``validate_outer_offset_grid`` below
+    # reports. Measured numbers live in the tests, not here, because they are
+    # per-config and go stale in a comment.
     outer_vertices = vertices + offset_sign * wall * unit
-    # Throat ring (row 0) is offset radially in the xz plane only.
-    throat = unit[:n_phi]
-    throat_radial_len = np.hypot(throat[:, 0], throat[:, 2])
-    safe_len = np.where(throat_radial_len > 1.0e-12, throat_radial_len, 1.0)
-    rx = np.where(throat_radial_len > 1.0e-12, throat[:, 0] / safe_len, 0.0)
-    rz = np.where(throat_radial_len > 1.0e-12, throat[:, 2] / safe_len, 0.0)
-    outer_vertices[:n_phi, 0] = vertices[:n_phi, 0] + offset_sign * wall * rx
-    outer_vertices[:n_phi, 1] = vertices[:n_phi, 1]
-    outer_vertices[:n_phi, 2] = vertices[:n_phi, 2] + offset_sign * wall * rz
 
-    outer = np.ascontiguousarray(
+    return np.ascontiguousarray(
         outer_vertices.reshape(n_cols, n_phi, 3).transpose(1, 0, 2)[:, :, (0, 2, 1)]
     )
-    outer[:, 0, 2] = inner[:, 0, 2] - wall
-    return outer
 
 
 def _lookup_curve(
@@ -1363,8 +1370,29 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
                 )
             ),
         )
+        # FREEFORM rejects a folded shell outright: its profile is user-drawn,
+        # so a fold means the input is wrong and refusing is the right answer.
+        #
+        # Every other formula only WARNS. A fold there means the requested wall
+        # exceeds the throat's concave curvature radius, which is a real defect
+        # -- but 11 of 16 reference designs, including this repository's own
+        # examples, have folded for as long as the offset has existed. Raising
+        # would reject configs that build and solve today, so surface it and let
+        # the caller decide.
         if formula == "FREEFORM":
             validate_outer_offset_grid(inner, outer, full_circle=full_circle)
+        else:
+            try:
+                validate_outer_offset_grid(
+                    inner, outer, full_circle=full_circle, label=str(formula)
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "[hornlab-mesher] outer wall self-intersects near the throat: %s "
+                    "Reduce the wall thickness or open the throat curvature; the "
+                    "acoustic (inner) surface is unaffected.",
+                    exc,
+                )
 
     return {
         "inner_grid": inner,
