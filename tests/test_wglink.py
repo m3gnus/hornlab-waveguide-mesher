@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+from hornlab_mesher.cad import CadInfo, read_wglink, write_wglink
+from hornlab_mesher.datums import derive_datums
+from hornlab_mesher.geometry import (
+    BuiltGeometry,
+    HornEnclosure,
+    PointGridHornGeometry,
+)
+from hornlab_mesher.mesher import MesherError
+
+
+def _inner_grid(*, nonplanar_mouth: bool = False) -> np.ndarray:
+    angles = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
+    points = np.empty((len(angles), 3, 3), dtype=np.float64)
+    for station, (radius, z) in enumerate(((12.7, 0.0), (30.0, 55.0), (60.0, 100.0))):
+        points[:, station, 0] = radius * np.cos(angles)
+        aspect = 1.0 if station == 0 else 0.8
+        points[:, station, 1] = aspect * radius * np.sin(angles)
+        points[:, station, 2] = z
+    if nonplanar_mouth:
+        points[0, -1, 2] += 0.05
+        points[4, -1, 2] -= 0.03
+    return points
+
+
+def _outer_grid(inner: np.ndarray) -> np.ndarray:
+    outer = np.array(inner, copy=True)
+    radial = np.linalg.norm(outer[..., :2], axis=2)
+    scale = np.divide(radial + 6.0, radial, out=np.ones_like(radial), where=radial > 0)
+    outer[..., :2] *= scale[..., None]
+    return outer
+
+
+def _freestanding(**kwargs) -> PointGridHornGeometry:
+    inner = _inner_grid(nonplanar_mouth=kwargs.pop("nonplanar_mouth", False))
+    return PointGridHornGeometry(
+        inner_points=inner,
+        outer_points=_outer_grid(inner),
+        **kwargs,
+    )
+
+
+def _enclosure_geometry(*, plan_type: int = 1, vertical_offset_mm: float = 0.0):
+    return PointGridHornGeometry(
+        inner_points=_inner_grid(),
+        enclosure=HornEnclosure(
+            depth_mm=20.0,
+            space_l_mm=10.0,
+            space_r_mm=14.0,
+            space_t_mm=12.0,
+            space_b_mm=8.0,
+            edge_mm=50.0,
+            plan_type=plan_type,
+        ),
+        vertical_offset_mm=vertical_offset_mm,
+    )
+
+
+def _built(geometry: PointGridHornGeometry) -> BuiltGeometry:
+    bounds = None
+    if geometry.enclosure is not None:
+        bounds = enclosure_box_bounds(
+            geometry.inner_points,
+            geometry.enclosure,
+            closed=geometry.closed,
+            symmetry_planes=geometry.symmetry_planes,
+        )
+    return BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(0.0, 100.0),
+        source_axis="z",
+        enclosure_bounds=bounds,
+    )
+
+
+def _fake_step(monkeypatch):
+    def write_step(geometry, output_path, *, open_throat=True):
+        path = Path(output_path)
+        path.write_bytes(b"ISO-10303-21;\nFAKE STEP\nEND-ISO-10303-21;\n")
+        return path, CadInfo(
+            path=path,
+            body="solid",
+            n_faces=12,
+            volume_mm3=123.5,
+            bounding_box_mm=((-70.0, -60.0, -6.0), (70.0, 60.0, 100.0)),
+            throat_opened=bool(open_throat),
+        )
+
+    monkeypatch.setattr("hornlab_mesher.cad.write_step", write_step)
+
+
+def test_freestanding_datums_use_inner_and_outer_realized_rings():
+    geometry = _freestanding()
+    datums = derive_datums(geometry, _built(geometry))
+
+    assert datums["rim_planar"] is True
+    assert datums["WG_MOUTH_PLANE"]["exact"] is True
+    assert np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"]) == pytest.approx(
+        geometry.inner_points[:, -1, :]
+    )
+    assert np.asarray(datums["WG_MOUTH_OUTLINE_OUTER"]["points_mm"]) == pytest.approx(
+        geometry.outer_points[:, -1, :]
+    )
+
+
+def test_nonplanar_rim_is_flagged_without_an_exact_mouth_plane():
+    geometry = _freestanding(nonplanar_mouth=True)
+    datums = derive_datums(geometry, _built(geometry))
+
+    assert datums["rim_planar"] is False
+    assert "WG_MOUTH_PLANE" not in datums
+
+
+def test_enclosure_datums_use_clamped_bounds_and_distinct_baffle_outlines():
+    geometry = _enclosure_geometry()
+    built = _built(geometry)
+    datums = derive_datums(geometry, built)
+    bounds = built.enclosure_bounds
+    assert bounds is not None
+
+    assert bounds["enc_depth"] == pytest.approx(101.0)
+    assert bounds["z_back"] == pytest.approx(bounds["z_front"] - 101.0)
+    assert bounds["clamped_edge"] < geometry.enclosure.edge_mm
+    assert datums["WG_BAFFLE_PLANE"]["origin_mm"][2] == bounds["z_front"]
+    assert datums["WG_ENC_BACK_PLANE"]["origin_mm"][2] == bounds["z_back"]
+    face = np.asarray(datums["WG_BAFFLE_OUTLINE_FACE"]["points_mm"])
+    envelope = np.asarray(datums["WG_BAFFLE_OUTLINE_ENVELOPE"]["points_mm"])
+    assert np.ptp(face[:, 0]) < np.ptp(envelope[:, 0])
+    assert np.ptp(face[:, 1]) < np.ptp(envelope[:, 1])
+
+
+def test_vertical_offset_has_distinct_geometry_and_solver_planes():
+    geometry = _freestanding(vertical_offset_mm=37.5)
+    datums = derive_datums(geometry, _built(geometry))
+
+    assert datums["WG_AXIS"]["origin_mm"] == [0.0, 37.5, 0.0]
+    assert datums["WG_GEOM_MIDPLANE_Y"]["origin_mm"][1] == 37.5
+    assert datums["WG_SOLVER_CUT_PLANE_Y"]["origin_mm"][1] == 0.0
+    mouth = np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
+    assert mouth[:, 1] == pytest.approx(geometry.inner_points[:, -1, 1] + 37.5)
+
+
+@pytest.mark.parametrize("plan_type", [2, 3])
+def test_wglink_rejects_unbuildable_enclosure_plans(plan_type, tmp_path):
+    with pytest.raises(MesherError, match=rf"plan_type={plan_type}.*plan_type=1"):
+        write_wglink(_enclosure_geometry(plan_type=plan_type), tmp_path / "bad.wglink")
+
+
+@pytest.mark.parametrize(
+    "geometry, mode",
+    [
+        (PointGridHornGeometry(inner_points=_inner_grid()), "BARE"),
+        (
+            PointGridHornGeometry(inner_points=_inner_grid(), infinite_baffle=True),
+            "INFINITE-BAFFLE",
+        ),
+    ],
+)
+def test_wglink_rejects_modes_without_material(geometry, mode, tmp_path):
+    with pytest.raises(MesherError, match=rf"{mode} is not supported"):
+        write_wglink(geometry, tmp_path / "bad.wglink")
+
+
+def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry(vertical_offset_mm=11.0)
+    object.__setattr__(geometry, "source_radius_mm", 999.0)
+    built = _built(geometry)
+    identity = {
+        "bundle": {"id": "caller-bundle", "created_at": "verbatim"},
+        "design": {"id": "caller-design", "design_hash": "sha256:design"},
+        "export": {"id": "caller-export", "sequence": 19},
+    }
+    result = write_wglink(
+        geometry,
+        tmp_path / "horn.wglink",
+        built_geometry=built,
+        identity=identity,
+        instance_slug="A-1",
+        check_points=[[1.0, 2.0, 3.0]],
+    )
+    manifest = read_wglink(result.path)
+
+    assert set(path.name for path in result.path.iterdir()) == {
+        "wglink.json",
+        "waveguide.step",
+        "point-grid.json",
+    }
+    assert manifest["bundle"] == identity["bundle"]
+    assert manifest["design"] == identity["design"]
+    assert manifest["export"] == identity["export"]
+    assert result.cad_info.path == result.step_path
+    grid = json.loads(result.point_grid_path.read_text())
+    assert grid["n_phi"] == geometry.inner_points.shape[0]
+    assert grid["n_length"] == geometry.inner_points.shape[1]
+    assert grid["check_points"] == [[1.0, 2.0, 3.0]]
+    params = {entry["name"]: entry["value"] for entry in manifest["parameters"]}
+    bounds = built.enclosure_bounds
+    assert bounds is not None
+    assert params["wg_a_1_throat_dia"] == pytest.approx(25.4)
+    assert params["wg_a_1_enc_w"] == pytest.approx(bounds["bx1"] - bounds["bx0"])
+    assert params["wg_a_1_enc_depth"] == pytest.approx(bounds["enc_depth"])
+    assert params["wg_a_1_enc_edge"] == pytest.approx(bounds["clamped_edge"])
+
+    with result.step_path.open("ab") as stream:
+        stream.write(b"X")
+    with pytest.raises(MesherError, match="checksum validation failed.*waveguide.step"):
+        read_wglink(result.path)
+
+
+def test_reader_rejects_unchecksummed_extra_file(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+    (result.path / "swapped.step").write_bytes(b"not declared")
+
+    with pytest.raises(MesherError, match="unchecksummed.*swapped.step"):
+        read_wglink(result.path)

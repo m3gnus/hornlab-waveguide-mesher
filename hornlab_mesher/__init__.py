@@ -28,7 +28,16 @@ from .cost import (
     estimate_solve_cost,
     estimate_triangle_count,
 )
-from .cad import CadInfo, write_step, write_step_from_config
+from .cad import (
+    CadInfo,
+    WgLinkIdentity,
+    WgLinkInfo,
+    read_wglink,
+    write_step,
+    write_step_from_config,
+    write_wglink,
+)
+from .datums import derive_datums
 from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
 from .tags import PhysicalGroup
 
@@ -65,6 +74,8 @@ def load_config(*args, **kwargs):
 
 __all__ = [
     "CadInfo",
+    "WgLinkIdentity",
+    "WgLinkInfo",
     "CrossSection",
     "Enclosure",
     "HornEnclosure",
@@ -91,4 +102,7 @@ __all__ = [
     "load_mesh",
     "write_step",
     "write_step_from_config",
+    "write_wglink",
+    "read_wglink",
+    "derive_datums",
 ]

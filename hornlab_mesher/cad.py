@@ -23,12 +23,20 @@ follows the cap's own face, a flat disc and a domed cap yield the same solid.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+import shutil
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 
+import numpy as np
+
+from .datums import derive_datums
 from .geometry import (
     BuiltGeometry,
     HornGeometry,
@@ -78,6 +86,28 @@ class CadInfo:
     ]
     throat_opened: bool
     units: Literal["mm"] = "mm"
+
+
+@dataclass(frozen=True)
+class WgLinkIdentity:
+    """Caller-owned identity/provenance sections emitted without augmentation."""
+
+    bundle: Mapping[str, Any] | None = None
+    generator: Mapping[str, Any] | None = None
+    design: Mapping[str, Any] | None = None
+    export: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class WgLinkInfo:
+    """All products of a bundle write, including the underlying CAD result."""
+
+    path: Path
+    manifest_path: Path
+    step_path: Path
+    point_grid_path: Path
+    manifest: dict[str, Any]
+    cad_info: CadInfo
 
 
 def _axis_direction(source_axis: str) -> tuple[float, float, float]:
@@ -408,4 +438,400 @@ def write_step_from_config(
     return write_step(resolved.geometry, output_path, open_throat=open_throat)
 
 
-__all__ = ["CadBody", "CadInfo", "write_step", "write_step_from_config"]
+def _realized_bundle_geometry(geometry: PointGridHornGeometry) -> BuiltGeometry:
+    """Build the non-OCC realized metadata needed by a standalone writer.
+
+    Normal mesh/export pipelines should pass their actual ``BuiltGeometry``.
+    This fallback uses the enclosure builder's own pure bounds function, so it
+    applies the identical rounding and clamps without constructing OCC twice.
+    """
+
+    bounds = None
+    if geometry.build_mode is PointGridBuildMode.ENCLOSURE:
+        if geometry.enclosure is None:
+            raise MesherError("enclosure build has no HornEnclosure metadata")
+        from .builders.enclosure import enclosure_box_bounds
+
+        bounds = enclosure_box_bounds(
+            np.asarray(geometry.inner_points, dtype=np.float64),
+            geometry.enclosure,
+            closed=geometry.closed,
+            symmetry_planes=geometry.symmetry_planes,
+        )
+    points = np.asarray(geometry.inner_points, dtype=np.float64)
+    return BuiltGeometry(
+        surface_groups={},
+        axial_bounds_mm=(
+            float(np.mean(points[:, 0, 2])),
+            float(np.mean(points[:, -1, 2])),
+        ),
+        source_axis="z",
+        enclosure_bounds=bounds,
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+    )
+
+
+def _point_grid_payload(
+    geometry: PointGridHornGeometry,
+    *,
+    check_points: object | None,
+) -> dict[str, Any]:
+    inner = np.asarray(geometry.inner_points, dtype=np.float64)
+    if inner.ndim != 3 or inner.shape[2] != 3 or inner.shape[0] < 3:
+        raise MesherError("wglink requires inner_points shaped (n_phi, n_length, 3)")
+    if not np.isfinite(inner).all():
+        raise MesherError("wglink point grid contains non-finite inner points")
+    outer = None
+    if geometry.outer_points is not None:
+        outer = np.asarray(geometry.outer_points, dtype=np.float64)
+        if outer.shape != inner.shape or not np.isfinite(outer).all():
+            raise MesherError("outer_points must be finite and match inner_points")
+
+    ring_z: list[float] = []
+    ring_planar: list[bool] = []
+    for station in range(inner.shape[1]):
+        z = inner[:, station, 2]
+        ring_planar.append(float(np.ptp(z)) < 1.0e-6)
+        ring_z.append(0.5 * (float(np.min(z)) + float(np.max(z))))
+
+    checks = np.asarray([] if check_points is None else check_points, dtype=np.float64)
+    if checks.size == 0:
+        checks = np.empty((0, 3), dtype=np.float64)
+    try:
+        checks = checks.reshape((-1, 3))
+    except ValueError as exc:
+        raise MesherError("check_points must be an array of xyz triples") from exc
+    if not np.isfinite(checks).all():
+        raise MesherError("check_points contains non-finite coordinates")
+
+    return {
+        "units": "mm",
+        "build_mode": geometry.build_mode.value,
+        "vertical_offset_mm": float(geometry.vertical_offset_mm),
+        "wall_thickness_mm": float(geometry.wall_thickness_mm),
+        "n_phi": int(inner.shape[0]),
+        # Kept compatible with wg_profile_points.py: this is the station count,
+        # despite the historical field name.
+        "n_length": int(inner.shape[1]),
+        "closed": bool(geometry.closed),
+        "all_rings_planar": all(ring_planar),
+        "ring_planar": ring_planar,
+        "ring_z_mm": ring_z,
+        "inner_points": inner.tolist(),
+        "has_outer_points": outer is not None,
+        "outer_points": outer.tolist() if outer is not None else None,
+        "check_points": checks.tolist(),
+    }
+
+
+def _parameter_table(
+    geometry: PointGridHornGeometry,
+    built: BuiltGeometry,
+    *,
+    instance_slug: str,
+    informational_parameters: Mapping[str, float] | None,
+) -> list[dict[str, Any]]:
+    slug = re.sub(r"[^a-z0-9_]+", "_", instance_slug.strip().lower()).strip("_")
+    if not slug:
+        raise MesherError("instance_slug must contain at least one letter or digit")
+    prefix = f"wg_{slug}_"
+    inner = np.asarray(geometry.inner_points, dtype=np.float64)
+    throat = inner[:, 0, :]
+    center = np.mean(throat, axis=0)
+    radii = np.linalg.norm(throat[:, :2] - center[:2], axis=1)
+    positive = radii[radii > 1.0e-9]
+    throat_dia = 2.0 * (float(np.mean(positive)) if len(positive) else 0.0)
+    mouth = inner[:, -1, :]
+    z_front = (
+        float(built.enclosure_bounds["z_front"])
+        if built.enclosure_bounds is not None
+        else float(np.max(mouth[:, 2]))
+    )
+    z_throat = float(np.mean(throat[:, 2]))
+    values = {
+        "throat_dia": throat_dia,
+        "mouth_w": float(np.ptp(mouth[:, 0])),
+        "mouth_h": float(np.ptp(mouth[:, 1])),
+        "depth": z_front - z_throat,
+        "wall_t": float(geometry.wall_thickness_mm),
+        "vertical_offset": float(geometry.vertical_offset_mm),
+    }
+    if geometry.build_mode is PointGridBuildMode.ENCLOSURE:
+        bounds = built.enclosure_bounds
+        if bounds is None:
+            raise MesherError("enclosure parameters require realized enclosure_bounds")
+        values.update(
+            {
+                "enc_w": float(bounds["bx1"]) - float(bounds["bx0"]),
+                "enc_h": float(bounds["by1"]) - float(bounds["by0"]),
+                "enc_depth": float(bounds["enc_depth"]),
+                "enc_edge": float(bounds["clamped_edge"]),
+            }
+        )
+    table = [
+        {"name": prefix + name, "value": value, "unit": "mm", "role": "interface"}
+        for name, value in values.items()
+    ]
+    for name, value in (informational_parameters or {}).items():
+        table.append(
+            {
+                "name": prefix + str(name),
+                "value": float(value),
+                "role": "informational",
+            }
+        )
+    return table
+
+
+def _identity_sections(
+    identity: WgLinkIdentity | Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    if identity is None:
+        return {}
+    if isinstance(identity, WgLinkIdentity):
+        sections = {
+            "bundle": identity.bundle,
+            "generator": identity.generator,
+            "design": identity.design,
+            "export": identity.export,
+        }
+    elif isinstance(identity, Mapping):
+        sections = dict(identity)
+    else:
+        raise MesherError("identity must be WgLinkIdentity, a mapping, or None")
+    unknown = sorted(set(sections).difference({"bundle", "generator", "design", "export"}))
+    if unknown:
+        raise MesherError("unknown wglink identity section(s): " + ", ".join(unknown))
+    return {
+        key: deepcopy(dict(value))
+        for key, value in sections.items()
+        if value is not None
+    }
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
+def _default_generator() -> dict[str, Any]:
+    try:
+        app_version = version("hornlab-waveguide-mesher")
+    except PackageNotFoundError:
+        app_version = "unknown"
+    return {
+        "app": "hornlab-waveguide-mesher",
+        "app_version": app_version,
+        "datum_schema": 1,
+    }
+
+
+def write_wglink(
+    geometry: PointGridHornGeometry,
+    output_path: str | Path,
+    *,
+    built_geometry: BuiltGeometry | None = None,
+    identity: WgLinkIdentity | Mapping[str, Mapping[str, Any]] | None = None,
+    instance_slug: str = "waveguide",
+    open_throat: bool = True,
+    check_points: object | None = None,
+    informational_parameters: Mapping[str, float] | None = None,
+) -> WgLinkInfo:
+    """Write a checksummed ``.wglink`` directory and return every product.
+
+    Bundle/design/export identity is caller-owned: no identifier, sequence,
+    timestamp, or content identity is minted here.  Callers with a mesh build
+    should pass its ``BuiltGeometry``; direct tests and adapters may use the
+    pure realized-bounds fallback.
+    """
+
+    if not isinstance(geometry, PointGridHornGeometry):
+        raise MesherError("wglink export requires PointGridHornGeometry")
+    mode = geometry.build_mode
+    if mode not in _SOLID_BUILD_MODES:
+        raise MesherError(
+            "wglink export supports only FREESTANDING and ENCLOSURE builds; "
+            f"{mode.value.upper()} is not supported"
+        )
+    if geometry.enclosure is not None and int(geometry.enclosure.plan_type) != 1:
+        raise MesherError(
+            f"wglink export rejects enclosure plan_type={geometry.enclosure.plan_type}; "
+            "only plan_type=1 has a buildable watertight enclosure"
+        )
+    if not geometry.closed:
+        raise MesherError("wglink export requires a full, closed point grid")
+
+    target = Path(output_path)
+    if target.exists():
+        raise MesherError(f"wglink output already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    built = built_geometry or _realized_bundle_geometry(geometry)
+    datums = derive_datums(geometry, built)
+    point_grid = _point_grid_payload(geometry, check_points=check_points)
+    parameters = _parameter_table(
+        geometry,
+        built,
+        instance_slug=instance_slug,
+        informational_parameters=informational_parameters,
+    )
+    identity_sections = _identity_sections(identity)
+    identity_sections.setdefault("generator", _default_generator())
+
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    try:
+        step_path, cad_info = write_step(
+            geometry, staging / "waveguide.step", open_throat=open_throat
+        )
+        grid_path = staging / "point-grid.json"
+        grid_path.write_text(
+            json.dumps(point_grid, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        files = {
+            "waveguide.step": {
+                "sha256": _sha256(step_path),
+                "size_bytes": step_path.stat().st_size,
+                "media_type": "model/step",
+            },
+            "point-grid.json": {
+                "sha256": _sha256(grid_path),
+                "size_bytes": grid_path.stat().st_size,
+                "media_type": "application/json",
+            },
+        }
+        manifest: dict[str, Any] = {
+            "wglink_version": "1.0",
+            "required_features": ["checksummed-files-v1", "link-local-frame-v1"],
+            **identity_sections,
+            "coordinate_system": {
+                "length_unit": "mm",
+                "handedness": "right",
+                "matrix_convention": "row-major-local-to-parent",
+                "step_from_design": [
+                    [1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1],
+                ],
+            },
+            "body": {
+                "file": "waveguide.step",
+                "kind": cad_info.body,
+                "n_faces": cad_info.n_faces,
+                "volume_mm3": cad_info.volume_mm3,
+                "bbox_mm": [list(v) for v in cad_info.bounding_box_mm],
+                "throat_opened": cad_info.throat_opened,
+                "semantic_face_names": False,
+            },
+            "files": files,
+            "symmetry": {
+                "declared_planes": list(built.symmetry_snap_axes),
+                "solver_cut_plane_y_mm": 0.0,
+            },
+            "datums": datums,
+            "interface": {},
+            "parameters": parameters,
+            "roles": {
+                "scheme": "advanced-face-record-order",
+                "assignments": {},
+            },
+        }
+        manifest_path = staging / "wglink.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        staging.replace(target)
+        return WgLinkInfo(
+            path=target,
+            manifest_path=target / "wglink.json",
+            step_path=target / "waveguide.step",
+            point_grid_path=target / "point-grid.json",
+            manifest=manifest,
+            cad_info=CadInfo(
+                path=target / "waveguide.step",
+                body=cad_info.body,
+                n_faces=cad_info.n_faces,
+                volume_mm3=cad_info.volume_mm3,
+                bounding_box_mm=cad_info.bounding_box_mm,
+                throat_opened=cad_info.throat_opened,
+                units=cad_info.units,
+            ),
+        )
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str, Any]:
+    """Read a v1 bundle, rejecting unsupported features and corrupt files."""
+
+    bundle = Path(path)
+    manifest_path = bundle / "wglink.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MesherError(f"could not read wglink manifest: {exc}") from exc
+    version = str(manifest.get("wglink_version", ""))
+    if version.split(".", 1)[0] != "1":
+        raise MesherError(f"unsupported wglink major version {version!r}")
+    supported = {"checksummed-files-v1", "link-local-frame-v1"}
+    unknown = sorted(set(manifest.get("required_features", ())).difference(supported))
+    if unknown:
+        raise MesherError("unsupported required wglink feature(s): " + ", ".join(unknown))
+    if not verify_checksums:
+        return manifest
+    files = manifest.get("files")
+    if not isinstance(files, Mapping):
+        raise MesherError("wglink manifest has no files table")
+    root = bundle.resolve()
+    declared_names = set(files)
+    actual_names = {
+        child.name
+        for child in bundle.iterdir()
+        if child.is_file() and child.name != "wglink.json"
+    }
+    unchecksummed = sorted(actual_names.difference(declared_names))
+    if unchecksummed:
+        raise MesherError(
+            "wglink bundle contains unchecksummed file(s): " + ", ".join(unchecksummed)
+        )
+    for name, record in files.items():
+        if not isinstance(name, str) or not isinstance(record, Mapping):
+            raise MesherError("wglink files table is malformed")
+        candidate = (bundle / name).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise MesherError(f"wglink file escapes bundle directory: {name!r}") from exc
+        if not candidate.is_file():
+            raise MesherError(f"wglink file is missing: {name}")
+        actual_size = candidate.stat().st_size
+        expected_size = record.get("size_bytes")
+        if actual_size != expected_size:
+            raise MesherError(
+                f"wglink checksum validation failed for {name}: size is {actual_size}, "
+                f"expected {expected_size}"
+            )
+        actual_digest = _sha256(candidate)
+        expected_digest = record.get("sha256")
+        if actual_digest != expected_digest:
+            raise MesherError(
+                f"wglink checksum validation failed for {name}: sha256 mismatch"
+            )
+    return manifest
+
+
+__all__ = [
+    "CadBody",
+    "CadInfo",
+    "WgLinkIdentity",
+    "WgLinkInfo",
+    "read_wglink",
+    "write_step",
+    "write_step_from_config",
+    "write_wglink",
+]
