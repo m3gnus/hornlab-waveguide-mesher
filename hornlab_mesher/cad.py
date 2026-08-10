@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -36,7 +37,7 @@ from typing import Any, Literal, Mapping
 
 import numpy as np
 
-from .datums import derive_datums
+from .datums import DEFAULT_PLANE_TOLERANCE_MM, derive_datums
 from .geometry import (
     BuiltGeometry,
     HornGeometry,
@@ -471,6 +472,43 @@ def _realized_bundle_geometry(geometry: PointGridHornGeometry) -> BuiltGeometry:
     )
 
 
+def _validate_realized_bundle_geometry(
+    geometry: PointGridHornGeometry, built: BuiltGeometry
+) -> None:
+    """Reject enclosure metadata that cannot describe this point grid's solid."""
+
+    if geometry.build_mode is not PointGridBuildMode.ENCLOSURE:
+        return
+    if geometry.enclosure is None or built.enclosure_bounds is None:
+        raise MesherError("enclosure export requires realized enclosure_bounds")
+    from .builders.enclosure import enclosure_box_bounds
+
+    expected = enclosure_box_bounds(
+        np.asarray(geometry.inner_points, dtype=np.float64),
+        geometry.enclosure,
+        closed=geometry.closed,
+        symmetry_planes=geometry.symmetry_planes,
+    )
+    for name, expected_value in expected.items():
+        actual_value = built.enclosure_bounds.get(name)
+        if actual_value is None or not np.isclose(
+            float(actual_value), float(expected_value), rtol=0.0, atol=1.0e-9
+        ):
+            raise MesherError(
+                "built_geometry enclosure_bounds do not match the realized "
+                f"point-grid enclosure: {name} is {actual_value!r}, expected "
+                f"{expected_value!r}"
+            )
+
+
+def _points_are_planar(points: np.ndarray) -> bool:
+    samples = np.asarray(points, dtype=np.float64)
+    origin = np.mean(samples, axis=0)
+    _u, _s, vh = np.linalg.svd(samples - origin, full_matrices=False)
+    errors = np.abs((samples - origin) @ vh[-1])
+    return float(np.max(errors)) <= DEFAULT_PLANE_TOLERANCE_MM
+
+
 def _point_grid_payload(
     geometry: PointGridHornGeometry,
     *,
@@ -491,7 +529,7 @@ def _point_grid_payload(
     ring_planar: list[bool] = []
     for station in range(inner.shape[1]):
         z = inner[:, station, 2]
-        ring_planar.append(float(np.ptp(z)) < 1.0e-6)
+        ring_planar.append(_points_are_planar(inner[:, station, :]))
         ring_z.append(0.5 * (float(np.min(z)) + float(np.max(z))))
 
     checks = np.asarray([] if check_points is None else check_points, dtype=np.float64)
@@ -629,6 +667,86 @@ def _default_generator() -> dict[str, Any]:
     }
 
 
+def _fsync_directory(path: Path) -> None:
+    """Persist directory entries on POSIX; other platforms lack this primitive."""
+
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _sync_staged_bundle(staging: Path) -> None:
+    for child in staging.iterdir():
+        if child.is_file():
+            with child.open("rb") as stream:
+                os.fsync(stream.fileno())
+    _fsync_directory(staging)
+
+
+def _atomic_exchange_directories(left: Path, right: Path) -> None:
+    """Atomically exchange two directories, or refuse an unsafe replacement."""
+
+    if os.name != "posix":
+        raise MesherError(
+            "atomic replacement of an existing wglink directory is not supported "
+            "on this platform"
+        )
+
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    left_bytes = os.fsencode(left)
+    right_bytes = os.fsencode(right)
+    if hasattr(libc, "renameatx_np"):
+        rename = libc.renameatx_np
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(-2, left_bytes, -2, right_bytes, 2)  # AT_FDCWD, RENAME_SWAP
+    elif hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(-100, left_bytes, -100, right_bytes, 2)  # AT_FDCWD, RENAME_EXCHANGE
+    else:
+        raise MesherError(
+            "atomic replacement of an existing wglink directory is unavailable; "
+            "the live bundle was left unchanged"
+        )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise MesherError(
+            "could not atomically replace the existing wglink bundle: "
+            f"{os.strerror(error)}"
+        )
+
+
+def _publish_bundle(staging: Path, target: Path) -> None:
+    """Publish a durable generation, atomically swapping a live generation."""
+
+    _sync_staged_bundle(staging)
+    if target.exists():
+        if target.is_symlink() or not target.is_dir():
+            raise MesherError(f"wglink output is not a directory: {target}")
+        _atomic_exchange_directories(staging, target)
+        _fsync_directory(target.parent)
+        shutil.rmtree(staging, ignore_errors=True)
+        return
+    try:
+        staging.replace(target)
+    except OSError:
+        # Another writer may have published after the existence check. Exchange
+        # only when the raced-in endpoint is a real directory.
+        if target.is_symlink() or not target.is_dir():
+            raise
+        _atomic_exchange_directories(staging, target)
+        shutil.rmtree(staging, ignore_errors=True)
+    _fsync_directory(target.parent)
+
+
 def write_wglink(
     geometry: PointGridHornGeometry,
     output_path: str | Path,
@@ -665,10 +783,9 @@ def write_wglink(
         raise MesherError("wglink export requires a full, closed point grid")
 
     target = Path(output_path)
-    if target.exists():
-        raise MesherError(f"wglink output already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     built = built_geometry or _realized_bundle_geometry(geometry)
+    _validate_realized_bundle_geometry(geometry, built)
     datums = derive_datums(geometry, built)
     point_grid = _point_grid_payload(geometry, check_points=check_points)
     parameters = _parameter_table(
@@ -744,7 +861,7 @@ def write_wglink(
             json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
-        staging.replace(target)
+        _publish_bundle(staging, target)
         return WgLinkInfo(
             path=target,
             manifest_path=target / "wglink.json",
@@ -790,9 +907,10 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
     root = bundle.resolve()
     declared_names = set(files)
     actual_names = {
-        child.name
-        for child in bundle.iterdir()
-        if child.is_file() and child.name != "wglink.json"
+        child.relative_to(bundle).as_posix()
+        for child in bundle.rglob("*")
+        if (child.is_file() or child.is_symlink())
+        and child.relative_to(bundle).as_posix() != "wglink.json"
     }
     unchecksummed = sorted(actual_names.difference(declared_names))
     if unchecksummed:

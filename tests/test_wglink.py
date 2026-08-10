@@ -148,6 +148,19 @@ def test_vertical_offset_has_distinct_geometry_and_solver_planes():
     assert mouth[:, 1] == pytest.approx(geometry.inner_points[:, -1, 1] + 37.5)
 
 
+def test_tilted_planar_rim_has_consistent_planarity_metadata(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    geometry = _freestanding()
+    geometry.inner_points[:, -1, 2] += 0.1 * geometry.inner_points[:, -1, 0]
+    result = write_wglink(geometry, tmp_path / "horn.wglink")
+
+    grid = json.loads(result.point_grid_path.read_text())
+    assert grid["ring_planar"][-1] is True
+    assert grid["all_rings_planar"] is True
+    assert result.manifest["datums"]["rim_planar"] is True
+    assert result.manifest["datums"]["WG_MOUTH_PLANE"]["exact"] is True
+
+
 @pytest.mark.parametrize("plan_type", [2, 3])
 def test_wglink_rejects_unbuildable_enclosure_plans(plan_type, tmp_path):
     with pytest.raises(MesherError, match=rf"plan_type={plan_type}.*plan_type=1"):
@@ -216,6 +229,18 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
         read_wglink(result.path)
 
 
+def test_reader_rejects_same_size_point_grid_corruption(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+    payload = bytearray(result.point_grid_path.read_bytes())
+    offset = payload.index(b'"units": "mm"') + len(b'"units": "')
+    payload[offset] = ord("c")
+    result.point_grid_path.write_bytes(payload)
+
+    with pytest.raises(MesherError, match="checksum validation failed.*point-grid.json"):
+        read_wglink(result.path)
+
+
 def test_reader_rejects_unchecksummed_extra_file(monkeypatch, tmp_path):
     _fake_step(monkeypatch)
     result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
@@ -223,3 +248,41 @@ def test_reader_rejects_unchecksummed_extra_file(monkeypatch, tmp_path):
 
     with pytest.raises(MesherError, match="unchecksummed.*swapped.step"):
         read_wglink(result.path)
+
+
+def test_reader_rejects_nested_unchecksummed_file(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+    nested = result.path / "extras" / "payload.bin"
+    nested.parent.mkdir()
+    nested.write_bytes(b"undeclared")
+
+    with pytest.raises(MesherError, match=r"unchecksummed.*extras/payload\.bin"):
+        read_wglink(result.path)
+
+
+def test_writer_atomically_replaces_live_bundle(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    target = tmp_path / "horn.wglink"
+    write_wglink(_freestanding(), target, identity={"export": {"sequence": 1}})
+
+    result = write_wglink(
+        _freestanding(), target, identity={"export": {"sequence": 2}}
+    )
+
+    assert read_wglink(target)["export"]["sequence"] == 2
+    assert result.path == target
+    assert not list(tmp_path.glob(".horn.wglink.*"))
+
+
+def test_writer_rejects_config_like_enclosure_bounds(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry()
+    built = _built(geometry)
+    assert built.enclosure_bounds is not None
+    built.enclosure_bounds["enc_depth"] = geometry.enclosure.depth_mm
+
+    with pytest.raises(MesherError, match="do not match.*enc_depth"):
+        write_wglink(
+            geometry, tmp_path / "horn.wglink", built_geometry=built
+        )
