@@ -174,6 +174,16 @@ def test_point_grid_payload_shares_the_datum_frame(monkeypatch, tmp_path):
     )
 
 
+def test_freestanding_parameter_table_has_no_enclosure_parameters(
+    monkeypatch, tmp_path
+):
+    _fake_step(monkeypatch)
+    result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+
+    names = {entry["name"] for entry in result.manifest["parameters"]}
+    assert not any("_enc_" in name for name in names)
+
+
 def test_tilted_planar_rim_has_consistent_planarity_metadata(monkeypatch, tmp_path):
     _fake_step(monkeypatch)
     geometry = _freestanding()
@@ -228,6 +238,8 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     )
     manifest = read_wglink(result.path)
 
+    assert result.manifest["wglink_version"] == "1.1"
+    assert manifest["wglink_version"] == "1.1"
     assert set(path.name for path in result.path.iterdir()) == {
         "wglink.json",
         "waveguide.step",
@@ -242,13 +254,40 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     assert grid["n_length"] == geometry.inner_points.shape[1]
     # Check points ship placed into the link-local frame (vertical offset 11).
     assert grid["check_points"] == [[1.0, 13.0, 3.0]]
-    params = {entry["name"]: entry["value"] for entry in manifest["parameters"]}
+    parameter_entries = {entry["name"]: entry for entry in manifest["parameters"]}
+    params = {name: entry["value"] for name, entry in parameter_entries.items()}
     bounds = built.enclosure_bounds
     assert bounds is not None
     assert params["wg_a_1_throat_dia"] == pytest.approx(25.4)
     assert params["wg_a_1_enc_w"] == pytest.approx(bounds["bx1"] - bounds["bx0"])
     assert params["wg_a_1_enc_depth"] == pytest.approx(bounds["enc_depth"])
     assert params["wg_a_1_enc_edge"] == pytest.approx(bounds["clamped_edge"])
+    assert params["wg_a_1_enc_x0"] == pytest.approx(bounds["bx0"])
+    assert params["wg_a_1_enc_y0"] == pytest.approx(
+        bounds["by0"] + geometry.vertical_offset_mm
+    )
+    assert params["wg_a_1_enc_z_front"] == pytest.approx(bounds["z_front"])
+
+    for name in ("wg_a_1_enc_x0", "wg_a_1_enc_y0", "wg_a_1_enc_z_front"):
+        assert parameter_entries[name]["role"] == "interface"
+        assert parameter_entries[name]["unit"] == "mm"
+
+    datums = manifest["datums"]
+    envelope = np.asarray(datums["WG_BAFFLE_OUTLINE_ENVELOPE"]["points_mm"])
+    assert params["wg_a_1_enc_x0"] == pytest.approx(float(np.min(envelope[:, 0])))
+    assert params["wg_a_1_enc_y0"] == pytest.approx(float(np.min(envelope[:, 1])))
+    assert params["wg_a_1_enc_x0"] + params["wg_a_1_enc_w"] == pytest.approx(
+        float(np.max(envelope[:, 0]))
+    )
+    assert params["wg_a_1_enc_y0"] + params["wg_a_1_enc_h"] == pytest.approx(
+        float(np.max(envelope[:, 1]))
+    )
+    assert params["wg_a_1_enc_z_front"] == pytest.approx(
+        datums["WG_BAFFLE_PLANE"]["origin_mm"][2]
+    )
+    assert params["wg_a_1_enc_z_front"] - params["wg_a_1_enc_depth"] == pytest.approx(
+        datums["WG_ENC_BACK_PLANE"]["origin_mm"][2]
+    )
 
     with result.step_path.open("ab") as stream:
         stream.write(b"X")

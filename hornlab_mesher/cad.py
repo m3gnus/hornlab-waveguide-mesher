@@ -614,12 +614,17 @@ def _parameter_table(
         bounds = built.enclosure_bounds
         if bounds is None:
             raise MesherError("enclosure parameters require realized enclosure_bounds")
+        # enclosure_bounds is unplaced; absolute placement shares the datums'
+        # link-local frame, with vertical_offset_mm applied on y only.
         values.update(
             {
                 "enc_w": float(bounds["bx1"]) - float(bounds["bx0"]),
                 "enc_h": float(bounds["by1"]) - float(bounds["by0"]),
                 "enc_depth": float(bounds["enc_depth"]),
                 "enc_edge": float(bounds["clamped_edge"]),
+                "enc_x0": float(bounds["bx0"]),
+                "enc_y0": float(bounds["by0"]) + float(geometry.vertical_offset_mm),
+                "enc_z_front": float(bounds["z_front"]),
             }
         )
     table = [
@@ -836,7 +841,7 @@ def write_wglink(
             },
         }
         manifest: dict[str, Any] = {
-            "wglink_version": "1.0",
+            "wglink_version": "1.1",
             "required_features": ["checksummed-files-v1", "link-local-frame-v1"],
             **identity_sections,
             "coordinate_system": {
