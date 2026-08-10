@@ -40,6 +40,22 @@ from .cad import (
 from .datums import derive_datums
 from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
 from .tags import PhysicalGroup
+from .step_prepare import (
+    DEFAULT_AUTO_CUT_GRID,
+    DEFAULT_AUTO_CUT_TOLERANCE_REL,
+    DEFAULT_SYMMETRY_SNAP_BAND_MM,
+    OccAutoCutResult,
+    OccSurfaceGroup,
+    OccSurfaceRole,
+    OccSurfaceSelector,
+    PlaneSymmetryVerdict,
+    auto_cut_occ_geometry,
+    evaluate_occ_plane_symmetry,
+    millimetres_to_step_units,
+    remap_surface_tags,
+    sample_occ_surface_points,
+    snap_symmetry_plane_vertices,
+)
 
 
 def build_from_config(*args, **kwargs):
@@ -84,6 +100,14 @@ __all__ = [
     "OsseHornGeometry",
     "RosseHornGeometry",
     "PhysicalGroup",
+    "OccAutoCutResult",
+    "OccSurfaceGroup",
+    "OccSurfaceRole",
+    "OccSurfaceSelector",
+    "PlaneSymmetryVerdict",
+    "DEFAULT_AUTO_CUT_GRID",
+    "DEFAULT_AUTO_CUT_TOLERANCE_REL",
+    "DEFAULT_SYMMETRY_SNAP_BAND_MM",
     "MesherError",
     "SolveCostEstimate",
     "estimate_solve_cost",
@@ -105,4 +129,34 @@ __all__ = [
     "write_wglink",
     "read_wglink",
     "derive_datums",
+    "auto_cut_occ_geometry",
+    "evaluate_occ_plane_symmetry",
+    "millimetres_to_step_units",
+    "normalized_arc_positions",
+    "remap_surface_tags",
+    "resample_grid_onto_existing",
+    "resample_point_grid",
+    "sample_occ_surface_points",
+    "snap_symmetry_plane_vertices",
 ]
+
+
+def normalized_arc_positions(*args, **kwargs):
+    """Lazily load the SciPy-backed grid resampler."""
+    from .grid_resample import normalized_arc_positions as _implementation
+
+    return _implementation(*args, **kwargs)
+
+
+def resample_point_grid(*args, **kwargs):
+    """Lazily load the SciPy-backed grid resampler."""
+    from .grid_resample import resample_point_grid as _implementation
+
+    return _implementation(*args, **kwargs)
+
+
+def resample_grid_onto_existing(*args, **kwargs):
+    """Lazily load the SciPy-backed grid resampler."""
+    from .grid_resample import resample_grid_onto_existing as _implementation
+
+    return _implementation(*args, **kwargs)
