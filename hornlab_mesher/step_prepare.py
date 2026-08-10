@@ -9,8 +9,31 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-import gmsh
 import numpy as np
+
+
+class _LazyGmsh:
+    """Import gmsh on first use, never at module import.
+
+    Every gmsh import in this package is lazy by contract: importing
+    hornlab_mesher must stay numpy-only. Eagerly importing gmsh here broke two
+    things at once when this module joined the package's eager exports — grid
+    resolution stopped being importable without gmsh, and gmsh's C++ runtime
+    installs its own signal handlers on load, which on Linux rearms SIGPIPE's
+    default action and turned a closed-socket write in a WG v2 test into a
+    process kill (pytest exit 141 on ubuntu CI). The first attribute access
+    imports the real module and replaces this shim in the module globals, so
+    the indirection costs one lookup, once.
+    """
+
+    def __getattr__(self, name: str):
+        import gmsh as _gmsh_module
+
+        globals()["gmsh"] = _gmsh_module
+        return getattr(_gmsh_module, name)
+
+
+gmsh = _LazyGmsh()
 
 
 SYMMETRY_AXIS_FOR_PLANE = {"x0": 0, "y0": 1, "z0": 2}

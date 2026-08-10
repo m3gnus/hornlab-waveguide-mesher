@@ -180,3 +180,30 @@ def test_snap_band_uses_step_units_conversion():
         tolerance=millimetres_to_step_units(1.0e-4, 1.0),
     )
     assert points[:, 0].tolist() == [0.0, 2.0e-7]
+
+
+def test_importing_the_package_never_imports_gmsh_or_scipy():
+    """Every gmsh/scipy import in this package is lazy, by contract.
+
+    Breaking it is invisible locally and lethal downstream: gmsh's C++
+    runtime installs signal handlers on load, and on Linux that rearms
+    SIGPIPE's default action inside any host process that merely imports
+    hornlab_mesher — WG v2's ubuntu CI died with pytest exit 141 when a
+    test wrote to a closed websocket. Run in a subprocess so this file's
+    own imports cannot contaminate the check.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; import hornlab_mesher; "
+        "import hornlab_mesher.step_prepare; "
+        "bad = [m for m in ('gmsh', 'scipy') if m in sys.modules]; "
+        "raise SystemExit(', '.join(bad) if bad else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"importing hornlab_mesher pulled in: {result.stderr.strip()}"
+    )
