@@ -48,7 +48,13 @@ def _freestanding(**kwargs) -> PointGridHornGeometry:
     )
 
 
-def _enclosure_geometry(*, plan_type: int = 1, vertical_offset_mm: float = 0.0):
+def _enclosure_geometry(
+    *,
+    edge_type: int | None = None,
+    plan_type: int = 1,
+    vertical_offset_mm: float = 0.0,
+):
+    edge_type_kwargs = {} if edge_type is None else {"edge_type": edge_type}
     return PointGridHornGeometry(
         inner_points=_inner_grid(),
         enclosure=HornEnclosure(
@@ -59,6 +65,7 @@ def _enclosure_geometry(*, plan_type: int = 1, vertical_offset_mm: float = 0.0):
             space_b_mm=8.0,
             edge_mm=50.0,
             plan_type=plan_type,
+            **edge_type_kwargs,
         ),
         vertical_offset_mm=vertical_offset_mm,
     )
@@ -182,6 +189,25 @@ def test_freestanding_parameter_table_has_no_enclosure_parameters(
 
     names = {entry["name"] for entry in result.manifest["parameters"]}
     assert not any("_enc_" in name for name in names)
+    assert "enclosure" not in result.manifest
+    assert "enclosure" not in read_wglink(result.path)
+
+
+@pytest.mark.parametrize(
+    ("edge_type", "expected_edge_type"),
+    [(None, 1), (2, 2)],
+)
+def test_enclosure_edge_treatment_round_trips(
+    monkeypatch, tmp_path, edge_type, expected_edge_type
+):
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry(edge_type=edge_type)
+    result = write_wglink(geometry, tmp_path / "horn.wglink")
+    expected = {"edge_type": expected_edge_type, "plan_type": 1}
+
+    assert geometry.enclosure.edge_type == expected_edge_type
+    assert result.manifest["enclosure"] == expected
+    assert read_wglink(result.path)["enclosure"] == expected
 
 
 def test_tilted_planar_rim_has_consistent_planarity_metadata(monkeypatch, tmp_path):

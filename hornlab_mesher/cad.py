@@ -877,6 +877,11 @@ def write_wglink(
                 "assignments": {},
             },
         }
+        if geometry.enclosure is not None:
+            manifest["enclosure"] = {
+                "edge_type": int(geometry.enclosure.edge_type),
+                "plan_type": int(geometry.enclosure.plan_type),
+            }
         manifest_path = staging / "wglink.json"
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n",
