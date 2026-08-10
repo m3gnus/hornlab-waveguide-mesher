@@ -148,6 +148,32 @@ def test_vertical_offset_has_distinct_geometry_and_solver_planes():
     assert mouth[:, 1] == pytest.approx(geometry.inner_points[:, -1, 1] + 37.5)
 
 
+def test_point_grid_payload_shares_the_datum_frame(monkeypatch, tmp_path):
+    """ONE frame per bundle (plan D1): the grid ships already placed.
+
+    Found on a real Tritonia export: the STEP body and datums sat at
+    y = vertical_offset while point-grid.json stayed centred, so an adapter
+    lofting the grid and mating against the datums would misassemble by the
+    whole offset (80 mm on the reference design).
+    """
+    _fake_step(monkeypatch)
+    geometry = _freestanding(vertical_offset_mm=37.5)
+    result = write_wglink(geometry, tmp_path / "horn.wglink")
+
+    grid = json.loads(result.point_grid_path.read_text())
+    assert grid["frame"] == "link-local"
+    inner = np.asarray(grid["inner_points"])
+    assert inner[:, -1, 1] == pytest.approx(geometry.inner_points[:, -1, 1] + 37.5)
+    mouth = np.asarray(
+        result.manifest["datums"]["WG_MOUTH_OUTLINE_INNER"]["points_mm"]
+    )
+    assert inner[:, -1, :] == pytest.approx(mouth)
+    # The stored geometry itself stays unshifted.
+    assert float(np.mean(geometry.inner_points[:, -1, 1])) == pytest.approx(
+        float(np.mean(inner[:, -1, 1])) - 37.5
+    )
+
+
 def test_tilted_planar_rim_has_consistent_planarity_metadata(monkeypatch, tmp_path):
     _fake_step(monkeypatch)
     geometry = _freestanding()
@@ -214,7 +240,8 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     grid = json.loads(result.point_grid_path.read_text())
     assert grid["n_phi"] == geometry.inner_points.shape[0]
     assert grid["n_length"] == geometry.inner_points.shape[1]
-    assert grid["check_points"] == [[1.0, 2.0, 3.0]]
+    # Check points ship placed into the link-local frame (vertical offset 11).
+    assert grid["check_points"] == [[1.0, 13.0, 3.0]]
     params = {entry["name"]: entry["value"] for entry in manifest["parameters"]}
     bounds = built.enclosure_bounds
     assert bounds is not None

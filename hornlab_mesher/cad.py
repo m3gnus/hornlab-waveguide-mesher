@@ -542,9 +542,25 @@ def _point_grid_payload(
     if not np.isfinite(checks).all():
         raise MesherError("check_points contains non-finite coordinates")
 
+    # ONE frame per bundle (plan D1). The STEP body and every datum are in the
+    # placed link-local frame (the body sits at y = vertical_offset), so the
+    # grid ships placed too -- a consumer that lofts these points and mates
+    # against the datums must not need to know about the offset at all. The
+    # stored geometry keeps its unshifted grid; only the payload is placed.
+    offset = float(geometry.vertical_offset_mm)
+    if offset:
+        shift = np.asarray([0.0, offset, 0.0], dtype=np.float64)
+        inner = inner + shift
+        if outer is not None:
+            outer = outer + shift
+        if checks.size:
+            checks = checks + shift
+
     return {
         "units": "mm",
         "build_mode": geometry.build_mode.value,
+        "frame": "link-local",
+        # Informational: already applied to every coordinate in this payload.
         "vertical_offset_mm": float(geometry.vertical_offset_mm),
         "wall_thickness_mm": float(geometry.wall_thickness_mm),
         "n_phi": int(inner.shape[0]),

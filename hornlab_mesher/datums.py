@@ -88,8 +88,9 @@ def derive_datums(
     """Return the v1 datum catalogue for a realized exportable build.
 
     Only freestanding and enclosure solids have defined v1 semantics.  Point
-    rings are placed by ``vertical_offset_mm`` here because the stored grid is
-    intentionally link-local and unshifted while the finished body is shifted.
+    rings are placed by ``vertical_offset_mm`` here because the STORED geometry
+    keeps its unshifted grid; the bundle's point-grid payload is shipped
+    already placed so every artifact in a bundle shares one link-local frame.
     """
 
     mode = geometry.build_mode
