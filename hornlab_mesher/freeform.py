@@ -1021,11 +1021,68 @@ def _curvature_phi_samples(
     return np.unique(np.mod(np.concatenate(samples), math.tau))
 
 
+def _polylines_cannot_self_intersect(points: np.ndarray, *, closed: bool) -> np.ndarray:
+    """Batched :func:`_polyline_cannot_self_intersect` over ``(count, n, 2)``.
+
+    An offset grid is validated one meridian and one ring at a time, and both
+    families are the same shape, so the proofs below run over all of them in a
+    handful of array operations instead of a handful per polyline.
+    """
+
+    if not closed:
+        steps = np.diff(points, axis=1)
+        monotonic = np.all(steps > 0.0, axis=1) | np.all(steps < 0.0, axis=1)
+        return np.any(monotonic, axis=1)
+
+    offsets = points - points.mean(axis=1, keepdims=True)
+    positive_radius = np.all(np.hypot(offsets[..., 0], offsets[..., 1]) > 0.0, axis=1)
+    angles = np.arctan2(offsets[..., 1], offsets[..., 0])
+    # Every step is wrapped into [-pi, pi), so a half-turn step -- the one case
+    # where the wedge is not convex and could contain the centroid -- reads as
+    # -pi and fails the strict sign test below rather than passing it.
+    steps = (
+        np.diff(np.concatenate((angles, angles[:, :1]), axis=1), axis=1) + math.pi
+    ) % math.tau - math.pi
+    turning = steps.sum(axis=1)
+    one_turn = np.all(steps > 0.0, axis=1) & (np.abs(turning - math.tau) <= 1.0e-6)
+    one_turn |= np.all(steps < 0.0, axis=1) & (np.abs(turning + math.tau) <= 1.0e-6)
+    return positive_radius & one_turn
+
+
+def _polyline_cannot_self_intersect(points: np.ndarray, *, closed: bool) -> bool:
+    """Prove in vectorised form that no two segments of the polyline can cross.
+
+    One-sided on purpose: ``True`` means an intersection is geometrically
+    impossible, ``False`` only means "not proven, run the exact sweep".  Both
+    proofs place every segment in its own region of a coordinate that the
+    polyline traverses monotonically, so non-neighbouring segments cannot even
+    share a point, let alone cross one another strictly.
+
+    *Open* polylines are cleared when x or y is strictly monotonic: segment
+    *k* then spans the interval ``[c_k, c_k+1]`` of that coordinate, and
+    segments more than one apart span intervals that do not touch.
+
+    *Closed* rings are cleared when their vertices turn strictly one way about
+    their centroid with a total turn of exactly one revolution.  Each edge then
+    lies in the convex angular wedge between its endpoints -- a wedge narrower
+    than a half turn, so it cannot pass through the centroid -- and the wedges
+    of non-neighbouring edges have disjoint interiors.  This is the ordinary
+    shape of an offset ring, which is why the guard used to spend its whole
+    budget proving the obvious about hundreds of them per preview frame.
+    """
+
+    return bool(_polylines_cannot_self_intersect(points[None, :, :], closed=closed)[0])
+
+
 def _polyline_self_intersects_2d(points: np.ndarray, *, closed: bool) -> bool:
     """Return whether non-neighbouring segments of a 2-D polyline intersect."""
 
     pts = np.asarray(points, dtype=float)
     if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 4:
+        return False
+    # Every comparison in the fast path is a strict one, so a non-finite
+    # coordinate fails it and falls through to the exact sweep unchanged.
+    if _polyline_cannot_self_intersect(pts, closed=closed):
         return False
     segment_count = pts.shape[0] if closed else pts.shape[0] - 1
 
@@ -1118,11 +1175,18 @@ def validate_outer_offset_grid(
 
     # Shared-z FREEFORM cannot hide a non-local axial overlap in Cartesian z;
     # checking every generated meridian in (z, radius) catches offset rollback.
-    for i in range(outer.shape[0]):
-        meridian = np.column_stack(
-            (outer[i, :, 2], np.linalg.norm(outer[i, :, :2], axis=1))
-        )
-        if _polyline_self_intersects_2d(meridian, closed=False):
+    #
+    # Both families are cleared in bulk first.  A preview builds this grid at
+    # its dense canonical resolution on every frame, and on ordinary geometry
+    # every one of the several hundred polylines is monotone or star-shaped --
+    # proving that per polyline, in Python, is what made the guard cost more
+    # than the geometry it was guarding.
+    meridians = np.stack(
+        (outer[:, :, 2], np.linalg.norm(outer[:, :, :2], axis=2)), axis=2
+    )
+    cleared = _polylines_cannot_self_intersect(meridians, closed=False)
+    for i in np.flatnonzero(~cleared):
+        if _polyline_self_intersects_2d(meridians[i], closed=False):
             raise ValueError(
                 f"{label} generated outer offset grid self-intersects "
                 f"near azimuth row {i}"
@@ -1130,9 +1194,10 @@ def validate_outer_offset_grid(
 
     # Each input ring is convex. Its regular outward offset must retain one
     # consistent turn direction; a sign reversal names the earliest bad ring.
-    for j in range(outer.shape[1]):
-        xy = outer[:, j, :2]
-        if _polyline_self_intersects_2d(xy, closed=full_circle):
+    rings = np.ascontiguousarray(np.transpose(outer[:, :, :2], (1, 0, 2)))
+    cleared = _polylines_cannot_self_intersect(rings, closed=full_circle)
+    for j in np.flatnonzero(~cleared):
+        if _polyline_self_intersects_2d(rings[j], closed=full_circle):
             raise ValueError(
                 f"{label} generated outer offset grid self-intersects "
                 f"on axial ring {j}"

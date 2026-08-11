@@ -17,6 +17,7 @@ from hornlab_mesher.config_builder import (
 )
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.freeform import (
+    _polyline_cannot_self_intersect,
     _polyline_self_intersects_2d,
     build_freeform_geometry,
     validate_outer_offset_grid,
@@ -248,6 +249,77 @@ def test_polyline_intersection_sweep_preserves_strict_crossing_contract(
     points, closed, expected
 ):
     assert _polyline_self_intersects_2d(np.asarray(points), closed=closed) is expected
+
+
+def _random_polylines(seed: int = 20260811, count: int = 2000):
+    """Monotone profiles, near-convex rings, quantised ties and random soup."""
+
+    rng = np.random.default_rng(seed)
+    for trial in range(count):
+        size = int(rng.integers(4, 40))
+        closed = bool(rng.integers(0, 2))
+        family = trial % 4
+        if family == 0:
+            points = rng.normal(size=(size, 2))
+        elif family == 1:
+            ordinate = np.sort(rng.normal(size=size))
+            points = np.column_stack((ordinate, rng.normal(size=size) * 0.3))
+        elif family == 2:
+            angle = np.sort(rng.uniform(0.0, 2.0 * np.pi, size))
+            radius = 1.0 + rng.normal(size=size) * 0.25
+            points = np.column_stack(
+                (radius * np.cos(angle), radius * np.sin(angle))
+            )
+        else:
+            # Repeated coordinates: ties defeat every strict comparison, so the
+            # fast path must decline rather than clear them.
+            points = np.round(rng.normal(size=(size, 2)) * 3.0) / 3.0
+        yield points, closed
+
+
+def test_intersection_fast_path_never_clears_a_crossing_the_sweep_would_report(
+    monkeypatch,
+):
+    """The cheap proof is one-sided: it may decline, it may never be wrong.
+
+    Clearing a polyline that really does cross would turn a rejected offset
+    shell into a silently accepted one, so this compares the shipped predicate
+    against the exact sweep it is allowed to skip.
+    """
+
+    for points, closed in _random_polylines():
+        fast = _polyline_self_intersects_2d(points, closed=closed)
+        with monkeypatch.context() as patched:
+            patched.setattr(
+                "hornlab_mesher.freeform._polyline_cannot_self_intersect",
+                lambda points, *, closed: False,
+            )
+            exact = _polyline_self_intersects_2d(points, closed=closed)
+        assert fast is exact, (closed, points.tolist())
+
+
+def test_intersection_fast_path_clears_an_ordinary_offset_shell():
+    """The shapes a preview actually builds must not reach the exact sweep."""
+
+    phi = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
+    z = np.linspace(0.0, 40.0, 9)
+    radius = 12.0 + 0.5 * z
+    outer = np.empty((phi.size, z.size, 3), dtype=np.float64)
+    outer[:, :, 0] = np.cos(phi)[:, None] * (radius + 1.0)[None, :]
+    outer[:, :, 1] = np.sin(phi)[:, None] * (radius + 1.0)[None, :]
+    outer[:, :, 2] = z[None, :]
+
+    meridians = np.stack(
+        (outer[:, :, 2], np.linalg.norm(outer[:, :, :2], axis=2)), axis=2
+    )
+    assert all(
+        _polyline_cannot_self_intersect(meridian, closed=False)
+        for meridian in meridians
+    )
+    assert all(
+        _polyline_cannot_self_intersect(outer[:, ring, :2], closed=True)
+        for ring in range(outer.shape[1])
+    )
 
 
 def test_freeform_circsym_eligibility_tracks_actual_azimuthal_span():
