@@ -1375,9 +1375,10 @@ def run_occ_healing_fallbacks(
     original_mesh_error: Exception,
     original_traceback: TracebackType | None,
     surface_order_reference: list[SurfaceGeometry],
-) -> tuple[dict[str, object], str]:
+) -> tuple[dict[str, object], str, list[dict[str, object]]]:
     """Try OCC repairs without hiding the original unhealed mesh failure."""
     rejection_reasons: list[str] = []
+    rejected_attempts: list[dict[str, object]] = []
     for healing_mode, occ_healing_options in OCC_HEALING_FALLBACKS:
         print(
             "gmsh mesh generation failed before healing; retrying with "
@@ -1395,17 +1396,31 @@ def run_occ_healing_fallbacks(
                 f"({type(exc).__name__}): {exc}"
             )
             rejection_reasons.append(reason)
+            rejected_attempts.append(
+                {
+                    "mode": healing_mode,
+                    "options": list(occ_healing_options),
+                    "reason": reason,
+                }
+            )
             print(f"{reason}; trying the next healing mode.", file=sys.stderr)
             continue
 
         healed_mesh_error = healed_state.get("mesh_generation_error")
         if healed_mesh_error is None:
-            return healed_state, healing_mode
+            return healed_state, healing_mode, rejected_attempts
         reason = (
             f"OCC {healing_mode} repair mesh generation failed "
             f"({type(healed_mesh_error).__name__}): {healed_mesh_error}"
         )
         rejection_reasons.append(reason)
+        rejected_attempts.append(
+            {
+                "mode": healing_mode,
+                "options": list(occ_healing_options),
+                "reason": reason,
+            }
+        )
         print(
             f"gmsh mesh generation still failed after OCC {healing_mode} repair. "
             f"Healed gmsh error: {healed_mesh_error}",

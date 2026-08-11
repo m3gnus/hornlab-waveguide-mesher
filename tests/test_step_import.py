@@ -4,10 +4,12 @@ from pathlib import Path
 import re
 
 from hornlab_mesher.step_import import (
+    OCC_HEALING_FALLBACKS,
     RIGID_TAG,
     StepFaceGroup,
     StepLabelSelector,
     map_step_face_groups,
+    run_occ_healing_fallbacks,
 )
 from hornlab_mesher.step_prepare import OccSurfaceRole
 
@@ -88,3 +90,32 @@ def test_step_import_keeps_application_vocabulary_out_of_mesher():
     assert all(name not in source for name in forbidden)
     assert re.search(r"\b(?:LF|MF|HF)\b", source) is None
     assert RIGID_TAG == 1
+
+
+def test_healing_fallback_returns_rejected_rung_records():
+    original = RuntimeError("unhealed failed")
+    calls = 0
+
+    def attempt(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("sew rejected")
+        return {"mesh_generation_error": None, "mesh": "ok"}
+
+    state, mode, rejected = run_occ_healing_fallbacks(
+        attempt,
+        original_mesh_error=original,
+        original_traceback=original.__traceback__,
+        surface_order_reference=[],
+    )
+
+    assert state["mesh"] == "ok"
+    assert mode == "full"
+    assert rejected == [
+        {
+            "mode": "sew",
+            "options": list(OCC_HEALING_FALLBACKS[0][1]),
+            "reason": "OCC sew repair rejected before meshing (RuntimeError): sew rejected",
+        }
+    ]
