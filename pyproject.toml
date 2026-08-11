@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hornlab-waveguide-mesher"
-version = "1.1.0"
+version = "1.1.1"
 description = "OSSE/R-OSSE waveguide geometry and Gmsh mesher"
 requires-python = ">=3.10"
 license = { text = "AGPL-3.0-or-later" }
