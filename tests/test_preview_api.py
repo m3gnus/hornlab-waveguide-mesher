@@ -391,6 +391,83 @@ def test_fine_osse_machine_local_performance_guard():
     assert elapsed < 0.750, f"fine OSSE preview took {elapsed * 1000.0:.1f} ms"
 
 
+ROSSE_FREESTANDING = {
+    "formula": "R-OSSE",
+    "mode": "freestanding",
+    "profile": copy.deepcopy(ROSSE_ENCLOSURE["profile"]),
+    "mesh": {"wall_thickness_mm": 5.0},
+}
+
+#: The fine preset's axial seed. The canonical reference is four times it.
+_FINE_AXIAL = 48
+
+
+def test_a_smooth_rosse_fine_preview_does_not_build_the_doubled_reference():
+    """The doubled axial reference is paid for where it changes the answer.
+
+    R-OSSE/ROSSE/FREEFORM doubled the canonical axial reference for every
+    configuration. On a smooth R-OSSE at fine, refinement selects the same grid
+    from the undoubled reference as from the doubled one, so the second half of
+    that reference is sampled, normal-differenced and measured for nothing --
+    a measured 139 -> 101 ms on the freestanding seed.
+    """
+
+    fine = build_preview_geometry(ROSSE_FREESTANDING, PreviewOptionsV1(lod="fine"))
+    reference = fine.metadata["canonical_reference"]
+
+    # 193, not the 385 the doubling used to ask for.
+    assert reference["axial_rows"] == 4 * int(_FINE_AXIAL) + 1
+    assert reference["escalated"] is False
+
+    # Coarse refinement consumes very nearly every row its reference offers, so
+    # the thin one always starves there. Trying it costs two builds on the lane
+    # a drag runs in, so coarse asks for the dense reference outright.
+    coarse = build_preview_geometry(ROSSE_FREESTANDING, PreviewOptionsV1(lod="coarse"))
+
+    assert coarse.metadata["canonical_reference"]["axial_rows"] == 97
+    assert coarse.metadata["canonical_reference"]["escalated"] is False
+
+
+@pytest.mark.parametrize(
+    "config,axial_rows",
+    [(OSSE_FREESTANDING, 193), (FREEFORM_FREESTANDING, 386)],
+    ids=["osse", "freeform"],
+)
+def test_families_outside_the_thin_reference_keep_their_density(config, axial_rows):
+    """Only smooth R-OSSE was measured to select the same grid either way.
+
+    FREEFORM's rear cap moved 0.86 mm -- seventeen times the fine chord budget
+    -- when it was given the thin reference, and OSSE never doubled to begin
+    with. Widening the thin path to either of them fails here.
+    """
+
+    fine = build_preview_geometry(config, PreviewOptionsV1(lod="fine"))
+    reference = fine.metadata["canonical_reference"]
+
+    assert reference["axial_rows"] == axial_rows
+    assert reference["escalated"] is False
+
+
+def test_a_starved_thin_reference_escalates_instead_of_shipping_a_coarser_grid():
+    """The thin reference is an attempt, not an assumption.
+
+    A tolerance tight enough that refinement exhausts the thin reference must
+    produce the grid the dense one would have chosen, not whatever the thin one
+    could reach. Without the escalation the emitted grid is strictly coarser.
+    """
+
+    demanding = PreviewOptionsV1(
+        lod="fine", max_chord_error_mm=0.05, max_normal_step_deg=0.35
+    )
+    preview = build_preview_geometry(ROSSE_FREESTANDING, demanding)
+    reference = preview.metadata["canonical_reference"]
+
+    assert reference["escalated"] is True
+    assert reference["axial_rows"] > 4 * 48 + 1
+    # And the escalated build is the one that was going to be built anyway.
+    assert preview.metadata["actual_segment_counts"]["horn_axial"] > 0
+
+
 def _orientation_config(base, mode):
     """Symmetric analytic cases with front/rear enclosure regions split by z=0."""
 

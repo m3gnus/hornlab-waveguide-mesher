@@ -2912,9 +2912,39 @@ def build_preview_geometry(
     axial_master = min(512, max(int(preset["master_axial"]), scaled_axial))
     axial_master = min(512, max(axial_master, 4 * int(preset["axial"])))
     formula_name = str(config.get("formula", "OSSE")).strip().upper()
-    if formula_name in {"R-OSSE", "ROSSE", "FREEFORM"}:
-        axial_master = min(512, axial_master * 2)
-    angular_product_cap = max(3, _MAX_CANONICAL_VERTICES // (axial_master + 1))
+    # R-OSSE/ROSSE/FREEFORM double the candidate lattice.
+    axial_ceiling = (
+        min(512, axial_master * 2)
+        if formula_name in {"R-OSSE", "ROSSE", "FREEFORM"}
+        else axial_master
+    )
+    # The doubling earns its cost on some of those configurations and not
+    # others, so the thin master is attempted only where it was measured to
+    # settle, and the escalation below is the guard for the rest:
+    #
+    #   * A smooth R-OSSE fine preview selects the same 97x256 grid from a
+    #     193-row master as from a 385-row one -- 2.4e-4 mm apart on a 0.05 mm
+    #     budget, and byte-identical on the enclosed variant -- for half the
+    #     canonical sampling. That is the case worth taking.
+    #   * The coarse preset sits on its own ``master_axial`` floor and its
+    #     refinement consumes very nearly every row the master offers, so the
+    #     thin pass always starves. Building it and then rebuilding cost a
+    #     measured 36 -> 59 ms, and coarse is the lane a drag runs in.
+    #   * Corner configurations starve the same way at fine (a rectangle-morph
+    #     R-OSSE went 70 -> 105 ms paying for both masters), because their
+    #     angular master is the silhouette target rather than a multiple of it
+    #     and the axial rows carry correspondingly more of the error budget.
+    #   * FREEFORM's rear cap moved 0.86 mm on the thin master, seventeen times
+    #     the chord budget, so it keeps the density it was given.
+    attempt_thin_master = (
+        axial_ceiling > axial_master
+        and formula_name in {"R-OSSE", "ROSSE"}
+        and not has_corners
+        and 4 * int(preset["axial"]) > int(preset["master_axial"])
+    )
+    if not attempt_thin_master:
+        axial_master = axial_ceiling
+    angular_product_cap = max(3, _MAX_CANONICAL_VERTICES // (axial_ceiling + 1))
     if angular_master > angular_product_cap:
         angular_master = angular_product_cap
         preflight_limited = True
@@ -2922,11 +2952,10 @@ def build_preview_geometry(
             f"canonical reference clamped to {_MAX_CANONICAL_VERTICES} points"
         )
 
-    canonical_start = time.perf_counter()
+    # Sampling time only, summed over every master an escalation builds, so it
+    # stays the same quantity it was before escalation existed.
+    canonical_ms = 0.0
     axial_power = {"coarse": 1.75, "fine": 2.0, "inspection": 2.5}[lod]
-    sampling_config = _adaptive_lod_config(
-        config, angular_master, axial_master, power=axial_power
-    )
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
     warnings.extend(_guiding_curve_warnings(parsed_params, _parsed_formula))
     # The wall thickness as configured. ``deferred_wall`` below is only set on
@@ -2936,43 +2965,117 @@ def build_preview_geometry(
     deferred_wall = 0.0
     if has_corners and str(_parsed_mode) == "freestanding":
         deferred_wall = float(eval_param(parsed_params.get("wallThickness"), 0.0, 0.0))
+
+    def _sample_and_select(axial: int):
+        """Sample the canonical master at ``axial`` and choose the render grid."""
+
+        sampling_config = _adaptive_lod_config(
+            config, angular_master, axial, power=axial_power
+        )
         if deferred_wall > 0.0:
             mesh = dict(sampling_config["mesh"])
             mesh["wall_thickness_mm"] = 0.0
             for alias in ("wallThickness", "wall_thickness", "WallThickness"):
                 mesh.pop(alias, None)
             sampling_config["mesh"] = mesh
-    # The preview never spells the grid's flat vertex lists: it reads the
-    # arrays they would be built from.
-    output = build_viewport_geometry_from_config(
-        sampling_config, point_lists=False
-    )
-    if has_corners:
-        _replace_grid_with_corner_refinement(output, corner_intervals)
-    if deferred_wall > 0.0:
-        output["params"]["wallThickness"] = deferred_wall
-    canonical_ms = (time.perf_counter() - canonical_start) * 1000.0
-
-    grid_data = output["grid"]
-    n_phi = int(grid_data["grid_n_phi"])
-    closed_phi = bool(grid_data.get("full_circle", True))
-    inner_canonical = grid_data["inner_grid"]
-    inner_master = _surface_grid(inner_canonical)
-    master_t = np.asarray(grid_data.get("slice_map"), dtype=np.float64)
-    master_phi = (
-        np.asarray(grid_data["phi_grid"], dtype=np.float64).T
-        if grid_data.get("phi_grid") is not None
-        else np.broadcast_to(
-            np.asarray(grid_data["angle_list"], dtype=np.float64),
-            inner_master.shape[:2],
+        # The preview never spells the grid's flat vertex lists: it reads the
+        # arrays they would be built from.
+        nonlocal canonical_ms
+        sampling_start = time.perf_counter()
+        output = build_viewport_geometry_from_config(
+            sampling_config, point_lists=False
         )
-    )
-    inner_normals = analytic_grid_normals(
+        canonical_ms += (time.perf_counter() - sampling_start) * 1000.0
+        if has_corners:
+            _replace_grid_with_corner_refinement(output, corner_intervals)
+        if deferred_wall > 0.0:
+            output["params"]["wallThickness"] = deferred_wall
+
+        grid_data = output["grid"]
+        n_phi = int(grid_data["grid_n_phi"])
+        closed_phi = bool(grid_data.get("full_circle", True))
+        inner_master = _surface_grid(grid_data["inner_grid"])
+        master_t = np.asarray(grid_data.get("slice_map"), dtype=np.float64)
+        master_phi = (
+            np.asarray(grid_data["phi_grid"], dtype=np.float64).T
+            if grid_data.get("phi_grid") is not None
+            else np.broadcast_to(
+                np.asarray(grid_data["angle_list"], dtype=np.float64),
+                inner_master.shape[:2],
+            )
+        )
+        inner_normals = analytic_grid_normals(
+            inner_master,
+            closed_phi=closed_phi,
+            t_coordinates=master_t,
+            phi_coordinates=master_phi,
+        )
+        semantic = _semantic_t_stations(config, output, master_t)
+        initial_t = sorted(
+            set(
+                _even_indices(
+                    len(master_t), int(preset["axial"]) + 1, closed=False
+                )
+            ).union(semantic[0])
+        )
+        initial_phi = _even_indices(n_phi, silhouette_target, closed=closed_phi)
+        corner_rows: list[int] = []
+        if has_corners:
+            corner_rows = _corner_phi_indices(inner_normals)
+            initial_phi = sorted(set(initial_phi).union(corner_rows))
+        selection = adaptive_grid_indices(
+            inner_master,
+            inner_normals,
+            initial_t,
+            initial_phi,
+            max_chord_error_mm=chord_target,
+            max_normal_step_deg=normal_target,
+            max_vertices=vertex_cap,
+            closed_phi=closed_phi,
+            t_coordinates=master_t,
+            phi_coordinates=master_phi,
+        )
+        return (
+            output,
+            grid_data,
+            n_phi,
+            closed_phi,
+            inner_master,
+            master_t,
+            master_phi,
+            inner_normals,
+            semantic,
+            corner_rows,
+            selection,
+        )
+
+    level = _sample_and_select(axial_master)
+    # Refinement asked for detail the master could not supply, so the doubled
+    # master this family used to build unconditionally is worth its cost here.
+    # One step only: the ceiling is the density that shipped before, so an
+    # escalated build is the old build and a settled one is strictly cheaper.
+    escalated = False
+    if axial_ceiling > axial_master and level[-1][2].get("candidate_starved"):
+        axial_master = axial_ceiling
+        level = _sample_and_select(axial_master)
+        escalated = True
+    (
+        output,
+        grid_data,
+        n_phi,
+        closed_phi,
         inner_master,
-        closed_phi=closed_phi,
-        t_coordinates=master_t,
-        phi_coordinates=master_phi,
-    )
+        master_t,
+        master_phi,
+        inner_normals,
+        (semantic_t, semantic_inserted, semantic_unavailable),
+        corner_rows,
+        (t_indices, phi_indices, horn_achieved),
+    ) = level
+    inner_canonical = grid_data["inner_grid"]
+
+    # Curvature depends only on the master that survived escalation, so it is
+    # evaluated once here rather than inside a level that may be discarded.
     inner_curvature_mean = inner_curvature_principal = None
     if options.include_curvature and options.include_inner:
         inner_curvature_mean, inner_curvature_principal = analytic_grid_curvature(
@@ -2981,33 +3084,6 @@ def build_preview_geometry(
             t_coordinates=master_t,
             phi_coordinates=master_phi,
         )
-    semantic_t, semantic_inserted, semantic_unavailable = _semantic_t_stations(
-        config, output, master_t
-    )
-    initial_t = sorted(
-        set(
-            _even_indices(
-                len(master_t), int(preset["axial"]) + 1, closed=False
-            )
-        ).union(semantic_t)
-    )
-    initial_phi = _even_indices(n_phi, silhouette_target, closed=closed_phi)
-    corner_rows: list[int] = []
-    if has_corners:
-        corner_rows = _corner_phi_indices(inner_normals)
-        initial_phi = sorted(set(initial_phi).union(corner_rows))
-    t_indices, phi_indices, horn_achieved = adaptive_grid_indices(
-        inner_master,
-        inner_normals,
-        initial_t,
-        initial_phi,
-        max_chord_error_mm=chord_target,
-        max_normal_step_deg=normal_target,
-        max_vertices=vertex_cap,
-        closed_phi=closed_phi,
-        t_coordinates=master_t,
-        phi_coordinates=master_phi,
-    )
 
     assembly_start = time.perf_counter()
     surfaces: list[PreviewSurfaceV1] = []
@@ -3445,6 +3521,15 @@ def build_preview_geometry(
             "canonical_sampling": canonical_ms,
             "surface_assembly_and_fidelity": assembly_ms,
             "total": total_ms,
+        },
+        # The true-surface reference the emitted grid was chosen from, and
+        # whether a thinner one was tried and found too coarse first. Canonical
+        # sampling is linear in this product, so it is the number that explains
+        # what a build cost.
+        "canonical_reference": {
+            "axial_rows": int(inner_master.shape[0]),
+            "azimuth_rows": int(inner_master.shape[1]),
+            "escalated": escalated,
         },
         "fidelity": fidelity,
         "warnings": warnings,

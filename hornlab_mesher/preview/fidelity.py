@@ -223,6 +223,7 @@ def adaptive_grid_indices(
 
     cap = None if max_vertices is None else max(6, int(max_vertices))
     cap_limited = cap is not None and len(t_indices) * len(phi_indices) > cap
+    candidate_starved = False
     if cap_limited:
         # Semantic/end stations have already been inserted.  Retain the axial
         # endpoints and a deterministic spread of the remaining stations.
@@ -270,7 +271,14 @@ def adaptive_grid_indices(
             candidates, key=lambda item: (-item[0], item[1], item[2] or -1)
         ):
             if split is None:
+                # This interval misses the target and the candidate grid holds
+                # nothing between its endpoints, so refinement cannot answer it
+                # at this density. Distinct from the vertex cap, which is a
+                # budget the caller chose: a denser candidate grid would let
+                # refinement continue, and that is what ``candidate_starved``
+                # tells the caller.
                 cap_limited = True
+                candidate_starved = True
                 continue
             target = t_indices if axis == 0 else phi_indices
             if split in target:
@@ -335,6 +343,11 @@ def adaptive_grid_indices(
             "vertex_cap_limited": limited,
             "measurement_complete": measurement_complete,
             "unmeasured_intervals": unmeasured_intervals,
+            # True when refinement stopped because the candidate grid ran out
+            # of interior samples on an interval that still misses the target.
+            # A caller that owns the candidate grid can answer this by making
+            # it denser; nothing else it does will help.
+            "candidate_starved": candidate_starved,
         },
     )
 
