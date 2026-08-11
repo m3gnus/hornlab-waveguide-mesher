@@ -1,6 +1,6 @@
 """Caller-neutral STEP import, face mapping, and surface-mesh validation.
 
-The caller owns every STEP label, alias, group name, and role string. This
+The caller owns every STEP label, group name, and role string. This
 module only reasons about STEP entities, Gmsh surfaces, physical tags, and the
 canonical surface-mesh contract.
 """
@@ -61,10 +61,16 @@ OCC_HEALING_FALLBACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 @dataclass(frozen=True)
 class StepLabelSelector:
-    """Select a STEP group label, trying caller-defined aliases in order."""
+    """Select a STEP group by its exact label.
+
+    Deliberately just a label: the one alias policy that ever existed (a
+    caller's legacy left/right names falling back to a generic one) was
+    measured never to fire in 471 recorded runs and was deleted, taking the
+    matching hook with it rather than leaving a hook with no caller. A caller
+    that genuinely needs aliasing should add it back explicitly.
+    """
 
     label: str
-    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -256,9 +262,9 @@ def map_step_face_groups(
 ) -> StepFaceMapping:
     """Map explicit caller-selected STEP labels onto imported Gmsh surfaces.
 
-    Labels and aliases are compared exactly first and case-insensitively
-    second. Alias meaning is entirely caller-owned; this function only tries
-    the selector's labels in their declared order.
+    Labels are compared exactly first and case-insensitively second. What a
+    label MEANS is entirely caller-owned; this function only matches the string
+    it is handed.
     """
     if named_faces is None:
         named_faces = _parse_named_shell_faces(step_path)
@@ -306,13 +312,6 @@ def map_step_face_groups(
     missing: dict[str, str] = {}
     for group in groups:
         lookup = lookup_label(group.selector.label)
-        alias_used: str | None = None
-        if lookup is None:
-            for alias in group.selector.aliases:
-                lookup = lookup_label(alias)
-                if lookup is not None:
-                    alias_used = alias
-                    break
         if lookup is None:
             reason = missing_message(group.selector.label)
             if not skip_missing_groups:
@@ -321,10 +320,6 @@ def map_step_face_groups(
             continue
 
         origin, face_ids = lookup
-        if alias_used is not None:
-            origin = (
-                f"{origin} ({alias_used} alias for {group.selector.label})"
-            )
         surface_tags: list[int] = []
         for face_id in face_ids:
             if face_id not in face_to_index:
