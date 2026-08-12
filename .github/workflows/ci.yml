@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # gmsh ships a wheel but links against the system GL/GLU stack, which the
+      # Linux runners do not carry by default. Importing it fails without this.
+      - name: Install the system libraries gmsh links against
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libglu1-mesa
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # tests/test_ath_reference_parity.py compares against a third-party
+      # reference archive that is not part of this repository and is not
+      # present on the runner. With ATH_REFERENCE_ROOT unset it skips
+      # *silently*, so this job proves everything except parity, which stays a
+      # release gate run where that archive is available.
+      #
+      # HORNLAB_ATH_PARITY is deliberately left unset. Setting it to "required"
+      # turns those skips into errors, which is what you want when gating a
+      # release and not what you want here.
+      - name: Tests
+        run: python -m pytest tests/ -v
+
+      # A silent skip is indistinguishable from a deleted file, so assert the
+      # parity suite still exists and still collects. This catches the case
+      # where parity coverage disappears and every job stays green.
+      - name: Parity suite is still present (it skips here by design)
+        run: |
+          python -m pytest tests/test_ath_reference_parity.py --collect-only -q
+          echo "Parity collected, not executed: set ATH_REFERENCE_ROOT to run it."
