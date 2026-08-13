@@ -1901,8 +1901,11 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     if violations:
         offending_t = violations[0]
         unmorphed = _geometry_without_morph(geometry)
-        morph_induced = geometry._morph_target in {1, 2, 3} and not (
-            convexity_violations(unmorphed, [offending_t], n_phi=None)
+        unmorphed_violations = convexity_violations(
+            unmorphed, convexity_samples, n_phi=None
+        )
+        morph_induced = (
+            geometry._morph_target in {1, 2, 3} and not unmorphed_violations
         )
         if morph_induced:
             target_name = {1: "rectangle", 2: "circle", 3: "superellipse"}[
@@ -1925,9 +1928,13 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
                 f"FREEFORM morph to the {target_name} target produces a non-convex "
                 f"outline near t={offending_t:g}; {remedy}{morph_corner_hint}"
             )
+        diagnostic_geometry = geometry
+        if unmorphed_violations:
+            offending_t = unmorphed_violations[0]
+            diagnostic_geometry = unmorphed
         span = _station_span_name(stations, offending_t)
         corner_hint = _minimum_feasible_corner_radius_hint(
-            geometry,
+            diagnostic_geometry,
             convexity_samples,
             offending_t,
             n_phi=256,
@@ -1966,7 +1973,13 @@ def _validate_freeform_morph_target(profile_params: Mapping[str, Any]) -> int:
         raise ValueError(
             f"FREEFORM morphTarget must be finite, got {raw_morph_target!r}"
         )
-    return int(round(static_morph_target))
+    morph_target = int(round(static_morph_target))
+    if morph_target not in {0, 1, 2, 3}:
+        raise ValueError(
+            "FREEFORM morphTarget must resolve to one of the valid values "
+            f"0, 1, 2, or 3; got {raw_morph_target!r}"
+        )
+    return morph_target
 
 
 def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeometry:

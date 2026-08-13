@@ -159,6 +159,35 @@ def test_scalar_morph_fast_path_matches_expression_fallback_and_keeps_axes_exact
     )
 
 
+def test_expression_morph_shape_params_match_equivalent_scalars() -> None:
+    scalar_params = {
+        **_straight_params(),
+        "morphTarget": 3,
+        "morphWidth": 80.0,
+        "morphHeight": 60.0,
+        "morphExponent": 4.0,
+        "morphRate": 2.0,
+        "morphAllowShrinkage": 1,
+    }
+    expression_params = {
+        **scalar_params,
+        "morphWidth": "80 + 0*p",
+        "morphExponent": "4 + 0*p",
+        "morphRate": "2 + 0*p",
+    }
+    scalar = build_freeform_geometry(scalar_params)
+    fallback = build_freeform_geometry(expression_params)
+    phi = np.linspace(0.0, math.pi / 2.0, 257)
+
+    for t in (0.0, 0.37, 1.0):
+        np.testing.assert_allclose(
+            fallback.cross_section_radius(phi, t),
+            scalar.cross_section_radius(phi, t),
+            rtol=0.0,
+            atol=1.0e-12,
+        )
+
+
 def test_no_shrinkage_floors_typed_dimensions_at_drawn_mouth() -> None:
     geometry = build_freeform_geometry(
         {
@@ -283,6 +312,36 @@ def test_nonconvex_station_with_active_morph_is_attributed_to_cross_sections() -
     )
 
 
+def test_later_station_defect_wins_over_earlier_morph_failure() -> None:
+    params = _straight_params()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": 0.5,
+        },
+    ]
+    params.update(
+        morphTarget=2,
+        morphWidth=2.0,
+        morphHeight=2.0,
+        morphRate=1.0,
+        morphAllowShrinkage=1,
+    )
+
+    with pytest.raises(ValueError) as error:
+        build_freeform_geometry(params)
+
+    message = str(error.value)
+    assert message.startswith(
+        "FREEFORM crossSections span 0..1 produces a non-convex outline"
+    )
+    assert "t=0.59375" in message
+    assert "minimum feasible corner radius here is ~0.4 mm" in message
+    assert "morph to" not in message
+
+
 def test_rectangle_morph_corner_15_still_builds() -> None:
     assert (
         build_freeform_geometry(
@@ -304,6 +363,71 @@ def test_expression_target_is_still_rejected() -> None:
         build_geometry_params(
             _config_with_morph("1 if 0.01 < p < 0.02 else 0")
         )
+
+
+@pytest.mark.parametrize("target", [4, 7, -1, 99])
+def test_out_of_range_static_morph_targets_are_rejected(target: int) -> None:
+    message = r"morphTarget.*valid values 0, 1, 2, or 3"
+    with pytest.raises(ConfigError, match=message):
+        build_geometry_params(_config_with_morph(target))
+    with pytest.raises(ValueError, match=message):
+        build_point_grid({**_straight_params(), "morphTarget": target})
+
+
+def test_expression_target_keeps_non_freeform_runtime_path() -> None:
+    params = {
+        "type": "OSSE",
+        "L": 100.0,
+        "r0": 10.0,
+        "a": 35.0,
+        "a0": 8.0,
+        "angularSegments": 8,
+        "lengthSegments": 2,
+        "quadrants": "1",
+        "morphTarget": "4 if p > 10 else 0",
+    }
+
+    assert build_point_grid(params)["inner_points"]
+
+
+def test_active_morph_quadrant_one_matches_full_circle_quadrant() -> None:
+    params = _ellipse_rectangle_morph_params(corner=15.0)
+    full = build_point_grid({**params, "quadrants": "1234"})
+    quarter = build_point_grid({**params, "quadrants": "1"})
+    full_points = np.asarray(full["inner_points"], dtype=np.float64).reshape(
+        full["grid_n_phi"], full["grid_n_length"] + 1, 3
+    )
+    quarter_points = np.asarray(quarter["inner_points"], dtype=np.float64).reshape(
+        quarter["grid_n_phi"], quarter["grid_n_length"] + 1, 3
+    )
+    full_phi = np.asarray(full["phi_grid"], dtype=np.float64)
+    quarter_phi = np.asarray(quarter["phi_grid"], dtype=np.float64)
+
+    selected = np.all(full_phi <= math.pi / 2.0 + 1.0e-14, axis=1)
+    np.testing.assert_allclose(
+        quarter_points, full_points[selected], rtol=0.0, atol=1.0e-12
+    )
+    np.testing.assert_allclose(
+        quarter_phi, full_phi[selected], rtol=0.0, atol=1.0e-14
+    )
+
+
+def test_vertical_offset_combined_with_active_morph_preserves_symmetry() -> None:
+    grid = build_point_grid(
+        {
+            **_ellipse_rectangle_morph_params(corner=15.0),
+            "quadrants": "1234",
+            "verticalOffset": 12.0,
+        }
+    )
+    points = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        grid["grid_n_phi"], grid["grid_n_length"] + 1, 3
+    )
+    mouth = points[:, -1, :2]
+
+    assert grid["vertical_offset_mm"] == 12.0
+    assert np.max(mouth[:, 0]) == -np.min(mouth[:, 0])
+    assert np.max(mouth[:, 1]) == -np.min(mouth[:, 1])
 
 
 @pytest.mark.parametrize(

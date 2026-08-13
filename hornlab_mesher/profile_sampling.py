@@ -37,6 +37,7 @@ from .profile_morph import (
     _morph_factors,
     _morph_target_radius_at_angle,
     _morph_target_shape,
+    _validate_static_morph_target,
     _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
     rounded_rect_corner_arc_span,
@@ -1247,6 +1248,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     the preview path takes ``inner_grid``/``outer_grid`` and never spells them.
     """
 
+    _validate_static_morph_target(params)
     formula = _normalise_formula(params.get("type", "OSSE"))
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
     symmetry_planes = _symmetry_planes_for_quadrants(quadrants)

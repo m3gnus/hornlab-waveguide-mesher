@@ -63,6 +63,37 @@ def test_only_rounded_rectangle_morph_target_has_corners():
     )
 
 
+@pytest.mark.parametrize(("target", "expected"), [(1, True), (2, False), (3, False)])
+def test_freeform_rectangle_morph_enables_corner_refinement(target, expected):
+    config = {
+        "formula": "FREEFORM",
+        "profile": {
+            "crossSections": [
+                {"t": 0.0, "shape": "ellipse"},
+                {"t": 1.0, "shape": "ellipse"},
+            ]
+        },
+        "morph": {"morphTarget": target},
+    }
+
+    assert _configuration_has_corners(config) is expected
+
+
+def test_freeform_rounded_rectangle_station_enables_corner_refinement():
+    config = {
+        "formula": "FREEFORM",
+        "profile": {
+            "crossSections": [
+                {"t": 0.0, "shape": "ellipse"},
+                {"t": 1.0, "shape": "rounded_rectangle"},
+            ]
+        },
+        "morph": {"morphTarget": 3},
+    }
+
+    assert _configuration_has_corners(config) is True
+
+
 @pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])
 @pytest.mark.parametrize("corner_radius", [None, 40.0])
 def test_rounded_rectangle_morph_builds_at_every_lod(lod, corner_radius):

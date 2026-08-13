@@ -454,12 +454,20 @@ def _validate_formula_features(
     config: Mapping[str, Any],
 ) -> None:
     _validate_static_gcurve_type(gcurve, config)
-    if formula == "FREEFORM":
-        raw_morph_target = _pick(
-            morph, config, names=("morph_target", "morphTarget"), default=0
+    raw_morph_target = _pick(
+        morph, config, names=("morph_target", "morphTarget"), default=0
+    )
+    static_morph_target = _static_float_or_none(raw_morph_target)
+    if (
+        static_morph_target is not None
+        and int(round(static_morph_target)) not in {0, 1, 2, 3}
+    ):
+        raise ConfigError(
+            "morphTarget must resolve to one of the valid values "
+            f"0, 1, 2, or 3; got {raw_morph_target!r}"
         )
-        morph_target = _static_float_or_none(raw_morph_target)
-        if morph_target is None:
+    if formula == "FREEFORM":
+        if static_morph_target is None:
             raise ConfigError(
                 "FREEFORM morphTarget expression cannot be proven inactive; "
                 "crossSections owns the outline"

@@ -326,6 +326,23 @@ def _morph_target_shape(params: Mapping[str, Any], p: float) -> int:
     return int(round(eval_param(params.get("morphTarget"), p, 0.0)))
 
 
+def _validate_static_morph_target(params: Mapping[str, Any]) -> None:
+    """Reject a numeric morph target that cannot name a supported shape."""
+
+    raw_target = params.get("morphTarget", 0.0)
+    try:
+        static_target = float(raw_target)
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(static_target):
+        raise ValueError(f"morphTarget must be finite, got {raw_target!r}")
+    if int(round(static_target)) not in {0, 1, 2, 3}:
+        raise ValueError(
+            "morphTarget must resolve to one of the valid values "
+            f"0, 1, 2, or 3; got {raw_target!r}"
+        )
+
+
 def _morph_active(params: Mapping[str, Any], p: float) -> bool:
     return _morph_target_shape(params, p) in {1, 2, 3}
 
@@ -497,14 +514,26 @@ def _morph_target_radius_at_angle(
         )
         abs_cos = abs(math.cos(phi))
         abs_sin = abs(math.sin(phi))
-        if abs_cos < 1.0e-9:
+        phase = math.fmod(phi, math.pi)
+        if abs(phase) == math.pi / 2.0:
             return half_height
-        if abs_sin < 1.0e-9:
+        if phase == 0.0:
             return half_width
-        return (
-            (abs_cos / half_width) ** exponent
-            + (abs_sin / half_height) ** exponent
-        ) ** (-1.0 / exponent)
+        if exponent == 2.0:
+            if half_width == half_height:
+                return half_width
+            return (half_width * half_height) / math.sqrt(
+                (half_height * abs_cos) ** 2
+                + (half_width * abs_sin) ** 2
+            )
+        width_term = (abs_cos / half_width) ** exponent
+        height_term = (abs_sin / half_height) ** exponent
+        relative_snap = np.finfo(float).eps
+        if width_term <= relative_snap * height_term:
+            return half_height
+        if height_term <= relative_snap * width_term:
+            return half_width
+        return (width_term + height_term) ** (-1.0 / exponent)
     corner = eval_param(params.get("morphCorner"), phi, 0.0)
     return _rounded_rect_radius(phi, half_width, half_height, corner)
 
@@ -517,15 +546,27 @@ def _superellipse_radii(
     angles = np.asarray(phi, dtype=np.float64)
     abs_cos = np.abs(np.cos(angles))
     abs_sin = np.abs(np.sin(angles))
-    cos_degenerate = abs_cos < 1.0e-9
-    sin_degenerate = abs_sin < 1.0e-9
+    phase = np.fmod(angles, math.pi)
+    vertical_axis = np.abs(phase) == math.pi / 2.0
+    horizontal_axis = phase == 0.0
 
-    radii = (
-        (abs_cos / half_width) ** exponent
-        + (abs_sin / half_height) ** exponent
-    ) ** (-1.0 / exponent)
-    radii = np.where(sin_degenerate, half_width, radii)
-    return np.where(cos_degenerate, half_height, radii)
+    if exponent == 2.0:
+        if half_width == half_height:
+            return np.full(angles.shape, half_width, dtype=np.float64)
+        radii = (half_width * half_height) / np.sqrt(
+            (half_height * abs_cos) ** 2
+            + (half_width * abs_sin) ** 2
+        )
+    else:
+        width_term = (abs_cos / half_width) ** exponent
+        height_term = (abs_sin / half_height) ** exponent
+        radii = (width_term + height_term) ** (-1.0 / exponent)
+        relative_snap = np.finfo(float).eps
+        vertical_axis |= width_term <= relative_snap * height_term
+        horizontal_axis |= height_term <= relative_snap * width_term
+
+    radii = np.where(horizontal_axis, half_width, radii)
+    return np.where(vertical_axis, half_height, radii)
 
 
 def _morph_factor(

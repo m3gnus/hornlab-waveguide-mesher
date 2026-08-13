@@ -2693,11 +2693,33 @@ def _configuration_has_corners(config: Mapping[str, Any]) -> bool:
     profile = config.get("profile")
     profile = profile if isinstance(profile, Mapping) else {}
     if str(config.get("formula", "OSSE")).strip().upper() == "FREEFORM":
-        return any(
+        station_has_corners = any(
             isinstance(station, Mapping)
             and str(station.get("shape", "")).strip().lower() == "rounded_rectangle"
             for station in profile.get("crossSections", ())
         )
+        if station_has_corners:
+            return True
+        morph = config.get("morph", config.get("MORPH"))
+        morph = morph if isinstance(morph, Mapping) else {}
+        target = morph.get(
+            "morph_target",
+            morph.get(
+                "morphTarget",
+                config.get(
+                    "morph_target",
+                    config.get(
+                        "morphTarget",
+                        profile.get("morph_target", profile.get("morphTarget", 0)),
+                    ),
+                ),
+            ),
+        )
+        try:
+            static_target = float(target)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(static_target) and int(round(static_target)) == 1
     morph = config.get("morph", config.get("MORPH"))
     morph = morph if isinstance(morph, Mapping) else {}
     target = morph.get(

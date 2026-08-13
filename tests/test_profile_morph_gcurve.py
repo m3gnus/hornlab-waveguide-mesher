@@ -115,6 +115,30 @@ def test_superellipse_n2_reaches_exact_ellipse_mouth():
     )
 
 
+def test_superellipse_n2_satisfies_ellipse_equation_at_several_azimuths():
+    params = {
+        "morphTarget": 3,
+        "morphWidth": 400.0,
+        "morphHeight": 300.0,
+        "morphExponent": 2.0,
+    }
+    azimuths = np.asarray([0.0, 0.13, 0.37, math.pi / 4.0, 1.1, math.pi / 2.0])
+    radii = np.asarray(
+        [_morph_target_radius_at_angle(75.0, float(phi), params) for phi in azimuths]
+    )
+    ellipse_equation = (
+        (radii * np.cos(azimuths) / 200.0) ** 2
+        + (radii * np.sin(azimuths) / 150.0) ** 2
+    )
+
+    np.testing.assert_allclose(
+        ellipse_equation,
+        np.ones_like(ellipse_equation),
+        rtol=0.0,
+        atol=2.0 * np.finfo(np.float64).eps,
+    )
+
+
 def test_superellipse_n2_with_equal_dimensions_matches_circle_target():
     params = {
         **_base_osse_params(),
@@ -127,7 +151,7 @@ def test_superellipse_n2_with_equal_dimensions_matches_circle_target():
     )
     circle, _ = _inner_grid({**params, "morphTarget": 2})
 
-    assert np.allclose(superellipse, circle, rtol=0.0, atol=1.0e-12)
+    assert np.array_equal(superellipse, circle)
 
 
 def test_superellipse_exponent_increases_diagonal_without_leaving_box():
@@ -162,6 +186,26 @@ def test_superellipse_axes_are_exact_across_exponents(exponent):
 
     assert _morph_target_radius_at_angle(75.0, 0.0, params) == 200.0
     assert _morph_target_radius_at_angle(75.0, math.pi / 2.0, params) == 150.0
+
+
+def test_superellipse_cardinal_snap_is_relative_at_extreme_aspect_ratio():
+    phi = 5.0e-10
+    half_width = 1.0e12
+    half_height = 1.0
+    exponent = 4.0
+    params = {
+        "morphTarget": 3,
+        "morphWidth": 2.0 * half_width,
+        "morphHeight": 2.0 * half_height,
+        "morphExponent": exponent,
+    }
+    expected = (
+        (abs(math.cos(phi)) / half_width) ** exponent
+        + (abs(math.sin(phi)) / half_height) ** exponent
+    ) ** (-1.0 / exponent)
+
+    assert _morph_target_radius_at_angle(1.0, phi, params) == expected
+    assert expected != half_width
 
 
 def test_superellipse_exponent_is_expression_capable_and_clamped():
