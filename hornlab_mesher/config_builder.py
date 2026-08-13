@@ -464,7 +464,7 @@ def _validate_formula_features(
                 "FREEFORM morphTarget expression cannot be proven inactive; "
                 "crossSections owns the outline"
             )
-        morph_active = int(round(morph_target)) in {1, 2}
+        morph_active = int(round(morph_target)) in {1, 2, 3}
         if morph_active:
             raise ConfigError(
                 "FREEFORM does not support active morphTarget shaping; "
@@ -877,6 +877,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         ),
         "morphCorner": _scalar_or_expr(
             morph, config, names=("morph_corner_mm", "morphCorner"), default=0
+        ),
+        "morphExponent": _scalar_or_expr(
+            morph, config, names=("morph_exponent", "morphExponent"), default=2.0
         ),
         "morphRate": _scalar_or_expr(
             morph, config, names=("morph_rate", "morphRate"), default=3.0

@@ -312,6 +312,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("TargetHeight", "morphHeight"),
             ("Height", "morphHeight"),
             ("CornerRadius", "morphCorner"),
+            ("Exponent", "morphExponent"),
             ("Rate", "morphRate"),
             ("FixedPart", "morphFixed"),
             ("AllowShrinkage", "morphAllowShrinkage"),

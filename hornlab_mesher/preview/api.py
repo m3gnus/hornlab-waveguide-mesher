@@ -2713,6 +2713,7 @@ def _configuration_has_corners(config: Mapping[str, Any]) -> bool:
             ),
         ),
     )
+    # A finite-exponent superellipse (target 3) is smooth and has no true corners.
     return isinstance(target, (int, float)) and int(round(float(target))) == 1
 
 

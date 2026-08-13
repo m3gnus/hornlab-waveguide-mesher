@@ -128,6 +128,7 @@ def _morph_angle_list(
     half_width: float | None = None,
     half_height: float | None = None,
 ) -> np.ndarray | None:
+    # Finite superellipses (target 3) are smooth and need no corner-tangency azimuths.
     if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
         return None
     if half_width is None or half_height is None:
@@ -181,6 +182,7 @@ def _morph_corner_arc_span(
         for key in ("morphTarget", "morphCorner", "morphWidth", "morphHeight")
     ):
         return None
+    # Finite superellipses (target 3) have no corner arc to refine.
     if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
         return None
     if not half_width or not half_height or half_width <= 0.0 or half_height <= 0.0:
@@ -1237,13 +1239,19 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     morph_target = _morph_target_shape(params, 0.0)
     resolved_half_width: float | None = None
     resolved_half_height: float | None = None
-    if morph_target in {1, 2}:
-        # ATH derives implicit target extents by rounding the raw mouth
-        # extents up to whole millimetres per half-dimension.
+    if morph_target in {1, 2, 3}:
         width = eval_param(params.get("morphWidth"), 0.0, 0.0)
         height = eval_param(params.get("morphHeight"), 0.0, 0.0)
-        resolved_half_width = width / 2.0 if width > 0.0 else float(math.ceil(raw_half_width - 1.0e-9))
-        resolved_half_height = height / 2.0 if height > 0.0 else float(math.ceil(raw_half_height - 1.0e-9))
+        if morph_target == 3:
+            # A shape-only superellipse morph preserves the exact raw mouth
+            # extents instead of inheriting ATH's whole-millimetre rounding.
+            resolved_half_width = width / 2.0 if width > 0.0 else raw_half_width
+            resolved_half_height = height / 2.0 if height > 0.0 else raw_half_height
+        else:
+            # ATH derives implicit target extents by rounding the raw mouth
+            # extents up to whole millimetres per half-dimension.
+            resolved_half_width = width / 2.0 if width > 0.0 else float(math.ceil(raw_half_width - 1.0e-9))
+            resolved_half_height = height / 2.0 if height > 0.0 else float(math.ceil(raw_half_height - 1.0e-9))
         if not _is_true(params.get("morphAllowShrinkage")):
             # No-shrinkage gates the target dimensions against the raw mouth
             # extents; the mouth still becomes the exact (enlarged) target.
@@ -1279,7 +1287,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
         snapped_morph_start = max(snapped_morph_start, float(t_unit_values[reserved_idx]))
 
     # _apply_morphing is a per-point no-op unless morphTarget resolves to a
-    # morph shape (1/2). When the param is absent or a plain non-morph
+    # morph shape (1/2/3). When the param is absent or a plain non-morph
     # constant it cannot activate at any azimuth — skip the n_phi * n_length
     # no-op calls. Expression values may vary with phi, so they keep the
     # per-point path.
@@ -1287,7 +1295,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     if morph_param is None:
         morph_possible = False
     elif isinstance(morph_param, (int, float)):
-        morph_possible = int(round(float(morph_param))) in {1, 2}
+        morph_possible = int(round(float(morph_param))) in {1, 2, 3}
     else:
         morph_possible = True
 
@@ -1306,11 +1314,23 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
             # is the global normalized axial position (z / L for OSSE),
             # identical for every azimuth: ATH does not shift the blend by the
             # per-azimuth slot length.
+            morph_progress = t_values
+            morph_progress_start = snapped_morph_start
+            if formula == "R-OSSE" and 0.0 < t_max < 1.0:
+                # ATH blends against an assumed unit path and undershoots the
+                # target when R-OSSE tmax truncates that path. HornLab
+                # deliberately normalises both progress and its snapped start
+                # by the actual path so the mouth reaches a factor of one.
+                morph_progress = t_unit_values
+                morph_progress_start = snapped_morph_start / t_max
             radials = raw_radials.copy()
             for i, phi in enumerate(angles):
                 phi_value = float(phi)
                 factors = _morph_factors(
-                    t_values, phi_value, params, morph_start=snapped_morph_start
+                    morph_progress,
+                    phi_value,
+                    params,
+                    morph_start=morph_progress_start,
                 )
                 blended = factors > 0.0
                 if not blended.any():

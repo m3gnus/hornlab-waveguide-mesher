@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
 from hornlab_mesher.profiles import (
     _angle_list,
@@ -28,6 +29,26 @@ def _base_osse_params() -> dict[str, float | int | str]:
         "s": 0.0,
         "angularSegments": 16,
         "lengthSegments": 20,
+        "wallThickness": 0.0,
+        "quadrants": "1234",
+    }
+
+
+def _base_rosse_params() -> dict[str, float | int | str]:
+    return {
+        "type": "R-OSSE",
+        "R": 150.0,
+        "r0": 12.7,
+        "a0": 12.0,
+        "a": 40.0,
+        "k": 1.0,
+        "r": 0.3,
+        "m": 0.8,
+        "b": 0.3,
+        "q": 0.995,
+        "tmax": 1.0,
+        "angularSegments": 8,
+        "lengthSegments": 4,
         "wallThickness": 0.0,
         "quadrants": "1234",
     }
@@ -71,6 +92,106 @@ def test_circle_morph_zero_dimension_preserves_available_raw_dimension():
             {"morphTarget": 2, "morphWidth": 0.0, "morphHeight": 0.0},
         ),
         75.0,
+    )
+
+
+def test_superellipse_n2_reaches_exact_ellipse_mouth():
+    params = {
+        **_base_osse_params(),
+        "morphTarget": 3,
+        "morphWidth": 400.0,
+        "morphHeight": 300.0,
+        "morphExponent": 2.0,
+        "morphAllowShrinkage": 1,
+    }
+    inner, _ = _inner_grid(params)
+    mouth = inner[:, -1]
+
+    assert np.max(np.abs(mouth[:, 0])) == pytest.approx(200.0, abs=1.0e-12)
+    assert np.max(np.abs(mouth[:, 1])) == pytest.approx(150.0, abs=1.0e-12)
+    diagonal = mouth[np.argmin(np.abs(np.arctan2(mouth[:, 1], mouth[:, 0]) - math.pi / 4.0))]
+    assert (diagonal[0] / 200.0) ** 2 + (diagonal[1] / 150.0) ** 2 == pytest.approx(
+        1.0, abs=1.0e-12
+    )
+
+
+def test_superellipse_n2_with_equal_dimensions_matches_circle_target():
+    params = {
+        **_base_osse_params(),
+        "morphWidth": 400.0,
+        "morphHeight": 400.0,
+        "morphAllowShrinkage": 1,
+    }
+    superellipse, _ = _inner_grid(
+        {**params, "morphTarget": 3, "morphExponent": 2.0}
+    )
+    circle, _ = _inner_grid({**params, "morphTarget": 2})
+
+    assert np.allclose(superellipse, circle, rtol=0.0, atol=1.0e-12)
+
+
+def test_superellipse_exponent_increases_diagonal_without_leaving_box():
+    phi = math.pi / 4.0
+    radii = []
+    for exponent in (2.0, 6.0, 16.0):
+        radius = _morph_target_radius_at_angle(
+            75.0,
+            phi,
+            {
+                "morphTarget": 3,
+                "morphWidth": 400.0,
+                "morphHeight": 300.0,
+                "morphExponent": exponent,
+            },
+        )
+        radii.append(radius)
+        assert abs(radius * math.cos(phi)) <= 200.0 + 1.0e-12
+        assert abs(radius * math.sin(phi)) <= 150.0 + 1.0e-12
+
+    assert radii[0] < radii[1] < radii[2]
+
+
+@pytest.mark.parametrize("exponent", [2.0, 4.0, 8.0, 16.0])
+def test_superellipse_axes_are_exact_across_exponents(exponent):
+    params = {
+        "morphTarget": 3,
+        "morphWidth": 400.0,
+        "morphHeight": 300.0,
+        "morphExponent": exponent,
+    }
+
+    assert _morph_target_radius_at_angle(75.0, 0.0, params) == 200.0
+    assert _morph_target_radius_at_angle(75.0, math.pi / 2.0, params) == 150.0
+
+
+def test_superellipse_exponent_is_expression_capable_and_clamped():
+    base = {
+        "morphTarget": 3,
+        "morphWidth": 400.0,
+        "morphHeight": 300.0,
+    }
+    phi = math.pi / 4.0
+    n2 = _morph_target_radius_at_angle(75.0, phi, {**base, "morphExponent": 2.0})
+    n16 = _morph_target_radius_at_angle(75.0, phi, {**base, "morphExponent": 16.0})
+
+    assert _morph_target_radius_at_angle(
+        75.0, phi, {**base, "morphExponent": -10.0}
+    ) == n2
+    assert _morph_target_radius_at_angle(
+        75.0, phi, {**base, "morphExponent": 100.0}
+    ) == n16
+    assert _morph_target_radius_at_angle(
+        75.0,
+        phi,
+        {**base, "morphExponent": "2 + 14*sin(p)^2"},
+    ) == pytest.approx(
+        _morph_target_radius_at_angle(
+            75.0,
+            phi,
+            {**base, "morphExponent": 9.0},
+        ),
+        rel=0.0,
+        abs=1.0e-12,
     )
 
 
@@ -210,6 +331,98 @@ def test_rectangle_morph_uses_ceiled_implicit_extents_when_dimensions_omitted():
     )
 
     assert np.allclose(mouth_radii, expected, rtol=0.0, atol=1.0e-9)
+
+
+def test_superellipse_implicit_extents_are_exact_while_rectangle_still_ceils():
+    base = {
+        **_base_osse_params(),
+        "morphWidth": 0.0,
+        "morphHeight": 0.0,
+        "morphAllowShrinkage": 1,
+    }
+    raw, _ = _inner_grid({**base, "morphTarget": 0})
+    superellipse, _ = _inner_grid(
+        {**base, "morphTarget": 3, "morphExponent": 2.0}
+    )
+    rectangle, _ = _inner_grid({**base, "morphTarget": 1, "morphCorner": 0.0})
+    raw_half_width = float(np.max(np.abs(raw[:, -1, 0])))
+    raw_half_height = float(np.max(np.abs(raw[:, -1, 1])))
+
+    assert np.max(np.abs(superellipse[:, -1, 0])) == pytest.approx(
+        raw_half_width, abs=1.0e-12
+    )
+    assert np.max(np.abs(superellipse[:, -1, 1])) == pytest.approx(
+        raw_half_height, abs=1.0e-12
+    )
+    assert np.max(np.abs(rectangle[:, -1, 0])) == math.ceil(
+        raw_half_width - 1.0e-9
+    )
+    assert np.max(np.abs(rectangle[:, -1, 1])) == math.ceil(
+        raw_half_height - 1.0e-9
+    )
+
+
+def test_rosse_tmax_morph_reaches_typed_target():
+    params = {
+        **_base_rosse_params(),
+        "tmax": 0.7,
+        "morphTarget": 1,
+        "morphWidth": 400.0,
+        "morphHeight": 300.0,
+        "morphCorner": 0.0,
+        "morphRate": 3.0,
+        "morphFixed": 0.0,
+        "morphAllowShrinkage": 1,
+    }
+    inner, _ = _inner_grid(params)
+    mouth = inner[:, -1]
+
+    # Before progress normalisation, this landed at 156.07 / 138.92 mm.
+    assert np.max(np.abs(mouth[:, 0])) == pytest.approx(200.0, abs=1.0e-12)
+    assert np.max(np.abs(mouth[:, 1])) == pytest.approx(150.0, abs=1.0e-12)
+
+
+def test_rosse_tmax_one_morph_grid_is_unchanged():
+    params = {
+        **_base_rosse_params(),
+        "angularSegments": 4,
+        "lengthSegments": 2,
+        "morphTarget": 1,
+        "morphWidth": 400.0,
+        "morphHeight": 300.0,
+        "morphCorner": 0.0,
+        "morphRate": 3.0,
+        "morphFixed": 0.0,
+        "morphAllowShrinkage": 1,
+    }
+    actual, _ = _inner_grid(params)
+    expected = np.asarray(
+        [
+            [
+                [12.7, 0.0, 0.0],
+                [112.65926870803122, 0.0, 68.52814036023145],
+                [200.0, 0.0, 60.263885256450806],
+            ],
+            [
+                [7.776507174585692e-16, 12.7, 0.0],
+                [6.515688516145052e-15, 106.40926870803122, 68.52814036023145],
+                [9.184850993605149e-15, 150.0, 60.263885256450806],
+            ],
+            [
+                [-12.7, 1.5553014349171384e-15, 0.0],
+                [-112.65926870803122, 1.3796781281757201e-14, 68.52814036023145],
+                [-200.0, 2.4492935982947064e-14, 60.263885256450806],
+            ],
+            [
+                [-2.3329521523757076e-15, -12.7, 0.0],
+                [-1.9547065548435155e-14, -106.40926870803122, 68.52814036023145],
+                [-2.7554552980815446e-14, -150.0, 60.263885256450806],
+            ],
+        ],
+        dtype=np.float64,
+    )
+
+    assert np.array_equal(actual, expected)
 
 
 def test_morph_does_not_shrink_without_explicit_permission():

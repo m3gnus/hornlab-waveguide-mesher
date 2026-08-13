@@ -1687,7 +1687,7 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
         raise ValueError(
             f"FREEFORM morphTarget must be finite, got {raw_morph_target!r}"
         )
-    if int(round(static_morph_target)) in {1, 2}:
+    if int(round(static_morph_target)) in {1, 2, 3}:
         raise ValueError(
             "FREEFORM does not support active morphTarget shaping; "
             "use crossSections stations instead"

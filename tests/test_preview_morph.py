@@ -58,6 +58,9 @@ def test_only_rounded_rectangle_morph_target_has_corners():
     assert not _configuration_has_corners(
         {"formula": "OSSE", "profile": {}, "morph": {"morphTarget": 2}}
     )
+    assert not _configuration_has_corners(
+        {"formula": "OSSE", "profile": {}, "morph": {"morphTarget": 3}}
+    )
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])

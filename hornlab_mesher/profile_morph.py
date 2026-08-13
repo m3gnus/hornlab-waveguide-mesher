@@ -327,7 +327,7 @@ def _morph_target_shape(params: Mapping[str, Any], p: float) -> int:
 
 
 def _morph_active(params: Mapping[str, Any], p: float) -> bool:
-    return _morph_target_shape(params, p) in {1, 2}
+    return _morph_target_shape(params, p) in {1, 2, 3}
 
 
 def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corner_radius: float) -> float:
@@ -474,7 +474,7 @@ def _morph_target_radius_at_angle(
             implicit_half_width=implicit_half_width,
             implicit_half_height=implicit_half_height,
         )
-    if target != 1:
+    if target not in {1, 3}:
         raise ValueError(f"unsupported Morph target {target}")
     half_width = _configured_morph_half_dimension(
         params.get("morphWidth"),
@@ -488,6 +488,23 @@ def _morph_target_radius_at_angle(
         fallback_radius=current_radius,
         implicit_half_dimension=implicit_half_height,
     )
+    if target == 3:
+        if half_width <= 0.0 or half_height <= 0.0:
+            raise ValueError("superellipse Morph target dimensions must be positive")
+        exponent = min(
+            16.0,
+            max(2.0, eval_param(params.get("morphExponent"), phi, 2.0)),
+        )
+        abs_cos = abs(math.cos(phi))
+        abs_sin = abs(math.sin(phi))
+        if abs_cos < 1.0e-9:
+            return half_height
+        if abs_sin < 1.0e-9:
+            return half_width
+        return (
+            (abs_cos / half_width) ** exponent
+            + (abs_sin / half_height) ** exponent
+        ) ** (-1.0 / exponent)
     corner = eval_param(params.get("morphCorner"), phi, 0.0)
     return _rounded_rect_radius(phi, half_width, half_height, corner)
 
