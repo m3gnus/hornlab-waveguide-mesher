@@ -32,6 +32,7 @@ from .profile_formulas import (
 from .profile_morph import (
     _guiding_curve_type,
     _guiding_curve_active,
+    _morph_factor,
     _morph_active,
     _morph_factors,
     _morph_target_radius_at_angle,
@@ -1003,7 +1004,8 @@ def _freeform_raw_radial_grid(
     has_rounded_rectangle = any(
         station["shape"] == "rounded_rectangle" for station in geometry.stations
     )
-    if has_rounded_rectangle:
+    rectangle_morph = geometry._morph_target == 1
+    if has_rounded_rectangle or rectangle_morph:
         angular_segments = _normalise_ath_angular_segments(
             int(params.get("angularSegments", 64))
         )
@@ -1013,10 +1015,52 @@ def _freeform_raw_radial_grid(
             int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
         )
         arc_subdivision = _morph_corner_arc_subdivision(params)
-        reference_a = float(radii_h[-1])
-        reference_b = float(radii_v[-1])
-        reference_corner = active_rounded_rect_corner_radius_mm(
-            geometry.stations, float(t_values[-1]), reference_a, reference_b
+        configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
+        morph_start = min(
+            math.nextafter(1.0, 0.0), max(0.0, configured_morph_start)
+        )
+        morph_corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
+
+        def effective_outline_parameters(
+            t_value: float, station_a: float, station_b: float
+        ) -> tuple[float, float, float]:
+            if not rectangle_morph:
+                return (
+                    station_a,
+                    station_b,
+                    active_rounded_rect_corner_radius_mm(
+                        geometry.stations, t_value, station_a, station_b
+                    ),
+                )
+
+            # These effective values only choose where the analytic outline is
+            # sampled; they do not define the surface. cross_section_radius is
+            # authoritative and already includes the exact FREEFORM morph.
+            effective_axes = geometry.cross_section_radius(
+                np.asarray([0.0, math.pi / 2.0]), t_value
+            )
+            factor = _morph_factor(
+                t_value, 0.0, params, morph_start=morph_start
+            )
+            if has_rounded_rectangle:
+                base_corner = active_rounded_rect_corner_radius_mm(
+                    geometry.stations, t_value, station_a, station_b
+                )
+                effective_corner = (
+                    (1.0 - factor) * base_corner + factor * morph_corner
+                )
+            else:
+                # A wholly smooth schedule has no structural corner descriptor.
+                # Avoid the existing nearest-station fallback's empty sequence.
+                effective_corner = factor * morph_corner
+            return (
+                float(effective_axes[0]),
+                float(effective_axes[1]),
+                float(effective_corner),
+            )
+
+        reference_a, reference_b, reference_corner = effective_outline_parameters(
+            float(t_values[-1]), float(radii_h[-1]), float(radii_v[-1])
         )
         reference_base = _rounded_rect_quadrant_angles(
             points_per_quadrant,
@@ -1029,8 +1073,26 @@ def _freeform_raw_radial_grid(
             points_per_quadrant, reference_a, reference_b, reference_corner
         )
         if reference_span is None:
-            side1_segments = max(0, points_per_quadrant - 3)
-            side2_segments = 0
+            if rectangle_morph:
+                # A sharp or fully rounded mouth has no finite corner arc from
+                # which to recover wall budgets. Use a non-degenerate sampling
+                # proxy so intermediate emerging corners retain rows on both
+                # walls; the proxy never participates in surface evaluation.
+                reference_layout = _rounded_rect_quadrant_layout(
+                    points_per_quadrant,
+                    reference_a,
+                    reference_b,
+                    0.5 * min(reference_a, reference_b),
+                )
+                if reference_layout is None:
+                    side1_segments = max(0, points_per_quadrant - 3)
+                    side2_segments = 0
+                else:
+                    side1_segments = int(reference_layout.side1_segments)
+                    side2_segments = int(reference_layout.side2_segments)
+            else:
+                side1_segments = max(0, points_per_quadrant - 3)
+                side2_segments = 0
         else:
             side1_segments = int(
                 np.flatnonzero(
@@ -1056,18 +1118,29 @@ def _freeform_raw_radial_grid(
         for ring_index, (t_value, a, b) in enumerate(
             zip(t_values, radii_h, radii_v)
         ):
-            corner_radius = active_rounded_rect_corner_radius_mm(
-                geometry.stations, float(t_value), float(a), float(b)
+            effective_a, effective_b, corner_radius = effective_outline_parameters(
+                float(t_value), float(a), float(b)
             )
-            q1 = _freeform_rounded_rect_quadrant_angles(
-                half_width=float(a),
-                half_height=float(b),
-                corner_radius=corner_radius,
-                side1_segments=side1_segments,
-                side2_segments=side2_segments,
-                arc_subdivision=arc_subdivision,
-                collapse_transition_intervals=collapse_transition_intervals,
-            )
+            if rectangle_morph and corner_radius <= 1.0e-9:
+                q1 = np.linspace(
+                    0.0,
+                    math.pi / 2.0,
+                    side1_segments
+                    + 3 * max(1, int(arc_subdivision))
+                    + side2_segments
+                    + 1,
+                    dtype=np.float64,
+                )
+            else:
+                q1 = _freeform_rounded_rect_quadrant_angles(
+                    half_width=effective_a,
+                    half_height=effective_b,
+                    corner_radius=corner_radius,
+                    side1_segments=side1_segments,
+                    side2_segments=side2_segments,
+                    arc_subdivision=arc_subdivision,
+                    collapse_transition_intervals=collapse_transition_intervals,
+                )
             reduced, full_circle = _freeform_quadrant_angles(q1, quadrants)
             if np.any(np.diff(reduced) <= 0.0):
                 raise ValueError(
@@ -1076,8 +1149,8 @@ def _freeform_raw_radial_grid(
             ring_angles.append(reduced)
             span = rounded_rect_corner_arc_span(
                 points_per_quadrant,
-                float(a),
-                float(b),
+                effective_a,
+                effective_b,
                 corner_radius,
             )
             if span is None:
@@ -1135,9 +1208,10 @@ def _freeform_raw_radial_grid(
         )
     z_values = np.repeat(shared_z[np.newaxis, :], phi_grid.shape[0], axis=0)
 
-    # Any rounded-rectangle station selects the structural corner-aware family
-    # for every ring so intermediate station tangencies cannot alias. Smooth
-    # rings use the nearest rounded-rectangle descriptor for harmless pinning.
+    # Any rounded-rectangle station or static rectangle morph selects the
+    # structural corner-aware family for every ring so tangencies cannot alias.
+    # Smooth station rings use the nearest descriptor for harmless pinning;
+    # smooth pre-morph rings use the uniform member of the same fixed-row family.
     return (
         raw_radials,
         z_values,

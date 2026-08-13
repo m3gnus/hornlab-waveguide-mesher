@@ -11,6 +11,7 @@ import pytest
 from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.freeform import build_freeform_geometry
+from hornlab_mesher.profile_morph import _rounded_rect_radius
 from hornlab_mesher.profiles import build_point_grid
 
 
@@ -190,11 +191,112 @@ def test_config_builder_accepts_smooth_freeform_morphs(target: int) -> None:
     assert params["morphTarget"] == target
 
 
-def test_rectangle_morph_still_points_to_cross_sections() -> None:
-    with pytest.raises(
-        ConfigError, match="rectangle morphing.*crossSections.*rounded-rectangle"
-    ):
-        build_geometry_params(_config_with_morph(1))
+def test_config_builder_accepts_rectangle_freeform_morph() -> None:
+    params, formula, _mode = build_geometry_params(_config_with_morph(1))
+    assert formula == "FREEFORM"
+    assert params["morphTarget"] == 1
+
+
+def _ellipse_rectangle_morph_params(*, corner: float = 6.0) -> dict:
+    params = _straight_params()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "ellipse"},
+        {"t": 1.0, "shape": "ellipse"},
+    ]
+    params.update(
+        angularSegments=32,
+        lengthSegments=8,
+        morphTarget=1,
+        morphWidth=80.0,
+        morphHeight=50.0,
+        morphCorner=corner,
+    )
+    return params
+
+
+def test_rectangle_morph_mouth_matches_typed_rounded_rectangle() -> None:
+    params = _ellipse_rectangle_morph_params()
+    grid = build_point_grid(params)
+    phi_grid = np.asarray(grid["phi_grid"], dtype=np.float64)
+    points = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        grid["grid_n_phi"], grid["grid_n_length"] + 1, 3
+    )
+    mouth_phi = phi_grid[:, -1]
+    mouth_radii = np.linalg.norm(points[:, -1, :2], axis=1)
+    expected = np.asarray(
+        [_rounded_rect_radius(phi, 40.0, 25.0, 6.0) for phi in mouth_phi]
+    )
+
+    assert np.array_equal(mouth_radii[[0, -1]], np.asarray([40.0, 25.0]))
+    np.testing.assert_allclose(mouth_radii, expected, rtol=0.0, atol=1.0e-12)
+
+
+def test_rectangle_morph_sampler_tracks_emerging_corner_tangencies() -> None:
+    grid = build_point_grid(_ellipse_rectangle_morph_params())
+    phi_grid = np.asarray(grid["phi_grid"], dtype=np.float64)
+    theta_1 = math.atan2(25.0 - 6.0, 40.0)
+    theta_2 = math.atan2(25.0, 40.0 - 6.0)
+
+    for tangent in (theta_1, theta_2):
+        assert np.any(np.isclose(phi_grid[:, -1], tangent, rtol=0.0, atol=1.0e-14))
+        assert not np.any(
+            np.isclose(phi_grid[:, 0], tangent, rtol=0.0, atol=1.0e-14)
+        )
+    assert grid["freeform_corner_arc_spans"][0] == []
+    np.testing.assert_allclose(
+        grid["freeform_corner_arc_spans"][-1],
+        [theta_1, theta_2],
+        rtol=0.0,
+        atol=1.0e-14,
+    )
+
+
+def test_sharp_rectangle_morph_is_rejected_as_non_convex() -> None:
+    """The convexity guard rejects the singular radial blend before meshing."""
+
+    with pytest.raises(ValueError) as error:
+        build_freeform_geometry(_ellipse_rectangle_morph_params(corner=0.0))
+    message = str(error.value)
+
+    assert "morph to the rectangle target" in message
+    assert "morphCorner" in message
+    assert "crossSections" not in message
+
+
+def test_nonconvex_station_with_active_morph_is_attributed_to_cross_sections() -> None:
+    params = _straight_params()
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": 0.5,
+        },
+    ]
+    params.update(morphTarget=1, morphCorner=15.0, morphFixed=0.9)
+
+    with pytest.raises(ValueError) as error:
+        build_freeform_geometry(params)
+
+    assert str(error.value).startswith(
+        "FREEFORM crossSections span 0..1 produces a non-convex outline"
+    )
+
+
+def test_rectangle_morph_corner_15_still_builds() -> None:
+    assert (
+        build_freeform_geometry(
+            _ellipse_rectangle_morph_params(corner=15.0)
+        ).length_mm
+        == 100.0
+    )
+
+
+def test_walled_rectangle_morph_builds_without_outer_offset_fold() -> None:
+    grid = build_point_grid(
+        {**_ellipse_rectangle_morph_params(), "wallThickness": 3.0}
+    )
+    assert grid["outer_points"] is not None
 
 
 def test_expression_target_is_still_rejected() -> None:
@@ -202,6 +304,116 @@ def test_expression_target_is_still_rejected() -> None:
         build_geometry_params(
             _config_with_morph("1 if 0.01 < p < 0.02 else 0")
         )
+
+
+@pytest.mark.parametrize(
+    ("morph", "expected"),
+    [
+        (
+            {"morphTarget": 2},
+            [
+                [
+                    [9.999999999999998, 0.0, 0.0],
+                    [20.0, 0.0, 50.0],
+                    [30.0, 0.0, 100.0],
+                ],
+                [
+                    [7.0710678118654755, 7.071067811865475, 0.0],
+                    [13.263678907805145, 13.263678907805144, 50.0],
+                    [21.213203435596427, 21.213203435596423, 100.0],
+                ],
+                [
+                    [6.123233995736765e-16, 9.999999999999998, 0.0],
+                    [9.950255243072245e-16, 16.25, 50.0],
+                    [1.83697019872103e-15, 30.0, 100.0],
+                ],
+            ],
+        ),
+        (
+            {"morphTarget": 3, "morphExponent": 3.0},
+            [
+                [
+                    [9.999999999999998, 0.0, 0.0],
+                    [20.0, 0.0, 50.0],
+                    [30.0, 0.0, 100.0],
+                ],
+                [
+                    [7.0710678118654755, 7.071067811865475, 0.0],
+                    [12.904858793852192, 12.904858793852188, 50.0],
+                    [18.34264252397279, 18.34264252397279, 100.0],
+                ],
+                [
+                    [6.123233995736765e-16, 9.999999999999998, 0.0],
+                    [9.18485099360515e-16, 15.0, 50.0],
+                    [1.2246467991473533e-15, 20.0, 100.0],
+                ],
+            ],
+        ),
+    ],
+)
+def test_smooth_morph_grids_are_bit_for_bit_unchanged(
+    morph: dict, expected: list
+) -> None:
+    actual = np.asarray(
+        build_point_grid({**_straight_params(), **morph})["inner_points"]
+    ).reshape(3, 3, 3)
+    assert np.array_equal(actual, np.asarray(expected))
+
+
+def test_rounded_rectangle_station_grid_is_bit_for_bit_unchanged() -> None:
+    params = {
+        **_straight_params(),
+        "profileH": {
+            "points": [[0.0, 10.0], [100.0, 20.0]],
+            "throatAngleDeg": 0.0,
+            "mouthAngleDeg": 0.0,
+        },
+        "profileV": {
+            "points": [[0.0, 10.0], [100.0, 15.0]],
+            "throatAngleDeg": 0.0,
+            "mouthAngleDeg": 0.0,
+        },
+        "crossSections": [
+            {"t": 0.0, "shape": "ellipse"},
+            {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 5.0},
+        ],
+    }
+    expected = np.asarray(
+        [
+            [
+                [9.999999999999998, 0.0, 0.0],
+                [15.0, 0.0, 50.0],
+                [20.0, 0.0, 100.0],
+            ],
+            [
+                [8.94427190999916, 4.47213595499958, 0.0],
+                [13.93119694284408, 6.96559847142204, 50.0],
+                [20.0, 10.0, 100.0],
+            ],
+            [
+                [7.79403831193579, 6.265218814381276, 0.0],
+                [12.915215846401743, 9.012631799667837, 50.0],
+                [19.330127018922198, 12.500000000000002, 100.0],
+            ],
+            [
+                [6.265218814381277, 7.794038311935788, 0.0],
+                [11.206359450427986, 10.605812457460974, 50.0],
+                [17.499999999999993, 14.33012701892219, 100.0],
+            ],
+            [
+                [4.4721359549995805, 8.94427190999916, 0.0],
+                [9.16025147168922, 11.450314339611522, 50.0],
+                [15.000000000000002, 15.0, 100.0],
+            ],
+            [
+                [6.123233995736765e-16, 9.999999999999998, 0.0],
+                [7.654042494670958e-16, 12.5, 50.0],
+                [9.18485099360515e-16, 15.0, 100.0],
+            ],
+        ]
+    )
+    actual = np.asarray(build_point_grid(params)["inner_points"]).reshape(6, 3, 3)
+    assert np.array_equal(actual, expected)
 
 
 def test_convexity_guard_sees_a_bad_morphed_surface() -> None:

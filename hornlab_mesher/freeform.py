@@ -50,6 +50,7 @@ _FREEFORM_PARAM_KEYS = (
     "morphTarget",
     "morphWidth",
     "morphHeight",
+    "morphCorner",
     "morphExponent",
     "morphRate",
     "morphFixed",
@@ -58,6 +59,7 @@ _FREEFORM_PARAM_KEYS = (
 _FREEFORM_SCALAR_MORPH_KEYS = (
     "morphWidth",
     "morphHeight",
+    "morphCorner",
     "morphExponent",
     "morphRate",
     "morphFixed",
@@ -202,7 +204,7 @@ class FreeformGeometry:
 
         # Keep an inactive FREEFORM morph on the original analytic path: none
         # of the target, mouth, or factor calculations below are evaluated.
-        if self._morph_target not in {2, 3}:
+        if self._morph_target not in {1, 2, 3}:
             return base_radius
 
         scalar_morph = all(
@@ -255,7 +257,14 @@ class FreeformGeometry:
                 half_width = max(half_width, mouth_a)
                 half_height = max(half_height, mouth_b)
 
-            if self._morph_target == 2:
+            if self._morph_target == 1:
+                corner = eval_param(
+                    self._morph_params.get("morphCorner"), 0.0, 0.0
+                )
+                target_radius = _rounded_rect_radii(
+                    phi, half_width, half_height, corner
+                )
+            elif self._morph_target == 2:
                 target_radius: float | np.ndarray = max(half_width, half_height)
             else:
                 if half_width <= 0.0 or half_height <= 0.0:
@@ -1555,6 +1564,90 @@ def _geometry_with_station_corner(
     )
 
 
+def _geometry_without_morph(geometry: FreeformGeometry) -> FreeformGeometry:
+    """Return the same station geometry on the inactive morph path."""
+
+    return FreeformGeometry(
+        geometry._profile_h,
+        geometry._profile_v,
+        geometry.stations,
+        _morph_target=0,
+        _morph_params=geometry._morph_params,
+        _inflection_spans=geometry._inflection_spans,
+    )
+
+
+def _geometry_with_morph_corner(
+    geometry: FreeformGeometry, value: float
+) -> FreeformGeometry:
+    morph_params = dict(geometry._morph_params)
+    morph_params["morphCorner"] = float(value)
+    return FreeformGeometry(
+        geometry._profile_h,
+        geometry._profile_v,
+        geometry.stations,
+        _morph_target=geometry._morph_target,
+        _morph_params=MappingProxyType(morph_params),
+        _inflection_spans=geometry._inflection_spans,
+    )
+
+
+def _minimum_feasible_morph_corner_hint(
+    geometry: FreeformGeometry,
+    t_samples: np.ndarray,
+    *,
+    n_phi: int | None,
+) -> str:
+    """Suggest the smallest scalar rectangle morph corner that is convex."""
+
+    if geometry._morph_target != 1 or not all(
+        geometry._morph_params.get(key) is None
+        or isinstance(geometry._morph_params.get(key), (int, float))
+        for key in _FREEFORM_SCALAR_MORPH_KEYS
+    ):
+        return ""
+
+    mouth_z = float(geometry._profile_h.anchors[-1, 0])
+    mouth_h, mouth_v = geometry.evaluate_radii(np.asarray(mouth_z))
+    mouth_a = float(mouth_h)
+    mouth_b = float(mouth_v)
+    width = eval_param(geometry._morph_params.get("morphWidth"), 0.0, 0.0)
+    height = eval_param(geometry._morph_params.get("morphHeight"), 0.0, 0.0)
+    half_width = width / 2.0 if width > 0.0 else mouth_a
+    half_height = height / 2.0 if height > 0.0 else mouth_b
+    if not _is_true(geometry._morph_params.get("morphAllowShrinkage")):
+        half_width = max(half_width, mouth_a)
+        half_height = max(half_height, mouth_b)
+
+    lower = max(
+        0.0,
+        eval_param(geometry._morph_params.get("morphCorner"), 0.0, 0.0),
+    )
+    upper = min(half_width, half_height)
+    if lower >= upper:
+        return ""
+
+    def schedule_is_convex(value: float) -> bool:
+        trial = _geometry_with_morph_corner(geometry, value)
+        return not convexity_violations(trial, t_samples, n_phi)
+
+    if not schedule_is_convex(upper):
+        return ""
+    if schedule_is_convex(lower):
+        feasible = lower
+    else:
+        infeasible = lower
+        feasible = upper
+        for _iteration in range(12):
+            midpoint = 0.5 * (infeasible + feasible)
+            if schedule_is_convex(midpoint):
+                feasible = midpoint
+            else:
+                infeasible = midpoint
+
+    return f"; minimum feasible morphCorner is ~{feasible:.1f} mm"
+
+
 def _minimum_feasible_corner_radius_hint(
     geometry: FreeformGeometry,
     t_samples: np.ndarray,
@@ -1786,6 +1879,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
                     "morphTarget",
                     "morphWidth",
                     "morphHeight",
+                    "morphCorner",
                     "morphExponent",
                     "morphRate",
                     "morphFixed",
@@ -1806,6 +1900,31 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     )
     if violations:
         offending_t = violations[0]
+        unmorphed = _geometry_without_morph(geometry)
+        morph_induced = geometry._morph_target in {1, 2, 3} and not (
+            convexity_violations(unmorphed, [offending_t], n_phi=None)
+        )
+        if morph_induced:
+            target_name = {1: "rectangle", 2: "circle", 3: "superellipse"}[
+                geometry._morph_target
+            ]
+            if geometry._morph_target == 1:
+                morph_corner_hint = _minimum_feasible_morph_corner_hint(
+                    geometry,
+                    convexity_samples,
+                    n_phi=None,
+                )
+                remedy = (
+                    "increase morphCorner or reduce how far the target departs "
+                    "from the drawn mouth"
+                )
+            else:
+                morph_corner_hint = ""
+                remedy = "reduce how far the target departs from the drawn mouth"
+            raise ValueError(
+                f"FREEFORM morph to the {target_name} target produces a non-convex "
+                f"outline near t={offending_t:g}; {remedy}{morph_corner_hint}"
+            )
         span = _station_span_name(stations, offending_t)
         corner_hint = _minimum_feasible_corner_radius_hint(
             geometry,
@@ -1847,13 +1966,7 @@ def _validate_freeform_morph_target(profile_params: Mapping[str, Any]) -> int:
         raise ValueError(
             f"FREEFORM morphTarget must be finite, got {raw_morph_target!r}"
         )
-    morph_target = int(round(static_morph_target))
-    if morph_target == 1:
-        raise ValueError(
-            "FREEFORM morphTarget rectangle morphing is not supported yet; use "
-            "crossSections' rounded-rectangle station instead"
-        )
-    return morph_target
+    return int(round(static_morph_target))
 
 
 def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeometry:

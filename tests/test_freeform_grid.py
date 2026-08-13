@@ -314,8 +314,7 @@ def test_freeform_config_threading_and_value_based_feature_gates() -> None:
 
     rectangle_morph = copy.deepcopy(config)
     rectangle_morph["morph"] = {"morphTarget": 1}
-    with pytest.raises(ConfigError, match="FREEFORM.*crossSections"):
-        build_geometry_params(rectangle_morph)
+    assert build_geometry_params(rectangle_morph)[1] == "FREEFORM"
 
     expression_morph = copy.deepcopy(config)
     expression_morph["morph"] = {
@@ -441,10 +440,10 @@ def test_profile_points_returns_freeform_h_meridian_and_lookup_polyline() -> Non
     )
 
 
-def test_low_level_grid_reuses_shared_freeform_feature_validation() -> None:
+def test_low_level_grid_accepts_rectangle_morph() -> None:
     params, _formula, _mode = build_geometry_params(_owner_config())
-    with pytest.raises(ValueError, match="FREEFORM.*crossSections"):
-        build_point_grid({**params, "morphTarget": 1})
+    grid = build_point_grid({**params, "morphTarget": 1})
+    assert grid["grid_n_phi"] > 0
     with pytest.raises(ValueError, match="FREEFORM.*guiding curves"):
         build_point_grid({**params, "gcurveType": 1, "gcurveWidth": 100.0})
     with pytest.raises(ValueError, match="cannot be proven inactive"):

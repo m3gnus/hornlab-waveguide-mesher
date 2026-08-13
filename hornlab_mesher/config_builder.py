@@ -464,11 +464,6 @@ def _validate_formula_features(
                 "FREEFORM morphTarget expression cannot be proven inactive; "
                 "crossSections owns the outline"
             )
-        if int(round(morph_target)) == 1:
-            raise ConfigError(
-                "FREEFORM morphTarget rectangle morphing is not supported yet; use "
-                "crossSections' rounded-rectangle station instead"
-            )
         if _gcurve_could_be_active(gcurve, config):
             raise ConfigError(
                 "FREEFORM does not support active guiding curves; "

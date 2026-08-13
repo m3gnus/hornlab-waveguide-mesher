@@ -412,10 +412,13 @@ def _convexity_window_params(corner_radius_mm: float) -> dict:
 
 
 def test_convexity_guard_reports_minimum_feasible_corner_radius() -> None:
-    with pytest.raises(
-        ValueError, match=r"minimum feasible corner radius here is ~[0-9.]+ mm"
-    ):
+    with pytest.raises(ValueError) as error:
         build_freeform_geometry(_convexity_window_params(3.0))
+    assert str(error.value) == (
+        "FREEFORM crossSections span 0..1 produces a non-convex outline near "
+        "t=0.6875; adjust its shape, aspect, or corner setting; for "
+        "crossSections[1], minimum feasible corner radius here is ~1.0 mm"
+    )
 
     assert build_freeform_geometry(_convexity_window_params(6.0)).length_mm == 120.0
 
