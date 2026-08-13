@@ -45,8 +45,10 @@ from .mesh_sizing import (
 )
 from .cad import (
     CadInfo,
+    SOURCE_INTERFACE_FEATURE,
     WgLinkIdentity,
     WgLinkInfo,
+    WgLinkSourceInterface,
     read_wglink,
     write_step,
     write_step_from_config,
@@ -105,8 +107,10 @@ def load_config(*args, **kwargs):
 
 __all__ = [
     "CadInfo",
+    "SOURCE_INTERFACE_FEATURE",
     "WgLinkIdentity",
     "WgLinkInfo",
+    "WgLinkSourceInterface",
     "CrossSection",
     "Enclosure",
     "HornEnclosure",

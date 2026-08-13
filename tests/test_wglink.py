@@ -8,7 +8,13 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.builders.enclosure import enclosure_box_bounds
-from hornlab_mesher.cad import CadInfo, read_wglink, write_wglink
+from hornlab_mesher.cad import (
+    SOURCE_INTERFACE_FEATURE,
+    CadInfo,
+    WgLinkSourceInterface,
+    read_wglink,
+    write_wglink,
+)
 from hornlab_mesher import cad as cad_module
 from hornlab_mesher.datums import derive_datums
 from hornlab_mesher.geometry import (
@@ -193,6 +199,101 @@ def test_freestanding_parameter_table_has_no_enclosure_parameters(
     assert not any("_enc_" in name for name in names)
     assert "enclosure" not in result.manifest
     assert "enclosure" not in read_wglink(result.path)
+
+
+def test_source_interface_v1_round_trips_as_an_additive_sources_table(
+    monkeypatch, tmp_path
+):
+    _fake_step(monkeypatch)
+    source = WgLinkSourceInterface(
+        id="source-hf",
+        role="HF",
+        required=True,
+        default_drive_channel_id="drive-hf",
+        patch_policy="single-connected",
+        expected_connected_components=1,
+        suggested_resolution_mm=4.0,
+    )
+
+    result = write_wglink(
+        _freestanding(),
+        tmp_path / "horn.wglink",
+        interface_sources=[source],
+    )
+    manifest = read_wglink(result.path)
+
+    assert SOURCE_INTERFACE_FEATURE in manifest["required_features"]
+    assert manifest["interface"] == {
+        "sources": [
+            {
+                "id": "source-hf",
+                "role": "HF",
+                "required": True,
+                "default_drive_channel_id": "drive-hf",
+                "patch_policy": "single-connected",
+                "expected_connected_components": 1,
+                "suggested_resolution_mm": 4.0,
+            }
+        ]
+    }
+
+
+def test_source_interface_feature_and_nonempty_table_are_atomic(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    result = write_wglink(
+        _freestanding(),
+        tmp_path / "horn.wglink",
+        interface_sources=[
+            {
+                "id": "source-hf",
+                "role": "HF",
+                "required": True,
+                "default_drive_channel_id": "drive-hf",
+                "patch_policy": "single-connected",
+                "expected_connected_components": 1,
+                "suggested_resolution_mm": 4,
+            }
+        ],
+    )
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    manifest["required_features"].remove(SOURCE_INTERFACE_FEATURE)
+    result.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(MesherError, match="required exactly when"):
+        read_wglink(result.path)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"id": " source-hf"}, "non-empty trimmed string"),
+        ({"required": 1}, "required must be boolean"),
+        ({"patch_policy": "nearest"}, "patch_policy"),
+        ({"expected_connected_components": 2}, "must be 1"),
+        ({"suggested_resolution_mm": 0}, "must be positive"),
+    ],
+)
+def test_source_interface_rejects_ambiguous_policy(
+    monkeypatch, tmp_path, override, message
+):
+    _fake_step(monkeypatch)
+    source = {
+        "id": "source-hf",
+        "role": "HF",
+        "required": True,
+        "default_drive_channel_id": "drive-hf",
+        "patch_policy": "single-connected",
+        "expected_connected_components": 1,
+        "suggested_resolution_mm": 4,
+        **override,
+    }
+
+    with pytest.raises(MesherError, match=message):
+        write_wglink(
+            _freestanding(),
+            tmp_path / "bad.wglink",
+            interface_sources=[source],
+        )
 
 
 @pytest.mark.parametrize(

@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import tempfile
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -64,6 +66,19 @@ _SOLID_BUILD_MODES = frozenset(
 )
 
 _MIN_SOLID_VOLUME_MM3 = 1.0e-6
+SOURCE_INTERFACE_FEATURE = "source-interface-v1"
+_SOURCE_INTERFACE_KEYS = frozenset(
+    {
+        "id",
+        "role",
+        "required",
+        "default_drive_channel_id",
+        "patch_policy",
+        "expected_connected_components",
+        "suggested_resolution_mm",
+    }
+)
+_SOURCE_PATCH_POLICIES = frozenset({"single-connected", "explicit-disconnected"})
 
 
 @dataclass(frozen=True)
@@ -97,6 +112,25 @@ class WgLinkIdentity:
     generator: Mapping[str, Any] | None = None
     design: Mapping[str, Any] | None = None
     export: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class WgLinkSourceInterface:
+    """WG-authored acoustic source policy carried by ``interface.sources[]``.
+
+    Geometry is deliberately not selected by face index or CAD body name. The
+    O4 Onshape adapter materializes the linked throat sheet from the manifest's
+    throat datum and diameter parameter, while this record owns the stable
+    acoustic identity and meshing policy for that sheet.
+    """
+
+    id: str
+    role: str
+    required: bool
+    default_drive_channel_id: str
+    patch_policy: Literal["single-connected", "explicit-disconnected"]
+    expected_connected_components: int
+    suggested_resolution_mm: float
 
 
 @dataclass(frozen=True)
@@ -668,6 +702,94 @@ def _identity_sections(
     }
 
 
+def _source_interface_table(
+    sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Validate and normalize the additive ``source-interface-v1`` table."""
+
+    if sources is None:
+        return []
+    if isinstance(sources, (str, bytes)):
+        raise MesherError("interface_sources must be a sequence of source records")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, source in enumerate(sources):
+        if isinstance(source, WgLinkSourceInterface):
+            record = {
+                "id": source.id,
+                "role": source.role,
+                "required": source.required,
+                "default_drive_channel_id": source.default_drive_channel_id,
+                "patch_policy": source.patch_policy,
+                "expected_connected_components": source.expected_connected_components,
+                "suggested_resolution_mm": source.suggested_resolution_mm,
+            }
+        elif isinstance(source, Mapping):
+            record = dict(source)
+        else:
+            raise MesherError(f"interface.sources[{index}] must be an object")
+        unknown = sorted(set(record).difference(_SOURCE_INTERFACE_KEYS))
+        missing = sorted(_SOURCE_INTERFACE_KEYS.difference(record))
+        if unknown or missing:
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if unknown:
+                details.append("unknown " + ", ".join(unknown))
+            raise MesherError(f"interface.sources[{index}] is invalid: {'; '.join(details)}")
+        for key in ("id", "role", "default_drive_channel_id"):
+            value = record[key]
+            if not isinstance(value, str) or not value.strip() or value != value.strip():
+                raise MesherError(
+                    f"interface.sources[{index}].{key} must be a non-empty trimmed string"
+                )
+        source_id = str(record["id"])
+        if source_id in seen:
+            raise MesherError(f"interface.sources has duplicate id {source_id!r}")
+        seen.add(source_id)
+        if not isinstance(record["required"], bool):
+            raise MesherError(f"interface.sources[{index}].required must be boolean")
+        policy = record["patch_policy"]
+        if policy not in _SOURCE_PATCH_POLICIES:
+            raise MesherError(
+                f"interface.sources[{index}].patch_policy must be single-connected "
+                "or explicit-disconnected"
+            )
+        components = record["expected_connected_components"]
+        if isinstance(components, bool) or not isinstance(components, int) or components < 1:
+            raise MesherError(
+                f"interface.sources[{index}].expected_connected_components "
+                "must be an integer >= 1"
+            )
+        if policy == "single-connected" and components != 1:
+            raise MesherError(
+                f"interface.sources[{index}].expected_connected_components must be 1 "
+                "for single-connected"
+            )
+        resolution = record["suggested_resolution_mm"]
+        if isinstance(resolution, bool) or not isinstance(resolution, (int, float)):
+            raise MesherError(
+                f"interface.sources[{index}].suggested_resolution_mm must be positive"
+            )
+        resolution = float(resolution)
+        if not math.isfinite(resolution) or resolution <= 0.0:
+            raise MesherError(
+                f"interface.sources[{index}].suggested_resolution_mm must be positive"
+            )
+        result.append(
+            {
+                "id": source_id,
+                "role": str(record["role"]),
+                "required": bool(record["required"]),
+                "default_drive_channel_id": str(record["default_drive_channel_id"]),
+                "patch_policy": str(policy),
+                "expected_connected_components": int(components),
+                "suggested_resolution_mm": resolution,
+            }
+        )
+    return result
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -782,6 +904,7 @@ def write_wglink(
     open_throat: bool = True,
     check_points: object | None = None,
     informational_parameters: Mapping[str, float] | None = None,
+    interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]] | None = None,
 ) -> WgLinkInfo:
     """Write a checksummed ``.wglink`` directory and return every product.
 
@@ -821,6 +944,7 @@ def write_wglink(
     )
     identity_sections = _identity_sections(identity)
     identity_sections.setdefault("generator", _default_generator())
+    source_interfaces = _source_interface_table(interface_sources)
 
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
     try:
@@ -844,9 +968,12 @@ def write_wglink(
                 "media_type": "application/json",
             },
         }
+        required_features = ["checksummed-files-v1", "link-local-frame-v1"]
+        if source_interfaces:
+            required_features.append(SOURCE_INTERFACE_FEATURE)
         manifest: dict[str, Any] = {
             "wglink_version": "1.1",
-            "required_features": ["checksummed-files-v1", "link-local-frame-v1"],
+            "required_features": required_features,
             **identity_sections,
             "coordinate_system": {
                 "length_unit": "mm",
@@ -874,7 +1001,7 @@ def write_wglink(
                 "solver_cut_plane_y_mm": 0.0,
             },
             "datums": datums,
-            "interface": {},
+            "interface": {"sources": source_interfaces},
             "parameters": parameters,
             "roles": {
                 "scheme": "advanced-face-record-order",
@@ -925,10 +1052,26 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
     version = str(manifest.get("wglink_version", ""))
     if version.split(".", 1)[0] != "1":
         raise MesherError(f"unsupported wglink major version {version!r}")
-    supported = {"checksummed-files-v1", "link-local-frame-v1"}
+    supported = {
+        "checksummed-files-v1",
+        "link-local-frame-v1",
+        SOURCE_INTERFACE_FEATURE,
+    }
     unknown = sorted(set(manifest.get("required_features", ())).difference(supported))
     if unknown:
         raise MesherError("unsupported required wglink feature(s): " + ", ".join(unknown))
+    interface = manifest.get("interface")
+    raw_sources = interface.get("sources") if isinstance(interface, Mapping) else None
+    has_source_feature = SOURCE_INTERFACE_FEATURE in manifest.get("required_features", ())
+    if raw_sources is None:
+        raw_sources = []
+    if not isinstance(raw_sources, list):
+        raise MesherError("wglink.interface.sources must be an array")
+    normalized_sources = _source_interface_table(raw_sources)
+    if bool(normalized_sources) != has_source_feature:
+        raise MesherError(
+            "source-interface-v1 is required exactly when wglink.interface.sources is non-empty"
+        )
     if not verify_checksums:
         return manifest
     files = manifest.get("files")
@@ -978,6 +1121,8 @@ __all__ = [
     "CadInfo",
     "WgLinkIdentity",
     "WgLinkInfo",
+    "WgLinkSourceInterface",
+    "SOURCE_INTERFACE_FEATURE",
     "read_wglink",
     "write_step",
     "write_step_from_config",
