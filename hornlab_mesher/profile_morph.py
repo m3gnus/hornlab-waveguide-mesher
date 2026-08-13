@@ -509,6 +509,25 @@ def _morph_target_radius_at_angle(
     return _rounded_rect_radius(phi, half_width, half_height, corner)
 
 
+def _superellipse_radii(
+    phi: Any, half_width: float, half_height: float, exponent: float
+) -> np.ndarray:
+    """Array form of the superellipse Morph target over a whole ring."""
+
+    angles = np.asarray(phi, dtype=np.float64)
+    abs_cos = np.abs(np.cos(angles))
+    abs_sin = np.abs(np.sin(angles))
+    cos_degenerate = abs_cos < 1.0e-9
+    sin_degenerate = abs_sin < 1.0e-9
+
+    radii = (
+        (abs_cos / half_width) ** exponent
+        + (abs_sin / half_height) ** exponent
+    ) ** (-1.0 / exponent)
+    radii = np.where(sin_degenerate, half_width, radii)
+    return np.where(cos_degenerate, half_height, radii)
+
+
 def _morph_factor(
     t: float,
     phi: float,

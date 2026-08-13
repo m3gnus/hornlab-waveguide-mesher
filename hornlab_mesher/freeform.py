@@ -31,7 +31,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .profile_common import _is_true, eval_param
-from .profile_morph import _rounded_rect_radii
+from .profile_morph import (
+    _morph_factor,
+    _morph_target_radius_at_angle,
+    _rounded_rect_radii,
+    _superellipse_radii,
+)
 
 
 _INVERSION_SAMPLE_N = 4001
@@ -42,6 +47,20 @@ _FREEFORM_PARAM_KEYS = (
     "crossSections",
     "inflectionPolicy",
     "a0",
+    "morphTarget",
+    "morphWidth",
+    "morphHeight",
+    "morphExponent",
+    "morphRate",
+    "morphFixed",
+    "morphAllowShrinkage",
+)
+_FREEFORM_SCALAR_MORPH_KEYS = (
+    "morphWidth",
+    "morphHeight",
+    "morphExponent",
+    "morphRate",
+    "morphFixed",
 )
 
 
@@ -115,6 +134,10 @@ class FreeformGeometry:
     _profile_h: _PlaneSpline
     _profile_v: _PlaneSpline
     stations: Sequence[Mapping[str, Any]]
+    _morph_target: int = field(default=0, repr=False)
+    _morph_params: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
     _inflection_spans: dict[str, tuple[_InflectionSpan, ...]] = field(
         default_factory=dict, repr=False
     )
@@ -170,11 +193,137 @@ class FreeformGeometry:
 
         rho0 = _station_radius(first, phi, a, b)
         if _station_descriptor(first) == _station_descriptor(second):
-            return rho0
-        rho1 = _station_radius(second, phi, a, b)
-        return np.asarray(
-            (1.0 - blend.weight) * rho0 + blend.weight * rho1, dtype=float
+            base_radius = rho0
+        else:
+            rho1 = _station_radius(second, phi, a, b)
+            base_radius = np.asarray(
+                (1.0 - blend.weight) * rho0 + blend.weight * rho1, dtype=float
+            )
+
+        # Keep an inactive FREEFORM morph on the original analytic path: none
+        # of the target, mouth, or factor calculations below are evaluated.
+        if self._morph_target not in {2, 3}:
+            return base_radius
+
+        scalar_morph = all(
+            self._morph_params.get(key) is None
+            or isinstance(self._morph_params.get(key), (int, float))
+            for key in _FREEFORM_SCALAR_MORPH_KEYS
         )
+        if scalar_morph:
+            # FREEFORM t is a scalar, so plain-number scheduling parameters
+            # produce one factor for the entire ring.
+            configured_start = eval_param(
+                self._morph_params.get("morphFixed"), 0.0, 0.0
+            )
+            morph_start = min(
+                math.nextafter(1.0, 0.0), max(0.0, configured_start)
+            )
+            factor = _morph_factor(
+                t,
+                0.0,
+                self._morph_params,
+                morph_start=morph_start,
+            )
+            if factor == 0.0:
+                return base_radius
+
+        mouth_z = float(self._profile_h.anchors[-1, 0])
+        mouth_h, mouth_v = self.evaluate_radii(np.asarray(mouth_z))
+        mouth_a = float(mouth_h)
+        mouth_b = float(mouth_v)
+        mouth_blend = _resolve_active_station_blend(self.stations, 1.0)
+        mouth_first = self.stations[mouth_blend.first_index]
+        mouth_second = self.stations[mouth_blend.second_index]
+        mouth_rho0 = _station_radius(mouth_first, phi, mouth_a, mouth_b)
+        if _station_descriptor(mouth_first) == _station_descriptor(mouth_second):
+            mouth_base = mouth_rho0
+        else:
+            mouth_rho1 = _station_radius(mouth_second, phi, mouth_a, mouth_b)
+            mouth_base = np.asarray(
+                (1.0 - mouth_blend.weight) * mouth_rho0
+                + mouth_blend.weight * mouth_rho1,
+                dtype=float,
+            )
+
+        if scalar_morph:
+            width = eval_param(self._morph_params.get("morphWidth"), 0.0, 0.0)
+            height = eval_param(self._morph_params.get("morphHeight"), 0.0, 0.0)
+            half_width = width / 2.0 if width > 0.0 else mouth_a
+            half_height = height / 2.0 if height > 0.0 else mouth_b
+            if not _is_true(self._morph_params.get("morphAllowShrinkage")):
+                half_width = max(half_width, mouth_a)
+                half_height = max(half_height, mouth_b)
+
+            if self._morph_target == 2:
+                target_radius: float | np.ndarray = max(half_width, half_height)
+            else:
+                if half_width <= 0.0 or half_height <= 0.0:
+                    raise ValueError(
+                        "superellipse Morph target dimensions must be positive"
+                    )
+                exponent = min(
+                    16.0,
+                    max(
+                        2.0,
+                        eval_param(
+                            self._morph_params.get("morphExponent"), 0.0, 2.0
+                        ),
+                    ),
+                )
+                target_radius = _superellipse_radii(
+                    phi, half_width, half_height, exponent
+                )
+            return np.asarray(
+                base_radius + factor * (target_radius - mouth_base), dtype=float
+            )
+
+        # FREEFORM t is already continuous normalized axial position. Do not
+        # snap morphFixed to a grid slice: that is an ATH axial-table artifact.
+        # With implicit W/H the exact drawn mouth extents are used. For target
+        # 3 this is shape-only and preserves both H/V mouth endpoints; target
+        # 2 necessarily expands the smaller endpoint when the mouth is not round.
+        result = np.asarray(base_radius, dtype=float).copy()
+        flat_phi = phi.reshape(-1)
+        flat_base = np.asarray(base_radius, dtype=float).reshape(-1)
+        flat_mouth = np.asarray(mouth_base, dtype=float).reshape(-1)
+        flat_result = result.reshape(-1)
+        allow_shrinkage = _is_true(self._morph_params.get("morphAllowShrinkage"))
+        for index, angle in enumerate(flat_phi):
+            phi_value = float(angle)
+            width = eval_param(self._morph_params.get("morphWidth"), phi_value, 0.0)
+            height = eval_param(self._morph_params.get("morphHeight"), phi_value, 0.0)
+            half_width = width / 2.0 if width > 0.0 else mouth_a
+            half_height = height / 2.0 if height > 0.0 else mouth_b
+            if not allow_shrinkage:
+                half_width = max(half_width, mouth_a)
+                half_height = max(half_height, mouth_b)
+
+            configured_start = eval_param(
+                self._morph_params.get("morphFixed"), phi_value, 0.0
+            )
+            morph_start = min(
+                math.nextafter(1.0, 0.0), max(0.0, configured_start)
+            )
+            factor = _morph_factor(
+                t,
+                phi_value,
+                self._morph_params,
+                morph_start=morph_start,
+            )
+            if factor == 0.0:
+                continue
+            target_radius = _morph_target_radius_at_angle(
+                float(flat_mouth[index]),
+                phi_value,
+                self._morph_params,
+                implicit_half_width=half_width,
+                implicit_half_height=half_height,
+            )
+            flat_result[index] = flat_base[index] + factor * (
+                target_radius - flat_mouth[index]
+            )
+        return result
 
     def report(self) -> dict[str, Any]:
         """Return spline deviation, tangents, inflections, and endpoint metadata."""
@@ -1400,6 +1549,8 @@ def _geometry_with_station_corner(
         geometry._profile_h,
         geometry._profile_v,
         stations,
+        _morph_target=geometry._morph_target,
+        _morph_params=geometry._morph_params,
         _inflection_spans=geometry._inflection_spans,
     )
 
@@ -1540,6 +1691,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     """Parse, validate, construct, and memoize a FREEFORM geometry definition."""
     if not isinstance(params, Mapping):
         raise ValueError("FREEFORM params must be a mapping")
+    morph_target = _validate_freeform_morph_target(params)
     if "overshootPolicy" in params:
         raise ValueError(
             "FREEFORM overshootPolicy was removed; tangent speed is now solved "
@@ -1626,6 +1778,22 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         plane_h,
         plane_v,
         tuple(MappingProxyType(dict(station)) for station in stations),
+        _morph_target=morph_target,
+        _morph_params=MappingProxyType(
+            {
+                key: params[key]
+                for key in (
+                    "morphTarget",
+                    "morphWidth",
+                    "morphHeight",
+                    "morphExponent",
+                    "morphRate",
+                    "morphFixed",
+                    "morphAllowShrinkage",
+                )
+                if key in params
+            }
+        ),
         _inflection_spans=inflection_spans,
     )
     _validate_station_corner_radii(geometry)
@@ -1665,16 +1833,8 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     return geometry
 
 
-def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeometry:
-    """Validate FREEFORM's pipeline-level exclusions and return its geometry.
-
-    The spline/station kernel owns intrinsic geometry validation.  This shared
-    entry-point adds the exclusions required by both config ingestion and
-    callers that invoke :func:`build_point_grid` directly.
-    """
-    geometry = build_freeform_geometry(profile_params)
-
-    sample_phi = np.linspace(0.0, math.tau, 33, endpoint=False)
+def _validate_freeform_morph_target(profile_params: Mapping[str, Any]) -> int:
+    """Resolve FREEFORM's geometry-level morph target before construction."""
     raw_morph_target = profile_params.get("morphTarget", 0.0)
     try:
         static_morph_target = float(raw_morph_target)
@@ -1687,12 +1847,26 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
         raise ValueError(
             f"FREEFORM morphTarget must be finite, got {raw_morph_target!r}"
         )
-    if int(round(static_morph_target)) in {1, 2, 3}:
+    morph_target = int(round(static_morph_target))
+    if morph_target == 1:
         raise ValueError(
-            "FREEFORM does not support active morphTarget shaping; "
-            "use crossSections stations instead"
+            "FREEFORM morphTarget rectangle morphing is not supported yet; use "
+            "crossSections' rounded-rectangle station instead"
         )
+    return morph_target
 
+
+def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeometry:
+    """Validate FREEFORM's pipeline-level exclusions and return its geometry.
+
+    The spline/station kernel owns intrinsic geometry validation.  This shared
+    entry-point adds the exclusions required by both config ingestion and
+    callers that invoke :func:`build_point_grid` directly.
+    """
+    _validate_freeform_morph_target(profile_params)
+    geometry = build_freeform_geometry(profile_params)
+
+    sample_phi = np.linspace(0.0, math.tau, 33, endpoint=False)
     gcurve_active = any(
         int(round(eval_param(profile_params.get("gcurveType"), float(phi), 0.0)))
         in {1, 2}
