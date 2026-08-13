@@ -32,10 +32,12 @@ from .profile_formulas import (
 from .profile_morph import (
     _guiding_curve_type,
     _guiding_curve_active,
+    _morph_factor,
     _morph_active,
     _morph_factors,
     _morph_target_radius_at_angle,
     _morph_target_shape,
+    _validate_static_morph_target,
     _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
     rounded_rect_corner_arc_span,
@@ -128,6 +130,7 @@ def _morph_angle_list(
     half_width: float | None = None,
     half_height: float | None = None,
 ) -> np.ndarray | None:
+    # Finite superellipses (target 3) are smooth and need no corner-tangency azimuths.
     if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
         return None
     if half_width is None or half_height is None:
@@ -181,6 +184,7 @@ def _morph_corner_arc_span(
         for key in ("morphTarget", "morphCorner", "morphWidth", "morphHeight")
     ):
         return None
+    # Finite superellipses (target 3) have no corner arc to refine.
     if not _morph_active(params, 0.0) or _morph_target_shape(params, 0.0) != 1:
         return None
     if not half_width or not half_height or half_width <= 0.0 or half_height <= 0.0:
@@ -1001,7 +1005,8 @@ def _freeform_raw_radial_grid(
     has_rounded_rectangle = any(
         station["shape"] == "rounded_rectangle" for station in geometry.stations
     )
-    if has_rounded_rectangle:
+    rectangle_morph = geometry._morph_target == 1
+    if has_rounded_rectangle or rectangle_morph:
         angular_segments = _normalise_ath_angular_segments(
             int(params.get("angularSegments", 64))
         )
@@ -1011,10 +1016,52 @@ def _freeform_raw_radial_grid(
             int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
         )
         arc_subdivision = _morph_corner_arc_subdivision(params)
-        reference_a = float(radii_h[-1])
-        reference_b = float(radii_v[-1])
-        reference_corner = active_rounded_rect_corner_radius_mm(
-            geometry.stations, float(t_values[-1]), reference_a, reference_b
+        configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
+        morph_start = min(
+            math.nextafter(1.0, 0.0), max(0.0, configured_morph_start)
+        )
+        morph_corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
+
+        def effective_outline_parameters(
+            t_value: float, station_a: float, station_b: float
+        ) -> tuple[float, float, float]:
+            if not rectangle_morph:
+                return (
+                    station_a,
+                    station_b,
+                    active_rounded_rect_corner_radius_mm(
+                        geometry.stations, t_value, station_a, station_b
+                    ),
+                )
+
+            # These effective values only choose where the analytic outline is
+            # sampled; they do not define the surface. cross_section_radius is
+            # authoritative and already includes the exact FREEFORM morph.
+            effective_axes = geometry.cross_section_radius(
+                np.asarray([0.0, math.pi / 2.0]), t_value
+            )
+            factor = _morph_factor(
+                t_value, 0.0, params, morph_start=morph_start
+            )
+            if has_rounded_rectangle:
+                base_corner = active_rounded_rect_corner_radius_mm(
+                    geometry.stations, t_value, station_a, station_b
+                )
+                effective_corner = (
+                    (1.0 - factor) * base_corner + factor * morph_corner
+                )
+            else:
+                # A wholly smooth schedule has no structural corner descriptor.
+                # Avoid the existing nearest-station fallback's empty sequence.
+                effective_corner = factor * morph_corner
+            return (
+                float(effective_axes[0]),
+                float(effective_axes[1]),
+                float(effective_corner),
+            )
+
+        reference_a, reference_b, reference_corner = effective_outline_parameters(
+            float(t_values[-1]), float(radii_h[-1]), float(radii_v[-1])
         )
         reference_base = _rounded_rect_quadrant_angles(
             points_per_quadrant,
@@ -1027,8 +1074,26 @@ def _freeform_raw_radial_grid(
             points_per_quadrant, reference_a, reference_b, reference_corner
         )
         if reference_span is None:
-            side1_segments = max(0, points_per_quadrant - 3)
-            side2_segments = 0
+            if rectangle_morph:
+                # A sharp or fully rounded mouth has no finite corner arc from
+                # which to recover wall budgets. Use a non-degenerate sampling
+                # proxy so intermediate emerging corners retain rows on both
+                # walls; the proxy never participates in surface evaluation.
+                reference_layout = _rounded_rect_quadrant_layout(
+                    points_per_quadrant,
+                    reference_a,
+                    reference_b,
+                    0.5 * min(reference_a, reference_b),
+                )
+                if reference_layout is None:
+                    side1_segments = max(0, points_per_quadrant - 3)
+                    side2_segments = 0
+                else:
+                    side1_segments = int(reference_layout.side1_segments)
+                    side2_segments = int(reference_layout.side2_segments)
+            else:
+                side1_segments = max(0, points_per_quadrant - 3)
+                side2_segments = 0
         else:
             side1_segments = int(
                 np.flatnonzero(
@@ -1054,18 +1119,29 @@ def _freeform_raw_radial_grid(
         for ring_index, (t_value, a, b) in enumerate(
             zip(t_values, radii_h, radii_v)
         ):
-            corner_radius = active_rounded_rect_corner_radius_mm(
-                geometry.stations, float(t_value), float(a), float(b)
+            effective_a, effective_b, corner_radius = effective_outline_parameters(
+                float(t_value), float(a), float(b)
             )
-            q1 = _freeform_rounded_rect_quadrant_angles(
-                half_width=float(a),
-                half_height=float(b),
-                corner_radius=corner_radius,
-                side1_segments=side1_segments,
-                side2_segments=side2_segments,
-                arc_subdivision=arc_subdivision,
-                collapse_transition_intervals=collapse_transition_intervals,
-            )
+            if rectangle_morph and corner_radius <= 1.0e-9:
+                q1 = np.linspace(
+                    0.0,
+                    math.pi / 2.0,
+                    side1_segments
+                    + 3 * max(1, int(arc_subdivision))
+                    + side2_segments
+                    + 1,
+                    dtype=np.float64,
+                )
+            else:
+                q1 = _freeform_rounded_rect_quadrant_angles(
+                    half_width=effective_a,
+                    half_height=effective_b,
+                    corner_radius=corner_radius,
+                    side1_segments=side1_segments,
+                    side2_segments=side2_segments,
+                    arc_subdivision=arc_subdivision,
+                    collapse_transition_intervals=collapse_transition_intervals,
+                )
             reduced, full_circle = _freeform_quadrant_angles(q1, quadrants)
             if np.any(np.diff(reduced) <= 0.0):
                 raise ValueError(
@@ -1074,8 +1150,8 @@ def _freeform_raw_radial_grid(
             ring_angles.append(reduced)
             span = rounded_rect_corner_arc_span(
                 points_per_quadrant,
-                float(a),
-                float(b),
+                effective_a,
+                effective_b,
                 corner_radius,
             )
             if span is None:
@@ -1133,9 +1209,10 @@ def _freeform_raw_radial_grid(
         )
     z_values = np.repeat(shared_z[np.newaxis, :], phi_grid.shape[0], axis=0)
 
-    # Any rounded-rectangle station selects the structural corner-aware family
-    # for every ring so intermediate station tangencies cannot alias. Smooth
-    # rings use the nearest rounded-rectangle descriptor for harmless pinning.
+    # Any rounded-rectangle station or static rectangle morph selects the
+    # structural corner-aware family for every ring so tangencies cannot alias.
+    # Smooth station rings use the nearest descriptor for harmless pinning;
+    # smooth pre-morph rings use the uniform member of the same fixed-row family.
     return (
         raw_radials,
         z_values,
@@ -1171,6 +1248,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     the preview path takes ``inner_grid``/``outer_grid`` and never spells them.
     """
 
+    _validate_static_morph_target(params)
     formula = _normalise_formula(params.get("type", "OSSE"))
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
     symmetry_planes = _symmetry_planes_for_quadrants(quadrants)
@@ -1237,13 +1315,19 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     morph_target = _morph_target_shape(params, 0.0)
     resolved_half_width: float | None = None
     resolved_half_height: float | None = None
-    if morph_target in {1, 2}:
-        # ATH derives implicit target extents by rounding the raw mouth
-        # extents up to whole millimetres per half-dimension.
+    if morph_target in {1, 2, 3}:
         width = eval_param(params.get("morphWidth"), 0.0, 0.0)
         height = eval_param(params.get("morphHeight"), 0.0, 0.0)
-        resolved_half_width = width / 2.0 if width > 0.0 else float(math.ceil(raw_half_width - 1.0e-9))
-        resolved_half_height = height / 2.0 if height > 0.0 else float(math.ceil(raw_half_height - 1.0e-9))
+        if morph_target == 3:
+            # A shape-only superellipse morph preserves the exact raw mouth
+            # extents instead of inheriting ATH's whole-millimetre rounding.
+            resolved_half_width = width / 2.0 if width > 0.0 else raw_half_width
+            resolved_half_height = height / 2.0 if height > 0.0 else raw_half_height
+        else:
+            # ATH derives implicit target extents by rounding the raw mouth
+            # extents up to whole millimetres per half-dimension.
+            resolved_half_width = width / 2.0 if width > 0.0 else float(math.ceil(raw_half_width - 1.0e-9))
+            resolved_half_height = height / 2.0 if height > 0.0 else float(math.ceil(raw_half_height - 1.0e-9))
         if not _is_true(params.get("morphAllowShrinkage")):
             # No-shrinkage gates the target dimensions against the raw mouth
             # extents; the mouth still becomes the exact (enlarged) target.
@@ -1279,7 +1363,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
         snapped_morph_start = max(snapped_morph_start, float(t_unit_values[reserved_idx]))
 
     # _apply_morphing is a per-point no-op unless morphTarget resolves to a
-    # morph shape (1/2). When the param is absent or a plain non-morph
+    # morph shape (1/2/3). When the param is absent or a plain non-morph
     # constant it cannot activate at any azimuth — skip the n_phi * n_length
     # no-op calls. Expression values may vary with phi, so they keep the
     # per-point path.
@@ -1287,7 +1371,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     if morph_param is None:
         morph_possible = False
     elif isinstance(morph_param, (int, float)):
-        morph_possible = int(round(float(morph_param))) in {1, 2}
+        morph_possible = int(round(float(morph_param))) in {1, 2, 3}
     else:
         morph_possible = True
 
@@ -1306,11 +1390,23 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
             # is the global normalized axial position (z / L for OSSE),
             # identical for every azimuth: ATH does not shift the blend by the
             # per-azimuth slot length.
+            morph_progress = t_values
+            morph_progress_start = snapped_morph_start
+            if formula == "R-OSSE" and 0.0 < t_max < 1.0:
+                # ATH blends against an assumed unit path and undershoots the
+                # target when R-OSSE tmax truncates that path. HornLab
+                # deliberately normalises both progress and its snapped start
+                # by the actual path so the mouth reaches a factor of one.
+                morph_progress = t_unit_values
+                morph_progress_start = snapped_morph_start / t_max
             radials = raw_radials.copy()
             for i, phi in enumerate(angles):
                 phi_value = float(phi)
                 factors = _morph_factors(
-                    t_values, phi_value, params, morph_start=snapped_morph_start
+                    morph_progress,
+                    phi_value,
+                    params,
+                    morph_start=morph_progress_start,
                 )
                 blended = factors > 0.0
                 if not blended.any():
