@@ -703,7 +703,11 @@ def _fsync_directory(path: Path) -> None:
 def _sync_staged_bundle(staging: Path) -> None:
     for child in staging.iterdir():
         if child.is_file():
-            with child.open("rb") as stream:
+            # Windows' CRT rejects ``_commit`` (the implementation behind
+            # ``os.fsync``) for a read-only descriptor with ``EBADF``.  Every
+            # staged member was just written by us, so opening it read/write
+            # preserves the same durability barrier on every platform.
+            with child.open("rb+") as stream:
                 os.fsync(stream.fileno())
     _fsync_directory(staging)
 

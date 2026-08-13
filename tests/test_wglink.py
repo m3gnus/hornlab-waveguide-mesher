@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 
 from hornlab_mesher.builders.enclosure import enclosure_box_bounds
 from hornlab_mesher.cad import CadInfo, read_wglink, write_wglink
+from hornlab_mesher import cad as cad_module
 from hornlab_mesher.datums import derive_datums
 from hornlab_mesher.geometry import (
     BuiltGeometry,
@@ -365,6 +367,20 @@ def test_writer_atomically_replaces_live_bundle(monkeypatch, tmp_path):
     assert read_wglink(target)["export"]["sequence"] == 2
     assert result.path == target
     assert not list(tmp_path.glob(".horn.wglink.*"))
+
+
+def test_writer_fsyncs_staged_members_through_writable_descriptors(monkeypatch, tmp_path):
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "member.bin").write_bytes(b"payload")
+    synced: list[int] = []
+
+    monkeypatch.setattr(cad_module, "_fsync_directory", lambda _path: None)
+    monkeypatch.setattr(cad_module.os, "fsync", lambda descriptor: synced.append(os.write(descriptor, b"")))
+
+    cad_module._sync_staged_bundle(staged)
+
+    assert synced == [0]
 
 
 def test_writer_rejects_config_like_enclosure_bounds(monkeypatch, tmp_path):
