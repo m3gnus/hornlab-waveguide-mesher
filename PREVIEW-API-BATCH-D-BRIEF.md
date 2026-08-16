@@ -1,7 +1,7 @@
 # Batch D — mesher preview API, stage 1 (STRICTLY ADDITIVE)
 
 You are adding a versioned preview-geometry API to `hornlab-waveguide-mesher` (this repo, branch `preview-api`). This implements the "Mesher preview API" contract from two documents you must read first:
-1. `../waveguide-generator-v2/docs/reference/FRAME-SPEC.md` — especially the v1.1 surfaces/normals/fidelity section.
+1. `../waveguide-generator/docs/reference/FRAME-SPEC.md` — especially the v1.1 surfaces/normals/fidelity section.
 2. `../wg-rebuild-reviews/tessellation-review-260803.md` — the findings driving this work (P0.1 analytic normals, P0.3 complete surfaces, P1.3 explicit shading semantics).
 
 **HARD CONSTRAINT — additive only:** create NEW files only (`hornlab_mesher/preview/` package + `tests/test_preview_api.py` + optional new test helpers). You may NOT modify any existing module, test, or config. This repo is a pushed public science package; the whole existing suite must stay green untouched. If stage 1 seems to need an existing-module change, work around it via the public/importable functions and record the limitation in your final report instead.

@@ -1,6 +1,6 @@
 # Batch H — preview API stage 2: error-bounded adaptive sampling (branch `preview-api`)
 
-Stage 1 (commit aea5f07) ships complete surfaces + analytic normals with fixed sampling. Stage 2 makes tessellation **error-bounded**: density driven by geometric tolerances, not segment labels. The normative sources are `../wg-rebuild-reviews/tessellation-review-260803.md` (P0.2, P1.1, P1.2, P1.4, and the "Mesher preview API" section) and `../waveguide-generator-v2/docs/reference/FRAME-SPEC.md` §fidelity. Read both first.
+Stage 1 (commit aea5f07) ships complete surfaces + analytic normals with fixed sampling. Stage 2 makes tessellation **error-bounded**: density driven by geometric tolerances, not segment labels. The normative sources are `../wg-rebuild-reviews/tessellation-review-260803.md` (P0.2, P1.1, P1.2, P1.4, and the "Mesher preview API" section) and `../waveguide-generator/docs/reference/FRAME-SPEC.md` §fidelity. Read both first.
 
 **Path discipline: you may create/modify ONLY files under `hornlab_mesher/preview/` and `tests/test_preview_api.py` (+ new test files `tests/test_preview_*.py`). All other existing modules remain untouched — same additive discipline as stage 1, now scoped to the preview package you own.**
 
