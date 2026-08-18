@@ -267,6 +267,79 @@ def _open_throat(
     return volumes[0]
 
 
+# ISO 10303-21 clause 8 fixes the header order: file_description, then
+# file_name, then file_schema. OpenCASCADE emitted them that way through 7.6,
+# and since 7.7 it writes file_name first -- gmsh 4.12 and newer inherit the
+# bug. Fusion and gmsh itself do not care; strict readers (CATIA among them)
+# parse the header positionally and can take the file's product structure
+# while dropping every shape in it, which looks like an empty tree rather than
+# an error. We write through OCC, so the fix is to reorder the header text.
+_HEADER_ORDER = ("FILE_DESCRIPTION", "FILE_NAME", "FILE_SCHEMA")
+
+
+def _split_step_statements(block: str) -> list[str]:
+    """Split a STEP section into statements, ignoring ``;`` inside strings.
+
+    STEP single-quoted strings escape a quote by doubling it, so a quote that
+    follows a quote does not end the literal.
+    """
+
+    statements: list[str] = []
+    start = 0
+    in_string = False
+    index = 0
+    while index < len(block):
+        char = block[index]
+        if char == "'":
+            if in_string and index + 1 < len(block) and block[index + 1] == "'":
+                index += 2
+                continue
+            in_string = not in_string
+        elif char == ";" and not in_string:
+            statements.append(block[start : index + 1])
+            start = index + 1
+        index += 1
+    tail = block[start:]
+    if tail.strip():
+        statements.append(tail)
+    return statements
+
+
+def normalise_step_header(text: str) -> str:
+    """Return ``text`` with its header entities in ISO 10303-21 order.
+
+    Anything that is not one of the three mandatory entities keeps its relative
+    position after them, and a header already in order is returned unchanged.
+    """
+
+    head, sep, rest = text.partition("HEADER;")
+    if not sep:
+        return text
+    block, end_sep, tail = rest.partition("ENDSEC;")
+    if not end_sep:
+        return text
+
+    statements = _split_step_statements(block)
+    keyed: dict[str, str] = {}
+    others: list[str] = []
+    for statement in statements:
+        stripped = statement.lstrip()
+        for keyword in _HEADER_ORDER:
+            if stripped.startswith(keyword) and keyword not in keyed:
+                keyed[keyword] = statement.strip()
+                break
+        else:
+            others.append(statement)
+    if len(keyed) != len(_HEADER_ORDER):
+        # Not the header we know how to reorder; leave it as OCC wrote it.
+        return text
+    ordered = "\n" + "\n".join(keyed[keyword] for keyword in _HEADER_ORDER) + "\n"
+    trailing = "".join(others).strip()
+    if trailing:
+        ordered += trailing + "\n"
+    return f"{head}{sep}{ordered}{end_sep}{tail}"
+
+
 def _assert_step(text: str, *, body: CadBody) -> None:
     required = ["ISO-10303-21", "END-ISO-10303-21", "ADVANCED_FACE"]
     if body == "solid":
@@ -280,6 +353,13 @@ def _assert_step(text: str, *, body: CadBody) -> None:
         )
     if "SI_UNIT(.MILLI.,.METRE.)" not in text:
         raise MesherError("STEP export did not declare millimetre length units")
+    header = text.partition("HEADER;")[2].partition("ENDSEC;")[0]
+    positions = [header.find(keyword) for keyword in _HEADER_ORDER]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        raise MesherError(
+            "STEP header is not in ISO 10303-21 order (file_description, "
+            "file_name, file_schema); strict CAD readers reject it"
+        )
 
 
 def write_step(
@@ -415,8 +495,11 @@ def write_step(
             ) as tmp:
                 staged_path = Path(tmp.name)
             gmsh.write(str(staged_path))
-            text = staged_path.read_text(encoding="utf-8", errors="replace")
+            text = normalise_step_header(
+                staged_path.read_text(encoding="utf-8", errors="replace")
+            )
             _assert_step(text, body=body)
+            staged_path.write_text(text, encoding="utf-8")
             staged_path.replace(out_path)
             staged_path = None
             wrote = True
@@ -1124,6 +1207,7 @@ __all__ = [
     "WgLinkSourceInterface",
     "SOURCE_INTERFACE_FEATURE",
     "read_wglink",
+    "normalise_step_header",
     "write_step",
     "write_step_from_config",
     "write_wglink",

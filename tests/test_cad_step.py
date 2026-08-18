@@ -433,3 +433,62 @@ def test_freestanding_throat_still_opens(tmp_path):
 
     assert info.throat_opened is True
     assert _points_inside(path, [(0.0, 0.0, -5.0)]) == [False]
+
+
+def test_header_follows_the_iso_10303_21_order(tmp_path):
+    """file_description, then file_name, then file_schema.
+
+    OpenCASCADE 7.7 started writing file_name first, so every gmsh from 4.12 on
+    emits a header that strict readers reject -- CATIA takes the product
+    structure and drops the shapes. Pin bumps must not reintroduce it.
+    """
+
+    path, _ = write_step(_freestanding(), tmp_path / "header.step")
+    header = path.read_text().partition("HEADER;")[2].partition("ENDSEC;")[0]
+
+    positions = [
+        header.find(keyword)
+        for keyword in ("FILE_DESCRIPTION", "FILE_NAME", "FILE_SCHEMA")
+    ]
+    assert all(position >= 0 for position in positions), header
+    assert positions == sorted(positions), header
+
+
+def test_header_normalisation_leaves_quoted_semicolons_alone():
+    """A ``;`` inside a STEP string must not be read as a statement end."""
+
+    from hornlab_mesher.cad import normalise_step_header
+
+    text = (
+        "ISO-10303-21;\nHEADER;\n"
+        "FILE_NAME('a;b','2026-01-01T00:00:00',('it''s me;'),(''),'p','o','');\n"
+        "FILE_DESCRIPTION(('d;d'),'2;1');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
+        "ENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+    )
+
+    out = normalise_step_header(text)
+
+    header = out.partition("HEADER;")[2].partition("ENDSEC;")[0]
+    assert header.index("FILE_DESCRIPTION") < header.index("FILE_NAME")
+    assert header.index("FILE_NAME") < header.index("FILE_SCHEMA")
+    # Both statements survived intact, semicolons and doubled quotes and all.
+    assert "FILE_NAME('a;b'" in header
+    assert "('it''s me;')" in header
+    assert "FILE_DESCRIPTION(('d;d'),'2;1');" in header
+    assert out.endswith("DATA;\nENDSEC;\nEND-ISO-10303-21;\n")
+
+
+def test_header_normalisation_is_idempotent():
+    from hornlab_mesher.cad import normalise_step_header
+
+    text = (
+        "ISO-10303-21;\nHEADER;\n"
+        "FILE_DESCRIPTION(('d'),'2;1');\n"
+        "FILE_NAME('n','2026-01-01T00:00:00',(''),(''),'p','o','');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
+        "ENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+    )
+
+    once = normalise_step_header(text)
+    assert normalise_step_header(once) == once
