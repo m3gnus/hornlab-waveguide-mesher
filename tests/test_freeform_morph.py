@@ -537,7 +537,13 @@ def test_rounded_rectangle_station_grid_is_bit_for_bit_unchanged() -> None:
         ]
     )
     actual = np.asarray(build_point_grid(params)["inner_points"]).reshape(6, 3, 3)
-    assert np.array_equal(actual, expected)
+    # The expected literals were captured on macOS. Linux libm's sin/cos differ
+    # from Apple's by an ULP at some arguments, which broke the original exact
+    # np.array_equal on every ubuntu CI run while macOS stayed green. A few
+    # femtometres of absolute tolerance keeps this a regression pin (1 ULP at
+    # coordinate magnitude ~20 mm is ~3.6e-15) without asserting that two libms
+    # round identically.
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
 
 
 def test_convexity_guard_sees_a_bad_morphed_surface() -> None:
