@@ -154,6 +154,37 @@ def test_auto_cut_does_not_treat_untrimmed_hole_as_symmetric():
         assert result.report["planes"]["x0"]["points_off_model"] > 0
 
 
+def test_auto_cut_only_considers_the_planes_the_caller_supports():
+    with _gmsh_session():
+        # Symmetric about all three coordinate planes, so the unrestricted
+        # cutter would halve the model on a plane the caller cannot mirror.
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        groups = [
+            OccSurfaceGroup(
+                "all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque")
+            )
+        ]
+
+        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0", "y0"))
+
+        assert result.planes == ("x0", "y0")
+        assert result.report["candidate_planes"] == ["x0", "y0"]
+        assert set(result.report["planes"]) == {"x0", "y0"}
+        assert result.report["cut"]["planes"] == ["x0", "y0"]
+
+
+def test_auto_cut_refuses_an_unknown_plane_name():
+    with _gmsh_session():
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        groups = [
+            OccSurfaceGroup(
+                "all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque")
+            )
+        ]
+        with pytest.raises(ValueError, match="unknown symmetry planes"):
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0", "xy"))
+
+
 def test_auto_cut_rejects_overlapping_group_selectors():
     with _gmsh_session():
         surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)

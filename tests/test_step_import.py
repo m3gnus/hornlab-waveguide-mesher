@@ -3,11 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+import numpy as np
+
 from hornlab_mesher.step_import import (
     OCC_HEALING_FALLBACKS,
     RIGID_TAG,
     StepFaceGroup,
     StepLabelSelector,
+    detect_symmetry_planes,
     map_step_face_groups,
     run_occ_healing_fallbacks,
 )
@@ -119,3 +122,63 @@ def test_healing_fallback_returns_rejected_rung_records():
             "reason": "OCC sew repair rejected before meshing (RuntimeError): sew rejected",
         }
     ]
+
+
+# A quarter box on the +x/+y side, lifted clear of z=0 so that no rim edge
+# lies on two coordinate planes at once except the x0/y0 corner.
+_QUARTER_BOX_VERTICES = [
+    (0.0, 0.0, 1.0),
+    (1.0, 0.0, 1.0),
+    (1.0, 1.0, 1.0),
+    (0.0, 1.0, 1.0),
+    (0.0, 0.0, 2.0),
+    (1.0, 0.0, 2.0),
+    (1.0, 1.0, 2.0),
+    (0.0, 1.0, 2.0),
+]
+_QUARTER_BOX_FACES = {
+    "zlow": [(0, 1, 2), (0, 2, 3)],
+    "zhigh": [(4, 5, 6), (4, 6, 7)],
+    "y0": [(0, 1, 5), (0, 5, 4)],
+    "y1": [(3, 2, 6), (3, 6, 7)],
+    "x0": [(0, 3, 7), (0, 7, 4)],
+    "x1": [(1, 2, 6), (1, 6, 5)],
+}
+
+
+def _quarter_box_mesh(*open_faces: str):
+    triangles = [
+        triangle
+        for name, face in _QUARTER_BOX_FACES.items()
+        if name not in open_faces
+        for triangle in face
+    ]
+    return (
+        np.asarray(_QUARTER_BOX_VERTICES, dtype=float),
+        np.asarray(triangles, dtype=np.int64),
+    )
+
+
+def test_detect_symmetry_planes_reads_the_cut_back_from_free_edges():
+    points, triangles = _quarter_box_mesh("x0", "y0")
+
+    planes, detection = detect_symmetry_planes(points, triangles, tolerance=1.0e-9)
+
+    assert planes == ("x0", "y0")
+    assert detection["detected_planes"] == ["x0", "y0"]
+    assert detection["plane_free_edge_counts"]["z0"] == 0
+
+
+def test_detect_symmetry_planes_does_not_report_a_capped_cut_plane():
+    """A capped plane is the failure the caller cannot see any other way.
+
+    The geometry was reduced on y0, but the reduced boundary came back closed
+    there, so the solver would mirror a rigid baffle instead of a cut.
+    """
+
+    points, triangles = _quarter_box_mesh("x0")
+
+    planes, detection = detect_symmetry_planes(points, triangles, tolerance=1.0e-9)
+
+    assert planes == ("x0",)
+    assert detection["plane_free_edge_counts"]["y0"] == 0

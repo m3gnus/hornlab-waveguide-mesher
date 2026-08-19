@@ -892,7 +892,7 @@ def _repair_triangle_winding(
 
     return repaired, stats
 
-def _detect_symmetry_planes(
+def detect_symmetry_planes(
     points: np.ndarray,
     triangles: np.ndarray,
     *,
@@ -970,6 +970,13 @@ def _detect_symmetry_planes(
     return detected, detection
 
 
+# The detector is public because it is the only way to re-read a cut from a
+# finished mesh with no knowledge of what was cut, which is what makes an
+# auto-cut self-checking: a plane that was cut but does not come back as an
+# open rim was capped, and a capped plane meshes as a rigid baffle rather than
+# as a symmetry plane.
+_detect_symmetry_planes = detect_symmetry_planes
+
 _snap_symmetry_plane_vertices = snap_symmetry_plane_vertices
 
 
@@ -1032,7 +1039,7 @@ def postprocess_mesh(
         else tolerance
     )
     if symmetry_planes == "auto":
-        symmetry_planes, symmetry_detection = _detect_symmetry_planes(
+        symmetry_planes, symmetry_detection = detect_symmetry_planes(
             points,
             triangles,
             tolerance=symmetry_tolerance,

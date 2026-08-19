@@ -444,15 +444,30 @@ def auto_cut_occ_geometry(
     *,
     grid: int = DEFAULT_AUTO_CUT_GRID,
     tolerance_rel: float = DEFAULT_AUTO_CUT_TOLERANCE_REL,
+    planes: Iterable[str] | None = None,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
 
     Group names and roles are never interpreted. Every selected surface must
     occur exactly once so role symmetry cannot silently use a default role.
+
+    ``planes`` restricts the candidate set. It exists because cutting a plane
+    the caller's solver cannot mirror is worse than not cutting at all: the
+    geometry is physically halved here and refused several stages later, with
+    nothing in between able to tell that the domain no longer matches the
+    model. A caller that supports only x0 and y0 says so.
     """
     groups = tuple(groups)
     if not groups:
         raise ValueError("at least one OCC surface group is required")
+    candidate_planes = (
+        tuple(SYMMETRY_AXIS_FOR_PLANE)
+        if planes is None
+        else tuple(dict.fromkeys(str(plane) for plane in planes))
+    )
+    unknown = [plane for plane in candidate_planes if plane not in SYMMETRY_AXIS_FOR_PLANE]
+    if unknown:
+        raise ValueError(f"unknown symmetry planes: {unknown}")
     roles: dict[int, str] = {}
     for group in groups:
         for surface in group.selector.surface_tags:
@@ -492,11 +507,12 @@ def auto_cut_occ_geometry(
             tolerance=tolerance,
             span_tolerance=span_tolerance,
         )
-        for plane in SYMMETRY_AXIS_FOR_PLANE
+        for plane in candidate_planes
     ]
-    planes = tuple(verdict.plane for verdict in verdicts if verdict.accepted)
+    accepted_planes = tuple(verdict.plane for verdict in verdicts if verdict.accepted)
     report: dict[str, object] = {
         "mode": "auto-cut",
+        "candidate_planes": list(candidate_planes),
         "tolerance_rel": float(tolerance_rel),
         "tolerance_step_units": float(tolerance),
         "model_diagonal_step_units": diagonal,
@@ -504,13 +520,15 @@ def auto_cut_occ_geometry(
         "sampled_surfaces": len(samples),
         "sample_points": int(len(stacked)),
         "planes": {verdict.plane: verdict.to_dict() for verdict in verdicts},
-        "cut_planes": list(planes),
+        "cut_planes": list(accepted_planes),
     }
-    if not planes:
+    if not accepted_planes:
         report["cut"] = None
         return OccAutoCutResult((), groups, {}, report)
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
-    parentage, cut_stats = _cut_occ_geometry_to_positive_side(planes, bbox=model_bbox)
+    parentage, cut_stats = _cut_occ_geometry_to_positive_side(
+        accepted_planes, bbox=model_bbox
+    )
     remapped_groups = tuple(
         OccSurfaceGroup(
             group.name,
@@ -520,4 +538,4 @@ def auto_cut_occ_geometry(
         for group in groups
     )
     report["cut"] = cut_stats
-    return OccAutoCutResult(planes, remapped_groups, parentage, report)
+    return OccAutoCutResult(accepted_planes, remapped_groups, parentage, report)
