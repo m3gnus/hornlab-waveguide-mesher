@@ -6,6 +6,7 @@ import gmsh
 import numpy as np
 import pytest
 
+import hornlab_mesher.step_prepare as step_prepare
 from hornlab_mesher import (
     DEFAULT_AUTO_CUT_TOLERANCE_REL,
     OccSurfaceGroup,
@@ -104,6 +105,40 @@ def test_auto_cut_rejects_geometry_that_does_not_mirror():
         assert result.parent_to_children == {}
         assert result.report["planes"]["x0"]["points_off_model"] > 0
         assert len(gmsh.model.getEntities(2)) == len(surfaces)
+
+
+def test_param_inside_fails_closed_when_occ_cannot_judge_trim_membership(monkeypatch):
+    monkeypatch.setattr(
+        gmsh.model,
+        "isInside",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("OCC failed")),
+    )
+
+    assert step_prepare._param_inside(7, 0.25, 0.75) is False
+
+
+def test_auto_cut_does_not_accept_samples_when_trim_membership_fails(monkeypatch):
+    with _gmsh_session():
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        monkeypatch.setattr(
+            gmsh.model,
+            "isInside",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("OCC failed")),
+        )
+
+        result = auto_cut_occ_geometry(
+            [
+                OccSurfaceGroup(
+                    "all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque")
+                )
+            ],
+            grid=5,
+            planes=("x0", "y0"),
+        )
+
+        assert result.planes == ()
+        assert result.report["planes"]["x0"]["points_off_model"] > 0
+        assert result.report["planes"]["y0"]["points_off_model"] > 0
 
 
 def test_auto_cut_requires_roles_to_mirror_even_when_geometry_does():

@@ -172,7 +172,10 @@ def _param_inside(surface: int, u: float, v: float) -> bool:
     try:
         return int(gmsh.model.isInside(2, surface, [u, v], parametric=True)) > 0
     except Exception:
-        return True
+        # Trim membership is evidence for accepting a symmetry cut. If OCC
+        # cannot answer, treating uncertainty as "inside" lets a failed sample
+        # help prove symmetry and can remove real geometry. Abstain instead.
+        return False
 
 
 def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
