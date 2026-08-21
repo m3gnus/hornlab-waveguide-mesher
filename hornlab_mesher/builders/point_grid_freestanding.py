@@ -62,6 +62,33 @@ def _outer_wall_axial_ring_indices(inner_points: np.ndarray) -> list[int]:
     ]
 
 
+def _wall_clearance_metadata(
+    geometry: PointGridHornGeometry, outer_points: np.ndarray
+) -> dict[str, float]:
+    """Publish what the density stage needs to keep the shell off the bore.
+
+    ``configure_density`` only receives a ``BuiltGeometry``, which knows nothing
+    about wall thickness -- yet the wall is exactly the clearance budget a
+    coarsely faceted outer shell spends. Passing it through metadata keeps the
+    builder/density split intact and leaves every other builder untouched: no
+    block means no cap, and the sizing is byte-identical to before.
+    """
+
+    radius = np.hypot(outer_points[..., 0], outer_points[..., 1])
+    # Per axial ring: the tightest radius anywhere on it, and the furthest
+    # forward any of its points sits. Density turns the pair into a bound that
+    # holds for every point on the ring -- the tightest radius because that is
+    # what curves fastest, the furthest z because that is where an axial ramp
+    # is largest. Taking the minimum around the ring is also what lets a
+    # morphed section be handled honestly: a rounded rectangle turns at its
+    # corner radius, not at its distance from the axis.
+    return {
+        "wallThicknessMm": float(geometry.wall_thickness_mm),
+        "minOuterRadiusMm": float(np.min(radius)),
+        "ringMinRadiusMm": [float(value) for value in radius.min(axis=0)],
+        "ringMaxAxialMm": [float(value) for value in outer_points[..., 2].max(axis=0)],
+    }
+
 def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")
     if geometry.outer_points is None:
@@ -158,6 +185,9 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
+        metadata={
+            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
+        },
     )
 
 
@@ -292,7 +322,10 @@ def _build_acoustic_freestanding_point_grid(
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
-        metadata={"meshTopologyMode": "acoustic"},
+        metadata={
+            "meshTopologyMode": "acoustic",
+            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points),
+        },
     )
 
 
@@ -390,4 +423,7 @@ def _build_wg_freestanding_point_grid(
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
         mesh_algorithm=2,
+        metadata={
+            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
+        },
     )

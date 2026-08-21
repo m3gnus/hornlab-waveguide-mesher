@@ -2112,12 +2112,16 @@ def _corner_arc_edge_mask(grid: Mapping[str, Any]) -> np.ndarray | None:
     return edges
 
 
-def _sampling_metadata(working: Mapping[str, Any], grid: Mapping[str, Any]) -> dict[str, int]:
+def _sampling_metadata(
+    working: Mapping[str, Any], grid: Mapping[str, Any]
+) -> dict[str, Any]:
     """Report both the nominal segment counts and the grid they actually produced."""
 
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
+    fold = grid.get("outer_offset_fold")
     return {
+        **({"outerOffsetFold": str(fold)} if fold else {}),
         "geometrySampleAngularSegments": int(working["angularSegments"]),
         "geometrySampleLengthSegments": int(working["lengthSegments"]),
         "geometrySamplePhiProfiles": n_phi,
