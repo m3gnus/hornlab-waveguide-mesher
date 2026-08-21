@@ -1447,6 +1447,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
 
     outer = None
+    outer_fold: str | None = None
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
     if enc_depth <= 0.0 and wall > 0.0:
@@ -1483,6 +1484,12 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
                     inner, outer, full_circle=full_circle, label=str(formula)
                 )
             except ValueError as exc:
+                # Reported as well as logged. A log line reaches nobody who is
+                # looking at a polar plot, and a folded outer shell is still a
+                # solver boundary the design does not describe -- "the acoustic
+                # surface is unaffected" is true of the analytic profile, not of
+                # what the solver ends up integrating over.
+                outer_fold = str(exc)
                 logger.warning(
                     "[hornlab-mesher] outer wall self-intersects near the throat: %s "
                     "Reduce the wall thickness or open the throat curvature; the "
@@ -1493,6 +1500,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "inner_grid": inner,
         "outer_grid": outer,
+        "outer_offset_fold": outer_fold,
         "grid_n_phi": int(inner.shape[0]),
         "grid_n_length": int(n_length),
         "full_circle": bool(full_circle),

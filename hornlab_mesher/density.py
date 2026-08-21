@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+from typing import Any
+
+import numpy as np
 
 from .cost import TRIANGLES_PER_AREA_OVER_H2
 from .geometry import BuiltGeometry, MeshDensity
@@ -12,6 +15,16 @@ _PREMESH_TRIANGLE_LIMIT_SLACK = 2.0
 # Mesh-size growth per millimetre of distance from a roundover seam curve
 # (1.0 = size equals distance: each element row roughly doubles). Bounds the
 # boundary-to-interior size jump the 2D mesher sees at the seam.
+# Fraction of the wall thickness a faceted outer shell may spend on chord
+# sagitta before it is treated as reaching the acoustic surface. Provisional
+# and empirical, not derived: it has to absorb the inner surface's own
+# faceting, which does not always bulge the other way.
+_WALL_CLEARANCE_FRACTION = 0.35
+# Gmsh treats a size field as a target, not a maximum. A 40 mm target has been
+# observed to realise a 48.5 mm edge on the free-standing outer wall, and
+# sagitta grows with the square of the chord, so the target is divided by this
+# before the geometric bound is applied.
+_WALL_CLEARANCE_SIZE_OVERSHOOT = 1.25
 _ENCLOSURE_SEAM_SIZE_GRADIENT = 1.0
 _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MIN = 64.0
 _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX = 2000.0
@@ -483,6 +496,121 @@ def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]
     }
 
 
+def _wall_clearance_chord_mm(radius_mm: Any, wall_mm: float) -> Any:
+    """Largest facet chord whose sagitta stays inside the wall's budget.
+
+    A flat facet spanning a chord ``h`` on a surface of local radius ``R``
+    departs from that surface by a sagitta ``d``, exactly ``h = 2 sqrt(2 R d -
+    d^2)``. Bounding ``d`` by a fraction of the wall therefore bounds the chord,
+    and the bound only bites where ``R`` is small -- the throat end of the
+    shell -- leaving the mouth end at the size the user asked for.
+    """
+
+    sagitta = _WALL_CLEARANCE_FRACTION * float(wall_mm)
+    radius = np.asarray(radius_mm, dtype=float)
+    return (
+        2.0
+        * np.sqrt(np.maximum(2.0 * sagitta * radius - sagitta * sagitta, 0.0))
+        / _WALL_CLEARANCE_SIZE_OVERSHOOT
+    )
+
+
+def _wall_clearance_axial_ramp(
+    ring_radius_mm: Any, ring_axial_mm: Any, *, wall_mm: float
+) -> tuple[float, float, float]:
+    """Fit the cheapest axial ramp that still respects the chord bound.
+
+    Returns ``(base_mm, slope_per_mm, intercept_mm)``; the size field is
+    ``max(base, intercept + slope*z)``, capped at rear resolution.
+
+    The bound itself is radial, but a radial size field cannot be used. Two half
+    models of the same horn are congruent, and the mesher's parity guard
+    requires them to reach the same triangle count; a field varying with x and y
+    is evaluated over patches parameterised differently in each half, and Gmsh
+    then breaks ties differently. The axial ramp the inner wall already uses
+    does not have that problem, because z is what the two halves share.
+
+    ``base`` is the bound at the tightest radius anywhere on the shell, safe at
+    every point. The ramp above it must stay under the bound on every ring, so
+    the admissible lines are exactly those under the lower convex hull of
+    ``(z, bound)``. Which hull edge to extend is then a cost question, not a
+    safety one, and the answer is not the obvious one: a horn whose mouth
+    roundover folds back in z ends its hull on a near-vertical edge, and
+    extending that pins the whole shell at ``base``. So every edge is costed and
+    the cheapest wins.
+    """
+
+    radius = np.asarray(ring_radius_mm, dtype=float).reshape(-1)
+    axial = np.asarray(ring_axial_mm, dtype=float).reshape(-1)
+    bound = _wall_clearance_chord_mm(radius, wall_mm)
+    base = float(np.min(bound))
+    if len(radius) < 2 or not np.all(np.isfinite(bound)):
+        return base, 0.0, base
+
+    order = np.argsort(axial, kind="stable")
+    points = np.stack((axial[order], bound[order]), axis=1)
+    hull: list[int] = []
+    for index in range(len(points)):
+        while len(hull) >= 2:
+            first, second, third = points[hull[-2]], points[hull[-1]], points[index]
+            # Andrew's monotone chain: keep only counter-clockwise turns, which
+            # leaves the lower hull.
+            cross = (second[0] - first[0]) * (third[1] - first[1]) - (
+                second[1] - first[1]
+            ) * (third[0] - first[0])
+            if cross > 0.0:
+                break
+            hull.pop()
+        hull.append(index)
+
+    # Triangle-count proxy: each ring carries roughly its circumference times
+    # its share of the meridian, and a region of size h holds area/h^2 of them.
+    step = np.gradient(np.hypot(np.gradient(radius), np.gradient(axial)))
+    weight = np.maximum(radius, 0.0) * np.maximum(np.abs(step), 1.0e-9)
+
+    def cost(slope: float, intercept: float) -> float:
+        size = np.maximum(intercept + slope * axial, base)
+        if np.any(size > bound + 1.0e-9):
+            return math.inf
+        return float(np.sum(weight / np.square(np.maximum(size, 1.0e-9))))
+
+    best = (0.0, base)
+    best_cost = cost(0.0, base)
+    for position in range(len(hull) - 1):
+        start, end = points[hull[position]], points[hull[position + 1]]
+        if end[0] <= start[0]:
+            continue
+        slope = float((end[1] - start[1]) / (end[0] - start[0]))
+        if slope <= 0.0:
+            continue
+        intercept = float(start[1] - slope * start[0])
+        candidate = cost(slope, intercept)
+        if candidate < best_cost:
+            best, best_cost = (slope, intercept), candidate
+    return base, best[0], best[1]
+
+
+def _wall_clearance_size_formula(
+    axial_expression: str,
+    *,
+    rear_res_mm: float,
+    base_mm: float,
+    slope_per_mm: float,
+    intercept_mm: float,
+) -> str:
+    """The ramp above as a Gmsh MathEval expression.
+
+    Floored at ``base_mm``, the bound at the tightest radius on the shell, which
+    is safe at every point. That floor is what covers the throat end and the
+    rear return and plate behind it, where the ramp itself dips lower.
+    """
+
+    return (
+        f"min({float(rear_res_mm):.12g}, max({float(intercept_mm):.12g} + "
+        f"({float(slope_per_mm):.12g})*{axial_expression}, {float(base_mm):.12g}))"
+    )
+
+
 def _axis_coordinate_expression(source_axis: str) -> tuple[str, str]:
     axis = str(source_axis or "z").strip().lower()
     sign = "-" if axis.startswith("-") else ""
@@ -650,6 +778,50 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         mesh_groups.get("enclosure")
     )
     outer_formula = f"{rear_res:.12g}" if free_standing_wall_mode else axial_formula
+    rear_boundary_formula: str | None = None
+    clearance = geometry.metadata.get("outerWallClearance")
+    if free_standing_wall_mode and clearance:
+        wall_mm = float(clearance.get("wallThicknessMm", 0.0) or 0.0)
+        min_radius = float(clearance.get("minOuterRadiusMm", 0.0) or 0.0)
+        ring_radius = clearance.get("ringMinRadiusMm") or []
+        ring_axial = clearance.get("ringMaxAxialMm") or []
+        if wall_mm > 0.0 and min_radius > 0.0 and len(ring_radius) == len(ring_axial) > 0:
+            base, slope, intercept = _wall_clearance_axial_ramp(
+                ring_radius, ring_axial, wall_mm=wall_mm
+            )
+            outer_formula = _wall_clearance_size_formula(
+                coord,
+                rear_res_mm=rear_res,
+                base_mm=base,
+                slope_per_mm=slope,
+                intercept_mm=intercept,
+            )
+            tightest = min(rear_res, base)
+            # The shell and the flat rear cap meet on a rim that is authored
+            # once but partly re-created by the planar fill, so the two sides
+            # mesh as separate curves and only weld when they ask for the same
+            # size -- which they always have, both being rear resolution. Give
+            # the cap's boundary the size the shell wants at the rim, as one
+            # constant.
+            #
+            # A constant, not the shell's formula, for two reasons. The rim sits
+            # at the shell's smallest radius, so the constant IS the formula
+            # there. And on a half model the cap's boundary also runs along the
+            # cut plane, straight through the axis, where a radial bound would
+            # collapse toward zero and shatter the disc.
+            rear_boundary_formula = f"{tightest:.12g}"
+            geometry.metadata["outerWallClearance"] = {
+                **{
+                    key: value
+                    for key, value in clearance.items()
+                    if key not in {"ringMinRadiusMm", "ringMaxAxialMm"}
+                },
+                "clearanceFraction": _WALL_CLEARANCE_FRACTION,
+                "sizeOvershoot": _WALL_CLEARANCE_SIZE_OVERSHOOT,
+                "requestedRearResolutionMm": float(rear_res),
+                "cappedSizeAtMinRadiusMm": float(tightest),
+                "capActive": bool(tightest < rear_res),
+            }
     add_field(
         outer_formula,
         mesh_groups.get("outer", []),
@@ -663,8 +835,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     add_field(
         f"{rear_res:.12g}",
         mesh_groups.get("rear", []),
-        curve_groups.get("rear", []),
+        [] if rear_boundary_formula else curve_groups.get("rear", []),
     )
+    if rear_boundary_formula:
+        add_field(rear_boundary_formula, [], curve_groups.get("rear", []))
     add_field(
         f"{interface_res:.12g}",
         mesh_groups.get("interface", []),
