@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from ..geometry import BuiltGeometry, PointGridHornGeometry
@@ -62,9 +64,47 @@ def _outer_wall_axial_ring_indices(inner_points: np.ndarray) -> list[int]:
     ]
 
 
+def _ring_curvature_radius_mm(ring_xy: np.ndarray, *, closed: bool) -> np.ndarray:
+    """Local curvature radius at each point of a cross-section ring.
+
+    The circumradius of each consecutive triple. Three collinear points give an
+    infinite radius, which is what a flat run of a section should contribute:
+    no constraint. On an open (symmetry-reduced) ring the two ends have no
+    triple, so they are left unconstrained rather than wrapped across the cut.
+    """
+
+    points = np.asarray(ring_xy, dtype=np.float64)
+    count = points.shape[0]
+    radius = np.full(points.shape[:-1], np.inf, dtype=np.float64)
+    if count < 3:
+        return radius
+
+    previous = np.roll(points, 1, axis=0)
+    following = np.roll(points, -1, axis=0)
+    first = points - previous
+    second = following - points
+    third = following - previous
+    side_a = np.linalg.norm(first, axis=-1)
+    side_b = np.linalg.norm(second, axis=-1)
+    side_c = np.linalg.norm(third, axis=-1)
+    twice_area = np.abs(
+        first[..., 0] * third[..., 1] - first[..., 1] * third[..., 0]
+    )
+    np.divide(
+        side_a * side_b * side_c,
+        2.0 * twice_area,
+        out=radius,
+        where=twice_area > 0.0,
+    )
+    if not closed:
+        radius[0] = np.inf
+        radius[-1] = np.inf
+    return radius
+
+
 def _wall_clearance_metadata(
     geometry: PointGridHornGeometry, outer_points: np.ndarray
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Publish what the density stage needs to keep the shell off the bore.
 
     ``configure_density`` only receives a ``BuiltGeometry``, which knows nothing
@@ -72,22 +112,28 @@ def _wall_clearance_metadata(
     coarsely faceted outer shell spends. Passing it through metadata keeps the
     builder/density split intact and leaves every other builder untouched: no
     block means no cap, and the sizing is byte-identical to before.
+
+    What each ring contributes is its tightest CURVATURE radius, not its
+    smallest distance from the axis. The two are the same only for a circular
+    ring centred on the axis. A rounded rectangle's nearest point is the middle
+    of a flat side, which curves not at all, while its corner fillet may be a
+    twentieth of that radius -- measured on 100 mm half-extents with a 5 mm
+    fillet, distance from the axis licenses a chord 4.9x coarser than the
+    corner can carry.
     """
 
-    radius = np.hypot(outer_points[..., 0], outer_points[..., 1])
-    # Per axial ring: the tightest radius anywhere on it, and the furthest
-    # forward any of its points sits. Density turns the pair into a bound that
-    # holds for every point on the ring -- the tightest radius because that is
-    # what curves fastest, the furthest z because that is where an axial ramp
-    # is largest. Taking the minimum around the ring is also what lets a
-    # morphed section be handled honestly: a rounded rectangle turns at its
-    # corner radius, not at its distance from the axis.
+    curvature = _ring_curvature_radius_mm(
+        outer_points[..., :2], closed=bool(geometry.closed)
+    )
+    ring_curvature = curvature.min(axis=0)
+    finite = ring_curvature[np.isfinite(ring_curvature)]
     return {
         "wallThicknessMm": float(geometry.wall_thickness_mm),
-        "minOuterRadiusMm": float(np.min(radius)),
-        "ringMinRadiusMm": [float(value) for value in radius.min(axis=0)],
+        "minOuterCurvatureRadiusMm": float(finite.min()) if finite.size else 0.0,
+        "ringMinCurvatureRadiusMm": [float(value) for value in ring_curvature],
         "ringMaxAxialMm": [float(value) for value in outer_points[..., 2].max(axis=0)],
     }
+
 
 def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")

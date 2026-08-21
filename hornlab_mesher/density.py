@@ -516,7 +516,11 @@ def _wall_clearance_chord_mm(radius_mm: Any, wall_mm: float) -> Any:
 
 
 def _wall_clearance_axial_ramp(
-    ring_radius_mm: Any, ring_axial_mm: Any, *, wall_mm: float
+    ring_radius_mm: Any,
+    ring_axial_mm: Any,
+    *,
+    wall_mm: float,
+    rear_res_fallback: float,
 ) -> tuple[float, float, float]:
     """Fit the cheapest axial ramp that still respects the chord bound.
 
@@ -543,8 +547,15 @@ def _wall_clearance_axial_ramp(
     radius = np.asarray(ring_radius_mm, dtype=float).reshape(-1)
     axial = np.asarray(ring_axial_mm, dtype=float).reshape(-1)
     bound = _wall_clearance_chord_mm(radius, wall_mm)
+    # A ring with a straight run has an infinite curvature radius there and so
+    # an infinite bound: it constrains nothing, and must not be allowed to
+    # decide the fit either. Rings whose bound is not finite are simply dropped.
+    finite = np.isfinite(bound) & np.isfinite(axial)
+    if not np.any(finite):
+        return float(rear_res_fallback), 0.0, float(rear_res_fallback)
+    radius, axial, bound = radius[finite], axial[finite], bound[finite]
     base = float(np.min(bound))
-    if len(radius) < 2 or not np.all(np.isfinite(bound)):
+    if len(radius) < 2:
         return base, 0.0, base
 
     order = np.argsort(axial, kind="stable")
@@ -565,8 +576,10 @@ def _wall_clearance_axial_ramp(
 
     # Triangle-count proxy: each ring carries roughly its circumference times
     # its share of the meridian, and a region of size h holds area/h^2 of them.
-    step = np.gradient(np.hypot(np.gradient(radius), np.gradient(axial)))
-    weight = np.maximum(radius, 0.0) * np.maximum(np.abs(step), 1.0e-9)
+    # Local meridian step, not its derivative. Differentiating twice weighted
+    # the *change* in spacing and skewed the cost on non-uniform ATH sampling.
+    step = np.hypot(np.gradient(bound), np.gradient(axial))
+    weight = np.maximum(np.abs(step), 1.0e-9)
 
     def cost(slope: float, intercept: float) -> float:
         size = np.maximum(intercept + slope * axial, base)
@@ -779,15 +792,19 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     )
     outer_formula = f"{rear_res:.12g}" if free_standing_wall_mode else axial_formula
     rear_boundary_formula: str | None = None
+    clearance_target_mm: float | None = None
     clearance = geometry.metadata.get("outerWallClearance")
     if free_standing_wall_mode and clearance:
         wall_mm = float(clearance.get("wallThicknessMm", 0.0) or 0.0)
-        min_radius = float(clearance.get("minOuterRadiusMm", 0.0) or 0.0)
-        ring_radius = clearance.get("ringMinRadiusMm") or []
+        min_radius = float(clearance.get("minOuterCurvatureRadiusMm", 0.0) or 0.0)
+        ring_radius = clearance.get("ringMinCurvatureRadiusMm") or []
         ring_axial = clearance.get("ringMaxAxialMm") or []
         if wall_mm > 0.0 and min_radius > 0.0 and len(ring_radius) == len(ring_axial) > 0:
             base, slope, intercept = _wall_clearance_axial_ramp(
-                ring_radius, ring_axial, wall_mm=wall_mm
+                ring_radius,
+                ring_axial,
+                wall_mm=wall_mm,
+                rear_res_fallback=rear_res,
             )
             outer_formula = _wall_clearance_size_formula(
                 coord,
@@ -810,11 +827,12 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             # cut plane, straight through the axis, where a radial bound would
             # collapse toward zero and shatter the disc.
             rear_boundary_formula = f"{tightest:.12g}"
+            clearance_target_mm = float(tightest)
             geometry.metadata["outerWallClearance"] = {
                 **{
                     key: value
                     for key, value in clearance.items()
-                    if key not in {"ringMinRadiusMm", "ringMaxAxialMm"}
+                    if key not in {"ringMinCurvatureRadiusMm", "ringMaxAxialMm"}
                 },
                 "clearanceFraction": _WALL_CLEARANCE_FRACTION,
                 "sizeOvershoot": _WALL_CLEARANCE_SIZE_OVERSHOOT,
@@ -1036,6 +1054,12 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
     sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
+    # The clearance cap is a size this build genuinely asks for, so it belongs
+    # in the floor calculation. Left out, Mesh.MeshSizeMin -- derived from the
+    # user's resolutions alone -- can clamp the field back above the cap and
+    # quietly undo it.
+    if clearance_target_mm is not None:
+        sizes.append(float(clearance_target_mm))
     sizes.extend(enclosure_resolution_values)
     sizes = [v for v in sizes if math.isfinite(v) and v > 0.0]
     if not sizes:
