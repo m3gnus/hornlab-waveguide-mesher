@@ -2236,7 +2236,12 @@ def _build_acoustic_sampling_grid(
     working = dict(params)
     if topology_mode != "acoustic":
         grid = build_point_grid(working)
+        fold = grid.get("outer_offset_fold")
         return grid, {
+            # A legacy-topology build detects an offset fold exactly as an
+            # acoustic one does; dropping it here left the consumer's warning
+            # unreachable for those builds.
+            **({"outerOffsetFold": str(fold)} if fold else {}),
             "geometrySampleAngularSegments": int(working["angularSegments"]),
             "geometrySampleLengthSegments": int(working["lengthSegments"]),
         }

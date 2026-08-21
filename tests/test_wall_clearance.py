@@ -42,7 +42,7 @@ def _flaring_shell() -> tuple[np.ndarray, np.ndarray]:
 
 def _ramp_values(radius, axial, wall_mm):
     base, slope, intercept = _wall_clearance_axial_ramp(
-        radius, axial, wall_mm=wall_mm
+        radius, axial, wall_mm=wall_mm, rear_res_fallback=40.0
     )
     return np.maximum(base, intercept + slope * np.asarray(axial, dtype=float))
 
@@ -90,7 +90,9 @@ def test_ramp_never_exceeds_the_bound_it_approximates(wall_mm) -> None:
     ids=["single ring", "cylindrical", "zero axial span", "narrowing"],
 )
 def test_degenerate_shells_fall_back_to_a_flat_bound(radius, axial) -> None:
-    base, slope, intercept = _wall_clearance_axial_ramp(radius, axial, wall_mm=5.0)
+    base, slope, intercept = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=5.0, rear_res_fallback=40.0
+    )
     values = np.maximum(base, intercept + slope * axial)
     assert np.all(np.isfinite(values))
     assert np.all(values <= _wall_clearance_chord_mm(radius, 5.0) + 1.0e-9)
@@ -105,7 +107,9 @@ def test_ramp_beats_a_flat_bound_on_a_flaring_shell() -> None:
     """
 
     radius, axial = _flaring_shell()
-    base, slope, intercept = _wall_clearance_axial_ramp(radius, axial, wall_mm=5.0)
+    base, slope, intercept = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=5.0, rear_res_fallback=40.0
+    )
     assert slope > 0.0
     at_mouth = intercept + slope * 283.0
     assert at_mouth > 3.0 * base
@@ -131,7 +135,9 @@ def test_a_mouth_that_turns_back_does_not_pin_the_shell() -> None:
 def test_formula_is_parseable_by_gmsh_and_matches_the_fit() -> None:
     gmsh = pytest.importorskip("gmsh")
     radius, axial = _flaring_shell()
-    base, slope, intercept = _wall_clearance_axial_ramp(radius, axial, wall_mm=5.0)
+    base, slope, intercept = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=5.0, rear_res_fallback=40.0
+    )
     formula = _wall_clearance_size_formula(
         "z",
         rear_res_mm=40.0,
@@ -172,7 +178,9 @@ def test_cap_is_inactive_on_a_shell_that_never_needed_it() -> None:
 
     radius = np.asarray([200.0, 300.0, 600.0])
     axial = np.asarray([0.0, 50.0, 200.0])
-    base, slope, intercept = _wall_clearance_axial_ramp(radius, axial, wall_mm=20.0)
+    base, slope, intercept = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=20.0, rear_res_fallback=40.0
+    )
     values = np.maximum(base, intercept + slope * axial)
     # Every bound is already coarser than a 40 mm rear resolution, so the
     # min() in the formula leaves the requested size untouched.
@@ -233,7 +241,7 @@ def test_thin_wall_shell_facets_stay_inside_the_wall(tmp_path) -> None:
     radius = np.hypot(centroid[:, 0], centroid[:, 1])
     # Near the throat the shell is tightest and the cap bites hardest. Without
     # it every one of these facets is free to reach the 40 mm rear resolution.
-    throat = radius < 2.0 * clearance["minOuterRadiusMm"]
+    throat = radius < 2.0 * clearance["minOuterCurvatureRadiusMm"]
     assert np.any(throat)
     assert float(np.max(edges[throat])) < clearance["requestedRearResolutionMm"]
 
@@ -253,3 +261,78 @@ def test_thick_wall_leaves_the_requested_resolution_alone(tmp_path) -> None:
     )
     # A thicker wall can afford coarser facets, so it must not cost more.
     assert thick.n_triangles < thin.n_triangles
+
+
+# --- regressions from the pre-push diff review -------------------------------
+
+
+def _rounded_rectangle(half_x: float, half_y: float, fillet: float, count: int = 2000):
+    angle = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+    core_x = np.clip(np.cos(angle) * 1.0e6, -(half_x - fillet), half_x - fillet)
+    core_y = np.clip(np.sin(angle) * 1.0e6, -(half_y - fillet), half_y - fillet)
+    return np.stack((core_x, core_y), axis=1) + fillet * np.stack(
+        (np.cos(angle), np.sin(angle)), axis=1
+    )
+
+
+def test_curvature_radius_is_curvature_not_distance_from_the_axis() -> None:
+    """The bound has to be fed the radius the section actually turns at.
+
+    Using each ring's smallest distance from the axis is right only for a
+    circle. A rounded rectangle's nearest point is the middle of a flat side,
+    which does not curve at all, while its corner fillet can be twenty times
+    tighter -- and the chord it can carry is what the wall has to survive.
+    """
+
+    from hornlab_mesher.builders.point_grid_freestanding import (
+        _ring_curvature_radius_mm,
+    )
+
+    ring = _rounded_rectangle(100.0, 100.0, 5.0)
+    curvature = _ring_curvature_radius_mm(ring[:, None, :], closed=True)
+    assert float(np.min(curvature)) == pytest.approx(5.0, rel=1e-3)
+    # Distance from the axis would have said 100 mm, licensing a chord ~4.9x
+    # coarser than the corner can carry.
+    assert float(np.min(np.hypot(ring[:, 0], ring[:, 1]))) == pytest.approx(100.0)
+    assert _wall_clearance_chord_mm(100.0, 5.0) > 4.0 * _wall_clearance_chord_mm(
+        5.0, 5.0
+    )
+
+    circle_angle = np.linspace(0.0, 2.0 * math.pi, 512, endpoint=False)
+    circle = np.stack(
+        (50.0 * np.cos(circle_angle), 50.0 * np.sin(circle_angle)), axis=1
+    )
+    assert float(
+        np.min(_ring_curvature_radius_mm(circle[:, None, :], closed=True))
+    ) == pytest.approx(50.0, rel=1e-4)
+
+
+def test_a_straight_run_constrains_nothing() -> None:
+    """Collinear samples have infinite curvature, and must stay out of the fit."""
+
+    from hornlab_mesher.builders.point_grid_freestanding import (
+        _ring_curvature_radius_mm,
+    )
+
+    line = np.stack((np.linspace(0.0, 10.0, 9), np.zeros(9)), axis=1)
+    curvature = _ring_curvature_radius_mm(line[:, None, :], closed=False)
+    assert np.all(np.isinf(curvature))
+    # A shell of nothing but straight runs falls back to rear resolution rather
+    # than to a NaN or a zero-size field.
+    base, slope, intercept = _wall_clearance_axial_ramp(
+        [np.inf, np.inf], [0.0, 50.0], wall_mm=5.0, rear_res_fallback=40.0
+    )
+    assert base == pytest.approx(40.0)
+    assert slope == 0.0
+
+
+def test_an_open_ring_does_not_wrap_across_the_cut_plane() -> None:
+    from hornlab_mesher.builders.point_grid_freestanding import (
+        _ring_curvature_radius_mm,
+    )
+
+    angle = np.linspace(0.0, math.pi / 2.0, 64)
+    quarter = np.stack((30.0 * np.cos(angle), 30.0 * np.sin(angle)), axis=1)
+    curvature = _ring_curvature_radius_mm(quarter[:, None, :], closed=False)
+    assert math.isinf(float(curvature[0, 0])) and math.isinf(float(curvature[-1, 0]))
+    assert float(np.min(curvature[1:-1])) == pytest.approx(30.0, rel=1e-3)
