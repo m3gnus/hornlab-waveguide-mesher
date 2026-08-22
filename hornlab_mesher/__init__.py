@@ -88,12 +88,16 @@ def build_geometry_params(*args, **kwargs):
 
 
 def build_meridian(*args, **kwargs):
+    """Build the millimetre-controlled CircSym meridian for a public config."""
+
     from .config_builder import build_meridian as _build_meridian
 
     return _build_meridian(*args, **kwargs)
 
 
 def circsym_rejection_reasons(*args, **kwargs):
+    """Return why a public config is ineligible for a CircSym solve."""
+
     from .config_builder import circsym_rejection_reasons as _circsym_rejection_reasons
 
     return _circsym_rejection_reasons(*args, **kwargs)

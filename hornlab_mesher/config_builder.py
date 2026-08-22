@@ -1155,10 +1155,6 @@ def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
     }.get(_normalised_quadrants(quadrants))
 
 
-def _native_symmetry_plane_for_mode(mode: str, quadrants: str) -> str | None:
-    return _native_symmetry_plane_for_quadrants(quadrants)
-
-
 def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
     """Map grid quadrant coverage to open-grid snap axes.
 
@@ -2561,7 +2557,7 @@ def resolve_geometry(
             "(ATH's free-standing two-subdomain construction is not implemented)"
         )
     quadrants = _normalised_quadrants(params.get("quadrants"))
-    native_plane = _native_symmetry_plane_for_mode(mode, quadrants)
+    native_plane = _native_symmetry_plane_for_quadrants(quadrants)
     source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
     freeform_axis_samples_mm: np.ndarray | None = None
     freeform_report: dict[str, Any] | None = None

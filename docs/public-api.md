@@ -78,6 +78,29 @@ Supported buildable geometry at the public boundary:
 not part of the current `HornGeometry` build union. Use the config path or
 point-grid path for R-OSSE mesh generation.
 
+### CircSym Meridian Builds
+
+```python
+from hornlab_mesher import build_meridian, circsym_rejection_reasons
+
+reasons = circsym_rejection_reasons(config)
+if not reasons:
+    meridian = build_meridian(config)
+```
+
+`circsym_rejection_reasons(config)` is the authoritative eligibility predicate
+for the axisymmetric solver path. It returns an empty list for an eligible
+circular body of revolution and explanatory strings for contracts that require
+the full-3D mesher, such as non-circular cross sections or enclosures.
+
+`build_meridian(config)` returns a tagged `MeridianBuildResult`. Its segment
+sizes are controlled by `mesh.throat_res_mm`, `mouth_res_mm`, `rear_res_mm`,
+and `aperture_res_scale`. The ordinary `length_segments` setting remains the
+base geometry-sampling input for point-grid/full-3D builds, but deliberately
+does not force a CircSym segment count; the meridian resamples the analytic
+profile to the millimetre targets. The removed `freq_max_hz` keyword fails with
+a migration error instead of silently changing resolution.
+
 ### Mesh Inspection
 
 ```python
