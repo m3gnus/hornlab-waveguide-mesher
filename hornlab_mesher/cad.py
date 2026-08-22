@@ -901,7 +901,7 @@ def _default_generator() -> dict[str, Any]:
 
 
 def _fsync_directory(path: Path) -> None:
-    """Persist directory entries on POSIX; other platforms lack this primitive."""
+    """Persist directory entries where Python exposes a directory sync."""
 
     if os.name != "posix":
         return
@@ -912,13 +912,41 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _move_path_write_through(source: Path, destination: Path, *, replace: bool) -> None:
+    """Move private state with Windows namespace write-through semantics."""
+
+    if sys.platform != "win32":
+        if not replace and (destination.exists() or destination.is_symlink()):
+            raise FileExistsError(destination)
+        source.replace(destination)
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.MoveFileExW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+    ]
+    kernel32.MoveFileExW.restype = wintypes.BOOL
+    movefile_replace_existing = 0x00000001
+    movefile_write_through = 0x00000008
+    flags = movefile_write_through
+    if replace:
+        flags |= movefile_replace_existing
+    if not kernel32.MoveFileExW(str(source), str(destination), flags):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def _sync_staged_bundle(staging: Path) -> None:
     for child in staging.iterdir():
         if child.is_file():
             # Windows' CRT rejects ``_commit`` (the implementation behind
             # ``os.fsync``) for a read-only descriptor with ``EBADF``.  Every
             # staged member was just written by us, so opening it read/write
-            # preserves the same durability barrier on every platform.
+            # requests the same file-content flush on every platform.
             with child.open("rb+") as stream:
                 os.fsync(stream.fileno())
     _fsync_directory(staging)
@@ -926,7 +954,7 @@ def _sync_staged_bundle(staging: Path) -> None:
 
 _BUNDLE_THREAD_LOCKS: dict[str, threading.Lock] = {}
 _BUNDLE_THREAD_LOCKS_GUARD = threading.Lock()
-_TRANSACTION_SCHEMA = 2
+_TRANSACTION_SCHEMA = 3
 _PRIVATE_STATE_SCHEMA = 1
 _TRANSACTION_MARKER_SCHEMA = 1
 _TRANSACTION_MARKER_NAME = ".hornlab-publish-owner.json"
@@ -1423,7 +1451,7 @@ def _atomic_write_private_payload(path: Path, payload: bytes, *, replace: bool) 
                 os.close(existing)
         elif path.exists() or path.is_symlink():
             raise MesherError(f"wglink coordination file already exists: {path}")
-        temporary.replace(path)
+        _move_path_write_through(temporary, path, replace=replace)
         descriptor = _open_existing_private_file(path)
         os.close(descriptor)
         _fsync_directory(path.parent)
@@ -1510,113 +1538,290 @@ def _set_active_transaction(
     state.update(updated)
 
 
-def _windows_directory_identity(path: Path) -> dict[str, Any]:
-    import ctypes
-    from ctypes import wintypes
+def _windows_file_identity(volume_serial: int, file_id: bytes) -> dict[str, Any]:
+    if len(file_id) != 16:
+        raise MesherError("Windows returned an invalid 128-bit directory file ID")
+    return {
+        "kind": "windows-file-id-128",
+        "volume_serial": int(volume_serial),
+        "file_id": file_id.hex(),
+    }
 
-    class ByHandleFileInformation(ctypes.Structure):
-        _fields_ = [
-            ("FileAttributes", wintypes.DWORD),
-            ("CreationTime", wintypes.FILETIME),
-            ("LastAccessTime", wintypes.FILETIME),
-            ("LastWriteTime", wintypes.FILETIME),
-            ("VolumeSerialNumber", wintypes.DWORD),
-            ("FileSizeHigh", wintypes.DWORD),
-            ("FileSizeLow", wintypes.DWORD),
-            ("NumberOfLinks", wintypes.DWORD),
-            ("FileIndexHigh", wintypes.DWORD),
-            ("FileIndexLow", wintypes.DWORD),
-        ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.GetFileInformationByHandle.argtypes = [
-        wintypes.HANDLE,
-        ctypes.POINTER(ByHandleFileInformation),
-    ]
-    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    file_read_attributes = 0x0080
-    # Deliberately omit FILE_SHARE_DELETE so this identity handle pins the
-    # directory name against rename/deletion for the duration of inspection.
-    share_read_write = 0x00000001 | 0x00000002
-    open_existing = 3
-    backup_semantics = 0x02000000
-    open_reparse_point = 0x00200000
-    file_attribute_directory = 0x00000010
-    file_attribute_reparse_point = 0x00000400
-    invalid_handle = ctypes.c_void_p(-1).value
-    handle = kernel32.CreateFileW(
-        str(path),
-        file_read_attributes,
-        share_read_write,
-        None,
-        open_existing,
-        backup_semantics | open_reparse_point,
-        None,
-    )
-    if handle == invalid_handle:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        information = ByHandleFileInformation()
-        if not kernel32.GetFileInformationByHandle(
-            handle, ctypes.byref(information)
-        ):
-            raise ctypes.WinError(ctypes.get_last_error())
-        attributes = int(information.FileAttributes)
-        if attributes & file_attribute_reparse_point:
-            raise MesherError(f"wglink transaction directory is a reparse point: {path}")
-        if not attributes & file_attribute_directory:
+class _PosixDirectoryHandle:
+    def __init__(self, path: Path, *, rename_source: bool, child_access: bool):
+        del rename_source, child_access
+        self.path = path
+        self._delete_on_close = False
+        metadata = os.lstat(path)
+        if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
             raise MesherError(f"wglink transaction path is not a directory: {path}")
-        return {
-            "kind": "windows-file-id",
-            "volume_serial": int(information.VolumeSerialNumber),
-            "file_id": int(information.FileIndexHigh) << 32
-            | int(information.FileIndexLow),
-        }
-    finally:
-        kernel32.CloseHandle(handle)
-
-
-def _directory_identity(path: Path) -> dict[str, Any]:
-    if sys.platform == "win32":
-        return _windows_directory_identity(path)
-    metadata = os.lstat(path)
-    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
-        raise MesherError(f"wglink transaction path is not a directory: {path}")
-    flags = os.O_RDONLY
-    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
-        flags |= int(getattr(os, name, 0))
-    descriptor = os.open(path, flags)
-    try:
-        handle_metadata = os.fstat(descriptor)
-        if not stat.S_ISDIR(handle_metadata.st_mode):
-            raise MesherError(f"wglink transaction path is not a directory: {path}")
+        flags = os.O_RDONLY
+        for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
+            flags |= int(getattr(os, name, 0))
+        self._descriptor = os.open(path, flags)
+        handle_metadata = os.fstat(self._descriptor)
         path_identity = (int(metadata.st_dev), int(metadata.st_ino))
         handle_identity = (
             int(handle_metadata.st_dev),
             int(handle_metadata.st_ino),
         )
+        if not stat.S_ISDIR(handle_metadata.st_mode):
+            self.close()
+            raise MesherError(f"wglink transaction path is not a directory: {path}")
         if path_identity != handle_identity:
+            self.close()
             raise MesherError(f"wglink transaction directory changed: {path}")
+
+    def identity(self) -> dict[str, Any]:
+        metadata = os.fstat(self._descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise MesherError(f"wglink transaction path is not a directory: {self.path}")
         return {
             "kind": "posix-file-id",
-            "device": handle_identity[0],
-            "inode": handle_identity[1],
+            "device": int(metadata.st_dev),
+            "inode": int(metadata.st_ino),
         }
+
+    def rename_into(self, destination_root: Any, name: str) -> None:
+        destination = destination_root.path / name
+        self.path.replace(destination)
+        self.path = destination
+
+    def delete_on_close(self) -> None:
+        self._delete_on_close = True
+
+    def close(self) -> None:
+        descriptor = getattr(self, "_descriptor", None)
+        if descriptor is None:
+            return
+        self._descriptor = None
+        try:
+            if self._delete_on_close:
+                self.path.rmdir()
+        finally:
+            os.close(descriptor)
+
+
+class _WindowsDirectoryHandle:
+    def __init__(self, path: Path, *, rename_source: bool, child_access: bool):
+        import ctypes
+        from ctypes import wintypes
+
+        self.path = path
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.GetFileInformationByHandleEx.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.SetFileInformationByHandle.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        self._kernel32 = kernel32
+
+        file_read_attributes = 0x00000080
+        delete_access = 0x00010000
+        file_add_subdirectory = 0x00000004
+        desired_access = file_read_attributes
+        if rename_source:
+            desired_access |= delete_access
+        if child_access:
+            desired_access |= file_add_subdirectory
+        # Omitting FILE_SHARE_DELETE pins the opened object name until close.
+        share_read_write = 0x00000001 | 0x00000002
+        open_existing = 3
+        backup_semantics = 0x02000000
+        open_reparse_point = 0x00200000
+        write_through = 0x80000000
+        invalid_handle = ctypes.c_void_p(-1).value
+        handle = kernel32.CreateFileW(
+            str(path),
+            desired_access,
+            share_read_write,
+            None,
+            open_existing,
+            backup_semantics | open_reparse_point | write_through,
+            None,
+        )
+        if handle == invalid_handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._handle = handle
+        try:
+            self.identity()
+        except BaseException:
+            self.close()
+            raise
+
+    def identity(self) -> dict[str, Any]:
+        ctypes = self._ctypes
+        wintypes = self._wintypes
+
+        class FileAttributeTagInfo(ctypes.Structure):
+            _fields_ = [
+                ("FileAttributes", wintypes.DWORD),
+                ("ReparseTag", wintypes.DWORD),
+            ]
+
+        class FileId128(ctypes.Structure):
+            _fields_ = [("Identifier", ctypes.c_ubyte * 16)]
+
+        class FileIdInfo(ctypes.Structure):
+            _fields_ = [
+                ("VolumeSerialNumber", ctypes.c_ulonglong),
+                ("FileId", FileId128),
+            ]
+
+        attribute_tag_info = 9
+        file_id_info_class = 18
+        file_attribute_directory = 0x00000010
+        file_attribute_reparse_point = 0x00000400
+        attributes = FileAttributeTagInfo()
+        if not self._kernel32.GetFileInformationByHandleEx(
+            self._handle,
+            attribute_tag_info,
+            ctypes.byref(attributes),
+            ctypes.sizeof(attributes),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if int(attributes.FileAttributes) & file_attribute_reparse_point:
+            raise MesherError(
+                f"wglink transaction directory is a reparse point: {self.path}"
+            )
+        if not int(attributes.FileAttributes) & file_attribute_directory:
+            raise MesherError(f"wglink transaction path is not a directory: {self.path}")
+        information = FileIdInfo()
+        if not self._kernel32.GetFileInformationByHandleEx(
+            self._handle,
+            file_id_info_class,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            raise MesherError(
+                "WGLink replacement requires a Windows filesystem that supplies "
+                "stable 128-bit directory file IDs"
+            ) from error
+        return _windows_file_identity(
+            int(information.VolumeSerialNumber),
+            bytes(information.FileId.Identifier),
+        )
+
+    def rename_into(self, destination_root: Any, name: str) -> None:
+        ctypes = self._ctypes
+        wintypes = self._wintypes
+        if Path(name).name != name:
+            raise MesherError(f"invalid wglink transaction destination name: {name}")
+        encoded_name = name.encode("utf-16-le")
+
+        class FileRenameInfo(ctypes.Structure):
+            _fields_ = [
+                ("ReplaceIfExists", ctypes.c_ubyte),
+                ("RootDirectory", wintypes.HANDLE),
+                ("FileNameLength", wintypes.DWORD),
+                ("FileName", ctypes.c_ubyte * len(encoded_name)),
+            ]
+
+        information = FileRenameInfo()
+        information.ReplaceIfExists = 0
+        information.RootDirectory = destination_root._handle
+        information.FileNameLength = len(encoded_name)
+        ctypes.memmove(
+            ctypes.addressof(information) + FileRenameInfo.FileName.offset,
+            encoded_name,
+            len(encoded_name),
+        )
+        file_rename_info = 3
+        if not self._kernel32.SetFileInformationByHandle(
+            self._handle,
+            file_rename_info,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.path = destination_root.path / name
+
+    def delete_on_close(self) -> None:
+        ctypes = self._ctypes
+
+        class FileDispositionInfo(ctypes.Structure):
+            _fields_ = [("DeleteFile", ctypes.c_ubyte)]
+
+        information = FileDispositionInfo(1)
+        file_disposition_info = 4
+        if not self._kernel32.SetFileInformationByHandle(
+            self._handle,
+            file_disposition_info,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is None:
+            return
+        self._handle = None
+        if not self._kernel32.CloseHandle(handle):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+
+def _new_directory_handle(
+    path: Path, *, rename_source: bool = False, child_access: bool = False
+):
+    handle_type = _WindowsDirectoryHandle if sys.platform == "win32" else _PosixDirectoryHandle
+    return handle_type(
+        path,
+        rename_source=rename_source,
+        child_access=child_access,
+    )
+
+
+@contextmanager
+def _open_directory_handle(
+    path: Path, *, rename_source: bool = False, child_access: bool = False
+):
+    handle = _new_directory_handle(
+        path,
+        rename_source=rename_source,
+        child_access=child_access,
+    )
+    try:
+        yield handle
     finally:
-        os.close(descriptor)
+        handle.close()
+
+
+def _windows_directory_identity(path: Path) -> dict[str, Any]:
+    with _open_directory_handle(path) as handle:
+        return handle.identity()
+
+
+def _directory_identity(path: Path) -> dict[str, Any]:
+    if sys.platform == "win32":
+        return _windows_directory_identity(path)
+    with _open_directory_handle(path) as handle:
+        return handle.identity()
 
 
 def _validate_directory_identity(path: Path, expected: Mapping[str, Any]) -> None:
@@ -1625,6 +1830,22 @@ def _validate_directory_identity(path: Path, expected: Mapping[str, Any]) -> Non
         raise MesherError(
             f"wglink transaction directory identity changed; recovery was refused: {path}"
         )
+
+
+def _validate_open_directory_identity(
+    handle: Any, expected: Mapping[str, Any]
+) -> None:
+    if handle.identity() != expected:
+        raise MesherError(
+            "wglink transaction directory identity changed; recovery was refused: "
+            f"{handle.path}"
+        )
+
+
+def _rename_open_directory(source: Any, destination_root: Any, name: str) -> None:
+    """Injected boundary for an identity-bound directory namespace move."""
+
+    source.rename_into(destination_root, name)
 
 
 def _transaction_marker_path(directory: Path) -> Path:
@@ -1753,6 +1974,34 @@ def _validate_transaction_marker(
     _validate_directory_identity(directory, identity)
 
 
+def _rename_owned_directory(
+    directory: Path,
+    destination: Path,
+    expected: Mapping[str, Any],
+    *,
+    marker: tuple[Path, str, str, Mapping[str, Any]] | None = None,
+) -> None:
+    """Rename the validated object while its identity handle remains open."""
+
+    with _open_directory_handle(
+        destination.parent, child_access=True
+    ) as destination_root:
+        with _open_directory_handle(directory, rename_source=True) as source:
+            _validate_open_directory_identity(source, expected)
+            if marker is not None:
+                target, token, role, state = marker
+                _validate_transaction_marker(
+                    directory, target, token, role, expected, state
+                )
+            _rename_open_directory(source, destination_root, destination.name)
+            _validate_open_directory_identity(source, expected)
+            if marker is not None:
+                target, token, role, state = marker
+                _validate_transaction_marker(
+                    destination, target, token, role, expected, state
+                )
+
+
 def _remove_transaction_marker(
     directory: Path,
     target: Path,
@@ -1763,26 +2012,27 @@ def _remove_transaction_marker(
     *,
     optional: bool = False,
 ) -> None:
-    marker_path = _transaction_marker_path(directory)
-    if not marker_path.exists() and not marker_path.is_symlink():
-        if optional:
-            _validate_directory_identity(directory, identity)
-            return
-        raise MesherError(f"wglink transaction marker is missing: {directory}")
-    _validate_transaction_marker(directory, target, token, role, identity, state)
-    if os.name == "posix":
-        flags = os.O_RDONLY
-        for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
-            flags |= int(getattr(os, name, 0))
-        descriptor = os.open(directory, flags)
-        try:
-            os.unlink(_TRANSACTION_MARKER_NAME, dir_fd=descriptor)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-    else:
-        marker_path.unlink()
-    _validate_directory_identity(directory, identity)
+    with _open_directory_handle(directory) as directory_handle:
+        _validate_open_directory_identity(directory_handle, identity)
+        marker_path = _transaction_marker_path(directory)
+        if not marker_path.exists() and not marker_path.is_symlink():
+            if optional:
+                return
+            raise MesherError(f"wglink transaction marker is missing: {directory}")
+        _validate_transaction_marker(directory, target, token, role, identity, state)
+        if os.name == "posix":
+            flags = os.O_RDONLY
+            for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
+                flags |= int(getattr(os, name, 0))
+            descriptor = os.open(directory, flags)
+            try:
+                os.unlink(_TRANSACTION_MARKER_NAME, dir_fd=descriptor)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        else:
+            marker_path.unlink()
+        _validate_open_directory_identity(directory_handle, identity)
 
 
 def _lock_file(descriptor: int) -> None:
@@ -1864,12 +2114,23 @@ def _bundle_publish_lock(target: Path):
             os.close(descriptor)
 
 
+def _remove_directory_contents(path: Path) -> None:
+    for child in path.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            child.unlink()
+        else:
+            shutil.rmtree(child)
+
+
 def _remove_transaction_directory(path: Path) -> None:
     if not path.exists() and not path.is_symlink():
         return
-    if path.is_symlink() or not path.is_dir():
-        raise MesherError(f"wglink replacement state is not a directory: {path}")
-    shutil.rmtree(path)
+    with _open_directory_handle(path, rename_source=True) as directory_handle:
+        if path.is_symlink() or not path.is_dir():
+            raise MesherError(f"wglink replacement state is not a directory: {path}")
+        _validate_private_directory(path)
+        _remove_directory_contents(path)
+        directory_handle.delete_on_close()
 
 
 def _transaction_mac(lock_secret: bytes, record: Mapping[str, Any]) -> str:
@@ -1928,7 +2189,7 @@ def _write_transaction_record(
         _validate_private_file_identity(temporary, descriptor)
     finally:
         os.close(descriptor)
-    temporary.replace(record_path)
+    _move_path_write_through(temporary, record_path, replace=False)
     descriptor = _open_existing_private_file(record_path)
     os.close(descriptor)
     _fsync_directory(transaction_path)
@@ -2028,20 +2289,23 @@ def _read_transaction_record(
 
 def _remove_transaction_record(target: Path) -> None:
     transaction_path = _transaction_path(target)
-    _validate_private_directory(transaction_path)
-    record_path = _transaction_record_path(target)
-    extras = [child for child in transaction_path.iterdir() if child != record_path]
-    if extras:
-        raise MesherError(
-            "wglink transaction claim contains unexpected state; cleanup was refused"
-        )
-    descriptor = _open_existing_private_file(record_path)
-    try:
-        _validate_private_file_identity(record_path, descriptor)
-    finally:
-        os.close(descriptor)
-    record_path.unlink()
-    transaction_path.rmdir()
+    with _open_directory_handle(
+        transaction_path, rename_source=True
+    ) as transaction_handle:
+        _validate_private_directory(transaction_path)
+        record_path = _transaction_record_path(target)
+        extras = [child for child in transaction_path.iterdir() if child != record_path]
+        if extras:
+            raise MesherError(
+                "wglink transaction claim contains unexpected state; cleanup was refused"
+            )
+        descriptor = _open_existing_private_file(record_path)
+        try:
+            _validate_private_file_identity(record_path, descriptor)
+        finally:
+            os.close(descriptor)
+        record_path.unlink()
+        transaction_handle.delete_on_close()
     _fsync_directory(target.parent)
 
 
@@ -2054,6 +2318,10 @@ def _unowned_backup_candidates(target: Path) -> list[Path]:
     ]
 
 
+def _transaction_cleanup_path(target: Path, role: str) -> Path:
+    return _transaction_path(target) / f"cleanup-{role}"
+
+
 def _remove_owned_transaction_directory(
     directory: Path,
     target: Path,
@@ -2062,9 +2330,54 @@ def _remove_owned_transaction_directory(
     identity: Mapping[str, Any],
     state: Mapping[str, Any],
 ) -> None:
-    _validate_transaction_marker(directory, target, token, role, identity, state)
-    _validate_directory_identity(directory, identity)
-    shutil.rmtree(directory)
+    transaction_path = _transaction_path(target)
+    quarantine = _transaction_cleanup_path(target, role)
+    if quarantine.exists() or quarantine.is_symlink():
+        raise MesherError(
+            "wglink transaction cleanup contains duplicate state; recovery was refused"
+        )
+    with _open_directory_handle(
+        transaction_path, child_access=True
+    ) as transaction_handle:
+        _validate_private_directory(transaction_path)
+        with _open_directory_handle(directory, rename_source=True) as owned_handle:
+            _validate_open_directory_identity(owned_handle, identity)
+            _validate_transaction_marker(
+                directory, target, token, role, identity, state
+            )
+            _rename_open_directory(owned_handle, transaction_handle, quarantine.name)
+            _validate_open_directory_identity(owned_handle, identity)
+            _validate_transaction_marker(
+                quarantine, target, token, role, identity, state
+            )
+            _remove_directory_contents(quarantine)
+            owned_handle.delete_on_close()
+    _fsync_directory(transaction_path)
+
+
+def _remove_quarantined_transaction_directory(
+    directory: Path,
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    transaction_path = _transaction_path(target)
+    if directory != _transaction_cleanup_path(target, role):
+        raise MesherError("invalid wglink transaction cleanup path")
+    with _open_directory_handle(transaction_path) as transaction_handle:
+        _validate_private_directory(transaction_path)
+        with _open_directory_handle(directory, rename_source=True) as owned_handle:
+            _validate_open_directory_identity(owned_handle, identity)
+            _validate_transaction_marker(
+                directory, target, token, role, identity, state
+            )
+            _remove_directory_contents(directory)
+            owned_handle.delete_on_close()
+        # Keep the claim pinned until the identity-bound child deletion closes.
+        transaction_handle.identity()
+    _fsync_directory(transaction_path)
 
 
 def _replace_owned_directories_with_rollback(
@@ -2078,29 +2391,26 @@ def _replace_owned_directories_with_rollback(
 ) -> None:
     if backup.exists() or backup.is_symlink():
         raise MesherError(f"wglink replacement backup already exists: {backup}")
-    _validate_transaction_marker(
-        target, target, token, "backup", backup_identity, state
-    )
-    target.replace(backup)
-    _validate_transaction_marker(
-        backup, target, token, "backup", backup_identity, state
+    _rename_owned_directory(
+        target,
+        backup,
+        backup_identity,
+        marker=(target, token, "backup", state),
     )
     try:
-        _validate_transaction_marker(
-            staging, target, token, "staging", staging_identity, state
-        )
-        staging.replace(target)
-        _validate_transaction_marker(
-            target, target, token, "staging", staging_identity, state
+        _rename_owned_directory(
+            staging,
+            target,
+            staging_identity,
+            marker=(target, token, "staging", state),
         )
     except BaseException as publish_error:
         try:
-            _validate_transaction_marker(
-                backup, target, token, "backup", backup_identity, state
-            )
-            backup.replace(target)
-            _validate_transaction_marker(
-                target, target, token, "backup", backup_identity, state
+            _rename_owned_directory(
+                backup,
+                target,
+                backup_identity,
+                marker=(target, token, "backup", state),
             )
         except BaseException as restore_error:
             raise MesherError(
@@ -2206,6 +2516,31 @@ def _recover_directory_replacement(target: Path, state: dict[str, Any]) -> None:
     token = record["token"]
     staging_identity = record["staging_identity"]
     backup_identity = record["backup_identity"]
+    cleanup_paths = {
+        "staging": _transaction_cleanup_path(target, "staging"),
+        "backup": _transaction_cleanup_path(target, "backup"),
+    }
+    for role, cleanup in cleanup_paths.items():
+        if not cleanup.exists() and not cleanup.is_symlink():
+            continue
+        if record["phase"] != "marked":
+            raise MesherError(
+                "wglink transaction cleanup state is ambiguous; recovery was refused"
+            )
+        original = staging if role == "staging" else backup
+        if original.exists() or original.is_symlink():
+            raise MesherError(
+                "wglink transaction contains duplicate cleanup state; "
+                "recovery was refused"
+            )
+        _remove_quarantined_transaction_directory(
+            cleanup,
+            target,
+            token,
+            role,
+            record[f"{role}_identity"],
+            state,
+        )
     staging_exists = staging.exists() or staging.is_symlink()
     backup_exists = backup.exists() or backup.is_symlink()
     target_exists = target.exists() or target.is_symlink()
@@ -2293,19 +2628,23 @@ def _recover_directory_replacement(target: Path, state: dict[str, Any]) -> None:
             staging, target, token, "staging", staging_identity, state
         )
         _fsync_directory(target.parent)
-    _validate_transaction_marker(
-        backup, target, token, "backup", backup_identity, state
-    )
-    backup.replace(target)
-    _validate_transaction_marker(
-        target, target, token, "backup", backup_identity, state
+    _rename_owned_directory(
+        backup,
+        target,
+        backup_identity,
+        marker=(target, token, "backup", state),
     )
     _fsync_directory(target.parent)
     _finish_directory_transaction(target, record, state, "backup")
 
 
 def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
-    """Publish on Windows with serialized, crash-recoverable renames."""
+    """Publish on Windows with serialized, process-crash-recoverable renames.
+
+    Namespace moves request write-through, but full power-loss ordering varies
+    by filesystem and storage hardware and is deliberately not part of this
+    recovery contract.
+    """
 
     with _bundle_publish_lock(target) as state:
         _recover_directory_replacement(target, state)
@@ -2354,11 +2693,7 @@ def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
                     state,
                 )
             except BaseException:
-                try:
-                    _recover_directory_replacement(target, state)
-                finally:
-                    if state["active_token"] is not None:
-                        _set_active_transaction(target, state, None)
+                _recover_directory_replacement(target, state)
                 raise
             _fsync_directory(target.parent)
             _recover_directory_replacement(target, state)
@@ -2367,20 +2702,17 @@ def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
             # closes the otherwise uncoordinated two-user race while keeping
             # all secret/authentication material in private per-user state.
             token = secrets.token_hex(16)
+            staging_identity = _directory_identity(staging)
             _set_active_transaction(target, state, token)
             try:
                 _create_transaction_directory(_transaction_path(target))
-                staging.replace(target)
+                _rename_owned_directory(staging, target, staging_identity)
                 _fsync_directory(target.parent)
                 _remove_transaction_directory(_transaction_path(target))
                 _fsync_directory(target.parent)
                 _set_active_transaction(target, state, None)
             except BaseException:
-                try:
-                    _recover_directory_replacement(target, state)
-                finally:
-                    if state["active_token"] is not None:
-                        _set_active_transaction(target, state, None)
+                _recover_directory_replacement(target, state)
                 raise
 
 
@@ -2430,7 +2762,7 @@ def _atomic_exchange_directories(left: Path, right: Path) -> None:
 
 
 def _publish_bundle(staging: Path, target: Path) -> None:
-    """Publish a durable generation, atomically swapping a live generation."""
+    """Sync a generation and publish it with the platform replacement path."""
 
     _sync_staged_bundle(staging)
     if os.name != "posix":
@@ -2474,6 +2806,10 @@ def write_wglink(
     timestamp, or content identity is minted here.  Callers with a mesh build
     should pass its ``BuiltGeometry``; direct tests and adapters may use the
     pure realized-bounds fallback.
+
+    On Windows, an interrupted process can resume an existing-bundle
+    replacement. Recovery from storage power loss is not promised because
+    filesystem and hardware write-through guarantees vary.
     """
 
     if not isinstance(geometry, PointGridHornGeometry):

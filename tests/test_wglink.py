@@ -529,15 +529,14 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
     staging.mkdir()
     (target / "generation.txt").write_text("old", encoding="utf-8")
     (staging / "generation.txt").write_text("new", encoding="utf-8")
-    path_type = type(target)
-    original_replace = path_type.replace
+    original_rename = cad_module._rename_open_directory
 
-    def fail_staged_publish(path, destination):
-        if path == staging and Path(destination) == target:
+    def fail_staged_publish(source, destination_root, name):
+        if source.path == staging and destination_root.path / name == target:
             raise OSError("injected publish failure")
-        return original_replace(path, destination)
+        return original_rename(source, destination_root, name)
 
-    monkeypatch.setattr(path_type, "replace", fail_staged_publish)
+    monkeypatch.setattr(cad_module, "_rename_open_directory", fail_staged_publish)
 
     with pytest.raises(OSError, match="injected publish failure"):
         cad_module._publish_bundle_without_exchange(staging, target)
@@ -545,6 +544,54 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
     assert not list(tmp_path.glob("*.previous"))
+
+
+def test_failed_recovery_keeps_token_for_later_retry(monkeypatch, tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    original_rename = cad_module._rename_open_directory
+    moves_blocked = True
+
+    def fail_moves_to_live_name(source, destination_root, name):
+        destination = destination_root.path / name
+        if (
+            moves_blocked
+            and destination == target
+            and (source.path == staging or source.path.name.endswith(".previous"))
+        ):
+            raise OSError("injected sharing violation")
+        return original_rename(source, destination_root, name)
+
+    monkeypatch.setattr(
+        cad_module, "_rename_open_directory", fail_moves_to_live_name
+    )
+
+    with pytest.raises(OSError, match="injected sharing violation"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    state_path = cad_module._private_state_path(target)
+    failed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    record = json.loads(
+        cad_module._transaction_record_path(target).read_text(encoding="utf-8")
+    )
+    backup = tmp_path / record["backup"]
+    assert failed_state["active_token"] == record["token"]
+    assert not target.exists()
+    assert not staging.exists()
+    assert (backup / "generation.txt").read_text(encoding="utf-8") == "old"
+
+    moves_blocked = False
+    with cad_module._bundle_publish_lock(target) as state:
+        cad_module._recover_directory_replacement(target, state)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert not backup.exists()
+    assert not cad_module._transaction_path(target).exists()
+    _assert_private_publish_lock(target)
 
 
 def test_non_posix_publication_recovers_after_process_dies_between_renames(tmp_path):
@@ -565,16 +612,16 @@ from hornlab_mesher import cad
 
 target = Path(sys.argv[1])
 staging = Path(sys.argv[2])
-path_type = type(target)
-original_replace = path_type.replace
+original_rename = cad._rename_open_directory
 
-def die_after_first_rename(path, destination):
-    result = original_replace(path, destination)
-    if path == target and Path(destination).name.endswith(".previous"):
+def die_after_first_rename(source, destination_root, name):
+    original_path = source.path
+    result = original_rename(source, destination_root, name)
+    if original_path == target and name.endswith(".previous"):
         os._exit(91)
     return result
 
-path_type.replace = die_after_first_rename
+cad._rename_open_directory = die_after_first_rename
 cad._publish_bundle_without_exchange(staging, target)
 """
 
@@ -626,16 +673,16 @@ from hornlab_mesher import cad
 
 target = Path(sys.argv[1])
 staging = Path(sys.argv[2])
-path_type = type(target)
-original_replace = path_type.replace
+original_rename = cad._rename_open_directory
 
-def die_after_first_rename(path, destination):
-    result = original_replace(path, destination)
-    if path == target and Path(destination).name.endswith(".previous"):
+def die_after_first_rename(source, destination_root, name):
+    original_path = source.path
+    result = original_rename(source, destination_root, name)
+    if original_path == target and name.endswith(".previous"):
         os._exit(94)
     return result
 
-path_type.replace = die_after_first_rename
+cad._rename_open_directory = die_after_first_rename
 cad._publish_bundle_without_exchange(staging, target)
 """
     crashed = subprocess.run(
@@ -681,16 +728,16 @@ from hornlab_mesher import cad
 
 target = Path(sys.argv[1])
 staging = Path(sys.argv[2])
-path_type = type(target)
-original_replace = path_type.replace
+original_rename = cad._rename_open_directory
 
-def die_after_second_rename(path, destination):
-    result = original_replace(path, destination)
-    if path == staging and Path(destination) == target:
+def die_after_second_rename(source, destination_root, name):
+    original_path = source.path
+    result = original_rename(source, destination_root, name)
+    if original_path == staging and destination_root.path / name == target:
         os._exit(95)
     return result
 
-path_type.replace = die_after_second_rename
+cad._rename_open_directory = die_after_second_rename
 cad._publish_bundle_without_exchange(staging, target)
 """
     crashed = subprocess.run(
@@ -716,6 +763,230 @@ cad._publish_bundle_without_exchange(staging, target)
     assert (preserved_backup / "generation.txt").read_text(encoding="utf-8") == "old"
 
 
+def test_recovery_never_deletes_backup_path_swapped_after_validation(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.interrupted"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+
+    with cad_module._bundle_publish_lock(target) as state:
+        token = "a" * 32
+        backup = tmp_path / f".{target.name}.publish.{token}.previous"
+        staging_identity = cad_module._directory_identity(staging)
+        backup_identity = cad_module._directory_identity(target)
+        cad_module._set_active_transaction(target, state, token)
+        record = cad_module._write_transaction_record(
+            target,
+            staging,
+            backup,
+            token,
+            staging_identity,
+            backup_identity,
+            state,
+        )
+        cad_module._install_transaction_marker(
+            target, target, token, "backup", backup_identity, state
+        )
+        cad_module._install_transaction_marker(
+            staging, target, token, "staging", staging_identity, state
+        )
+        cad_module._update_transaction_phase(target, record, state, "marked")
+        cad_module._rename_owned_directory(
+            target,
+            backup,
+            backup_identity,
+            marker=(target, token, "backup", state),
+        )
+        cad_module._rename_owned_directory(
+            staging,
+            target,
+            staging_identity,
+            marker=(target, token, "staging", state),
+        )
+
+        preserved_backup = tmp_path / "preserved-real-backup"
+        decoy = tmp_path / "customer-data"
+        decoy.mkdir()
+        (decoy / "must-survive.txt").write_text("unrelated", encoding="utf-8")
+        original_rmtree = cad_module.shutil.rmtree
+
+        def swap_at_path_based_delete(path, *args, **kwargs):
+            if Path(path) == backup:
+                backup.replace(preserved_backup)
+                decoy.replace(backup)
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(cad_module.shutil, "rmtree", swap_at_path_based_delete)
+        cad_module._recover_directory_replacement(target, state)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert (decoy / "must-survive.txt").read_text(encoding="utf-8") == "unrelated"
+    assert not preserved_backup.exists()
+
+
+def test_owned_rename_mutates_open_identity_not_swapped_path(monkeypatch, tmp_path):
+    source = tmp_path / "authenticated"
+    destination = tmp_path / "published"
+    decoy = tmp_path / "customer-data"
+    preserved = tmp_path / "pinned-authenticated-object"
+    source.mkdir()
+    decoy.mkdir()
+    (source / "owned.txt").write_text("transaction", encoding="utf-8")
+    (decoy / "must-survive.txt").write_text("unrelated", encoding="utf-8")
+    expected = cad_module._directory_identity(source)
+    original_new_handle = cad_module._new_directory_handle
+
+    def inject_swap_after_handle_validation(
+        path, *, rename_source=False, child_access=False
+    ):
+        handle = original_new_handle(
+            path,
+            rename_source=rename_source,
+            child_access=child_access,
+        )
+        if path == source and rename_source:
+
+            def rename_pinned_object(destination_root, name):
+                source.replace(preserved)
+                decoy.replace(source)
+                preserved.replace(destination_root.path / name)
+                handle.path = destination_root.path / name
+
+            handle.rename_into = rename_pinned_object
+        return handle
+
+    monkeypatch.setattr(
+        cad_module, "_new_directory_handle", inject_swap_after_handle_validation
+    )
+
+    cad_module._rename_owned_directory(source, destination, expected)
+
+    assert (destination / "owned.txt").read_text(encoding="utf-8") == "transaction"
+    assert (source / "must-survive.txt").read_text(encoding="utf-8") == "unrelated"
+
+
+def test_recovery_resumes_authenticated_quarantine_cleanup(monkeypatch, tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.interrupted"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+
+    with cad_module._bundle_publish_lock(target) as state:
+        token = "b" * 32
+        backup = tmp_path / f".{target.name}.publish.{token}.previous"
+        staging_identity = cad_module._directory_identity(staging)
+        backup_identity = cad_module._directory_identity(target)
+        cad_module._set_active_transaction(target, state, token)
+        record = cad_module._write_transaction_record(
+            target,
+            staging,
+            backup,
+            token,
+            staging_identity,
+            backup_identity,
+            state,
+        )
+        cad_module._install_transaction_marker(
+            target, target, token, "backup", backup_identity, state
+        )
+        cad_module._install_transaction_marker(
+            staging, target, token, "staging", staging_identity, state
+        )
+        cad_module._update_transaction_phase(target, record, state, "marked")
+        cad_module._rename_owned_directory(
+            target,
+            backup,
+            backup_identity,
+            marker=(target, token, "backup", state),
+        )
+        cad_module._rename_owned_directory(
+            staging,
+            target,
+            staging_identity,
+            marker=(target, token, "staging", state),
+        )
+
+        original_remove_contents = cad_module._remove_directory_contents
+        cleanup = cad_module._transaction_cleanup_path(target, "backup")
+        fail_cleanup = True
+
+        def interrupt_quarantine_cleanup(path):
+            if fail_cleanup and path == cleanup:
+                raise OSError("injected cleanup interruption")
+            return original_remove_contents(path)
+
+        monkeypatch.setattr(
+            cad_module, "_remove_directory_contents", interrupt_quarantine_cleanup
+        )
+        with pytest.raises(OSError, match="injected cleanup interruption"):
+            cad_module._recover_directory_replacement(target, state)
+
+        assert state["active_token"] == token
+        assert cleanup.is_dir()
+        assert not backup.exists()
+        assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+
+        fail_cleanup = False
+        cad_module._recover_directory_replacement(target, state)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert not cleanup.exists()
+    assert not cad_module._transaction_path(target).exists()
+    _assert_private_publish_lock(target)
+
+
+def test_windows_directory_identity_distinguishes_full_128_bit_file_id():
+    shared_low_bits = bytes.fromhex("0011223344556677")
+    first = cad_module._windows_file_identity(
+        42, shared_low_bits + bytes.fromhex("8899aabbccddeeff")
+    )
+    second = cad_module._windows_file_identity(
+        42, shared_low_bits + bytes.fromhex("8899aabbccddee00")
+    )
+
+    assert first != second
+    assert len(bytes.fromhex(first["file_id"])) == 16
+    assert len(bytes.fromhex(second["file_id"])) == 16
+
+
+def test_publication_fails_closed_when_identity_backend_is_unsupported(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    original_new_handle = cad_module._new_directory_handle
+
+    def reject_staging_identity(
+        path, *, rename_source=False, child_access=False
+    ):
+        if path == staging:
+            raise MesherError("filesystem has no stable 128-bit directory ID")
+        return original_new_handle(
+            path,
+            rename_source=rename_source,
+            child_access=child_access,
+        )
+
+    monkeypatch.setattr(cad_module, "_new_directory_handle", reject_staging_identity)
+
+    with pytest.raises(MesherError, match="no stable 128-bit directory ID"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert not cad_module._transaction_path(target).exists()
+
+
 def test_non_posix_publication_serializes_concurrent_processes(tmp_path):
     target = tmp_path / "horn.wglink"
     staging_a = tmp_path / ".horn.wglink.writer-a"
@@ -737,18 +1008,18 @@ from pathlib import Path
 from hornlab_mesher import cad
 
 target, staging, backed_up, release = map(Path, sys.argv[1:])
-path_type = type(target)
-original_replace = path_type.replace
+original_rename = cad._rename_open_directory
 
-def pause_after_first_rename(path, destination):
-    result = original_replace(path, destination)
-    if path == target and Path(destination).name.endswith(".previous"):
+def pause_after_first_rename(source, destination_root, name):
+    original_path = source.path
+    result = original_rename(source, destination_root, name)
+    if original_path == target and name.endswith(".previous"):
         backed_up.write_text("ready", encoding="utf-8")
         while not release.exists():
             time.sleep(0.01)
     return result
 
-path_type.replace = pause_after_first_rename
+cad._rename_open_directory = pause_after_first_rename
 cad._publish_bundle_without_exchange(staging, target)
 """
     writer_b_script = """
@@ -872,7 +1143,7 @@ def test_non_posix_publication_rejects_untrusted_transaction_record(tmp_path):
     token = "0" * 32
     payload = json.dumps(
         {
-            "schema": 2,
+            "schema": cad_module._TRANSACTION_SCHEMA,
             "target": target.name,
             "token": token,
             "staging": staging.name,
@@ -917,7 +1188,7 @@ def test_non_posix_publication_rejects_chosen_key_forged_record(tmp_path):
     victim.mkdir()
     (victim / "keep.txt").write_text("do not delete", encoding="utf-8")
     record = {
-        "schema": 2,
+        "schema": cad_module._TRANSACTION_SCHEMA,
         "target": target.name,
         "token": token,
         "staging": staging.name,
@@ -959,18 +1230,18 @@ from pathlib import Path
 from hornlab_mesher import cad
 
 target, staging, paused, release = map(Path, sys.argv[1:])
-path_type = type(target)
-original_replace = path_type.replace
+original_rename = cad._rename_open_directory
 
-def pause_after_first_rename(path, destination):
-    result = original_replace(path, destination)
-    if path == target and Path(destination).name.endswith(".previous"):
+def pause_after_first_rename(source, destination_root, name):
+    original_path = source.path
+    result = original_rename(source, destination_root, name)
+    if original_path == target and name.endswith(".previous"):
         paused.write_text("ready", encoding="utf-8")
         while not release.exists():
             time.sleep(0.01)
     return result
 
-path_type.replace = pause_after_first_rename
+cad._rename_open_directory = pause_after_first_rename
 cad._publish_bundle_without_exchange(staging, target)
 """
     writer = subprocess.Popen(
@@ -1103,6 +1374,30 @@ def test_coordination_write_all_retries_short_writes(monkeypatch, tmp_path):
 
     assert calls > 1
     assert path.read_bytes() == b"complete coordination payload"
+
+
+def test_private_state_replacements_use_write_through_namespace_move(
+    monkeypatch, tmp_path
+):
+    state_path = tmp_path / "state.json"
+    moves: list[tuple[Path, Path, bool]] = []
+    original_move = cad_module._move_path_write_through
+
+    def capture_move(source, destination, *, replace):
+        moves.append((source, destination, replace))
+        return original_move(source, destination, replace=replace)
+
+    monkeypatch.setattr(cad_module, "_move_path_write_through", capture_move)
+
+    cad_module._atomic_write_private_payload(state_path, b"first", replace=False)
+    cad_module._atomic_write_private_payload(state_path, b"second", replace=True)
+
+    assert state_path.read_bytes() == b"second"
+    assert [(destination, replace) for _, destination, replace in moves] == [
+        (state_path, False),
+        (state_path, True),
+    ]
+    assert all(source.parent == state_path.parent for source, _, _ in moves)
 
 
 def test_private_state_update_survives_partial_write_crash(tmp_path):
