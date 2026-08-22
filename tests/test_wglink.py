@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -478,8 +481,7 @@ def test_writer_replaces_live_bundle_without_posix_exchange(monkeypatch, tmp_pat
     (target / "generation.txt").write_text("old", encoding="utf-8")
     (staging / "generation.txt").write_text("new", encoding="utf-8")
 
-    monkeypatch.setattr(cad_module.os, "name", "nt")
-    cad_module._atomic_exchange_directories(staging, target)
+    cad_module._publish_bundle_without_exchange(staging, target)
 
     assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
     assert not staging.exists()
@@ -510,6 +512,167 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
 
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob("*.previous"))
+
+
+def test_non_posix_publication_recovers_after_process_dies_between_renames(tmp_path):
+    target = tmp_path / "horn.wglink"
+    interrupted_staging = tmp_path / ".horn.wglink.interrupted"
+    next_staging = tmp_path / ".horn.wglink.next"
+    target.mkdir()
+    interrupted_staging.mkdir()
+    next_staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (interrupted_staging / "generation.txt").write_text("interrupted", encoding="utf-8")
+    (next_staging / "generation.txt").write_text("next", encoding="utf-8")
+    crash_script = """
+import os
+import sys
+from pathlib import Path
+from hornlab_mesher import cad
+
+target = Path(sys.argv[1])
+staging = Path(sys.argv[2])
+backup = staging.with_name(f"{staging.name}.previous")
+path_type = type(target)
+original_replace = path_type.replace
+
+def die_after_first_rename(path, destination):
+    result = original_replace(path, destination)
+    if path == target and Path(destination) == backup:
+        os._exit(91)
+    return result
+
+path_type.replace = die_after_first_rename
+cad._publish_bundle_without_exchange(staging, target)
+"""
+
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_script, str(target), str(interrupted_staging)],
+        check=False,
+    )
+
+    assert crashed.returncode == 91
+    assert not target.exists()
+    assert interrupted_staging.exists()
+    assert interrupted_staging.with_name(
+        f"{interrupted_staging.name}.previous"
+    ).exists()
+
+    with cad_module._bundle_publish_lock(target):
+        cad_module._recover_directory_replacement(target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert not interrupted_staging.exists()
+    assert not list(tmp_path.glob("*.previous"))
+
+    cad_module._publish_bundle_without_exchange(next_staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "next"
+    assert not interrupted_staging.exists()
+    assert not next_staging.exists()
+    assert not list(tmp_path.glob("*.previous"))
+
+
+def test_non_posix_publication_serializes_concurrent_processes(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging_a = tmp_path / ".horn.wglink.writer-a"
+    staging_b = tmp_path / ".horn.wglink.writer-b"
+    backed_up = tmp_path / "writer-a-backed-up"
+    release_a = tmp_path / "release-writer-a"
+    writer_b_ready = tmp_path / "writer-b-ready"
+    target.mkdir()
+    staging_a.mkdir()
+    staging_b.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging_a / "generation.txt").write_text("writer-a", encoding="utf-8")
+    (staging_b / "generation.txt").write_text("writer-b", encoding="utf-8")
+    writer_a_script = """
+import sys
+import time
+from pathlib import Path
+from hornlab_mesher import cad
+
+target, staging, backed_up, release = map(Path, sys.argv[1:])
+backup = staging.with_name(f"{staging.name}.previous")
+path_type = type(target)
+original_replace = path_type.replace
+
+def pause_after_first_rename(path, destination):
+    result = original_replace(path, destination)
+    if path == target and Path(destination) == backup:
+        backed_up.write_text("ready", encoding="utf-8")
+        while not release.exists():
+            time.sleep(0.01)
+    return result
+
+path_type.replace = pause_after_first_rename
+cad._publish_bundle_without_exchange(staging, target)
+"""
+    writer_b_script = """
+import sys
+from pathlib import Path
+from hornlab_mesher import cad
+
+target, staging, ready = map(Path, sys.argv[1:])
+ready.write_text("ready", encoding="utf-8")
+cad._publish_bundle_without_exchange(staging, target)
+"""
+    writer_a = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            writer_a_script,
+            str(target),
+            str(staging_a),
+            str(backed_up),
+            str(release_a),
+        ]
+    )
+    writer_b = None
+    try:
+        for _ in range(500):
+            if backed_up.exists():
+                break
+            assert writer_a.poll() is None
+            time.sleep(0.01)
+        assert backed_up.exists()
+        assert not target.exists()
+
+        writer_b = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                writer_b_script,
+                str(target),
+                str(staging_b),
+                str(writer_b_ready),
+            ]
+        )
+        for _ in range(500):
+            if writer_b_ready.exists():
+                break
+            assert writer_b.poll() is None
+            time.sleep(0.01)
+        assert writer_b_ready.exists()
+        time.sleep(0.1)
+        assert writer_b.poll() is None
+
+        release_a.write_text("release", encoding="utf-8")
+        assert writer_a.wait(timeout=5) == 0
+        assert writer_b.wait(timeout=5) == 0
+    finally:
+        release_a.touch(exist_ok=True)
+        if writer_a.poll() is None:
+            writer_a.kill()
+            writer_a.wait()
+        if writer_b is not None and writer_b.poll() is None:
+            writer_b.kill()
+            writer_b.wait()
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "writer-b"
+    assert not staging_a.exists()
+    assert not staging_b.exists()
     assert not list(tmp_path.glob("*.previous"))
 
 

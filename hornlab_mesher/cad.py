@@ -29,8 +29,12 @@ import math
 import os
 import re
 import shutil
+import sys
 import tempfile
+import threading
+import time
 from collections.abc import Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -917,18 +921,127 @@ def _sync_staged_bundle(staging: Path) -> None:
     _fsync_directory(staging)
 
 
+_BUNDLE_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_BUNDLE_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _publish_lock_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}.publish.lock")
+
+
+def _lock_file(descriptor: int) -> None:
+    if sys.platform == "win32":
+        import errno
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        while True:
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                time.sleep(0.05)
+
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+
+
+def _unlock_file(descriptor: int) -> None:
+    if sys.platform == "win32":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _bundle_publish_lock(target: Path):
+    """Serialize publishers in this process and across processes."""
+
+    lock_path = _publish_lock_path(target)
+    lock_key = str(lock_path.absolute())
+    with _BUNDLE_THREAD_LOCKS_GUARD:
+        thread_lock = _BUNDLE_THREAD_LOCKS.setdefault(lock_key, threading.Lock())
+    with thread_lock:
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            _lock_file(descriptor)
+            try:
+                yield
+            finally:
+                _unlock_file(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _transaction_backups(target: Path) -> list[Path]:
+    prefix = f".{target.name}."
+    return sorted(
+        (
+            child
+            for child in target.parent.iterdir()
+            if child.name.startswith(prefix) and child.name.endswith(".previous")
+        ),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+
+
+def _staging_for_backup(backup: Path) -> Path:
+    return backup.with_name(backup.name.removesuffix(".previous"))
+
+
+def _remove_transaction_directory(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise MesherError(f"wglink replacement state is not a directory: {path}")
+    shutil.rmtree(path)
+
+
+def _recover_directory_replacement(target: Path) -> None:
+    """Restore or clean interrupted non-POSIX replacement transactions."""
+
+    backups = _transaction_backups(target)
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise MesherError(f"wglink output is not a directory: {target}")
+    if not target.exists() and backups:
+        newest = backups[0]
+        if newest.is_symlink() or not newest.is_dir():
+            raise MesherError(f"wglink replacement backup is not a directory: {newest}")
+        _remove_transaction_directory(_staging_for_backup(newest))
+        newest.replace(target)
+        _fsync_directory(target.parent)
+
+    if target.exists():
+        for backup in backups:
+            staging = _staging_for_backup(backup)
+            _remove_transaction_directory(staging)
+            _remove_transaction_directory(backup)
+
+
 def _replace_directories_with_rollback(staging: Path, target: Path) -> None:
-    """Replace a directory where the OS has no atomic exchange primitive.
+    """Replace a directory while holding its non-POSIX publication lock.
 
     Windows cannot atomically exchange two non-empty directories. Preserve the
     live generation under a unique sibling name, publish the staged generation,
-    and restore the original if publication fails. The operation has a short
-    non-atomic window, but never turns an ordinary second export into the hard
-    failure that the previous POSIX-only implementation did.
+    and restore the original if publication fails. A later publisher recovers
+    either side if this process terminates between the two renames.
     """
 
     backup = staging.with_name(f"{staging.name}.previous")
-    if backup.exists():
+    if backup.exists() or backup.is_symlink():
         raise MesherError(f"wglink replacement backup already exists: {backup}")
     target.replace(backup)
     try:
@@ -942,15 +1055,24 @@ def _replace_directories_with_rollback(staging: Path, target: Path) -> None:
                 f"restore the previous generation: {restore_error}"
             ) from publish_error
         raise
-    shutil.rmtree(backup, ignore_errors=True)
+    _remove_transaction_directory(backup)
+
+
+def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
+    """Publish on Windows with serialized, crash-recoverable renames."""
+
+    with _bundle_publish_lock(target):
+        _recover_directory_replacement(target)
+        if target.exists():
+            _replace_directories_with_rollback(staging, target)
+        else:
+            staging.replace(target)
+        _fsync_directory(target.parent)
+        _recover_directory_replacement(target)
 
 
 def _atomic_exchange_directories(left: Path, right: Path) -> None:
-    """Exchange two directories, using a rollback-safe Windows fallback."""
-
-    if os.name != "posix":
-        _replace_directories_with_rollback(left, right)
-        return
+    """Atomically exchange two directories on POSIX."""
 
     import ctypes
 
@@ -984,6 +1106,9 @@ def _publish_bundle(staging: Path, target: Path) -> None:
     """Publish a durable generation, atomically swapping a live generation."""
 
     _sync_staged_bundle(staging)
+    if os.name != "posix":
+        _publish_bundle_without_exchange(staging, target)
+        return
     if target.exists():
         if target.is_symlink() or not target.is_dir():
             raise MesherError(f"wglink output is not a directory: {target}")
