@@ -927,14 +927,329 @@ def _sync_staged_bundle(staging: Path) -> None:
 _BUNDLE_THREAD_LOCKS: dict[str, threading.Lock] = {}
 _BUNDLE_THREAD_LOCKS_GUARD = threading.Lock()
 _TRANSACTION_SCHEMA = 1
+_PRIVATE_STATE_SCHEMA = 1
+
+
+def _windows_current_user_sid():
+    import ctypes
+    from ctypes import wintypes
+
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("Sid", wintypes.LPVOID), ("Attributes", wintypes.DWORD)]
+
+    class TokenUser(ctypes.Structure):
+        _fields_ = [("User", SidAndAttributes)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    token_query = 0x0008
+    token_user = 1
+    process = kernel32.GetCurrentProcess()
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, token_query, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        needed = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, token_user, None, 0, ctypes.byref(needed))
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(
+            token,
+            token_user,
+            buffer,
+            needed.value,
+            ctypes.byref(needed),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return ctypes.cast(buffer, ctypes.POINTER(TokenUser)).contents.User.Sid, buffer
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _windows_verify_owner_only_dacl(path: Path, *, directory: bool) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    owner_security_information = 0x00000001
+    dacl_security_information = 0x00000004
+    se_file_object = 1
+    access_allowed_ace_type = 0
+    file_all_access = 0x001F01FF
+
+    class Acl(ctypes.Structure):
+        _fields_ = [
+            ("AclRevision", ctypes.c_ubyte),
+            ("Sbz1", ctypes.c_ubyte),
+            ("AclSize", wintypes.WORD),
+            ("AceCount", wintypes.WORD),
+            ("Sbz2", wintypes.WORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi32.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi32.EqualSid.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+    advapi32.EqualSid.restype = wintypes.BOOL
+    advapi32.GetAce.argtypes = [
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi32.GetAce.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorControl.argtypes = [
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetSecurityDescriptorControl.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+
+    owner = wintypes.LPVOID()
+    dacl = wintypes.LPVOID()
+    descriptor = wintypes.LPVOID()
+    result = advapi32.GetNamedSecurityInfoW(
+        str(path),
+        se_file_object,
+        owner_security_information | dacl_security_information,
+        ctypes.byref(owner),
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if result:
+        raise ctypes.WinError(result)
+    current_sid, sid_buffer = _windows_current_user_sid()
+    try:
+        if not advapi32.EqualSid(owner, current_sid):
+            raise MesherError(f"wglink private state has a different owner: {path}")
+        if not dacl:
+            raise MesherError(f"wglink private state has no protected DACL: {path}")
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not advapi32.GetSecurityDescriptorControl(
+            descriptor, ctypes.byref(control), ctypes.byref(revision)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not int(control.value) & 0x1000:  # SE_DACL_PROTECTED
+            raise MesherError(f"wglink private state has no protected DACL: {path}")
+        acl = ctypes.cast(dacl, ctypes.POINTER(Acl)).contents
+        if int(acl.AceCount) != 1:
+            raise MesherError(f"wglink private state DACL is not owner-only: {path}")
+        ace = wintypes.LPVOID()
+        if not advapi32.GetAce(dacl, 0, ctypes.byref(ace)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        ace_address = int(ace.value)
+        ace_type = ctypes.c_ubyte.from_address(ace_address).value
+        ace_flags = ctypes.c_ubyte.from_address(ace_address + 1).value
+        access_mask = wintypes.DWORD.from_address(ace_address + 4).value
+        ace_sid = wintypes.LPVOID(ace_address + 8)
+        required_flags = 0x03 if directory else 0x00
+        if (
+            ace_type != access_allowed_ace_type
+            or access_mask != file_all_access
+            or ace_flags & 0x03 != required_flags
+            or not advapi32.EqualSid(ace_sid, current_sid)
+        ):
+            raise MesherError(f"wglink private state DACL is not owner-only: {path}")
+    finally:
+        del sid_buffer
+        kernel32.LocalFree(descriptor)
+
+
+def _windows_apply_owner_only_dacl(path: Path, *, directory: bool) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = (
+        wintypes.BOOL
+    )
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+
+    dacl_security_information = 0x00000004
+    protected_dacl_security_information = 0x80000000
+    se_file_object = 1
+    sddl_revision_1 = 1
+    current_sid, sid_buffer = _windows_current_user_sid()
+    sid_string = wintypes.LPWSTR()
+    if not advapi32.ConvertSidToStringSidW(current_sid, ctypes.byref(sid_string)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        inheritance = "OICI" if directory else ""
+        sddl = f"D:P(A;{inheritance};FA;;;{sid_string.value})"
+    finally:
+        kernel32.LocalFree(ctypes.cast(sid_string, wintypes.HLOCAL))
+        del sid_buffer
+    descriptor = wintypes.LPVOID()
+    descriptor_size = wintypes.DWORD()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        sddl_revision_1,
+        ctypes.byref(descriptor),
+        ctypes.byref(descriptor_size),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        dacl = wintypes.LPVOID()
+        if not advapi32.GetSecurityDescriptorDacl(
+            descriptor,
+            ctypes.byref(present),
+            ctypes.byref(dacl),
+            ctypes.byref(defaulted),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not present or not dacl:
+            raise MesherError("could not construct owner-only Windows DACL")
+        result = advapi32.SetNamedSecurityInfoW(
+            str(path),
+            se_file_object,
+            dacl_security_information | protected_dacl_security_information,
+            None,
+            None,
+            dacl,
+            None,
+        )
+        if result:
+            raise ctypes.WinError(result)
+    finally:
+        kernel32.LocalFree(descriptor)
+    _windows_verify_owner_only_dacl(path, directory=directory)
+
+
+def _validate_private_directory(path: Path) -> None:
+    metadata = os.lstat(path)
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    file_attributes = int(getattr(metadata, "st_file_attributes", 0))
+    if path.is_symlink() or (reparse_flag and file_attributes & reparse_flag):
+        raise MesherError(f"wglink private state is a reparse point: {path}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise MesherError(f"wglink private state is not a directory: {path}")
+    if os.name == "posix":
+        if int(metadata.st_uid) != int(os.getuid()):
+            raise MesherError(f"wglink private state has a different owner: {path}")
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise MesherError(f"wglink private state must have mode 0700: {path}")
+    elif sys.platform == "win32":
+        _windows_verify_owner_only_dacl(path, directory=True)
+
+
+def _ensure_private_directory(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        if os.name == "posix":
+            _validate_private_directory(path)
+            return
+        metadata = os.lstat(path)
+        reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or path.is_symlink()
+            or reparse_flag
+            and int(getattr(metadata, "st_file_attributes", 0)) & reparse_flag
+        ):
+            raise MesherError(f"wglink private state is not a plain directory: {path}")
+    if os.name == "posix":
+        path.chmod(0o700)
+    elif sys.platform == "win32":
+        _windows_apply_owner_only_dacl(path, directory=True)
+    _validate_private_directory(path)
+
+
+def _private_lock_root() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
+        vendor_root = base / "HornLab"
+        _ensure_private_directory(vendor_root)
+        app_root = vendor_root / "WaveguideMesher"
+        _ensure_private_directory(app_root)
+        root = app_root / "lock-state-v1"
+    else:
+        root = Path(tempfile.gettempdir()) / f"hornlab-waveguide-mesher-{os.getuid()}"
+    _ensure_private_directory(root)
+    return root
+
+
+def _target_lock_key(target: Path) -> str:
+    normalized = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+    return hashlib.sha256(os.fsencode(normalized)).hexdigest()
 
 
 def _publish_lock_path(target: Path) -> Path:
-    return target.with_name(f".{target.name}.publish.lock")
+    return _private_lock_root() / f"{_target_lock_key(target)}.lock"
+
+
+def _private_state_path(target: Path) -> Path:
+    return _private_lock_root() / f"{_target_lock_key(target)}.state.json"
 
 
 def _transaction_path(target: Path) -> Path:
-    return target.with_name(f".{target.name}.publish.transaction.json")
+    return target.with_name(f".{target.name}.publish.transaction")
+
+
+def _transaction_record_path(target: Path) -> Path:
+    return _transaction_path(target) / "record.json"
 
 
 def _private_file_flags() -> int:
@@ -958,9 +1273,9 @@ def _validate_private_file_stat(path: Path, metadata: os.stat_result) -> None:
     if hasattr(os, "getuid") and int(metadata.st_uid) != int(os.getuid()):
         raise MesherError(f"wglink coordination file has a different owner: {path}")
     if os.name == "posix" and stat.S_IMODE(metadata.st_mode) != 0o600:
-        raise MesherError(
-            f"wglink coordination file must have mode 0600: {path}"
-        )
+        raise MesherError(f"wglink coordination file must have mode 0600: {path}")
+    if sys.platform == "win32":
+        _windows_verify_owner_only_dacl(path, directory=False)
 
 
 def _validate_private_file_identity(path: Path, descriptor: int) -> os.stat_result:
@@ -969,7 +1284,9 @@ def _validate_private_file_identity(path: Path, descriptor: int) -> os.stat_resu
     try:
         path_metadata = os.lstat(path)
     except FileNotFoundError as exc:
-        raise MesherError(f"wglink coordination file changed while open: {path}") from exc
+        raise MesherError(
+            f"wglink coordination file changed while open: {path}"
+        ) from exc
     _validate_private_file_stat(path, path_metadata)
     handle_identity = (int(handle_metadata.st_dev), int(handle_metadata.st_ino))
     path_identity = (int(path_metadata.st_dev), int(path_metadata.st_ino))
@@ -985,10 +1302,14 @@ def _create_private_file(path: Path) -> int:
     except FileExistsError:
         raise
     except OSError as exc:
-        raise MesherError(f"could not create wglink coordination file {path}: {exc}") from exc
+        raise MesherError(
+            f"could not create wglink coordination file {path}: {exc}"
+        ) from exc
     try:
         if os.name == "posix":
             os.fchmod(descriptor, 0o600)
+        elif sys.platform == "win32":
+            _windows_apply_owner_only_dacl(path, directory=False)
         _validate_private_file_identity(path, descriptor)
     except BaseException:
         os.close(descriptor)
@@ -1005,7 +1326,9 @@ def _open_existing_private_file(path: Path) -> int:
     try:
         descriptor = os.open(path, _private_file_flags())
     except OSError as exc:
-        raise MesherError(f"could not open wglink coordination file {path}: {exc}") from exc
+        raise MesherError(
+            f"could not open wglink coordination file {path}: {exc}"
+        ) from exc
     try:
         _validate_private_file_identity(path, descriptor)
     except BaseException:
@@ -1019,6 +1342,135 @@ def _open_or_create_private_file(path: Path) -> int:
         return _create_private_file(path)
     except FileExistsError:
         return _open_existing_private_file(path)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("short write while persisting wglink coordination state")
+        view = view[written:]
+
+
+def _read_private_payload(path: Path, *, limit: int) -> bytes:
+    descriptor = _open_existing_private_file(path)
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        payload = os.read(descriptor, limit + 1)
+        if len(payload) > limit:
+            raise MesherError(f"wglink coordination file is too large: {path}")
+        _validate_private_file_identity(path, descriptor)
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_private_payload(path: Path, payload: bytes, *, replace: bool) -> None:
+    token = secrets.token_hex(16)
+    temporary = path.with_name(f".{path.name}.{token}.tmp")
+    descriptor = _create_private_file(temporary)
+    try:
+        _write_all(descriptor, payload)
+        os.fsync(descriptor)
+        _validate_private_file_identity(temporary, descriptor)
+    except BaseException:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+    os.close(descriptor)
+    try:
+        if replace:
+            if path.exists() or path.is_symlink():
+                existing = _open_existing_private_file(path)
+                os.close(existing)
+        elif path.exists() or path.is_symlink():
+            raise MesherError(f"wglink coordination file already exists: {path}")
+        temporary.replace(path)
+        descriptor = _open_existing_private_file(path)
+        os.close(descriptor)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _private_state_temps(state_path: Path) -> list[Path]:
+    pattern = re.compile(rf"^\.{re.escape(state_path.name)}\.[0-9a-f]{{32}}\.tmp$")
+    return [
+        child for child in state_path.parent.iterdir() if pattern.fullmatch(child.name)
+    ]
+
+
+def _cleanup_private_state_temps(state_path: Path) -> None:
+    for temporary in _private_state_temps(state_path):
+        descriptor = _open_existing_private_file(temporary)
+        os.close(descriptor)
+        temporary.unlink()
+    _fsync_directory(state_path.parent)
+
+
+def _validate_private_state(state_path: Path, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema",
+        "secret",
+        "active_token",
+    }:
+        raise MesherError(f"wglink private state is invalid: {state_path}")
+    secret = value.get("secret")
+    active_token = value.get("active_token")
+    if (
+        value.get("schema") != _PRIVATE_STATE_SCHEMA
+        or not isinstance(secret, str)
+        or re.fullmatch(r"[0-9a-f]{64}", secret) is None
+        or active_token is not None
+        and (
+            not isinstance(active_token, str)
+            or re.fullmatch(r"[0-9a-f]{32}", active_token) is None
+        )
+    ):
+        raise MesherError(f"wglink private state is invalid: {state_path}")
+    return value
+
+
+def _write_private_state(
+    target: Path, state: Mapping[str, Any], *, replace: bool
+) -> None:
+    state_path = _private_state_path(target)
+    validated = _validate_private_state(state_path, dict(state))
+    payload = json.dumps(validated, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    _atomic_write_private_payload(state_path, payload, replace=replace)
+
+
+def _load_or_create_private_state(target: Path) -> dict[str, Any]:
+    state_path = _private_state_path(target)
+    _cleanup_private_state_temps(state_path)
+    try:
+        payload = _read_private_payload(state_path, limit=4096)
+    except FileNotFoundError:
+        state = {
+            "schema": _PRIVATE_STATE_SCHEMA,
+            "secret": secrets.token_hex(32),
+            "active_token": None,
+        }
+        _write_private_state(target, state, replace=False)
+        return state
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MesherError(f"wglink private state is invalid: {state_path}") from exc
+    return _validate_private_state(state_path, value)
+
+
+def _set_active_transaction(
+    target: Path, state: dict[str, Any], token: str | None
+) -> None:
+    updated = dict(state)
+    updated["active_token"] = token
+    _write_private_state(target, updated, replace=True)
+    state.clear()
+    state.update(updated)
 
 
 def _lock_file(descriptor: int) -> None:
@@ -1056,7 +1508,11 @@ def _unlock_file(descriptor: int) -> None:
 
 @contextmanager
 def _bundle_publish_lock(target: Path):
-    """Serialize publishers through a stable, private filesystem endpoint."""
+    """Serialize same-account publishers through stable private state.
+
+    A fixed, owner-checked claim beside the target separately makes publishers
+    from other OS accounts fail safely instead of running concurrent renames.
+    """
 
     lock_path = _publish_lock_path(target)
     lock_key = str(lock_path.absolute())
@@ -1069,20 +1525,20 @@ def _bundle_publish_lock(target: Path):
             try:
                 metadata = _validate_private_file_identity(lock_path, descriptor)
                 os.lseek(descriptor, 0, os.SEEK_SET)
-                lock_secret = os.read(descriptor, 33)
-                if metadata.st_size == 0 or lock_secret == b"\0":
-                    lock_secret = secrets.token_bytes(32)
+                marker = os.read(descriptor, 2)
+                if metadata.st_size == 0:
                     os.ftruncate(descriptor, 0)
                     os.lseek(descriptor, 0, os.SEEK_SET)
-                    os.write(descriptor, lock_secret)
+                    _write_all(descriptor, b"\0")
                     os.fsync(descriptor)
                     _validate_private_file_identity(lock_path, descriptor)
-                elif metadata.st_size != 32 or len(lock_secret) != 32:
+                elif metadata.st_size != 1 or marker != b"\0":
                     raise MesherError(
                         f"wglink publication lock has invalid contents: {lock_path}"
                     )
+                state = _load_or_create_private_state(target)
                 try:
-                    yield lock_secret
+                    yield state
                 finally:
                     _validate_private_file_identity(lock_path, descriptor)
             finally:
@@ -1104,14 +1560,28 @@ def _transaction_mac(lock_secret: bytes, record: Mapping[str, Any]) -> str:
     return hmac.new(lock_secret, payload, hashlib.sha256).hexdigest()
 
 
+def _create_transaction_directory(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        raise
+    if os.name == "posix":
+        path.chmod(0o700)
+    elif sys.platform == "win32":
+        _windows_apply_owner_only_dacl(path, directory=True)
+    _validate_private_directory(path)
+    _fsync_directory(path.parent)
+
+
 def _write_transaction_record(
     target: Path,
     staging: Path,
     backup: Path,
     token: str,
-    lock_secret: bytes,
+    state: Mapping[str, Any],
 ) -> None:
-    record_path = _transaction_path(target)
+    transaction_path = _transaction_path(target)
+    record_path = _transaction_record_path(target)
     record = {
         "schema": _TRANSACTION_SCHEMA,
         "target": target.name,
@@ -1119,42 +1589,46 @@ def _write_transaction_record(
         "staging": staging.name,
         "backup": backup.name,
     }
-    record["mac"] = _transaction_mac(lock_secret, record)
+    record["mac"] = _transaction_mac(bytes.fromhex(state["secret"]), record)
     payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
     try:
-        descriptor = _create_private_file(record_path)
+        _create_transaction_directory(transaction_path)
     except FileExistsError as exc:
         raise MesherError(
-            f"wglink transaction record already exists: {record_path}"
+            f"wglink transaction claim already exists: {transaction_path}"
         ) from exc
+    temporary = transaction_path / f".record.{token}.tmp"
+    descriptor = _create_private_file(temporary)
     try:
-        os.write(descriptor, payload)
+        _write_all(descriptor, payload)
         os.fsync(descriptor)
-        _validate_private_file_identity(record_path, descriptor)
+        _validate_private_file_identity(temporary, descriptor)
     finally:
         os.close(descriptor)
+    temporary.replace(record_path)
+    descriptor = _open_existing_private_file(record_path)
+    os.close(descriptor)
+    _fsync_directory(transaction_path)
     _fsync_directory(target.parent)
 
 
 def _read_transaction_record(
-    target: Path, lock_secret: bytes
+    target: Path, state: Mapping[str, Any]
 ) -> tuple[dict[str, Any], Path, Path] | None:
-    record_path = _transaction_path(target)
-    try:
-        descriptor = _open_existing_private_file(record_path)
-    except FileNotFoundError:
+    transaction_path = _transaction_path(target)
+    if not transaction_path.exists() and not transaction_path.is_symlink():
         return None
-    try:
-        payload = os.read(descriptor, 4097)
-        if len(payload) > 4096:
-            raise MesherError(f"wglink transaction record is too large: {record_path}")
-        _validate_private_file_identity(record_path, descriptor)
-    finally:
-        os.close(descriptor)
+    _validate_private_directory(transaction_path)
+    record_path = _transaction_record_path(target)
+    if not record_path.exists() and not record_path.is_symlink():
+        raise MesherError(f"wglink transaction record is incomplete: {record_path}")
+    payload = _read_private_payload(record_path, limit=4096)
     try:
         record = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise MesherError(f"wglink transaction record is invalid: {record_path}") from exc
+        raise MesherError(
+            f"wglink transaction record is invalid: {record_path}"
+        ) from exc
     if not isinstance(record, dict) or set(record) != {
         "schema",
         "target",
@@ -1168,11 +1642,9 @@ def _read_transaction_record(
     staging_name = record.get("staging")
     provided_mac = record.get("mac")
     signed_record = {key: value for key, value in record.items() if key != "mac"}
-    expected_mac = _transaction_mac(lock_secret, signed_record)
+    expected_mac = _transaction_mac(bytes.fromhex(state["secret"]), signed_record)
     expected_backup = (
-        f".{target.name}.publish.{token}.previous"
-        if isinstance(token, str)
-        else None
+        f".{target.name}.publish.{token}.previous" if isinstance(token, str) else None
     )
     if (
         record.get("schema") != _TRANSACTION_SCHEMA
@@ -1193,13 +1665,21 @@ def _read_transaction_record(
 
 
 def _remove_transaction_record(target: Path) -> None:
-    record_path = _transaction_path(target)
+    transaction_path = _transaction_path(target)
+    _validate_private_directory(transaction_path)
+    record_path = _transaction_record_path(target)
+    extras = [child for child in transaction_path.iterdir() if child != record_path]
+    if extras:
+        raise MesherError(
+            "wglink transaction claim contains unexpected state; cleanup was refused"
+        )
     descriptor = _open_existing_private_file(record_path)
     try:
         _validate_private_file_identity(record_path, descriptor)
     finally:
         os.close(descriptor)
     record_path.unlink()
+    transaction_path.rmdir()
     _fsync_directory(target.parent)
 
 
@@ -1212,20 +1692,39 @@ def _unowned_backup_candidates(target: Path) -> list[Path]:
     ]
 
 
-def _recover_directory_replacement(target: Path, lock_secret: bytes) -> None:
+def _recover_directory_replacement(target: Path, state: dict[str, Any]) -> None:
     """Recover only the exact replacement named by an owned record."""
 
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         raise MesherError(f"wglink output is not a directory: {target}")
-    transaction = _read_transaction_record(target, lock_secret)
+    transaction_path = _transaction_path(target)
+    if transaction_path.exists() or transaction_path.is_symlink():
+        _validate_private_directory(transaction_path)
+        if not _transaction_record_path(target).exists():
+            if state["active_token"] is None:
+                raise MesherError(
+                    "wglink transaction state is incomplete or unowned; "
+                    "recovery was refused"
+                )
+            _remove_transaction_directory(transaction_path)
+            _fsync_directory(target.parent)
+            _set_active_transaction(target, state, None)
+            return
+    transaction = _read_transaction_record(target, state)
     if transaction is None:
+        if state["active_token"] is not None:
+            _set_active_transaction(target, state, None)
         if not target.exists() and _unowned_backup_candidates(target):
             raise MesherError(
                 "unowned wglink replacement state exists while the live bundle "
                 "is missing; recovery was refused"
             )
         return
-    _record, staging, backup = transaction
+    record, staging, backup = transaction
+    if not hmac.compare_digest(record["token"], state["active_token"] or ""):
+        raise MesherError(
+            "wglink transaction record is stale or replayed; recovery was refused"
+        )
     staging_exists = staging.exists() or staging.is_symlink()
     backup_exists = backup.exists() or backup.is_symlink()
     if staging_exists and (staging.is_symlink() or not staging.is_dir()):
@@ -1250,6 +1749,7 @@ def _recover_directory_replacement(target: Path, lock_secret: bytes) -> None:
         _remove_transaction_directory(backup)
 
     _remove_transaction_record(target)
+    _set_active_transaction(target, state, None)
 
 
 def _replace_directories_with_rollback(
@@ -1276,24 +1776,44 @@ def _replace_directories_with_rollback(
 def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
     """Publish on Windows with serialized, crash-recoverable renames."""
 
-    with _bundle_publish_lock(target) as lock_secret:
-        _recover_directory_replacement(target, lock_secret)
+    with _bundle_publish_lock(target) as state:
+        _recover_directory_replacement(target, state)
         if target.exists():
             token = secrets.token_hex(16)
-            backup = target.with_name(
-                f".{target.name}.publish.{token}.previous"
-            )
-            _write_transaction_record(target, staging, backup, token, lock_secret)
+            backup = target.with_name(f".{target.name}.publish.{token}.previous")
+            _set_active_transaction(target, state, token)
             try:
+                _write_transaction_record(target, staging, backup, token, state)
                 _replace_directories_with_rollback(staging, target, backup)
             except BaseException:
-                _recover_directory_replacement(target, lock_secret)
+                try:
+                    _recover_directory_replacement(target, state)
+                finally:
+                    if state["active_token"] is not None:
+                        _set_active_transaction(target, state, None)
                 raise
             _fsync_directory(target.parent)
-            _recover_directory_replacement(target, lock_secret)
+            _recover_directory_replacement(target, state)
         else:
-            staging.replace(target)
-            _fsync_directory(target.parent)
+            # Even a first publication takes the fixed output-side claim.  It
+            # closes the otherwise uncoordinated two-user race while keeping
+            # all secret/authentication material in private per-user state.
+            token = secrets.token_hex(16)
+            _set_active_transaction(target, state, token)
+            try:
+                _create_transaction_directory(_transaction_path(target))
+                staging.replace(target)
+                _fsync_directory(target.parent)
+                _remove_transaction_directory(_transaction_path(target))
+                _fsync_directory(target.parent)
+                _set_active_transaction(target, state, None)
+            except BaseException:
+                try:
+                    _recover_directory_replacement(target, state)
+                finally:
+                    if state["active_token"] is not None:
+                        _set_active_transaction(target, state, None)
+                raise
 
 
 def _atomic_exchange_directories(left: Path, right: Path) -> None:
@@ -1306,14 +1826,28 @@ def _atomic_exchange_directories(left: Path, right: Path) -> None:
     right_bytes = os.fsencode(right)
     if hasattr(libc, "renameatx_np"):
         rename = libc.renameatx_np
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
         rename.restype = ctypes.c_int
         result = rename(-2, left_bytes, -2, right_bytes, 2)  # AT_FDCWD, RENAME_SWAP
     elif hasattr(libc, "renameat2"):
         rename = libc.renameat2
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
         rename.restype = ctypes.c_int
-        result = rename(-100, left_bytes, -100, right_bytes, 2)  # AT_FDCWD, RENAME_EXCHANGE
+        result = rename(
+            -100, left_bytes, -100, right_bytes, 2
+        )  # AT_FDCWD, RENAME_EXCHANGE
     else:
         raise MesherError(
             "atomic replacement of an existing wglink directory is unavailable; "
@@ -1363,7 +1897,8 @@ def write_wglink(
     open_throat: bool = True,
     check_points: object | None = None,
     informational_parameters: Mapping[str, float] | None = None,
-    interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]] | None = None,
+    interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]]
+    | None = None,
 ) -> WgLinkInfo:
     """Write a checksummed ``.wglink`` directory and return every product.
 
@@ -1518,10 +2053,14 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
     }
     unknown = sorted(set(manifest.get("required_features", ())).difference(supported))
     if unknown:
-        raise MesherError("unsupported required wglink feature(s): " + ", ".join(unknown))
+        raise MesherError(
+            "unsupported required wglink feature(s): " + ", ".join(unknown)
+        )
     interface = manifest.get("interface")
     raw_sources = interface.get("sources") if isinstance(interface, Mapping) else None
-    has_source_feature = SOURCE_INTERFACE_FEATURE in manifest.get("required_features", ())
+    has_source_feature = SOURCE_INTERFACE_FEATURE in manifest.get(
+        "required_features", ()
+    )
     if raw_sources is None:
         raw_sources = []
     if not isinstance(raw_sources, list):
@@ -1556,7 +2095,9 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
         try:
             candidate.relative_to(root)
         except ValueError as exc:
-            raise MesherError(f"wglink file escapes bundle directory: {name!r}") from exc
+            raise MesherError(
+                f"wglink file escapes bundle directory: {name!r}"
+            ) from exc
         if not candidate.is_file():
             raise MesherError(f"wglink file is missing: {name}")
         actual_size = candidate.stat().st_size

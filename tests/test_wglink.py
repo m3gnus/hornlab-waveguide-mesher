@@ -31,13 +31,31 @@ from hornlab_mesher.mesher import MesherError
 
 def _assert_private_publish_lock(target: Path) -> None:
     lock_path = cad_module._publish_lock_path(target)
+    state_path = cad_module._private_state_path(target)
     metadata = os.lstat(lock_path)
     assert stat.S_ISREG(metadata.st_mode)
     assert metadata.st_nlink == 1
-    assert metadata.st_size == 32
+    assert metadata.st_size == 1
+    assert lock_path.read_bytes() == b"\0"
+    state_metadata = os.lstat(state_path)
+    assert stat.S_ISREG(state_metadata.st_mode)
+    assert state_metadata.st_nlink == 1
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["schema"] == 1
+    assert len(state["secret"]) == 64
+    assert state["active_token"] is None
     if os.name == "posix":
         assert stat.S_IMODE(metadata.st_mode) == 0o600
         assert metadata.st_uid == os.getuid()
+        assert stat.S_IMODE(state_metadata.st_mode) == 0o600
+        assert state_metadata.st_uid == os.getuid()
+        root_metadata = os.lstat(lock_path.parent)
+        assert stat.S_IMODE(root_metadata.st_mode) == 0o700
+        assert root_metadata.st_uid == os.getuid()
+    elif sys.platform == "win32":
+        cad_module._windows_verify_owner_only_dacl(lock_path.parent, directory=True)
+        cad_module._windows_verify_owner_only_dacl(lock_path, directory=False)
+        cad_module._windows_verify_owner_only_dacl(state_path, directory=False)
 
 
 def _inner_grid(*, nonplanar_mouth: bool = False) -> np.ndarray:
@@ -482,12 +500,7 @@ def test_writer_atomically_replaces_live_bundle(monkeypatch, tmp_path):
 
     assert read_wglink(target)["export"]["sequence"] == 2
     assert result.path == target
-    remnants = set(tmp_path.glob(".horn.wglink.*"))
-    if os.name == "posix":
-        assert not remnants
-    else:
-        assert remnants == {cad_module._publish_lock_path(target)}
-        _assert_private_publish_lock(target)
+    assert not set(tmp_path.glob(".horn.wglink.*"))
 
 
 def test_writer_replaces_live_bundle_without_posix_exchange(monkeypatch, tmp_path):
@@ -574,11 +587,13 @@ cad._publish_bundle_without_exchange(staging, target)
     assert crashed.returncode == 91
     assert not target.exists()
     assert interrupted_staging.exists()
-    record = json.loads(cad_module._transaction_path(target).read_text(encoding="utf-8"))
+    record = json.loads(
+        cad_module._transaction_record_path(target).read_text(encoding="utf-8")
+    )
     assert (tmp_path / record["backup"]).exists()
 
-    with cad_module._bundle_publish_lock(target) as lock_secret:
-        cad_module._recover_directory_replacement(target, lock_secret)
+    with cad_module._bundle_publish_lock(target) as state:
+        cad_module._recover_directory_replacement(target, state)
 
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert not interrupted_staging.exists()
@@ -601,6 +616,7 @@ def test_non_posix_publication_serializes_concurrent_processes(tmp_path):
     backed_up = tmp_path / "writer-a-backed-up"
     release_a = tmp_path / "release-writer-a"
     writer_b_ready = tmp_path / "writer-b-ready"
+    output_lock_decoy = tmp_path / ".horn.wglink.publish.lock"
     target.mkdir()
     staging_a.mkdir()
     staging_b.mkdir()
@@ -658,6 +674,10 @@ cad._publish_bundle_without_exchange(staging, target)
         assert backed_up.exists()
         assert not target.exists()
 
+        # The old output-directory lock pathname is attacker-replaceable and
+        # must have no bearing on the live per-user mutex.
+        output_lock_decoy.write_bytes(b"replacement while writer A holds lock")
+
         writer_b = subprocess.Popen(
             [
                 sys.executable,
@@ -694,6 +714,7 @@ cad._publish_bundle_without_exchange(staging, target)
     assert not staging_b.exists()
     assert not list(tmp_path.glob("*.previous"))
     assert not cad_module._transaction_path(target).exists()
+    assert output_lock_decoy.read_bytes() == b"replacement while writer A holds lock"
     _assert_private_publish_lock(target)
 
 
@@ -738,23 +759,27 @@ def test_non_posix_publication_rejects_untrusted_transaction_record(tmp_path):
     staging.mkdir()
     (target / "generation.txt").write_text("old", encoding="utf-8")
     (staging / "generation.txt").write_text("new", encoding="utf-8")
-    record_path = cad_module._transaction_path(target)
+    transaction_path = cad_module._transaction_path(target)
+    cad_module._create_transaction_directory(transaction_path)
+    record_path = cad_module._transaction_record_path(target)
     token = "0" * 32
-    record_path.write_text(
-        json.dumps(
-            {
-                "schema": 1,
-                "target": target.name,
-                "token": token,
-                "staging": staging.name,
-                "backup": f".{target.name}.publish.{token}.previous",
-                "mac": "0" * 64,
-            }
-        ),
-        encoding="utf-8",
+    payload = json.dumps(
+        {
+            "schema": 1,
+            "target": target.name,
+            "token": token,
+            "staging": staging.name,
+            "backup": f".{target.name}.publish.{token}.previous",
+            "mac": "0" * 64,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    cad_module._atomic_write_private_payload(
+        record_path,
+        payload,
+        replace=False,
     )
-    if os.name == "posix":
-        record_path.chmod(0o600)
 
     with pytest.raises(MesherError, match="invalid or unauthenticated"):
         cad_module._publish_bundle_without_exchange(staging, target)
@@ -762,6 +787,255 @@ def test_non_posix_publication_rejects_untrusted_transaction_record(tmp_path):
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
     assert record_path.exists()
+
+
+def test_non_posix_publication_rejects_chosen_key_forged_record(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.next"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+
+    # This is the former output-directory lock location.  A publisher must not
+    # trust either its attacker-chosen key or a record MACed with that key.
+    chosen_key = b"A" * 32
+    (tmp_path / ".horn.wglink.publish.lock").write_bytes(chosen_key)
+    token = "1" * 32
+    victim = tmp_path / f".horn.wglink.publish.{token}.previous"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("do not delete", encoding="utf-8")
+    record = {
+        "schema": 1,
+        "target": target.name,
+        "token": token,
+        "staging": ".horn.wglink.forged-staging",
+        "backup": victim.name,
+    }
+    record["mac"] = cad_module._transaction_mac(chosen_key, record)
+    cad_module._create_transaction_directory(cad_module._transaction_path(target))
+    cad_module._atomic_write_private_payload(
+        cad_module._transaction_record_path(target),
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        replace=False,
+    )
+
+    with pytest.raises(MesherError, match="invalid or unauthenticated"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert (victim / "keep.txt").read_text(encoding="utf-8") == "do not delete"
+
+
+def test_non_posix_publication_rejects_captured_record_replay(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.writer-a"
+    paused = tmp_path / "writer-a-paused"
+    release = tmp_path / "release-writer-a"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("writer-a", encoding="utf-8")
+    writer_script = """
+import sys
+import time
+from pathlib import Path
+from hornlab_mesher import cad
+
+target, staging, paused, release = map(Path, sys.argv[1:])
+path_type = type(target)
+original_replace = path_type.replace
+
+def pause_after_first_rename(path, destination):
+    result = original_replace(path, destination)
+    if path == target and Path(destination).name.endswith(".previous"):
+        paused.write_text("ready", encoding="utf-8")
+        while not release.exists():
+            time.sleep(0.01)
+    return result
+
+path_type.replace = pause_after_first_rename
+cad._publish_bundle_without_exchange(staging, target)
+"""
+    writer = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            writer_script,
+            str(target),
+            str(staging),
+            str(paused),
+            str(release),
+        ]
+    )
+    try:
+        for _ in range(500):
+            if paused.exists():
+                break
+            assert writer.poll() is None
+            time.sleep(0.01)
+        assert paused.exists()
+        captured = cad_module._transaction_record_path(target).read_bytes()
+        captured_record = json.loads(captured.decode("utf-8"))
+        release.write_text("release", encoding="utf-8")
+        assert writer.wait(timeout=5) == 0
+    finally:
+        release.touch(exist_ok=True)
+        if writer.poll() is None:
+            writer.kill()
+            writer.wait()
+
+    victim = tmp_path / captured_record["backup"]
+    victim.mkdir()
+    (victim / "keep.txt").write_text("recreated after publish", encoding="utf-8")
+    cad_module._create_transaction_directory(cad_module._transaction_path(target))
+    cad_module._atomic_write_private_payload(
+        cad_module._transaction_record_path(target), captured, replace=False
+    )
+    next_staging = tmp_path / ".horn.wglink.next"
+    next_staging.mkdir()
+    (next_staging / "generation.txt").write_text("next", encoding="utf-8")
+
+    with pytest.raises(MesherError, match="stale or replayed"):
+        cad_module._publish_bundle_without_exchange(next_staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "writer-a"
+    assert (next_staging / "generation.txt").read_text(encoding="utf-8") == "next"
+    assert (victim / "keep.txt").read_text(
+        encoding="utf-8"
+    ) == "recreated after publish"
+
+
+@pytest.mark.parametrize("crash_mode", ["before", "partial"])
+def test_non_posix_publication_recovers_crash_while_writing_record(
+    tmp_path, crash_mode
+):
+    target = tmp_path / "horn.wglink"
+    interrupted = tmp_path / ".horn.wglink.interrupted"
+    next_staging = tmp_path / ".horn.wglink.next"
+    target.mkdir()
+    interrupted.mkdir()
+    next_staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (interrupted / "generation.txt").write_text("interrupted", encoding="utf-8")
+    (next_staging / "generation.txt").write_text("next", encoding="utf-8")
+    crash_script = """
+import os
+import sys
+from pathlib import Path
+from hornlab_mesher import cad
+
+target, staging = map(Path, sys.argv[1:3])
+mode = sys.argv[3]
+original_write_record = cad._write_transaction_record
+
+def crash_while_writing_record(*args, **kwargs):
+    def crashing_write(descriptor, payload):
+        if mode == "partial":
+            os.write(descriptor, payload[: max(1, len(payload) // 2)])
+        os._exit(92)
+    cad._write_all = crashing_write
+    return original_write_record(*args, **kwargs)
+
+cad._write_transaction_record = crash_while_writing_record
+cad._publish_bundle_without_exchange(staging, target)
+"""
+    crashed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            crash_script,
+            str(target),
+            str(interrupted),
+            crash_mode,
+        ],
+        check=False,
+    )
+
+    assert crashed.returncode == 92
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert interrupted.exists()
+    transaction_path = cad_module._transaction_path(target)
+    assert transaction_path.is_dir()
+    assert not cad_module._transaction_record_path(target).exists()
+
+    cad_module._publish_bundle_without_exchange(next_staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "next"
+    assert interrupted.exists()
+    assert not next_staging.exists()
+    assert not transaction_path.exists()
+    _assert_private_publish_lock(target)
+
+
+def test_coordination_write_all_retries_short_writes(monkeypatch, tmp_path):
+    path = tmp_path / "coordination.bin"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    original_write = os.write
+    calls = 0
+
+    def short_write(fd, payload):
+        nonlocal calls
+        calls += 1
+        return original_write(fd, payload[:3])
+
+    monkeypatch.setattr(cad_module.os, "write", short_write)
+    try:
+        cad_module._write_all(descriptor, b"complete coordination payload")
+    finally:
+        os.close(descriptor)
+
+    assert calls > 1
+    assert path.read_bytes() == b"complete coordination payload"
+
+
+def test_private_state_update_survives_partial_write_crash(tmp_path):
+    target = tmp_path / "horn.wglink"
+    interrupted = tmp_path / ".horn.wglink.interrupted"
+    next_staging = tmp_path / ".horn.wglink.next"
+    target.mkdir()
+    interrupted.mkdir()
+    next_staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (interrupted / "generation.txt").write_text("interrupted", encoding="utf-8")
+    (next_staging / "generation.txt").write_text("next", encoding="utf-8")
+    with cad_module._bundle_publish_lock(target):
+        pass
+    state_path = cad_module._private_state_path(target)
+    original_state = state_path.read_bytes()
+    crash_script = """
+import os
+import sys
+from pathlib import Path
+from hornlab_mesher import cad
+
+target, staging = map(Path, sys.argv[1:])
+
+def crash_during_state_write(descriptor, payload):
+    os.write(descriptor, payload[: max(1, len(payload) // 2)])
+    os._exit(93)
+
+cad._write_all = crash_during_state_write
+cad._publish_bundle_without_exchange(staging, target)
+"""
+
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_script, str(target), str(interrupted)],
+        check=False,
+    )
+
+    assert crashed.returncode == 93
+    assert state_path.read_bytes() == original_state
+    assert cad_module._private_state_temps(state_path)
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+
+    cad_module._publish_bundle_without_exchange(next_staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "next"
+    assert interrupted.exists()
+    assert not cad_module._private_state_temps(state_path)
+    _assert_private_publish_lock(target)
 
 
 def test_publish_lock_rejects_hardlink_redirection(tmp_path):
@@ -863,14 +1137,20 @@ def test_publish_lock_rejects_inode_split(monkeypatch, tmp_path):
     assert staging.exists()
 
 
-def test_writer_fsyncs_staged_members_through_writable_descriptors(monkeypatch, tmp_path):
+def test_writer_fsyncs_staged_members_through_writable_descriptors(
+    monkeypatch, tmp_path
+):
     staged = tmp_path / "staged"
     staged.mkdir()
     (staged / "member.bin").write_bytes(b"payload")
     synced: list[int] = []
 
     monkeypatch.setattr(cad_module, "_fsync_directory", lambda _path: None)
-    monkeypatch.setattr(cad_module.os, "fsync", lambda descriptor: synced.append(os.write(descriptor, b"")))
+    monkeypatch.setattr(
+        cad_module.os,
+        "fsync",
+        lambda descriptor: synced.append(os.write(descriptor, b"")),
+    )
 
     cad_module._sync_staged_bundle(staged)
 
@@ -885,6 +1165,4 @@ def test_writer_rejects_config_like_enclosure_bounds(monkeypatch, tmp_path):
     built.enclosure_bounds["enc_depth"] = geometry.enclosure.depth_mm
 
     with pytest.raises(MesherError, match="do not match.*enc_depth"):
-        write_wglink(
-            geometry, tmp_path / "horn.wglink", built_geometry=built
-        )
+        write_wglink(geometry, tmp_path / "horn.wglink", built_geometry=built)
