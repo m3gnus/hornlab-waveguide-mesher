@@ -917,14 +917,40 @@ def _sync_staged_bundle(staging: Path) -> None:
     _fsync_directory(staging)
 
 
+def _replace_directories_with_rollback(staging: Path, target: Path) -> None:
+    """Replace a directory where the OS has no atomic exchange primitive.
+
+    Windows cannot atomically exchange two non-empty directories. Preserve the
+    live generation under a unique sibling name, publish the staged generation,
+    and restore the original if publication fails. The operation has a short
+    non-atomic window, but never turns an ordinary second export into the hard
+    failure that the previous POSIX-only implementation did.
+    """
+
+    backup = staging.with_name(f"{staging.name}.previous")
+    if backup.exists():
+        raise MesherError(f"wglink replacement backup already exists: {backup}")
+    target.replace(backup)
+    try:
+        staging.replace(target)
+    except BaseException as publish_error:
+        try:
+            backup.replace(target)
+        except BaseException as restore_error:
+            raise MesherError(
+                "could not publish the staged wglink bundle and could not "
+                f"restore the previous generation: {restore_error}"
+            ) from publish_error
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
+
+
 def _atomic_exchange_directories(left: Path, right: Path) -> None:
-    """Atomically exchange two directories, or refuse an unsafe replacement."""
+    """Exchange two directories, using a rollback-safe Windows fallback."""
 
     if os.name != "posix":
-        raise MesherError(
-            "atomic replacement of an existing wglink directory is not supported "
-            "on this platform"
-        )
+        _replace_directories_with_rollback(left, right)
+        return
 
     import ctypes
 

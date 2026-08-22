@@ -470,6 +470,49 @@ def test_writer_atomically_replaces_live_bundle(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".horn.wglink.*"))
 
 
+def test_writer_replaces_live_bundle_without_posix_exchange(monkeypatch, tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+
+    monkeypatch.setattr(cad_module.os, "name", "nt")
+    cad_module._atomic_exchange_directories(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert not staging.exists()
+    assert not list(tmp_path.glob("*.previous"))
+
+
+def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    path_type = type(target)
+    original_replace = path_type.replace
+
+    def fail_staged_publish(path, destination):
+        if path == staging and Path(destination) == target:
+            raise OSError("injected publish failure")
+        return original_replace(path, destination)
+
+    monkeypatch.setattr(path_type, "replace", fail_staged_publish)
+
+    with pytest.raises(OSError, match="injected publish failure"):
+        cad_module._replace_directories_with_rollback(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert not list(tmp_path.glob("*.previous"))
+
+
 def test_writer_fsyncs_staged_members_through_writable_descriptors(monkeypatch, tmp_path):
     staged = tmp_path / "staged"
     staged.mkdir()
