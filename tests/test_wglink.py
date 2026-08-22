@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -26,6 +27,17 @@ from hornlab_mesher.geometry import (
     PointGridHornGeometry,
 )
 from hornlab_mesher.mesher import MesherError
+
+
+def _assert_private_publish_lock(target: Path) -> None:
+    lock_path = cad_module._publish_lock_path(target)
+    metadata = os.lstat(lock_path)
+    assert stat.S_ISREG(metadata.st_mode)
+    assert metadata.st_nlink == 1
+    assert metadata.st_size == 32
+    if os.name == "posix":
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        assert metadata.st_uid == os.getuid()
 
 
 def _inner_grid(*, nonplanar_mouth: bool = False) -> np.ndarray:
@@ -470,7 +482,12 @@ def test_writer_atomically_replaces_live_bundle(monkeypatch, tmp_path):
 
     assert read_wglink(target)["export"]["sequence"] == 2
     assert result.path == target
-    assert not list(tmp_path.glob(".horn.wglink.*"))
+    remnants = set(tmp_path.glob(".horn.wglink.*"))
+    if os.name == "posix":
+        assert not remnants
+    else:
+        assert remnants == {cad_module._publish_lock_path(target)}
+        _assert_private_publish_lock(target)
 
 
 def test_writer_replaces_live_bundle_without_posix_exchange(monkeypatch, tmp_path):
@@ -486,6 +503,8 @@ def test_writer_replaces_live_bundle_without_posix_exchange(monkeypatch, tmp_pat
     assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
     assert not staging.exists()
     assert not list(tmp_path.glob("*.previous"))
+    assert not cad_module._transaction_path(target).exists()
+    _assert_private_publish_lock(target)
 
 
 def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
@@ -497,6 +516,7 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
     staging.mkdir()
     (target / "generation.txt").write_text("old", encoding="utf-8")
     (staging / "generation.txt").write_text("new", encoding="utf-8")
+    backup = tmp_path / ".horn.wglink.publish.00000000000000000000000000000000.previous"
     path_type = type(target)
     original_replace = path_type.replace
 
@@ -508,7 +528,7 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
     monkeypatch.setattr(path_type, "replace", fail_staged_publish)
 
     with pytest.raises(OSError, match="injected publish failure"):
-        cad_module._replace_directories_with_rollback(staging, target)
+        cad_module._replace_directories_with_rollback(staging, target, backup)
 
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
@@ -533,13 +553,12 @@ from hornlab_mesher import cad
 
 target = Path(sys.argv[1])
 staging = Path(sys.argv[2])
-backup = staging.with_name(f"{staging.name}.previous")
 path_type = type(target)
 original_replace = path_type.replace
 
 def die_after_first_rename(path, destination):
     result = original_replace(path, destination)
-    if path == target and Path(destination) == backup:
+    if path == target and Path(destination).name.endswith(".previous"):
         os._exit(91)
     return result
 
@@ -555,16 +574,16 @@ cad._publish_bundle_without_exchange(staging, target)
     assert crashed.returncode == 91
     assert not target.exists()
     assert interrupted_staging.exists()
-    assert interrupted_staging.with_name(
-        f"{interrupted_staging.name}.previous"
-    ).exists()
+    record = json.loads(cad_module._transaction_path(target).read_text(encoding="utf-8"))
+    assert (tmp_path / record["backup"]).exists()
 
-    with cad_module._bundle_publish_lock(target):
-        cad_module._recover_directory_replacement(target)
+    with cad_module._bundle_publish_lock(target) as lock_secret:
+        cad_module._recover_directory_replacement(target, lock_secret)
 
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert not interrupted_staging.exists()
     assert not list(tmp_path.glob("*.previous"))
+    assert not cad_module._transaction_path(target).exists()
 
     cad_module._publish_bundle_without_exchange(next_staging, target)
 
@@ -572,6 +591,7 @@ cad._publish_bundle_without_exchange(staging, target)
     assert not interrupted_staging.exists()
     assert not next_staging.exists()
     assert not list(tmp_path.glob("*.previous"))
+    _assert_private_publish_lock(target)
 
 
 def test_non_posix_publication_serializes_concurrent_processes(tmp_path):
@@ -594,13 +614,12 @@ from pathlib import Path
 from hornlab_mesher import cad
 
 target, staging, backed_up, release = map(Path, sys.argv[1:])
-backup = staging.with_name(f"{staging.name}.previous")
 path_type = type(target)
 original_replace = path_type.replace
 
 def pause_after_first_rename(path, destination):
     result = original_replace(path, destination)
-    if path == target and Path(destination) == backup:
+    if path == target and Path(destination).name.endswith(".previous"):
         backed_up.write_text("ready", encoding="utf-8")
         while not release.exists():
             time.sleep(0.01)
@@ -674,6 +693,174 @@ cad._publish_bundle_without_exchange(staging, target)
     assert not staging_a.exists()
     assert not staging_b.exists()
     assert not list(tmp_path.glob("*.previous"))
+    assert not cad_module._transaction_path(target).exists()
+    _assert_private_publish_lock(target)
+
+
+def test_non_posix_publication_preserves_unowned_matching_directory(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    unrelated = tmp_path / ".horn.wglink.customer.previous"
+    target.mkdir()
+    staging.mkdir()
+    unrelated.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    (unrelated / "keep.txt").write_text("owned elsewhere", encoding="utf-8")
+
+    cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert (unrelated / "keep.txt").read_text(encoding="utf-8") == "owned elsewhere"
+    assert not cad_module._transaction_path(target).exists()
+
+
+def test_non_posix_publication_rejects_unowned_state_when_target_is_missing(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    unrelated = tmp_path / ".horn.wglink.customer.previous"
+    staging.mkdir()
+    unrelated.mkdir()
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    (unrelated / "keep.txt").write_text("owned elsewhere", encoding="utf-8")
+
+    with pytest.raises(MesherError, match="unowned.*recovery was refused"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert staging.exists()
+    assert (unrelated / "keep.txt").read_text(encoding="utf-8") == "owned elsewhere"
+
+
+def test_non_posix_publication_rejects_untrusted_transaction_record(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    record_path = cad_module._transaction_path(target)
+    token = "0" * 32
+    record_path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "target": target.name,
+                "token": token,
+                "staging": staging.name,
+                "backup": f".{target.name}.publish.{token}.previous",
+                "mac": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        record_path.chmod(0o600)
+
+    with pytest.raises(MesherError, match="invalid or unauthenticated"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
+    assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert record_path.exists()
+
+
+def test_publish_lock_rejects_hardlink_redirection(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("do not touch", encoding="utf-8")
+    if os.name == "posix":
+        victim.chmod(0o600)
+    os.link(victim, cad_module._publish_lock_path(target))
+
+    with pytest.raises(MesherError, match="exactly one link"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert victim.read_text(encoding="utf-8") == "do not touch"
+    assert target.exists()
+    assert staging.exists()
+
+
+def test_publish_lock_rejects_symlink_redirection(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("do not touch", encoding="utf-8")
+    try:
+        cad_module._publish_lock_path(target).symlink_to(victim)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(MesherError, match="coordination"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert victim.read_text(encoding="utf-8") == "do not touch"
+    assert target.exists()
+    assert staging.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits are not portable")
+def test_publish_lock_rejects_non_private_mode(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    lock_path = cad_module._publish_lock_path(target)
+    lock_path.write_bytes(b"\0")
+    lock_path.chmod(0o644)
+
+    with pytest.raises(MesherError, match="mode 0600"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert target.exists()
+    assert staging.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ownership is not portable")
+def test_publish_lock_rejects_different_owner(monkeypatch, tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    lock_path = cad_module._publish_lock_path(target)
+    lock_path.write_bytes(b"existing")
+    lock_path.chmod(0o600)
+    actual_uid = os.getuid()
+    monkeypatch.setattr(cad_module.os, "getuid", lambda: actual_uid + 1)
+
+    with pytest.raises(MesherError, match="different owner"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert target.exists()
+    assert staging.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires unlinking an open file")
+def test_publish_lock_rejects_inode_split(monkeypatch, tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.staged"
+    target.mkdir()
+    staging.mkdir()
+    lock_path = cad_module._publish_lock_path(target)
+    original_lock = cad_module._lock_file
+
+    def split_lock_inode(descriptor):
+        original_lock(descriptor)
+        lock_path.unlink()
+        lock_path.write_bytes(b"replacement")
+        lock_path.chmod(0o600)
+
+    monkeypatch.setattr(cad_module, "_lock_file", split_lock_inode)
+
+    with pytest.raises(MesherError, match="exactly one link|changed while open"):
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert target.exists()
+    assert staging.exists()
 
 
 def test_writer_fsyncs_staged_members_through_writable_descriptors(monkeypatch, tmp_path):

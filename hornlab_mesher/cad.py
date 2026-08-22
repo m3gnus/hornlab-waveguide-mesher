@@ -24,11 +24,14 @@ follows the cap's own face, a flat disc and a domed cap yield the same solid.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -923,10 +926,99 @@ def _sync_staged_bundle(staging: Path) -> None:
 
 _BUNDLE_THREAD_LOCKS: dict[str, threading.Lock] = {}
 _BUNDLE_THREAD_LOCKS_GUARD = threading.Lock()
+_TRANSACTION_SCHEMA = 1
 
 
 def _publish_lock_path(target: Path) -> Path:
     return target.with_name(f".{target.name}.publish.lock")
+
+
+def _transaction_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}.publish.transaction.json")
+
+
+def _private_file_flags() -> int:
+    flags = os.O_RDWR
+    for name in ("O_BINARY", "O_CLOEXEC", "O_NOINHERIT", "O_NOFOLLOW"):
+        flags |= int(getattr(os, name, 0))
+    return flags
+
+
+def _validate_private_file_stat(path: Path, metadata: os.stat_result) -> None:
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    file_attributes = int(getattr(metadata, "st_file_attributes", 0))
+    if reparse_flag and file_attributes & reparse_flag:
+        raise MesherError(f"wglink coordination file is a reparse point: {path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise MesherError(f"wglink coordination path is not a regular file: {path}")
+    if int(metadata.st_nlink) != 1:
+        raise MesherError(
+            f"wglink coordination file must have exactly one link: {path}"
+        )
+    if hasattr(os, "getuid") and int(metadata.st_uid) != int(os.getuid()):
+        raise MesherError(f"wglink coordination file has a different owner: {path}")
+    if os.name == "posix" and stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise MesherError(
+            f"wglink coordination file must have mode 0600: {path}"
+        )
+
+
+def _validate_private_file_identity(path: Path, descriptor: int) -> os.stat_result:
+    handle_metadata = os.fstat(descriptor)
+    _validate_private_file_stat(path, handle_metadata)
+    try:
+        path_metadata = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise MesherError(f"wglink coordination file changed while open: {path}") from exc
+    _validate_private_file_stat(path, path_metadata)
+    handle_identity = (int(handle_metadata.st_dev), int(handle_metadata.st_ino))
+    path_identity = (int(path_metadata.st_dev), int(path_metadata.st_ino))
+    if handle_identity != path_identity or int(handle_metadata.st_nlink) != 1:
+        raise MesherError(f"wglink coordination file changed while open: {path}")
+    return handle_metadata
+
+
+def _create_private_file(path: Path) -> int:
+    flags = _private_file_flags() | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        raise MesherError(f"could not create wglink coordination file {path}: {exc}") from exc
+    try:
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        _validate_private_file_identity(path, descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_existing_private_file(path: Path) -> int:
+    try:
+        path_metadata = os.lstat(path)
+    except FileNotFoundError:
+        raise
+    _validate_private_file_stat(path, path_metadata)
+    try:
+        descriptor = os.open(path, _private_file_flags())
+    except OSError as exc:
+        raise MesherError(f"could not open wglink coordination file {path}: {exc}") from exc
+    try:
+        _validate_private_file_identity(path, descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_or_create_private_file(path: Path) -> int:
+    try:
+        return _create_private_file(path)
+    except FileExistsError:
+        return _open_existing_private_file(path)
 
 
 def _lock_file(descriptor: int) -> None:
@@ -964,42 +1056,39 @@ def _unlock_file(descriptor: int) -> None:
 
 @contextmanager
 def _bundle_publish_lock(target: Path):
-    """Serialize publishers in this process and across processes."""
+    """Serialize publishers through a stable, private filesystem endpoint."""
 
     lock_path = _publish_lock_path(target)
     lock_key = str(lock_path.absolute())
     with _BUNDLE_THREAD_LOCKS_GUARD:
         thread_lock = _BUNDLE_THREAD_LOCKS.setdefault(lock_key, threading.Lock())
     with thread_lock:
-        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        descriptor = _open_or_create_private_file(lock_path)
         try:
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"\0")
-                os.fsync(descriptor)
             _lock_file(descriptor)
             try:
-                yield
+                metadata = _validate_private_file_identity(lock_path, descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                lock_secret = os.read(descriptor, 33)
+                if metadata.st_size == 0 or lock_secret == b"\0":
+                    lock_secret = secrets.token_bytes(32)
+                    os.ftruncate(descriptor, 0)
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    os.write(descriptor, lock_secret)
+                    os.fsync(descriptor)
+                    _validate_private_file_identity(lock_path, descriptor)
+                elif metadata.st_size != 32 or len(lock_secret) != 32:
+                    raise MesherError(
+                        f"wglink publication lock has invalid contents: {lock_path}"
+                    )
+                try:
+                    yield lock_secret
+                finally:
+                    _validate_private_file_identity(lock_path, descriptor)
             finally:
                 _unlock_file(descriptor)
         finally:
             os.close(descriptor)
-
-
-def _transaction_backups(target: Path) -> list[Path]:
-    prefix = f".{target.name}."
-    return sorted(
-        (
-            child
-            for child in target.parent.iterdir()
-            if child.name.startswith(prefix) and child.name.endswith(".previous")
-        ),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-        reverse=True,
-    )
-
-
-def _staging_for_backup(backup: Path) -> Path:
-    return backup.with_name(backup.name.removesuffix(".previous"))
 
 
 def _remove_transaction_directory(path: Path) -> None:
@@ -1010,37 +1099,164 @@ def _remove_transaction_directory(path: Path) -> None:
     shutil.rmtree(path)
 
 
-def _recover_directory_replacement(target: Path) -> None:
-    """Restore or clean interrupted non-POSIX replacement transactions."""
+def _transaction_mac(lock_secret: bytes, record: Mapping[str, Any]) -> str:
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(lock_secret, payload, hashlib.sha256).hexdigest()
 
-    backups = _transaction_backups(target)
+
+def _write_transaction_record(
+    target: Path,
+    staging: Path,
+    backup: Path,
+    token: str,
+    lock_secret: bytes,
+) -> None:
+    record_path = _transaction_path(target)
+    record = {
+        "schema": _TRANSACTION_SCHEMA,
+        "target": target.name,
+        "token": token,
+        "staging": staging.name,
+        "backup": backup.name,
+    }
+    record["mac"] = _transaction_mac(lock_secret, record)
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    try:
+        descriptor = _create_private_file(record_path)
+    except FileExistsError as exc:
+        raise MesherError(
+            f"wglink transaction record already exists: {record_path}"
+        ) from exc
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+        _validate_private_file_identity(record_path, descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_directory(target.parent)
+
+
+def _read_transaction_record(
+    target: Path, lock_secret: bytes
+) -> tuple[dict[str, Any], Path, Path] | None:
+    record_path = _transaction_path(target)
+    try:
+        descriptor = _open_existing_private_file(record_path)
+    except FileNotFoundError:
+        return None
+    try:
+        payload = os.read(descriptor, 4097)
+        if len(payload) > 4096:
+            raise MesherError(f"wglink transaction record is too large: {record_path}")
+        _validate_private_file_identity(record_path, descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        record = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MesherError(f"wglink transaction record is invalid: {record_path}") from exc
+    if not isinstance(record, dict) or set(record) != {
+        "schema",
+        "target",
+        "token",
+        "staging",
+        "backup",
+        "mac",
+    }:
+        raise MesherError(f"wglink transaction record is invalid: {record_path}")
+    token = record.get("token")
+    staging_name = record.get("staging")
+    provided_mac = record.get("mac")
+    signed_record = {key: value for key, value in record.items() if key != "mac"}
+    expected_mac = _transaction_mac(lock_secret, signed_record)
+    expected_backup = (
+        f".{target.name}.publish.{token}.previous"
+        if isinstance(token, str)
+        else None
+    )
+    if (
+        record.get("schema") != _TRANSACTION_SCHEMA
+        or record.get("target") != target.name
+        or not isinstance(token, str)
+        or re.fullmatch(r"[0-9a-f]{32}", token) is None
+        or not isinstance(staging_name, str)
+        or Path(staging_name).name != staging_name
+        or not staging_name.startswith(f".{target.name}.")
+        or record.get("backup") != expected_backup
+        or not isinstance(provided_mac, str)
+        or not hmac.compare_digest(provided_mac, expected_mac)
+    ):
+        raise MesherError(
+            f"wglink transaction record is invalid or unauthenticated: {record_path}"
+        )
+    return record, target.parent / staging_name, target.parent / expected_backup
+
+
+def _remove_transaction_record(target: Path) -> None:
+    record_path = _transaction_path(target)
+    descriptor = _open_existing_private_file(record_path)
+    try:
+        _validate_private_file_identity(record_path, descriptor)
+    finally:
+        os.close(descriptor)
+    record_path.unlink()
+    _fsync_directory(target.parent)
+
+
+def _unowned_backup_candidates(target: Path) -> list[Path]:
+    prefix = f".{target.name}."
+    return [
+        child
+        for child in target.parent.iterdir()
+        if child.name.startswith(prefix) and child.name.endswith(".previous")
+    ]
+
+
+def _recover_directory_replacement(target: Path, lock_secret: bytes) -> None:
+    """Recover only the exact replacement named by an owned record."""
+
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         raise MesherError(f"wglink output is not a directory: {target}")
-    if not target.exists() and backups:
-        newest = backups[0]
-        if newest.is_symlink() or not newest.is_dir():
-            raise MesherError(f"wglink replacement backup is not a directory: {newest}")
-        _remove_transaction_directory(_staging_for_backup(newest))
-        newest.replace(target)
-        _fsync_directory(target.parent)
+    transaction = _read_transaction_record(target, lock_secret)
+    if transaction is None:
+        if not target.exists() and _unowned_backup_candidates(target):
+            raise MesherError(
+                "unowned wglink replacement state exists while the live bundle "
+                "is missing; recovery was refused"
+            )
+        return
+    _record, staging, backup = transaction
+    staging_exists = staging.exists() or staging.is_symlink()
+    backup_exists = backup.exists() or backup.is_symlink()
+    if staging_exists and (staging.is_symlink() or not staging.is_dir()):
+        raise MesherError(f"wglink replacement staging is not a directory: {staging}")
+    if backup_exists and (backup.is_symlink() or not backup.is_dir()):
+        raise MesherError(f"wglink replacement backup is not a directory: {backup}")
 
-    if target.exists():
-        for backup in backups:
-            staging = _staging_for_backup(backup)
+    if not target.exists():
+        if not backup_exists:
+            raise MesherError(
+                "wglink transaction state is ambiguous; recovery was refused"
+            )
+        if staging_exists:
             _remove_transaction_directory(staging)
-            _remove_transaction_directory(backup)
+        backup.replace(target)
+        _fsync_directory(target.parent)
+    elif staging_exists and backup_exists:
+        raise MesherError("wglink transaction state is ambiguous; recovery was refused")
+    elif staging_exists:
+        _remove_transaction_directory(staging)
+    elif backup_exists:
+        _remove_transaction_directory(backup)
+
+    _remove_transaction_record(target)
 
 
-def _replace_directories_with_rollback(staging: Path, target: Path) -> None:
-    """Replace a directory while holding its non-POSIX publication lock.
+def _replace_directories_with_rollback(
+    staging: Path, target: Path, backup: Path
+) -> None:
+    """Replace a directory while holding its publication lock and record."""
 
-    Windows cannot atomically exchange two non-empty directories. Preserve the
-    live generation under a unique sibling name, publish the staged generation,
-    and restore the original if publication fails. A later publisher recovers
-    either side if this process terminates between the two renames.
-    """
-
-    backup = staging.with_name(f"{staging.name}.previous")
     if backup.exists() or backup.is_symlink():
         raise MesherError(f"wglink replacement backup already exists: {backup}")
     target.replace(backup)
@@ -1055,20 +1271,29 @@ def _replace_directories_with_rollback(staging: Path, target: Path) -> None:
                 f"restore the previous generation: {restore_error}"
             ) from publish_error
         raise
-    _remove_transaction_directory(backup)
 
 
 def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
     """Publish on Windows with serialized, crash-recoverable renames."""
 
-    with _bundle_publish_lock(target):
-        _recover_directory_replacement(target)
+    with _bundle_publish_lock(target) as lock_secret:
+        _recover_directory_replacement(target, lock_secret)
         if target.exists():
-            _replace_directories_with_rollback(staging, target)
+            token = secrets.token_hex(16)
+            backup = target.with_name(
+                f".{target.name}.publish.{token}.previous"
+            )
+            _write_transaction_record(target, staging, backup, token, lock_secret)
+            try:
+                _replace_directories_with_rollback(staging, target, backup)
+            except BaseException:
+                _recover_directory_replacement(target, lock_secret)
+                raise
+            _fsync_directory(target.parent)
+            _recover_directory_replacement(target, lock_secret)
         else:
             staging.replace(target)
-        _fsync_directory(target.parent)
-        _recover_directory_replacement(target)
+            _fsync_directory(target.parent)
 
 
 def _atomic_exchange_directories(left: Path, right: Path) -> None:
