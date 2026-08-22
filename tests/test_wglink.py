@@ -529,7 +529,6 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
     staging.mkdir()
     (target / "generation.txt").write_text("old", encoding="utf-8")
     (staging / "generation.txt").write_text("new", encoding="utf-8")
-    backup = tmp_path / ".horn.wglink.publish.00000000000000000000000000000000.previous"
     path_type = type(target)
     original_replace = path_type.replace
 
@@ -541,7 +540,7 @@ def test_non_posix_directory_replacement_restores_live_bundle_on_failure(
     monkeypatch.setattr(path_type, "replace", fail_staged_publish)
 
     with pytest.raises(OSError, match="injected publish failure"):
-        cad_module._replace_directories_with_rollback(staging, target, backup)
+        cad_module._publish_bundle_without_exchange(staging, target)
 
     assert (target / "generation.txt").read_text(encoding="utf-8") == "old"
     assert (staging / "generation.txt").read_text(encoding="utf-8") == "new"
@@ -607,6 +606,114 @@ cad._publish_bundle_without_exchange(staging, target)
     assert not next_staging.exists()
     assert not list(tmp_path.glob("*.previous"))
     _assert_private_publish_lock(target)
+
+
+@pytest.mark.parametrize("replaced_role", ["backup", "staging"])
+def test_recovery_rejects_replaced_owned_directory_after_first_rename(
+    tmp_path, replaced_role
+):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.interrupted"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    crash_script = """
+import os
+import sys
+from pathlib import Path
+from hornlab_mesher import cad
+
+target = Path(sys.argv[1])
+staging = Path(sys.argv[2])
+path_type = type(target)
+original_replace = path_type.replace
+
+def die_after_first_rename(path, destination):
+    result = original_replace(path, destination)
+    if path == target and Path(destination).name.endswith(".previous"):
+        os._exit(94)
+    return result
+
+path_type.replace = die_after_first_rename
+cad._publish_bundle_without_exchange(staging, target)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_script, str(target), str(staging)],
+        check=False,
+    )
+    assert crashed.returncode == 94
+    record = json.loads(
+        cad_module._transaction_record_path(target).read_text(encoding="utf-8")
+    )
+    backup = tmp_path / record["backup"]
+    replaced = backup if replaced_role == "backup" else staging
+    preserved = tmp_path / f"preserved-real-{replaced_role}"
+    replaced.replace(preserved)
+    replaced.mkdir()
+    (replaced / "attacker.txt").write_text("must survive", encoding="utf-8")
+
+    with cad_module._bundle_publish_lock(target) as state:
+        with pytest.raises(MesherError, match="identity changed"):
+            cad_module._recover_directory_replacement(target, state)
+
+    assert not target.exists()
+    assert (replaced / "attacker.txt").read_text(encoding="utf-8") == "must survive"
+    expected = "old" if replaced_role == "backup" else "new"
+    assert (preserved / "generation.txt").read_text(encoding="utf-8") == expected
+    untouched = staging if replaced_role == "backup" else backup
+    untouched_expected = "new" if replaced_role == "backup" else "old"
+    assert (untouched / "generation.txt").read_text(encoding="utf-8") == untouched_expected
+
+
+def test_recovery_never_deletes_replaced_backup_after_second_rename(tmp_path):
+    target = tmp_path / "horn.wglink"
+    staging = tmp_path / ".horn.wglink.interrupted"
+    target.mkdir()
+    staging.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+    crash_script = """
+import os
+import sys
+from pathlib import Path
+from hornlab_mesher import cad
+
+target = Path(sys.argv[1])
+staging = Path(sys.argv[2])
+path_type = type(target)
+original_replace = path_type.replace
+
+def die_after_second_rename(path, destination):
+    result = original_replace(path, destination)
+    if path == staging and Path(destination) == target:
+        os._exit(95)
+    return result
+
+path_type.replace = die_after_second_rename
+cad._publish_bundle_without_exchange(staging, target)
+"""
+    crashed = subprocess.run(
+        [sys.executable, "-c", crash_script, str(target), str(staging)],
+        check=False,
+    )
+    assert crashed.returncode == 95
+    record = json.loads(
+        cad_module._transaction_record_path(target).read_text(encoding="utf-8")
+    )
+    backup = tmp_path / record["backup"]
+    preserved_backup = tmp_path / "preserved-real-backup"
+    backup.replace(preserved_backup)
+    backup.mkdir()
+    (backup / "attacker.txt").write_text("must not be deleted", encoding="utf-8")
+
+    with cad_module._bundle_publish_lock(target) as state:
+        with pytest.raises(MesherError, match="identity changed"):
+            cad_module._recover_directory_replacement(target, state)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert (backup / "attacker.txt").read_text(encoding="utf-8") == "must not be deleted"
+    assert (preserved_backup / "generation.txt").read_text(encoding="utf-8") == "old"
 
 
 def test_non_posix_publication_serializes_concurrent_processes(tmp_path):
@@ -765,11 +872,15 @@ def test_non_posix_publication_rejects_untrusted_transaction_record(tmp_path):
     token = "0" * 32
     payload = json.dumps(
         {
-            "schema": 1,
+            "schema": 2,
             "target": target.name,
             "token": token,
             "staging": staging.name,
             "backup": f".{target.name}.publish.{token}.previous",
+            "staging_identity": cad_module._directory_identity(staging),
+            "backup_identity": cad_module._directory_identity(target),
+            "phase": "marked",
+            "committed_role": None,
             "mac": "0" * 64,
         },
         sort_keys=True,
@@ -806,11 +917,15 @@ def test_non_posix_publication_rejects_chosen_key_forged_record(tmp_path):
     victim.mkdir()
     (victim / "keep.txt").write_text("do not delete", encoding="utf-8")
     record = {
-        "schema": 1,
+        "schema": 2,
         "target": target.name,
         "token": token,
-        "staging": ".horn.wglink.forged-staging",
+        "staging": staging.name,
         "backup": victim.name,
+        "staging_identity": cad_module._directory_identity(staging),
+        "backup_identity": cad_module._directory_identity(victim),
+        "phase": "marked",
+        "committed_role": None,
     }
     record["mac"] = cad_module._transaction_mac(chosen_key, record)
     cad_module._create_transaction_directory(cad_module._transaction_path(target))
@@ -1055,6 +1170,34 @@ def test_publish_lock_rejects_hardlink_redirection(tmp_path):
     assert victim.read_text(encoding="utf-8") == "do not touch"
     assert target.exists()
     assert staging.exists()
+
+
+def test_windows_private_lock_root_never_reacls_existing_ancestors(
+    monkeypatch, tmp_path
+):
+    app_root = tmp_path / "HornLab" / "WaveguideMesher"
+    app_root.mkdir(parents=True)
+    applied: list[tuple[Path, bool]] = []
+    verified: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        cad_module,
+        "_windows_apply_owner_only_dacl",
+        lambda path, *, directory: applied.append((path, directory)),
+    )
+    monkeypatch.setattr(
+        cad_module,
+        "_windows_verify_owner_only_dacl",
+        lambda path, *, directory: verified.append((path, directory)),
+    )
+
+    root = cad_module._windows_private_lock_root(tmp_path)
+    assert root == app_root / "lock-state-v1"
+    assert applied == [(root, True)]
+    assert verified == [(root, True)]
+
+    assert cad_module._windows_private_lock_root(tmp_path) == root
+    assert applied == [(root, True)]
+    assert verified == [(root, True), (root, True)]
 
 
 def test_publish_lock_rejects_symlink_redirection(tmp_path):

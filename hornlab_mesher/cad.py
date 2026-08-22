@@ -926,8 +926,10 @@ def _sync_staged_bundle(staging: Path) -> None:
 
 _BUNDLE_THREAD_LOCKS: dict[str, threading.Lock] = {}
 _BUNDLE_THREAD_LOCKS_GUARD = threading.Lock()
-_TRANSACTION_SCHEMA = 1
+_TRANSACTION_SCHEMA = 2
 _PRIVATE_STATE_SCHEMA = 1
+_TRANSACTION_MARKER_SCHEMA = 1
+_TRANSACTION_MARKER_NAME = ".hornlab-publish-owner.json"
 
 
 def _windows_current_user_sid():
@@ -1217,14 +1219,49 @@ def _ensure_private_directory(path: Path) -> None:
     _validate_private_directory(path)
 
 
+def _validate_plain_directory(path: Path) -> None:
+    metadata = os.lstat(path)
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or path.is_symlink()
+        or reparse_flag
+        and int(getattr(metadata, "st_file_attributes", 0)) & reparse_flag
+    ):
+        raise MesherError(f"wglink state ancestor is not a plain directory: {path}")
+
+
+def _windows_private_lock_root(base: Path) -> Path:
+    # These ancestors may predate this application and may contain unrelated
+    # data.  Never rewrite their ACLs.  The dedicated leaf is the trust root.
+    vendor_root = base / "HornLab"
+    try:
+        vendor_root.mkdir()
+    except FileExistsError:
+        pass
+    _validate_plain_directory(vendor_root)
+    app_root = vendor_root / "WaveguideMesher"
+    try:
+        app_root.mkdir()
+    except FileExistsError:
+        pass
+    _validate_plain_directory(app_root)
+    root = app_root / "lock-state-v1"
+    try:
+        root.mkdir()
+    except FileExistsError:
+        _validate_plain_directory(root)
+        _windows_verify_owner_only_dacl(root, directory=True)
+    else:
+        _windows_apply_owner_only_dacl(root, directory=True)
+        _windows_verify_owner_only_dacl(root, directory=True)
+    return root
+
+
 def _private_lock_root() -> Path:
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
-        vendor_root = base / "HornLab"
-        _ensure_private_directory(vendor_root)
-        app_root = vendor_root / "WaveguideMesher"
-        _ensure_private_directory(app_root)
-        root = app_root / "lock-state-v1"
+        return _windows_private_lock_root(base)
     else:
         root = Path(tempfile.gettempdir()) / f"hornlab-waveguide-mesher-{os.getuid()}"
     _ensure_private_directory(root)
@@ -1473,6 +1510,281 @@ def _set_active_transaction(
     state.update(updated)
 
 
+def _windows_directory_identity(path: Path) -> dict[str, Any]:
+    import ctypes
+    from ctypes import wintypes
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("CreationTime", wintypes.FILETIME),
+            ("LastAccessTime", wintypes.FILETIME),
+            ("LastWriteTime", wintypes.FILETIME),
+            ("VolumeSerialNumber", wintypes.DWORD),
+            ("FileSizeHigh", wintypes.DWORD),
+            ("FileSizeLow", wintypes.DWORD),
+            ("NumberOfLinks", wintypes.DWORD),
+            ("FileIndexHigh", wintypes.DWORD),
+            ("FileIndexLow", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ByHandleFileInformation),
+    ]
+    kernel32.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    file_read_attributes = 0x0080
+    # Deliberately omit FILE_SHARE_DELETE so this identity handle pins the
+    # directory name against rename/deletion for the duration of inspection.
+    share_read_write = 0x00000001 | 0x00000002
+    open_existing = 3
+    backup_semantics = 0x02000000
+    open_reparse_point = 0x00200000
+    file_attribute_directory = 0x00000010
+    file_attribute_reparse_point = 0x00000400
+    invalid_handle = ctypes.c_void_p(-1).value
+    handle = kernel32.CreateFileW(
+        str(path),
+        file_read_attributes,
+        share_read_write,
+        None,
+        open_existing,
+        backup_semantics | open_reparse_point,
+        None,
+    )
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        information = ByHandleFileInformation()
+        if not kernel32.GetFileInformationByHandle(
+            handle, ctypes.byref(information)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        attributes = int(information.FileAttributes)
+        if attributes & file_attribute_reparse_point:
+            raise MesherError(f"wglink transaction directory is a reparse point: {path}")
+        if not attributes & file_attribute_directory:
+            raise MesherError(f"wglink transaction path is not a directory: {path}")
+        return {
+            "kind": "windows-file-id",
+            "volume_serial": int(information.VolumeSerialNumber),
+            "file_id": int(information.FileIndexHigh) << 32
+            | int(information.FileIndexLow),
+        }
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _directory_identity(path: Path) -> dict[str, Any]:
+    if sys.platform == "win32":
+        return _windows_directory_identity(path)
+    metadata = os.lstat(path)
+    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        raise MesherError(f"wglink transaction path is not a directory: {path}")
+    flags = os.O_RDONLY
+    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
+        flags |= int(getattr(os, name, 0))
+    descriptor = os.open(path, flags)
+    try:
+        handle_metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(handle_metadata.st_mode):
+            raise MesherError(f"wglink transaction path is not a directory: {path}")
+        path_identity = (int(metadata.st_dev), int(metadata.st_ino))
+        handle_identity = (
+            int(handle_metadata.st_dev),
+            int(handle_metadata.st_ino),
+        )
+        if path_identity != handle_identity:
+            raise MesherError(f"wglink transaction directory changed: {path}")
+        return {
+            "kind": "posix-file-id",
+            "device": handle_identity[0],
+            "inode": handle_identity[1],
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _validate_directory_identity(path: Path, expected: Mapping[str, Any]) -> None:
+    actual = _directory_identity(path)
+    if actual != expected:
+        raise MesherError(
+            f"wglink transaction directory identity changed; recovery was refused: {path}"
+        )
+
+
+def _transaction_marker_path(directory: Path) -> Path:
+    return directory / _TRANSACTION_MARKER_NAME
+
+
+def _marker_signed_record(
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema": _TRANSACTION_MARKER_SCHEMA,
+        "target": target.name,
+        "token": token,
+        "role": role,
+        "identity": dict(identity),
+    }
+
+
+def _install_transaction_marker(
+    directory: Path,
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    _validate_directory_identity(directory, identity)
+    marker = _marker_signed_record(target, token, role, identity)
+    marker["mac"] = _transaction_mac(bytes.fromhex(state["secret"]), marker)
+    payload = json.dumps(marker, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    _atomic_write_private_payload(
+        _transaction_marker_path(directory), payload, replace=False
+    )
+    _validate_transaction_marker(directory, target, token, role, identity, state)
+
+
+def _read_posix_transaction_marker(directory: Path) -> bytes:
+    directory_flags = os.O_RDONLY
+    for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
+        directory_flags |= int(getattr(os, name, 0))
+    directory_descriptor = os.open(directory, directory_flags)
+    try:
+        marker_flags = _private_file_flags()
+        descriptor = os.open(
+            _TRANSACTION_MARKER_NAME,
+            marker_flags,
+            dir_fd=directory_descriptor,
+        )
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or int(metadata.st_nlink) != 1
+                or int(metadata.st_uid) != int(os.getuid())
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+            ):
+                raise MesherError(
+                    f"wglink transaction marker is not private: {directory}"
+                )
+            linked = os.stat(
+                _TRANSACTION_MARKER_NAME,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                int(linked.st_dev),
+                int(linked.st_ino),
+            ) != (
+                int(metadata.st_dev),
+                int(metadata.st_ino),
+            ):
+                raise MesherError(
+                    f"wglink transaction marker changed while open: {directory}"
+                )
+            payload = os.read(descriptor, 4097)
+            if len(payload) > 4096:
+                raise MesherError(
+                    f"wglink transaction marker is too large: {directory}"
+                )
+            return payload
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _validate_transaction_marker(
+    directory: Path,
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    _validate_directory_identity(directory, identity)
+    marker_path = _transaction_marker_path(directory)
+    try:
+        payload = (
+            _read_posix_transaction_marker(directory)
+            if os.name == "posix"
+            else _read_private_payload(marker_path, limit=4096)
+        )
+    except FileNotFoundError as exc:
+        raise MesherError(f"wglink transaction marker is missing: {directory}") from exc
+    try:
+        marker = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MesherError(f"wglink transaction marker is invalid: {directory}") from exc
+    signed = _marker_signed_record(target, token, role, identity)
+    expected_mac = _transaction_mac(bytes.fromhex(state["secret"]), signed)
+    if (
+        not isinstance(marker, dict)
+        or set(marker) != {*signed, "mac"}
+        or any(marker.get(key) != value for key, value in signed.items())
+        or not isinstance(marker.get("mac"), str)
+        or not hmac.compare_digest(marker["mac"], expected_mac)
+    ):
+        raise MesherError(
+            f"wglink transaction marker is invalid or unauthenticated: {directory}"
+        )
+    _validate_directory_identity(directory, identity)
+
+
+def _remove_transaction_marker(
+    directory: Path,
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+    *,
+    optional: bool = False,
+) -> None:
+    marker_path = _transaction_marker_path(directory)
+    if not marker_path.exists() and not marker_path.is_symlink():
+        if optional:
+            _validate_directory_identity(directory, identity)
+            return
+        raise MesherError(f"wglink transaction marker is missing: {directory}")
+    _validate_transaction_marker(directory, target, token, role, identity, state)
+    if os.name == "posix":
+        flags = os.O_RDONLY
+        for name in ("O_CLOEXEC", "O_DIRECTORY", "O_NOFOLLOW"):
+            flags |= int(getattr(os, name, 0))
+        descriptor = os.open(directory, flags)
+        try:
+            os.unlink(_TRANSACTION_MARKER_NAME, dir_fd=descriptor)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    else:
+        marker_path.unlink()
+    _validate_directory_identity(directory, identity)
+
+
 def _lock_file(descriptor: int) -> None:
     if sys.platform == "win32":
         import errno
@@ -1508,10 +1820,15 @@ def _unlock_file(descriptor: int) -> None:
 
 @contextmanager
 def _bundle_publish_lock(target: Path):
-    """Serialize same-account publishers through stable private state.
+    """Serialize cooperating same-account publishers through private state.
 
     A fixed, owner-checked claim beside the target separately makes publishers
     from other OS accounts fail safely instead of running concurrent renames.
+    The private 0700/DACL-protected root is the trust boundary: on POSIX, a
+    process deliberately unlinking another process's lock as the same UID can
+    subvert advisory locking (and can also read the HMAC secret), so hostile
+    same-UID processes are outside the supported ownership model.  Windows
+    keeps the locked file handle open without delete sharing.
     """
 
     lock_path = _publish_lock_path(target)
@@ -1578,8 +1895,10 @@ def _write_transaction_record(
     staging: Path,
     backup: Path,
     token: str,
+    staging_identity: Mapping[str, Any],
+    backup_identity: Mapping[str, Any],
     state: Mapping[str, Any],
-) -> None:
+) -> dict[str, Any]:
     transaction_path = _transaction_path(target)
     record_path = _transaction_record_path(target)
     record = {
@@ -1588,6 +1907,10 @@ def _write_transaction_record(
         "token": token,
         "staging": staging.name,
         "backup": backup.name,
+        "staging_identity": dict(staging_identity),
+        "backup_identity": dict(backup_identity),
+        "phase": "prepared",
+        "committed_role": None,
     }
     record["mac"] = _transaction_mac(bytes.fromhex(state["secret"]), record)
     payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1610,6 +1933,29 @@ def _write_transaction_record(
     os.close(descriptor)
     _fsync_directory(transaction_path)
     _fsync_directory(target.parent)
+    return record
+
+
+def _update_transaction_phase(
+    target: Path,
+    record: Mapping[str, Any],
+    state: Mapping[str, Any],
+    phase: str,
+    *,
+    committed_role: str | None = None,
+) -> dict[str, Any]:
+    updated = {key: value for key, value in record.items() if key != "mac"}
+    updated["phase"] = phase
+    updated["committed_role"] = committed_role
+    updated["mac"] = _transaction_mac(bytes.fromhex(state["secret"]), updated)
+    payload = json.dumps(updated, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    _atomic_write_private_payload(
+        _transaction_record_path(target), payload, replace=True
+    )
+    _fsync_directory(_transaction_path(target))
+    return updated
 
 
 def _read_transaction_record(
@@ -1635,12 +1981,20 @@ def _read_transaction_record(
         "token",
         "staging",
         "backup",
+        "staging_identity",
+        "backup_identity",
+        "phase",
+        "committed_role",
         "mac",
     }:
         raise MesherError(f"wglink transaction record is invalid: {record_path}")
     token = record.get("token")
     staging_name = record.get("staging")
     provided_mac = record.get("mac")
+    staging_identity = record.get("staging_identity")
+    backup_identity = record.get("backup_identity")
+    phase = record.get("phase")
+    committed_role = record.get("committed_role")
     signed_record = {key: value for key, value in record.items() if key != "mac"}
     expected_mac = _transaction_mac(bytes.fromhex(state["secret"]), signed_record)
     expected_backup = (
@@ -1655,6 +2009,14 @@ def _read_transaction_record(
         or Path(staging_name).name != staging_name
         or not staging_name.startswith(f".{target.name}.")
         or record.get("backup") != expected_backup
+        or not isinstance(staging_identity, dict)
+        or not isinstance(backup_identity, dict)
+        or phase not in {"prepared", "marked", "aborted", "committed"}
+        or committed_role not in {None, "staging", "backup"}
+        or phase == "committed"
+        and committed_role is None
+        or phase != "committed"
+        and committed_role is not None
         or not isinstance(provided_mac, str)
         or not hmac.compare_digest(provided_mac, expected_mac)
     ):
@@ -1692,8 +2054,124 @@ def _unowned_backup_candidates(target: Path) -> list[Path]:
     ]
 
 
+def _remove_owned_transaction_directory(
+    directory: Path,
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    _validate_transaction_marker(directory, target, token, role, identity, state)
+    _validate_directory_identity(directory, identity)
+    shutil.rmtree(directory)
+
+
+def _replace_owned_directories_with_rollback(
+    staging: Path,
+    target: Path,
+    backup: Path,
+    token: str,
+    staging_identity: Mapping[str, Any],
+    backup_identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    if backup.exists() or backup.is_symlink():
+        raise MesherError(f"wglink replacement backup already exists: {backup}")
+    _validate_transaction_marker(
+        target, target, token, "backup", backup_identity, state
+    )
+    target.replace(backup)
+    _validate_transaction_marker(
+        backup, target, token, "backup", backup_identity, state
+    )
+    try:
+        _validate_transaction_marker(
+            staging, target, token, "staging", staging_identity, state
+        )
+        staging.replace(target)
+        _validate_transaction_marker(
+            target, target, token, "staging", staging_identity, state
+        )
+    except BaseException as publish_error:
+        try:
+            _validate_transaction_marker(
+                backup, target, token, "backup", backup_identity, state
+            )
+            backup.replace(target)
+            _validate_transaction_marker(
+                target, target, token, "backup", backup_identity, state
+            )
+        except BaseException as restore_error:
+            raise MesherError(
+                "could not publish the staged wglink bundle and could not "
+                f"restore the previous generation: {restore_error}"
+            ) from publish_error
+        raise
+
+
+def _finish_directory_transaction(
+    target: Path,
+    record: Mapping[str, Any],
+    state: dict[str, Any],
+    role: str,
+) -> None:
+    token = record["token"]
+    identity = record[f"{role}_identity"]
+    _update_transaction_phase(
+        target, record, state, "committed", committed_role=role
+    )
+    _remove_transaction_marker(
+        target, target, token, role, identity, state, optional=True
+    )
+    _remove_transaction_record(target)
+    _set_active_transaction(target, state, None)
+
+
+def _validate_optional_marker(
+    directory: Path,
+    target: Path,
+    token: str,
+    role: str,
+    identity: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> None:
+    marker = _transaction_marker_path(directory)
+    if marker.exists() or marker.is_symlink():
+        _validate_transaction_marker(directory, target, token, role, identity, state)
+
+
+def _abort_prepared_transaction(
+    target: Path,
+    staging: Path,
+    record: Mapping[str, Any],
+    state: dict[str, Any],
+) -> None:
+    token = record["token"]
+    backup_identity = record["backup_identity"]
+    staging_identity = record["staging_identity"]
+    _validate_directory_identity(target, backup_identity)
+    _validate_directory_identity(staging, staging_identity)
+    _validate_optional_marker(
+        target, target, token, "backup", backup_identity, state
+    )
+    _validate_optional_marker(
+        staging, target, token, "staging", staging_identity, state
+    )
+    if record["phase"] != "aborted":
+        record = _update_transaction_phase(target, record, state, "aborted")
+    _remove_transaction_marker(
+        target, target, token, "backup", backup_identity, state, optional=True
+    )
+    _remove_transaction_marker(
+        staging, target, token, "staging", staging_identity, state, optional=True
+    )
+    _remove_transaction_record(target)
+    _set_active_transaction(target, state, None)
+
+
 def _recover_directory_replacement(target: Path, state: dict[str, Any]) -> None:
-    """Recover only the exact replacement named by an owned record."""
+    """Recover only authenticated names whose directory identities still match."""
 
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         raise MesherError(f"wglink output is not a directory: {target}")
@@ -1725,52 +2203,105 @@ def _recover_directory_replacement(target: Path, state: dict[str, Any]) -> None:
         raise MesherError(
             "wglink transaction record is stale or replayed; recovery was refused"
         )
+    token = record["token"]
+    staging_identity = record["staging_identity"]
+    backup_identity = record["backup_identity"]
     staging_exists = staging.exists() or staging.is_symlink()
     backup_exists = backup.exists() or backup.is_symlink()
-    if staging_exists and (staging.is_symlink() or not staging.is_dir()):
-        raise MesherError(f"wglink replacement staging is not a directory: {staging}")
-    if backup_exists and (backup.is_symlink() or not backup.is_dir()):
-        raise MesherError(f"wglink replacement backup is not a directory: {backup}")
+    target_exists = target.exists() or target.is_symlink()
 
-    if not target.exists():
-        if not backup_exists:
+    if record["phase"] in {"prepared", "aborted"}:
+        if not target_exists or not staging_exists or backup_exists:
             raise MesherError(
-                "wglink transaction state is ambiguous; recovery was refused"
+                "wglink prepared transaction state is ambiguous; recovery was refused"
+            )
+        _abort_prepared_transaction(target, staging, record, state)
+        return
+
+    if record["phase"] == "committed":
+        role = record["committed_role"]
+        identity = record[f"{role}_identity"]
+        if not target_exists or staging_exists or backup_exists:
+            raise MesherError(
+                "wglink committed transaction state is ambiguous; recovery was refused"
+            )
+        _validate_directory_identity(target, identity)
+        _validate_optional_marker(target, target, token, role, identity, state)
+        _remove_transaction_marker(
+            target, target, token, role, identity, state, optional=True
+        )
+        _remove_transaction_record(target)
+        _set_active_transaction(target, state, None)
+        return
+
+    target_role: str | None = None
+    if target_exists:
+        actual_target_identity = _directory_identity(target)
+        if actual_target_identity == staging_identity:
+            target_role = "staging"
+        elif actual_target_identity == backup_identity:
+            target_role = "backup"
+        else:
+            raise MesherError(
+                "wglink live directory identity changed; recovery was refused"
+            )
+        _validate_transaction_marker(
+            target,
+            target,
+            token,
+            target_role,
+            record[f"{target_role}_identity"],
+            state,
+        )
+    if staging_exists:
+        _validate_transaction_marker(
+            staging, target, token, "staging", staging_identity, state
+        )
+    if backup_exists:
+        _validate_transaction_marker(
+            backup, target, token, "backup", backup_identity, state
+        )
+
+    if target_role == "backup":
+        if backup_exists:
+            raise MesherError(
+                "wglink transaction contains duplicate backup state; recovery was refused"
             )
         if staging_exists:
-            _remove_transaction_directory(staging)
-        backup.replace(target)
-        _fsync_directory(target.parent)
-    elif staging_exists and backup_exists:
-        raise MesherError("wglink transaction state is ambiguous; recovery was refused")
-    elif staging_exists:
-        _remove_transaction_directory(staging)
-    elif backup_exists:
-        _remove_transaction_directory(backup)
+            _abort_prepared_transaction(target, staging, record, state)
+        else:
+            _finish_directory_transaction(target, record, state, "backup")
+        return
 
-    _remove_transaction_record(target)
-    _set_active_transaction(target, state, None)
-
-
-def _replace_directories_with_rollback(
-    staging: Path, target: Path, backup: Path
-) -> None:
-    """Replace a directory while holding its publication lock and record."""
-
-    if backup.exists() or backup.is_symlink():
-        raise MesherError(f"wglink replacement backup already exists: {backup}")
-    target.replace(backup)
-    try:
-        staging.replace(target)
-    except BaseException as publish_error:
-        try:
-            backup.replace(target)
-        except BaseException as restore_error:
+    if target_role == "staging":
+        if staging_exists:
             raise MesherError(
-                "could not publish the staged wglink bundle and could not "
-                f"restore the previous generation: {restore_error}"
-            ) from publish_error
-        raise
+                "wglink transaction contains duplicate staging state; recovery was refused"
+            )
+        if backup_exists:
+            _remove_owned_transaction_directory(
+                backup, target, token, "backup", backup_identity, state
+            )
+            _fsync_directory(target.parent)
+        _finish_directory_transaction(target, record, state, "staging")
+        return
+
+    if not backup_exists:
+        raise MesherError("wglink transaction state is ambiguous; recovery was refused")
+    if staging_exists:
+        _remove_owned_transaction_directory(
+            staging, target, token, "staging", staging_identity, state
+        )
+        _fsync_directory(target.parent)
+    _validate_transaction_marker(
+        backup, target, token, "backup", backup_identity, state
+    )
+    backup.replace(target)
+    _validate_transaction_marker(
+        target, target, token, "backup", backup_identity, state
+    )
+    _fsync_directory(target.parent)
+    _finish_directory_transaction(target, record, state, "backup")
 
 
 def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
@@ -1781,10 +2312,47 @@ def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
         if target.exists():
             token = secrets.token_hex(16)
             backup = target.with_name(f".{target.name}.publish.{token}.previous")
+            staging_identity = _directory_identity(staging)
+            backup_identity = _directory_identity(target)
             _set_active_transaction(target, state, token)
             try:
-                _write_transaction_record(target, staging, backup, token, state)
-                _replace_directories_with_rollback(staging, target, backup)
+                record = _write_transaction_record(
+                    target,
+                    staging,
+                    backup,
+                    token,
+                    staging_identity,
+                    backup_identity,
+                    state,
+                )
+                _install_transaction_marker(
+                    target,
+                    target,
+                    token,
+                    "backup",
+                    backup_identity,
+                    state,
+                )
+                _install_transaction_marker(
+                    staging,
+                    target,
+                    token,
+                    "staging",
+                    staging_identity,
+                    state,
+                )
+                record = _update_transaction_phase(
+                    target, record, state, "marked"
+                )
+                _replace_owned_directories_with_rollback(
+                    staging,
+                    target,
+                    backup,
+                    token,
+                    staging_identity,
+                    backup_identity,
+                    state,
+                )
             except BaseException:
                 try:
                     _recover_directory_replacement(target, state)
