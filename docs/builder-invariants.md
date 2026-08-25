@@ -95,11 +95,44 @@ Builders return `BuiltGeometry`, not a mesh file. The important fields are:
 - `source_axis`: axis used by source normal validation.
 - `enclosure_bounds`: enclosure bounding data for front/back interpolation.
 - `symmetry_snap_axes`: axes that postprocess may snap to zero.
-- `mesh_algorithm`: optional Gmsh 2D mesh algorithm override.
+- `mesh_algorithm`: the Gmsh 2D mesh algorithm the mode selects (see below).
 
 Builders must not configure density, add physical groups, generate the final
 mesh, scale units, repair triangle orientation, or write the output file.
 `hornlab_mesher.mesher` owns those steps.
+
+## Mesh Algorithm Selection
+
+`mesh_algorithm` is not a user-facing override. Each point-grid build mode picks
+the Gmsh 2D algorithm measured to suit its own surfaces, and `mesher` applies it
+verbatim. `None` means "leave Gmsh on its own default", which is MeshAdapt (`1`).
+
+| Build mode | `mesh_algorithm` | Gmsh algorithm |
+| --- | --- | --- |
+| `freestanding` | `6` | Frontal-Delaunay |
+| `enclosure` | `5` | Delaunay |
+| `bare` | `None` | MeshAdapt (Gmsh default) |
+| `infinite-baffle` | `None` | MeshAdapt (Gmsh default) |
+
+The legacy `wg_topology` freestanding path keeps `2` (Automatic), which it has
+always used.
+
+MeshAdapt is the slowest algorithm on the trimmed B-spline patches this mesher
+builds, because its cost per triangle grows with surface count instead of
+staying flat. Moving `freestanding` and `enclosure` off it is worth 2.94x and
+1.46x at solver mesh densities.
+
+`bare` deliberately stays on MeshAdapt. Its wall patches come from a fitted
+spline surface whose parameterisation neither Delaunay front respects, so both
+fronts trade triangle quality away for no speedup at all. On the FREEFORM bare
+example at a quarter of its stock mesh resolutions the worst-case triangle angle
+is 22.5 deg under MeshAdapt, 5.8 deg under Delaunay, and 4.7 deg under
+Frontal-Delaunay, while the build time does not improve. `infinite-baffle` is
+unmeasured and is therefore also left unchanged.
+
+A builder that changes its algorithm must update
+`tests/test_point_grid_contract.py::test_build_modes_select_their_measured_gmsh_algorithm`,
+which pins the table above.
 
 ## Physical Surface Groups
 

@@ -3194,6 +3194,16 @@ def test_build_modes_select_their_measured_gmsh_algorithm():
         inner_points=inner, closed=True, wall_thickness_mm=0.0, preserve_grid=True
     )
     assert bare.build_mode is PointGridBuildMode.BARE
-    # None leaves mesher.py on gmsh's MeshAdapt fallback; a Delaunay front
-    # collapses FREEFORM's bare-shell triangle angles from 22.5 to 4.7 degrees.
+    # None leaves mesher.py on gmsh's MeshAdapt fallback. Both fronts lose the
+    # bare shell's triangle quality: on the quarter-resolution FREEFORM bare
+    # example the worst-case angle falls from 22.5 degrees under MeshAdapt to
+    # 5.8 under Delaunay and 4.7 under Frontal-Delaunay.
     assert _built_mesh_algorithm(bare) is None
+
+    baffle = PointGridHornGeometry(
+        inner_points=inner, closed=True, infinite_baffle=True
+    )
+    assert baffle.build_mode is PointGridBuildMode.INFINITE_BAFFLE
+    # INFINITE_BAFFLE returns before the dispatch tail that selects Delaunay,
+    # so it is unmeasured and deliberately unchanged.
+    assert _built_mesh_algorithm(baffle) is None
