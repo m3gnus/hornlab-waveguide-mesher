@@ -37,7 +37,7 @@ from .profile_sampling import (
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
     _classify_zmap_kind,
 )
-from .profiles import build_point_grid, eval_param, profile_points
+from .profiles import azimuthal_mean, build_point_grid, eval_param, profile_points
 from .builders.point_grid_freestanding import (
     _outer_wall_axial_ring_indices,
     _restored_outer_throat_points,
@@ -1651,6 +1651,27 @@ def _circsym_resolution_budget(
     }
 
 
+def _freeform_source_auto_angle_deg(report: Mapping[str, Any]) -> float:
+    """FREEFORM's stand-in for ATH's average throat opening angle.
+
+    FREEFORM has no ATH counterpart to match, but its throat opens at a
+    different angle in H and V, so taking H alone would aim the automatic cap at
+    one axis. The mean of the two is the direct analogue of the azimuthal mean
+    the formula families use.
+    """
+
+    throat = report["tangentAnglesDeg"]
+    return 0.5 * (float(throat["H"]["throat"]) + float(throat["V"]["throat"]))
+
+
+def _source_auto_angle_deg(params: Mapping[str, Any], formula: str) -> float:
+    """Throat opening angle the automatic source-cap radius is matched to."""
+
+    if formula == "FREEFORM":
+        return _freeform_source_auto_angle_deg(build_freeform_geometry(params).report())
+    return azimuthal_mean(params.get("a0"), 15.5)
+
+
 def _source_cap_polyline(
     *,
     throat_radius_mm: float,
@@ -1837,13 +1858,7 @@ def build_meridian(
     throat_radius = float(inner_profile[0, 0])
     mouth_radius = float(inner_profile[-1, 0])
     throat_z = float(inner_profile[0, 1])
-    source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
-    if formula == "FREEFORM":
-        source_auto_angle_deg = float(
-            build_freeform_geometry(params).report()["tangentAnglesDeg"]["H"][
-                "throat"
-            ]
-        )
+    source_auto_angle_deg = _source_auto_angle_deg(params, formula)
     source_geometry = PointGridHornGeometry(
         inner_points=inner_points,
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
@@ -2558,15 +2573,13 @@ def resolve_geometry(
         )
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_quadrants(quadrants)
-    source_auto_angle_deg = float(eval_param(params.get("a0"), 0.0, 15.5))
+    source_auto_angle_deg = azimuthal_mean(params.get("a0"), 15.5)
     freeform_axis_samples_mm: np.ndarray | None = None
     freeform_report: dict[str, Any] | None = None
     if formula == "FREEFORM":
         freeform_geometry = build_freeform_geometry(params)
         freeform_report = freeform_geometry.report()
-        source_auto_angle_deg = float(
-            freeform_report["tangentAnglesDeg"]["H"]["throat"]
-        )
+        source_auto_angle_deg = _freeform_source_auto_angle_deg(freeform_report)
         slice_map = np.asarray(grid.get("slice_map"), dtype=np.float64)
         z0 = float(params["profileH"]["points"][0][0])
         analytic_z = z0 + slice_map * freeform_geometry.length_mm

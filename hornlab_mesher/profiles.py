@@ -8,7 +8,7 @@ ATH/WG behavior, but they are intentionally not advertised through `__all__`.
 
 from __future__ import annotations
 
-from .profile_common import eval_param
+from .profile_common import azimuthal_mean, eval_param
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse,
