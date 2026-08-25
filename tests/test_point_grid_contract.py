@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 
+import gmsh
 import meshio
 import numpy as np
 import pytest
@@ -37,7 +38,13 @@ from hornlab_mesher.cli import (
 )
 from hornlab_mesher.config_builder import _number_list
 from hornlab_mesher.density import _parse_quadrant_resolutions
-from hornlab_mesher.geometry import HornInterface, PointGridHornGeometry
+from hornlab_mesher.geometry import (
+    MESH_ALGORITHM_DELAUNAY,
+    MESH_ALGORITHM_FRONTAL_DELAUNAY,
+    HornInterface,
+    PointGridBuildMode,
+    PointGridHornGeometry,
+)
 from hornlab_mesher.profile_sampling import _zmap_number_list
 from hornlab_mesher.profiles import build_point_grid, profile_points
 from hornlab_mesher.viewport import build_viewport_geometry_from_config
@@ -3131,3 +3138,62 @@ def test_enclosure_bounds_logs_edge_roundover_clamp(caplog):
     assert bounds["clamped_edge"] < 20.0
     assert "enc_edge" in caplog.text
     assert "clamping" in caplog.text
+
+
+def _built_mesh_algorithm(geometry: PointGridHornGeometry) -> int | None:
+    """Return the gmsh 2D algorithm a build mode selects, in its own session."""
+
+    initialized_here = False
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+        initialized_here = True
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("mesh-algorithm-selection")
+        return build_point_grid_geometry(geometry).mesh_algorithm
+    finally:
+        gmsh.clear()
+        if initialized_here:
+            gmsh.finalize()
+
+
+def test_build_modes_select_their_measured_gmsh_algorithm():
+    """Pin the per-mode 2D algorithm: MeshAdapt is 1.5-3x slower on the two
+    modes that tolerate a Delaunay front, and BARE is the one that does not."""
+
+    inner = _make_point_grid()
+
+    freestanding = PointGridHornGeometry(
+        inner_points=inner,
+        outer_points=_make_outer_point_grid(inner),
+        closed=True,
+    )
+    assert freestanding.build_mode is PointGridBuildMode.FREESTANDING
+    assert _built_mesh_algorithm(freestanding) == MESH_ALGORITHM_FRONTAL_DELAUNAY
+
+    enclosure = PointGridHornGeometry(
+        inner_points=inner,
+        closed=True,
+        enclosure=HornEnclosure(
+            depth_mm=180.0,
+            space_l_mm=20.0,
+            space_t_mm=20.0,
+            space_r_mm=20.0,
+            space_b_mm=20.0,
+            edge_mm=8.0,
+            edge_type=1,
+            plan_type=1,
+            depth_margin_mm=5.0,
+        ),
+    )
+    assert enclosure.build_mode is PointGridBuildMode.ENCLOSURE
+    assert _built_mesh_algorithm(enclosure) == MESH_ALGORITHM_DELAUNAY
+
+    bare = PointGridHornGeometry(
+        inner_points=inner, closed=True, wall_thickness_mm=0.0, preserve_grid=True
+    )
+    assert bare.build_mode is PointGridBuildMode.BARE
+    # None leaves mesher.py on gmsh's MeshAdapt fallback; a Delaunay front
+    # collapses FREEFORM's bare-shell triangle angles from 22.5 to 4.7 degrees.
+    assert _built_mesh_algorithm(bare) is None

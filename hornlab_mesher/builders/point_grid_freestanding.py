@@ -4,7 +4,12 @@ from typing import Any
 
 import numpy as np
 
-from ..geometry import BuiltGeometry, PointGridHornGeometry
+from ..geometry import (
+    MESH_ALGORITHM_AUTOMATIC,
+    MESH_ALGORITHM_FRONTAL_DELAUNAY,
+    BuiltGeometry,
+    PointGridHornGeometry,
+)
 from ..tags import PhysicalGroup
 from ._occ import make_planar_fill_from_boundary, require_gmsh
 from .point_grid_sources import (
@@ -231,6 +236,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
+        mesh_algorithm=MESH_ALGORITHM_FRONTAL_DELAUNAY,
         metadata={
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
         },
@@ -368,6 +374,7 @@ def _build_acoustic_freestanding_point_grid(
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
+        mesh_algorithm=MESH_ALGORITHM_FRONTAL_DELAUNAY,
         metadata={
             "meshTopologyMode": "acoustic",
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points),
@@ -468,7 +475,7 @@ def _build_wg_freestanding_point_grid(
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
-        mesh_algorithm=2,
+        mesh_algorithm=MESH_ALGORITHM_AUTOMATIC,
         metadata={
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
         },
