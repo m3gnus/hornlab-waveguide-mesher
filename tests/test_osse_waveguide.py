@@ -13,7 +13,7 @@ from hornlab_mesher import (
     compute_osse_profile_points,
     load_mesh,
 )
-from hornlab_mesher.profiles import eval_param, profile_points
+from hornlab_mesher.profiles import azimuthal_mean, eval_param, profile_points
 from hornlab_mesher.builders._occ import superellipse_ring
 
 
@@ -163,3 +163,28 @@ def test_throat_extension_over_taper_raises():
               "throatExtLength": 30.0, "throatExtAngle": 30.0}
     with pytest.raises(ValueError, match="below zero radius"):
         calculate_osse(10.0, 0.0, params)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, 15.5),
+        ("", 15.5),
+        (12.7, 12.7),
+        ("12.7", 12.7),
+        # Mean of a constant plus a full-period term is the constant: the
+        # cos(2p) term integrates away over one turn, sin(p)^2 averages to 1/2.
+        ("10 + 4*cos(2*p)", 10.0),
+        ("10 + 4*sin(p)^2", 12.0),
+    ],
+)
+def test_azimuthal_mean_averages_over_one_full_turn(value, expected) -> None:
+    assert azimuthal_mean(value, 15.5) == pytest.approx(expected, abs=1.0e-9)
+
+
+def test_azimuthal_mean_is_not_the_value_at_p_zero() -> None:
+    """The distinction the automatic source-cap radius depends on."""
+
+    expression = "10 + 4*sin(p)^2"
+    assert eval_param(expression, 0.0, 15.5) == pytest.approx(10.0)
+    assert azimuthal_mean(expression, 15.5) == pytest.approx(12.0)

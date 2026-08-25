@@ -33,8 +33,7 @@ from numpy.typing import NDArray
 
 from ..builders.enclosure import sample_enclosure_plan
 from ..builders.point_grid_sources import _source_cap_height, _source_cap_radius
-from ..config_builder import build_geometry_params
-from ..freeform import build_freeform_geometry
+from ..config_builder import _source_auto_angle_deg, build_geometry_params
 from ..geometry import PointGridHornGeometry
 from ..profile_sampling import (
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
@@ -917,11 +916,8 @@ def _smooth_mouth_rim(
 def _source_geometry(
     params: Mapping[str, Any], formula: str, inner: NDArray[np.float64]
 ) -> PointGridHornGeometry:
-    auto_angle = float(eval_param(params.get("a0"), 0.0, 15.5))
-    if formula == "FREEFORM":
-        auto_angle = float(
-            build_freeform_geometry(params).report()["tangentAnglesDeg"]["H"]["throat"]
-        )
+    # Shared with the solved build so the previewed cap is the meshed cap.
+    auto_angle = _source_auto_angle_deg(params, formula)
     return PointGridHornGeometry(
         inner_points=inner,
         source_shape=int(round(float(eval_param(params.get("sourceShape"), 0.0, 1)))),
