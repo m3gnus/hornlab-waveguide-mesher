@@ -273,6 +273,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
 | `topology` | `topology_mode`, `topologyMode` | `acoustic` | `acoustic` separates geometry samples from BEM topology. `legacy` retains ATH/parity patch and grid semantics. |
+| `surface_fit` | `surfaceFit` | `approximate` | B-spline fitting mode for the acoustic wall patches. `approximate` hands the sampled grid to OCC as control points; `interpolate` solves for poles whose surface passes through the grid. Refused on FREEFORM profiles. See below. |
 | `preserve_grid` | `preserveGrid` | `false` | Legacy faceted point-grid topology. Requires `topology = "legacy"`; rejected in ordinary acoustic mode. |
 | `scale_to_metres` | `scaleToMetres` | `true` | Final `.msh` units are metres when true. |
 | `max_triangles` | `maxTriangles` | `18000` | Full-domain-equivalent triangle ceiling. Estimated gross overruns fail before meshing and realized overruns fail before return. Sizes are never rewritten. |
@@ -293,6 +294,39 @@ Sampling modes accepted by the profile layer:
 - `uniform`, `linear`, `canonical`, `default`
 - `ath`, `ath-parity`, `ath-zmap`, `ath-default`, `ath-default-zmap`,
   `default-zmap`
+
+### `mesh.surface_fit`
+
+Two values are accepted; anything else raises `ConfigError`.
+
+- `approximate` (default) hands the sampled profile grid to
+  `occ.addBSplineSurface` as control points. OCC treats them as poles, not as
+  points the surface passes through, so the meshed wall hangs systematically
+  *inside* the sampled one. The bias does not shrink with mesh refinement.
+- `interpolate` instead solves for the poles whose surface passes through the
+  sampled grid. The solve is separable and exact to machine precision, adds no
+  control points, and therefore leaves the triangle count essentially unchanged.
+
+Measured on `examples/osse-freestanding.toml`, inner acoustic wall against a
+4000-segment analytic meridian:
+
+| `surface_fit` | triangles | rms | p95 | p99 |
+| --- | --- | --- | --- | --- |
+| `approximate` | 2800 | 0.280 mm | 0.378 mm | 0.432 mm |
+| `interpolate` | 2872 | 0.161 mm | 0.200 mm | 0.261 mm |
+
+Two limits apply.
+
+- `interpolate` is refused on FREEFORM profiles. Their deliberate creases make
+  the interpolating patch fit unmeshable — Gmsh grinds past ten minutes inside
+  `mesh.generate` rather than failing — so the geometry constructor raises
+  instead of hanging.
+- Only the acoustic wall changes fit. The outer shell always keeps
+  `approximate`, because `outer_topology` splices the rear rim on as a
+  deliberate sharp corner that a cubic interpolant overshoots.
+
+The default stays `approximate` because `interpolate` moves the nodes of every
+acoustic mesh.
 
 ## Experimental LOOKUP Profiles
 
