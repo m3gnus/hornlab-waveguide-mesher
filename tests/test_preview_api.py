@@ -745,3 +745,58 @@ def test_preview_rear_plate_sits_on_the_mesh_rear_plane(lod):
     assert np.isclose(band[:, 2].min(), expected, atol=1.0e-9)
     outer_throat_z = float(band[:, 2].max())
     assert outer_throat_z > expected + 1.0
+
+
+# a0 and the ATH-built cap height of ATH's own 250906asro* references. Those
+# configs carry no Source.* items, so the caps are ATH's automatic ones, and the
+# cap heights are read off the SD1D1001 driving group of the meshes ATH wrote.
+ATH_AUTO_CAP_CASES = [
+    ("15.5", 1.7280),
+    ("15.5 - 7*cos(2*p)^5 - 16*sin(p)^12", 1.3230),
+    ("15.5*(abs(cos(p)/1)^10 + abs(sin(p)/0.8)^4)^(-1/3)", 1.7840),
+    ("15.5*(abs(cos(p)/2)^3 + abs(sin(p)/0.7)^4)^(-1/7)", 1.8120),
+]
+
+
+@pytest.mark.parametrize(("a0", "ath_cap_height_mm"), ATH_AUTO_CAP_CASES)
+def test_auto_source_cap_matches_aths_average_throat_opening_angle(
+    a0: str, ath_cap_height_mm: float
+):
+    """ATH's automatic cap radius follows the MEAN of a0 over the azimuth.
+
+    Taking a0 at p=0 instead leaves the cap 0.38 mm too flat on the second case
+    and 0.53 mm too domed on the fourth -- 25-30% of the cap height on the very
+    designs that vary a0 around the throat. ATH's 4-decimal mesh export is the
+    precision floor here, not the agreement.
+    """
+
+    config = copy.deepcopy(OSSE_FREESTANDING)
+    config["profile"]["r0_mm"] = 12.7
+    config["profile"]["a0_deg"] = a0
+    metadata = build_preview_geometry(config).metadata
+
+    assert metadata["source_cap_height_mm"] == pytest.approx(
+        ath_cap_height_mm, abs=5.0e-4
+    )
+
+
+def test_freeform_auto_source_cap_averages_the_two_throat_angles():
+    """FREEFORM has no ATH counterpart, so it averages its own H and V angles.
+
+    Reading H alone aimed the automatic cap at one axis of a throat that opens
+    at two different angles.
+    """
+
+    config = copy.deepcopy(FREEFORM_FREESTANDING)
+    # Kept inside the 5-degree H/V spread the builder already warns about, so
+    # the test exercises the averaging and not the warning path.
+    config["profile"]["profileH"]["throatAngleDeg"] = 13.0
+    config["profile"]["profileV"]["throatAngleDeg"] = 17.0
+    averaged = build_preview_geometry(config).metadata["source_cap_radius_mm"]
+
+    both_at_15 = copy.deepcopy(config)
+    both_at_15["profile"]["profileH"]["throatAngleDeg"] = 15.0
+    both_at_15["profile"]["profileV"]["throatAngleDeg"] = 15.0
+    expected = build_preview_geometry(both_at_15).metadata["source_cap_radius_mm"]
+
+    assert averaged == pytest.approx(expected, rel=1.0e-9)

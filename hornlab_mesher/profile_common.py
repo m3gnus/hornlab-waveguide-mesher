@@ -212,6 +212,39 @@ def eval_param(value: Any, p: float = 0.0, default: float = 0.0) -> float:
     return _eval_text_param(text, float(p))
 
 
+# ATH matches an automatic source-cap radius to the "(average) throat opening
+# angle" (Ath 4.8.2 User Guide p.22). Measured against ATH's own meshes for four
+# designs with an azimuthally varying a0 (the 250906asro* family), that average
+# is the plain arithmetic mean of a0 over one full turn: inverting the cap height
+# ATH built recovers the mean to 0.004 deg, while a0 at p=0, (H+V)/2,
+# mean(1/sin a0) and mean(sin a0) all miss by degrees.
+#
+# 144 samples is exact to well under ATH's own precision even for absurdly peaked
+# expressions (sin(p)**256 lands within 1e-5 deg), and the count is fixed rather
+# than derived from the mesh density so the eval cache stays warm across previews.
+AZIMUTHAL_MEAN_SAMPLES = 144
+
+
+def azimuthal_mean(
+    value: Any, default: float = 0.0, *, samples: int = AZIMUTHAL_MEAN_SAMPLES
+) -> float:
+    """Mean of a possibly p-dependent parameter over one full turn of azimuth."""
+
+    if value is None:
+        return float(default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return float(default)
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    step = 2.0 * math.pi / samples
+    return math.fsum(_eval_text_param(text, i * step) for i in range(samples)) / samples
+
+
 def _deg(value: Any, p: float = 0.0, default: float = 0.0) -> float:
     return math.radians(eval_param(value, p, default))
 
