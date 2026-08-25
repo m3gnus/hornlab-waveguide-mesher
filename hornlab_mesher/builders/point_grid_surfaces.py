@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._occ import require_gmsh
+from ._occ import (
+    SURFACE_FIT_APPROXIMATE,
+    add_bspline_patch,
+    grid_v_parameters,
+    require_gmsh,
+)
 
 def _safe_surface_from_curves(curves: list[int]) -> tuple[int, int]:
     gmsh = require_gmsh()
@@ -428,6 +433,7 @@ def _add_occ_bspline_patch_wall_surfaces(
     *,
     closed: bool,
     phi_groups: list[list[int]] | None = None,
+    surface_fit: str = SURFACE_FIT_APPROXIMATE,
 ) -> list[tuple[int, int]]:
     """Build enclosure-mode horn walls as large OCC BSpline patches.
 
@@ -436,31 +442,26 @@ def _add_occ_bspline_patch_wall_surfaces(
     can attach a sector to each).
     """
 
-    gmsh = require_gmsh()
+    require_gmsh()
     arr = _validated_grid(points, name="inner_points")
     n_phi, n_len, _ = arr.shape
     surfaces: list[tuple[int, int]] = []
     degree_v = min(3, max(1, n_len - 1))
     groups = phi_groups if phi_groups is not None else _bspline_patch_phi_groups(n_phi, closed=closed)
+    v_params = grid_v_parameters(arr)
     for indices in groups:
-        n_u = len(indices)
-        degree_u = min(3, max(1, n_u - 1))
-        point_tags: list[int] = []
-        for j in range(n_len):
-            for i in indices:
-                x, y, z = arr[i, j]
-                point_tags.append(
-                    int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
-                )
-        surf = int(
-            gmsh.model.occ.addBSplineSurface(
-                point_tags,
-                n_u,
-                degreeU=degree_u,
-                degreeV=degree_v,
+        surfaces.append(
+            (
+                2,
+                add_bspline_patch(
+                    arr,
+                    list(indices),
+                    degree_v=degree_v,
+                    surface_fit=surface_fit,
+                    v_params=v_params,
+                ),
             )
         )
-        surfaces.append((2, surf))
     return surfaces
 
 

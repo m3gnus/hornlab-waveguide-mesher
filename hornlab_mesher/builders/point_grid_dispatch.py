@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..geometry import BuiltGeometry, PointGridBuildMode, PointGridHornGeometry
+from ..geometry import (
+    MESH_ALGORITHM_DELAUNAY,
+    BuiltGeometry,
+    PointGridBuildMode,
+    PointGridHornGeometry,
+)
 from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
@@ -180,7 +185,10 @@ def _build_coupled_baffle_point_grid(
         if geometry.closed:
             cap_boundary_groups = [list(range(n_phi)) + [0]]
             wall = build_surface_from_points(
-                inner_points, closed=True, preserve_grid=False
+                inner_points,
+                closed=True,
+                preserve_grid=False,
+                surface_fit=geometry.surface_fit,
             )
         else:
             cap_boundary_groups = [list(range(n_phi))]
@@ -188,6 +196,7 @@ def _build_coupled_baffle_point_grid(
                 inner_points,
                 closed=False,
                 phi_groups=cap_boundary_groups,
+                surface_fit=geometry.surface_fit,
             )
         require_gmsh().model.occ.synchronize()
 
@@ -334,6 +343,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 inner_points,
                 closed=geometry.closed,
                 phi_groups=wall_groups,
+                surface_fit=geometry.surface_fit,
             )
             cap_boundary_groups = wall_groups
             throat = _add_occ_source_cap_surfaces(
@@ -375,6 +385,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 inner_points,
                 closed=geometry.closed,
                 preserve_grid=False,
+                surface_fit=geometry.surface_fit,
             )
             require_gmsh().model.occ.synchronize()
 
@@ -485,6 +496,15 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         mesh_surface_groups=mesh_surface_groups,
         enclosure_bounds=enclosure_bounds,
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+        # BARE keeps gmsh's MeshAdapt default: it is the one mode where the
+        # Delaunay fronts lose triangle quality without a matching speedup. On
+        # the quarter-resolution FREEFORM bare shell the worst-case triangle
+        # angle falls from 22.5 deg under MeshAdapt to 5.8 deg under the
+        # Delaunay this branch would otherwise select (and to 4.7 deg under
+        # Frontal-Delaunay). See MESH_ALGORITHM_* in ``geometry`` for the table.
+        mesh_algorithm=(
+            None if build_mode is PointGridBuildMode.BARE else MESH_ALGORITHM_DELAUNAY
+        ),
         open_shell_wall_points_mm=open_shell_points,
         open_shell_wall_normals=open_shell_normals,
     )

@@ -4,7 +4,12 @@ from typing import Any
 
 import numpy as np
 
-from ..geometry import BuiltGeometry, PointGridHornGeometry
+from ..geometry import (
+    MESH_ALGORITHM_AUTOMATIC,
+    MESH_ALGORITHM_FRONTAL_DELAUNAY,
+    BuiltGeometry,
+    PointGridHornGeometry,
+)
 from ..tags import PhysicalGroup
 from ._occ import make_planar_fill_from_boundary, require_gmsh
 from .point_grid_sources import (
@@ -231,6 +236,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
+        mesh_algorithm=MESH_ALGORITHM_FRONTAL_DELAUNAY,
         metadata={
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
         },
@@ -269,7 +275,16 @@ def _build_acoustic_freestanding_point_grid(
         inner_points,
         closed=geometry.closed,
         phi_groups=phi_groups,
+        surface_fit=geometry.surface_fit,
     )
+    # The outer shell keeps the approximating pole fit regardless of
+    # ``surface_fit``. ``outer_topology`` splices the rear rim onto the wall as
+    # a deliberate sharp corner (z jumps from the rear plane back to the throat
+    # plane), and a cubic *interpolating* spline overshoots such a corner — on
+    # the stock OSSE it dips the rear boundary to z = -9.09 mm instead of the
+    # -6.00 mm rear plane, which stops the rear cap's planar-extreme detection
+    # from ever finding its loop. The acoustic (inner) surface is the one whose
+    # fidelity the BEM result depends on; the outer shell is rigid backing.
     outer_wall = _add_occ_bspline_patch_wall_surfaces(
         outer_topology,
         closed=geometry.closed,
@@ -368,6 +383,7 @@ def _build_acoustic_freestanding_point_grid(
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
+        mesh_algorithm=MESH_ALGORITHM_FRONTAL_DELAUNAY,
         metadata={
             "meshTopologyMode": "acoustic",
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points),
@@ -468,7 +484,7 @@ def _build_wg_freestanding_point_grid(
         },
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         symmetry_snap_tol_mm=1.0,
-        mesh_algorithm=2,
+        mesh_algorithm=MESH_ALGORITHM_AUTOMATIC,
         metadata={
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
         },

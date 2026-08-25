@@ -339,3 +339,113 @@ def test_postprocess_rejects_inconsistent_open_mesh(tmp_path):
         )
 
     assert not out_path.exists()
+
+
+from hornlab_mesher.step_import import (  # noqa: E402
+    _repair_triangle_winding,
+    _signed_volume,
+    _signed_volume_noise_floor,
+)
+
+
+def _half_box_cut_on_x() -> tuple[np.ndarray, np.ndarray]:
+    """A box cut by the single plane x=0, wound outward."""
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 10.0, 0.0], [0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0], [10.0, 0.0, 10.0], [10.0, 10.0, 10.0], [0.0, 10.0, 10.0],
+        ],
+        dtype=np.float64,
+    )
+    triangles = np.array(
+        [
+            [0, 2, 1], [0, 3, 2],      # z = 0
+            [4, 5, 6], [4, 6, 7],      # z = 10
+            [0, 1, 5], [0, 5, 4],      # y = 0
+            [3, 7, 6], [3, 6, 2],      # y = 10
+            [1, 2, 6], [1, 6, 5],      # x = 10
+        ],
+        dtype=np.int64,
+    )
+    return points, triangles
+
+
+def test_single_plane_cut_orientation_is_resolved_by_signed_volume():
+    """The Fusion-common one-plane cut used to be left unjudged.
+
+    Every free edge of a symmetry-reduced component lies on a coordinate plane
+    through the origin, so the divergence-theorem cone terms vanish and the
+    signed volume about the origin is a valid oracle -- unlike for an arbitrary
+    open rim.
+    """
+    points, triangles = _half_box_cut_on_x()
+    inverted = triangles[:, [0, 2, 1]]
+
+    repaired, stats = _repair_triangle_winding(
+        points,
+        inverted,
+        tags=np.zeros(len(inverted), dtype=np.int64),
+        source_tags=set(),
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+    assert stats["unjudged_symmetry_components"] == 1
+    assert stats["symmetry_volume_fallback_flipped"] == 1
+    assert np.array_equal(np.sort(repaired, axis=1), np.sort(triangles, axis=1))
+    # and the repaired winding is the outward one
+    normals = np.cross(
+        points[repaired[:, 1]] - points[repaired[:, 0]],
+        points[repaired[:, 2]] - points[repaired[:, 0]],
+    )
+    centroids = points[repaired].mean(axis=1) - np.array([5.0, 5.0, 5.0])
+    assert np.all(np.einsum("ij,ij->i", normals, centroids) > 0.0)
+
+
+def test_a_near_degenerate_component_is_left_unresolved_not_flipped():
+    """A sliver encloses nothing, so its signed-volume sign is float noise.
+
+    Exactly 0.0 is not the only unresolved case. Collapsing the half box to a
+    thickness of 1e-9 leaves a signed volume many orders below the component's
+    own scale, and reading that sign would flip real normals on rounding.
+    """
+    points, triangles = _half_box_cut_on_x()
+    flattened = points.copy()
+    flattened[:, 0] *= 1.0e-9  # 10 x 10 x 1e-8 sliver on the x=0 cut plane
+
+    volume = _signed_volume(flattened, triangles)
+    assert volume != 0.0, "the hazard is a nonzero volume, not an exact zero"
+
+    repaired, stats = _repair_triangle_winding(
+        flattened,
+        triangles,
+        tags=np.zeros(len(triangles), dtype=np.int64),
+        source_tags=set(),
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+    assert stats["unresolved_symmetry_components"] == 1
+    assert stats["symmetry_volume_fallback_flipped"] == 0
+    assert stats["symmetry_volume_fallback_kept"] == 0
+    assert np.array_equal(repaired, triangles)
+
+
+def test_a_healthy_reduced_shell_clears_the_noise_floor_by_orders_of_magnitude():
+    """The guard must not start abstaining on the geometry it is meant to judge."""
+    points, triangles = _half_box_cut_on_x()
+    floor = _signed_volume_noise_floor(points, triangles)
+    assert abs(_signed_volume(points, triangles)) > 1.0e6 * floor
+
+
+def test_already_outward_single_plane_cut_is_left_alone():
+    points, triangles = _half_box_cut_on_x()
+    repaired, stats = _repair_triangle_winding(
+        points,
+        triangles,
+        tags=np.zeros(len(triangles), dtype=np.int64),
+        source_tags=set(),
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+    assert stats["symmetry_volume_fallback_kept"] == 1
+    assert stats["symmetry_volume_fallback_flipped"] == 0
+    assert np.array_equal(repaired, triangles)

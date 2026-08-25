@@ -374,6 +374,26 @@ The codebase should use explicit names for compatibility behavior:
   point-grid topology is intentionally requested. Ordinary solve meshes use
   `topology_mode = "acoustic"` so geometry sampling does not dictate BEM
   topology.
+- `surface_fit = "approximate"` is the default because it is what every existing
+  mesh was built with, not because it is the more faithful fit. It is a
+  compatibility default: OCC reads the sampled grid as control points, so the
+  meshed wall sits inside the designed one by roughly `R * dtheta^2 / 6` for a
+  cubic pole fit, and refining the mesh converges onto that biased surface
+  rather than onto the sampled one.
+
+`surface_fit = "interpolate"` removes that bias by solving for the poles whose
+surface passes through the sampled grid, at the same control-point and triangle
+count. Two rules constrain it:
+
+- Patches cut from one wall must share a v-parameterisation. A clamped
+  interpolating spline reproduces its end data, so neighbouring patches already
+  share the poles of their common seam curve, but they trace the same curve only
+  if they also share its knot vector. Deriving v per patch tears the shell open
+  along every seam.
+- It is refused on FREEFORM profiles, whose deliberate creases make the
+  interpolating patch fit unmeshable.
+
+See `docs/config-schema.md` for the measured fit error and the config key.
 
 Names like `ath_*` are acceptable in tests and compatibility adapters. Generic
 geometry helpers should instead name the rule they implement.

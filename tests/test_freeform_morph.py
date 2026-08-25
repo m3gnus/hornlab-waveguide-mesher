@@ -82,12 +82,22 @@ def test_unmorphed_freeform_grid_is_bit_for_bit_unchanged() -> None:
             ],
         ]
     )
-    assert np.array_equal(actual, expected)
-    assert np.array_equal(
+    # Same cross-platform ULP problem, and the same resolution, as
+    # test_rounded_rectangle_station_grid_is_bit_for_bit_unchanged, which was
+    # relaxed when ubuntu joined the matrix: the literals were captured on
+    # macOS, and a libm that rounds sin/cos differently at some arguments lands
+    # an ULP away. Windows joined the matrix in 5f9603b and reddened exactly the
+    # bit-for-bit grids that had not had this treatment yet. Femtometre
+    # tolerance keeps the regression pin (1 ULP at ~20 mm is ~3.6e-15) without
+    # asserting that two libms round identically.
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(
         np.asarray(
             build_point_grid({**params, "morphTarget": 0})["inner_points"]
         ).reshape(3, 3, 3),
         expected,
+        rtol=0.0,
+        atol=1e-12,
     )
 
 
@@ -481,7 +491,15 @@ def test_smooth_morph_grids_are_bit_for_bit_unchanged(
     actual = np.asarray(
         build_point_grid({**_straight_params(), **morph})["inner_points"]
     ).reshape(3, 3, 3)
-    assert np.array_equal(actual, np.asarray(expected))
+    # Same cross-platform ULP problem, and the same resolution, as
+    # test_rounded_rectangle_station_grid_is_bit_for_bit_unchanged, which was
+    # relaxed when ubuntu joined the matrix: the literals were captured on
+    # macOS, and a libm that rounds sin/cos differently at some arguments lands
+    # an ULP away. Windows joined the matrix in 5f9603b and reddened exactly the
+    # bit-for-bit grids that had not had this treatment yet. Femtometre
+    # tolerance keeps the regression pin (1 ULP at ~20 mm is ~3.6e-15) without
+    # asserting that two libms round identically.
+    np.testing.assert_allclose(actual, np.asarray(expected), rtol=0.0, atol=1e-12)
 
 
 def test_rounded_rectangle_station_grid_is_bit_for_bit_unchanged() -> None:

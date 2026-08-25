@@ -115,6 +115,44 @@ class HornInterface:
     offset_mm: float
 
 
+#: Gmsh ``Mesh.Algorithm`` values for 2D surface meshing.
+#:
+#: MeshAdapt is gmsh's default and the mesher's historical fallback. It is also
+#: by far the slowest on the trimmed B-spline patches this mesher builds,
+#: because its cost per triangle grows with the surface count rather than
+#: staying flat. Measured on ``examples/`` at four mesh densities:
+#:
+#: ==============  =========  =========  ==========  ================
+#: config          triangles  MeshAdapt  chosen alg  speedup
+#: ==============  =========  =========  ==========  ================
+#: osse (frstnd)      42,300      8.23 s      2.80 s  2.94x (alg 6)
+#: rosse (encl)       36,766      5.07 s      3.48 s  1.46x (alg 5)
+#: freeform (bare)    18,503      9.88 s      9.88 s  1.00x (unchanged)
+#: ==============  =========  =========  ==========  ================
+#:
+#: The choice is per build mode because mesh quality does not follow speed.
+#: Frontal-Delaunay keeps the freestanding shell's worst-case triangle angle
+#: level with MeshAdapt (15.9 deg vs 17.8 deg at 42k triangles) and improves the
+#: 1st-percentile angle (38.6 deg vs 36.3 deg). On the bare shell both fronts do
+#: the opposite. Measured on ``examples/freeform-bare.toml`` with the three mesh
+#: resolutions scaled to a quarter, the worst-case triangle angle is:
+#:
+#: ======================  =========  ================
+#: algorithm               triangles  worst-case angle
+#: ======================  =========  ================
+#: MeshAdapt (1)              18,503          22.5 deg
+#: Delaunay (5)               19,221           5.8 deg
+#: Frontal-Delaunay (6)       17,199           4.7 deg
+#: ======================  =========  ================
+#:
+#: BARE therefore stays on MeshAdapt: its wall patches come from a fitted spline
+#: surface whose parameterisation neither Delaunay front respects.
+MESH_ALGORITHM_MESHADAPT = 1
+MESH_ALGORITHM_AUTOMATIC = 2
+MESH_ALGORITHM_DELAUNAY = 5
+MESH_ALGORITHM_FRONTAL_DELAUNAY = 6
+
+
 class PointGridBuildMode(str, Enum):
     """Topology mode implied by point-grid geometry options."""
 
@@ -146,6 +184,12 @@ class PointGridHornGeometry:
     # legacy mode exists only for ATH parity/export workflows whose reference
     # meshes intentionally pin every sampled ring or grid cell.
     topology_mode: Literal["acoustic", "legacy"] = "acoustic"
+    # ``approximate`` hands the sampled grid to OCC as B-spline control points,
+    # which biases the meshed surface inward (see builders/_occ.py).
+    # ``interpolate`` solves for poles whose surface passes through the grid at
+    # the same control-point count, and so at the same triangle count. It stays
+    # opt-in because it moves the nodes of every acoustic mesh.
+    surface_fit: Literal["approximate", "interpolate"] = "approximate"
     preserve_grid: bool = False
     closed: bool = True
     outer_points: NDArray[np.float64] | None = None
@@ -179,6 +223,21 @@ class PointGridHornGeometry:
     def __post_init__(self) -> None:
         if self.topology_mode not in {"acoustic", "legacy"}:
             raise ValueError("topology_mode must be 'acoustic' or 'legacy'")
+        if self.surface_fit not in {"approximate", "interpolate"}:
+            raise ValueError("surface_fit must be 'approximate' or 'interpolate'")
+        if self.surface_fit == "interpolate" and self.freeform_report is not None:
+            # FREEFORM profiles carry deliberate creases, and an interpolating
+            # spline does not merely round them badly: on examples/freeform-bare
+            # it drives gmsh's 2D mesher into a grind that ran past ten minutes
+            # with the stack parked in mesh.generate. Refuse loudly rather than
+            # degrade quietly or hang. Attempts at a geometric crease detector
+            # were dropped because the measured pole-displacement ratio does not
+            # separate the two families -- the smooth OSSE scores higher than
+            # the FREEFORM grid that hangs.
+            raise ValueError(
+                "surface_fit='interpolate' is not supported for FREEFORM profiles; "
+                "their creases make the interpolating patch fit unmeshable"
+            )
         if self.infinite_baffle and self.enclosure is not None:
             raise ValueError(
                 "infinite_baffle and enclosure are mutually exclusive point-grid topologies"
