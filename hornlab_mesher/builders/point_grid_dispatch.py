@@ -497,8 +497,11 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         enclosure_bounds=enclosure_bounds,
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
         # BARE keeps gmsh's MeshAdapt default: it is the one mode where the
-        # Delaunay fronts lose triangle quality (FREEFORM's worst-case angle
-        # falls from 22.5 to 5.8 degrees) without a matching speedup.
+        # Delaunay fronts lose triangle quality without a matching speedup. On
+        # the quarter-resolution FREEFORM bare shell the worst-case triangle
+        # angle falls from 22.5 deg under MeshAdapt to 5.8 deg under the
+        # Delaunay this branch would otherwise select (and to 4.7 deg under
+        # Frontal-Delaunay). See MESH_ALGORITHM_* in ``geometry`` for the table.
         mesh_algorithm=(
             None if build_mode is PointGridBuildMode.BARE else MESH_ALGORITHM_DELAUNAY
         ),

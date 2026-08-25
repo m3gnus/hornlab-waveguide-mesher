@@ -133,10 +133,20 @@ class HornInterface:
 #: The choice is per build mode because mesh quality does not follow speed.
 #: Frontal-Delaunay keeps the freestanding shell's worst-case triangle angle
 #: level with MeshAdapt (15.9 deg vs 17.8 deg at 42k triangles) and improves the
-#: 1st-percentile angle (38.6 deg vs 36.3 deg), but it collapses FREEFORM's
-#: bare-shell angles from 22.5 deg to 4.7 deg. BARE therefore stays on MeshAdapt:
-#: its wall patches come from a fitted spline surface whose parameterisation the
-#: Delaunay front does not respect.
+#: 1st-percentile angle (38.6 deg vs 36.3 deg). On the bare shell both fronts do
+#: the opposite. Measured on ``examples/freeform-bare.toml`` with the three mesh
+#: resolutions scaled to a quarter, the worst-case triangle angle is:
+#:
+#: ======================  =========  ================
+#: algorithm               triangles  worst-case angle
+#: ======================  =========  ================
+#: MeshAdapt (1)              18,503          22.5 deg
+#: Delaunay (5)               19,221           5.8 deg
+#: Frontal-Delaunay (6)       17,199           4.7 deg
+#: ======================  =========  ================
+#:
+#: BARE therefore stays on MeshAdapt: its wall patches come from a fitted spline
+#: surface whose parameterisation neither Delaunay front respects.
 MESH_ALGORITHM_MESHADAPT = 1
 MESH_ALGORITHM_AUTOMATIC = 2
 MESH_ALGORITHM_DELAUNAY = 5
