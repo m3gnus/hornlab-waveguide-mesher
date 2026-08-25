@@ -1783,19 +1783,36 @@ class _WindowsDirectoryHandle:
         wintypes = self._wintypes
         if Path(name).name != name:
             raise MesherError(f"invalid wglink transaction destination name: {name}")
-        encoded_name = name.encode("utf-16-le")
+        # Win32's SetFileInformationByHandle rejects a non-NULL RootDirectory
+        # with ERROR_INVALID_PARAMETER: handle-relative renames are reachable
+        # only through the NT layer, so the documented call needs a
+        # fully qualified destination.  That does not loosen the guarantee.
+        # destination_root is held open for the whole rename without
+        # FILE_SHARE_DELETE, which pins its name -- and its ancestors' names --
+        # against rename and delete until we close it, so the path below cannot
+        # be redirected between here and the call.  The object being moved stays
+        # pinned by this handle, and the caller revalidates its identity through
+        # the handle afterwards.
+        destination = destination_root.path / name
+        encoded_name = str(destination).encode("utf-16-le")
+        # SetFileInformationByHandle reads FileName as a NUL-terminated string
+        # rather than stopping at FileNameLength.  Without the terminator it
+        # runs on into the structure's trailing alignment padding and renames
+        # the object to the requested name with stray characters appended, so
+        # reserve room for the NUL that ctypes zero-initialises for us.
+        terminated_length = len(encoded_name) + 2
 
         class FileRenameInfo(ctypes.Structure):
             _fields_ = [
                 ("ReplaceIfExists", ctypes.c_ubyte),
                 ("RootDirectory", wintypes.HANDLE),
                 ("FileNameLength", wintypes.DWORD),
-                ("FileName", ctypes.c_ubyte * len(encoded_name)),
+                ("FileName", ctypes.c_ubyte * terminated_length),
             ]
 
         information = FileRenameInfo()
         information.ReplaceIfExists = 0
-        information.RootDirectory = destination_root._handle
+        information.RootDirectory = None
         information.FileNameLength = len(encoded_name)
         ctypes.memmove(
             ctypes.addressof(information) + FileRenameInfo.FileName.offset,
@@ -1810,7 +1827,7 @@ class _WindowsDirectoryHandle:
             ctypes.sizeof(information),
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        self.path = destination_root.path / name
+        self.path = destination
 
     def delete_on_close(self) -> None:
         ctypes = self._ctypes
