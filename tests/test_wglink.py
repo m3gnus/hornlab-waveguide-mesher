@@ -849,12 +849,26 @@ def test_owned_rename_mutates_open_identity_not_swapped_path(monkeypatch, tmp_pa
             child_access=child_access,
         )
         if path == source and rename_source:
+            original_rename_into = handle.rename_into
 
-            def rename_pinned_object(destination_root, name):
-                source.replace(preserved)
-                decoy.replace(source)
-                preserved.replace(destination_root.path / name)
-                handle.path = destination_root.path / name
+            if sys.platform == "win32":
+                # The Windows handle is opened without FILE_SHARE_DELETE, so
+                # the OS itself pins the path-object binding: the attacker's
+                # path swap cannot even start while the validated handle is
+                # open.  Assert the sharing violation, then let the real
+                # handle-based rename proceed.
+                def rename_pinned_object(destination_root, name):
+                    with pytest.raises(PermissionError):
+                        source.replace(preserved)
+                    original_rename_into(destination_root, name)
+
+            else:
+
+                def rename_pinned_object(destination_root, name):
+                    source.replace(preserved)
+                    decoy.replace(source)
+                    preserved.replace(destination_root.path / name)
+                    handle.path = destination_root.path / name
 
             handle.rename_into = rename_pinned_object
         return handle
@@ -866,7 +880,11 @@ def test_owned_rename_mutates_open_identity_not_swapped_path(monkeypatch, tmp_pa
     cad_module._rename_owned_directory(source, destination, expected)
 
     assert (destination / "owned.txt").read_text(encoding="utf-8") == "transaction"
-    assert (source / "must-survive.txt").read_text(encoding="utf-8") == "unrelated"
+    if sys.platform == "win32":
+        assert not source.exists()
+        assert (decoy / "must-survive.txt").read_text(encoding="utf-8") == "unrelated"
+    else:
+        assert (source / "must-survive.txt").read_text(encoding="utf-8") == "unrelated"
 
 
 def test_recovery_resumes_authenticated_quarantine_cleanup(monkeypatch, tmp_path):
