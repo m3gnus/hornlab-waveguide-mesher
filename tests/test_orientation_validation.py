@@ -341,7 +341,11 @@ def test_postprocess_rejects_inconsistent_open_mesh(tmp_path):
     assert not out_path.exists()
 
 
-from hornlab_mesher.step_import import _repair_triangle_winding  # noqa: E402
+from hornlab_mesher.step_import import (  # noqa: E402
+    _repair_triangle_winding,
+    _signed_volume,
+    _signed_volume_noise_floor,
+)
 
 
 def _half_box_cut_on_x() -> tuple[np.ndarray, np.ndarray]:
@@ -395,6 +399,41 @@ def test_single_plane_cut_orientation_is_resolved_by_signed_volume():
     )
     centroids = points[repaired].mean(axis=1) - np.array([5.0, 5.0, 5.0])
     assert np.all(np.einsum("ij,ij->i", normals, centroids) > 0.0)
+
+
+def test_a_near_degenerate_component_is_left_unresolved_not_flipped():
+    """A sliver encloses nothing, so its signed-volume sign is float noise.
+
+    Exactly 0.0 is not the only unresolved case. Collapsing the half box to a
+    thickness of 1e-9 leaves a signed volume many orders below the component's
+    own scale, and reading that sign would flip real normals on rounding.
+    """
+    points, triangles = _half_box_cut_on_x()
+    flattened = points.copy()
+    flattened[:, 0] *= 1.0e-9  # 10 x 10 x 1e-8 sliver on the x=0 cut plane
+
+    volume = _signed_volume(flattened, triangles)
+    assert volume != 0.0, "the hazard is a nonzero volume, not an exact zero"
+
+    repaired, stats = _repair_triangle_winding(
+        flattened,
+        triangles,
+        tags=np.zeros(len(triangles), dtype=np.int64),
+        source_tags=set(),
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+    assert stats["unresolved_symmetry_components"] == 1
+    assert stats["symmetry_volume_fallback_flipped"] == 0
+    assert stats["symmetry_volume_fallback_kept"] == 0
+    assert np.array_equal(repaired, triangles)
+
+
+def test_a_healthy_reduced_shell_clears_the_noise_floor_by_orders_of_magnitude():
+    """The guard must not start abstaining on the geometry it is meant to judge."""
+    points, triangles = _half_box_cut_on_x()
+    floor = _signed_volume_noise_floor(points, triangles)
+    assert abs(_signed_volume(points, triangles)) > 1.0e6 * floor
 
 
 def test_already_outward_single_plane_cut_is_left_alone():
