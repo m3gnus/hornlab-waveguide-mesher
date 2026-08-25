@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..geometry import BuiltGeometry, PointGridBuildMode, PointGridHornGeometry
+from ..geometry import (
+    MESH_ALGORITHM_DELAUNAY,
+    BuiltGeometry,
+    PointGridBuildMode,
+    PointGridHornGeometry,
+)
 from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
@@ -491,6 +496,15 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         mesh_surface_groups=mesh_surface_groups,
         enclosure_bounds=enclosure_bounds,
         symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+        # BARE keeps gmsh's MeshAdapt default: it is the one mode where the
+        # Delaunay fronts lose triangle quality without a matching speedup. On
+        # the quarter-resolution FREEFORM bare shell the worst-case triangle
+        # angle falls from 22.5 deg under MeshAdapt to 5.8 deg under the
+        # Delaunay this branch would otherwise select (and to 4.7 deg under
+        # Frontal-Delaunay). See MESH_ALGORITHM_* in ``geometry`` for the table.
+        mesh_algorithm=(
+            None if build_mode is PointGridBuildMode.BARE else MESH_ALGORITHM_DELAUNAY
+        ),
         open_shell_wall_points_mm=open_shell_points,
         open_shell_wall_normals=open_shell_normals,
     )

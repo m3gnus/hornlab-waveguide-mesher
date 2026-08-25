@@ -692,6 +692,27 @@ def _signed_volume(points: np.ndarray, triangles: np.ndarray) -> float:
     return float(np.sum(p0 * np.cross(p1, p2)) / 6.0)
 
 
+#: Fraction of a component's own ``area ** 1.5`` below which its signed volume
+#: is rounding noise rather than an orientation. The sum is taken over
+#: coordinates, so its absolute error scales with the component's size and
+#: triangle count, and a near-degenerate component -- a sliver panel, a shell
+#: whose two cut planes almost coincide -- encloses so little that the sign is
+#: whatever the accumulation happened to leave. Exactly ``0.0`` is therefore not
+#: the only unresolved case, and flipping on a noise sign would silently invert
+#: normals that the solver then trusts. A genuinely reduced closed shell sits
+#: many orders of magnitude above this: a half-box scores ~0.09.
+SIGNED_VOLUME_NOISE_REL = 1.0e-9
+
+
+def _signed_volume_noise_floor(points: np.ndarray, triangles: np.ndarray) -> float:
+    """Magnitude below which ``_signed_volume`` cannot be read as a sign."""
+
+    if len(triangles) == 0:
+        return 0.0
+    area = 0.5 * float(np.sum(_triangle_area2(points, triangles)))
+    return SIGNED_VOLUME_NOISE_REL * area**1.5
+
+
 def _source_normal_projections(
     points: np.ndarray,
     triangles: np.ndarray,
@@ -936,14 +957,15 @@ def _repair_triangle_winding(
             # pinned to the cut planes, so the general open-shell path below
             # still refuses to guess.)
             volume = _signed_volume(points, component_triangles)
-            if volume < 0.0:
+            if abs(volume) <= _signed_volume_noise_floor(points, component_triangles):
+                # Degenerate enough that the sign is accumulated rounding.
+                stats["unresolved_symmetry_components"] += 1
+            elif volume < 0.0:
                 repaired[component] = component_triangles[:, [0, 2, 1]]
                 stats["flipped_global"] += int(len(component))
                 stats["symmetry_volume_fallback_flipped"] += 1
-            elif volume > 0.0:
-                stats["symmetry_volume_fallback_kept"] += 1
             else:
-                stats["unresolved_symmetry_components"] += 1
+                stats["symmetry_volume_fallback_kept"] += 1
             continue
         if projection < 0.0:
             repaired[component] = component_triangles[:, [0, 2, 1]]

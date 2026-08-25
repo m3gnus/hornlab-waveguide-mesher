@@ -258,6 +258,12 @@ def extreme_boundary_loop_curves(
     # boundary curve. Letting a wall-running curve set the target makes the
     # search fail closed (returning no loop, hence no cap) whenever such a
     # curve overshoots the cap plane by any amount at all.
+    #
+    # The ``else`` below is the pre-change selection, and it is a no-op: with no
+    # flat curve, any curve within ``eps`` of the whole-boundary extreme at both
+    # ends would have a span of at most ``eps`` and so would have been flat. It
+    # therefore always yields an empty loop -- the same fail-closed answer as
+    # before -- which is why this restriction moves no existing mesh.
     eps = max(1e-6, abs(hi_all - lo_all) * 1e-3)
     flat = {tag: lo for tag, (lo, hi) in bounds.items() if abs(hi - lo) <= eps}
     if flat:
