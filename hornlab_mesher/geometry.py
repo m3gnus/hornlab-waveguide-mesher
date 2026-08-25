@@ -187,6 +187,19 @@ class PointGridHornGeometry:
             raise ValueError("topology_mode must be 'acoustic' or 'legacy'")
         if self.surface_fit not in {"approximate", "interpolate"}:
             raise ValueError("surface_fit must be 'approximate' or 'interpolate'")
+        if self.surface_fit == "interpolate" and self.freeform_report is not None:
+            # FREEFORM profiles carry deliberate creases, and an interpolating
+            # spline does not merely round them badly: on examples/freeform-bare
+            # it drives gmsh's 2D mesher into a grind that ran past ten minutes
+            # with the stack parked in mesh.generate. Refuse loudly rather than
+            # degrade quietly or hang. Attempts at a geometric crease detector
+            # were dropped because the measured pole-displacement ratio does not
+            # separate the two families -- the smooth OSSE scores higher than
+            # the FREEFORM grid that hangs.
+            raise ValueError(
+                "surface_fit='interpolate' is not supported for FREEFORM profiles; "
+                "their creases make the interpolating patch fit unmeshable"
+            )
         if self.infinite_baffle and self.enclosure is not None:
             raise ValueError(
                 "infinite_baffle and enclosure are mutually exclusive point-grid topologies"

@@ -128,3 +128,26 @@ def test_config_reads_both_surface_fit_spellings():
     assert _mesh_surface_fit({"surfaceFit": "Interpolate"}) == SURFACE_FIT_INTERPOLATE
     with pytest.raises(ConfigError, match="surface_fit"):
         _mesh_surface_fit({"surface_fit": "nearest"})
+
+
+def test_interpolate_is_refused_on_freeform_profiles():
+    """FREEFORM creases make the interpolating fit unmeshable, not just worse.
+
+    examples/freeform-bare ran past ten minutes inside gmsh's 2D mesher with
+    this enabled. Refusing is the honest outcome: a silent fallback would hide
+    that the requested fit was not the one used.
+    """
+    with pytest.raises(ValueError, match="FREEFORM"):
+        PointGridHornGeometry(
+            inner_points=_revolved_grid(),
+            surface_fit=SURFACE_FIT_INTERPOLATE,
+            freeform_report={"freeformProfileDeviationMm": 0.0},
+        )
+
+
+def test_freeform_still_builds_with_the_default_fit():
+    geometry = PointGridHornGeometry(
+        inner_points=_revolved_grid(),
+        freeform_report={"freeformProfileDeviationMm": 0.0},
+    )
+    assert geometry.surface_fit == SURFACE_FIT_APPROXIMATE
