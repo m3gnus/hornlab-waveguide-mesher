@@ -146,6 +146,12 @@ class PointGridHornGeometry:
     # legacy mode exists only for ATH parity/export workflows whose reference
     # meshes intentionally pin every sampled ring or grid cell.
     topology_mode: Literal["acoustic", "legacy"] = "acoustic"
+    # ``approximate`` hands the sampled grid to OCC as B-spline control points,
+    # which biases the meshed surface inward (see builders/_occ.py).
+    # ``interpolate`` solves for poles whose surface passes through the grid at
+    # the same control-point count, and so at the same triangle count. It stays
+    # opt-in because it moves the nodes of every acoustic mesh.
+    surface_fit: Literal["approximate", "interpolate"] = "approximate"
     preserve_grid: bool = False
     closed: bool = True
     outer_points: NDArray[np.float64] | None = None
@@ -179,6 +185,8 @@ class PointGridHornGeometry:
     def __post_init__(self) -> None:
         if self.topology_mode not in {"acoustic", "legacy"}:
             raise ValueError("topology_mode must be 'acoustic' or 'legacy'")
+        if self.surface_fit not in {"approximate", "interpolate"}:
+            raise ValueError("surface_fit must be 'approximate' or 'interpolate'")
         if self.infinite_baffle and self.enclosure is not None:
             raise ValueError(
                 "infinite_baffle and enclosure are mutually exclusive point-grid topologies"
