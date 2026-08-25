@@ -20,6 +20,7 @@ from .density import (
     effective_triangle_limit,
 )
 from .geometry import (
+    MESH_ALGORITHM_MESHADAPT,
     BuiltGeometry,
     HornGeometry,
     MeshDensity,
@@ -214,7 +215,13 @@ def build_mesh_with_info(
             configure_density(built, mesh_density)
             add_physical_groups(built.surface_groups)
 
-            gmsh.option.setNumber("Mesh.Algorithm", int(built.mesh_algorithm or 1))
+            # A builder that leaves ``mesh_algorithm`` unset asks for gmsh's own
+            # default, which is MeshAdapt. Naming it keeps the fallback readable
+            # and matches what BARE deliberately selects by returning ``None``.
+            gmsh.option.setNumber(
+                "Mesh.Algorithm",
+                int(built.mesh_algorithm or MESH_ALGORITHM_MESHADAPT),
+            )
             gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
             gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
