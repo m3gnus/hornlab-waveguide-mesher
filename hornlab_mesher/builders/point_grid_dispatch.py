@@ -180,7 +180,10 @@ def _build_coupled_baffle_point_grid(
         if geometry.closed:
             cap_boundary_groups = [list(range(n_phi)) + [0]]
             wall = build_surface_from_points(
-                inner_points, closed=True, preserve_grid=False
+                inner_points,
+                closed=True,
+                preserve_grid=False,
+                surface_fit=geometry.surface_fit,
             )
         else:
             cap_boundary_groups = [list(range(n_phi))]
@@ -188,6 +191,7 @@ def _build_coupled_baffle_point_grid(
                 inner_points,
                 closed=False,
                 phi_groups=cap_boundary_groups,
+                surface_fit=geometry.surface_fit,
             )
         require_gmsh().model.occ.synchronize()
 
@@ -334,6 +338,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 inner_points,
                 closed=geometry.closed,
                 phi_groups=wall_groups,
+                surface_fit=geometry.surface_fit,
             )
             cap_boundary_groups = wall_groups
             throat = _add_occ_source_cap_surfaces(
@@ -375,6 +380,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 inner_points,
                 closed=geometry.closed,
                 preserve_grid=False,
+                surface_fit=geometry.surface_fit,
             )
             require_gmsh().model.occ.synchronize()
 

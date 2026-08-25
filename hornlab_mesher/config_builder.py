@@ -1244,6 +1244,22 @@ def _mesh_topology_mode(mesh: Mapping[str, Any]) -> str:
     return mode
 
 
+def _mesh_surface_fit(mesh: Mapping[str, Any]) -> str:
+    """Read mesh.surface_fit, the acoustic B-spline patch fitting mode.
+
+    Defaults to ``approximate`` so existing configs keep byte-identical meshes;
+    ``interpolate`` removes the inward pole-fit bias at the same triangle count.
+    """
+
+    raw = _pick(
+        mesh, names=("surface_fit", "surfaceFit"), default="approximate"
+    )
+    mode = str(raw or "approximate").strip().lower()
+    if mode not in {"approximate", "interpolate"}:
+        raise ConfigError("mesh surface_fit must be 'approximate' or 'interpolate'")
+    return mode
+
+
 def _mesh_density_from_config(
     config: Mapping[str, Any],
     *,
@@ -2598,6 +2614,7 @@ def resolve_geometry(
         inner_points=inner_points,
         outer_points=outer_points,
         topology_mode=topology_mode,
+        surface_fit=_mesh_surface_fit(mesh),
         # ATH does not scale Mesh.WallThickness by global Scale; the rear-cap
         # depth follows the unscaled wall offset.
         wall_thickness_mm=float(params["wallThickness"] or 0.0),

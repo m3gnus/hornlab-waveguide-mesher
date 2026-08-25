@@ -6,6 +6,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+SURFACE_FIT_APPROXIMATE = "approximate"
+SURFACE_FIT_INTERPOLATE = "interpolate"
+SURFACE_FIT_MODES = (SURFACE_FIT_APPROXIMATE, SURFACE_FIT_INTERPOLATE)
+
+
 def require_gmsh():
     import gmsh
 
@@ -124,10 +129,11 @@ def build_surface_from_points(
     *,
     closed: bool = True,
     preserve_grid: bool = False,
+    surface_fit: str = SURFACE_FIT_APPROXIMATE,
 ) -> list[tuple[int, int]]:
     """Build the WG-compatible OCC horn surface from a point grid."""
 
-    gmsh = require_gmsh()
+    require_gmsh()
     if preserve_grid:
         return build_faceted_surface_from_points(points, closed=closed)
     if points.ndim != 3 or points.shape[2] != 3:
@@ -139,20 +145,11 @@ def build_surface_from_points(
     degree_v = min(3, max(1, n_len - 1))
 
     def make_patch(column_indices: list[int]) -> int:
-        n_u = len(column_indices)
-        degree_u = min(3, max(1, n_u - 1))
-        point_tags: list[int] = []
-        for j in range(n_len):
-            for i in column_indices:
-                x, y, z = points[i, j]
-                point_tags.append(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
-        return int(
-            gmsh.model.occ.addBSplineSurface(
-                point_tags,
-                n_u,
-                degreeU=degree_u,
-                degreeV=degree_v,
-            )
+        return add_bspline_patch(
+            points,
+            column_indices,
+            degree_v=degree_v,
+            surface_fit=surface_fit,
         )
 
     if closed:
@@ -256,8 +253,17 @@ def extreme_boundary_loop_curves(
     if not math.isfinite(lo_all):
         return []
 
-    target = lo_all if use_min else hi_all
+    # Only curves that are themselves flat in ``source_axis`` can bound a
+    # planar cap, so the extreme is taken over those rather than over every
+    # boundary curve. Letting a wall-running curve set the target makes the
+    # search fail closed (returning no loop, hence no cap) whenever such a
+    # curve overshoots the cap plane by any amount at all.
     eps = max(1e-6, abs(hi_all - lo_all) * 1e-3)
+    flat = {tag: lo for tag, (lo, hi) in bounds.items() if abs(hi - lo) <= eps}
+    if flat:
+        target = min(flat.values()) if use_min else max(flat.values())
+    else:
+        target = lo_all if use_min else hi_all
     return [
         curve_tag
         for curve_tag, (lo, hi) in bounds.items()
@@ -346,3 +352,152 @@ def add_physical_groups(surface_groups: dict[int, list[int]]) -> None:
         gmsh.model.setPhysicalName(
             2, int(tag), PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}")
         )
+
+
+# ---------------------------------------------------------------------------
+# B-spline surface fitting
+# ---------------------------------------------------------------------------
+#
+# ``occ.addBSplineSurface`` treats the tags it is handed as *control points*
+# (poles), not as points the surface passes through. Feeding it the sampled
+# profile grid therefore meshes a surface that hangs systematically *inside*
+# the sampled one: for a cubic pole fit the offset is about R*dtheta^2/6, which
+# on a stock OSSE measures ~0.12 mm rms and ~0.25 mm peak, biased inward and
+# growing toward the mouth. Refining the mesh converges onto that biased
+# surface rather than onto the analytic one, so the error is a floor no
+# element-size or curvature setting can reach.
+#
+# ``SURFACE_FIT_INTERPOLATE`` instead solves for the poles whose surface
+# *interpolates* the sampled grid. The separable tensor-product solve below is
+# exact to machine precision, costs no extra control points, and so leaves the
+# meshed triangle count unchanged.
+
+
+def _averaged_chord_parameters(grid: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
+    """Chord-length parameters along ``axis``, averaged over the other direction.
+
+    A tensor-product surface carries one knot vector per direction, so every
+    row has to share a single parameterisation. Averaging the per-row chord
+    lengths is the standard construction. Degenerate grids (coincident rings,
+    an apex ring collapsed to a point) fall back to a uniform parameterisation,
+    which always yields a solvable collocation system.
+    """
+
+    count = int(grid.shape[axis])
+    uniform = (
+        np.arange(count, dtype=np.float64) / float(count - 1)
+        if count > 1
+        else np.zeros(1, dtype=np.float64)
+    )
+    if count < 2:
+        return uniform
+
+    chords = np.linalg.norm(np.diff(grid, axis=axis), axis=-1)
+    mean_chords = chords.mean(axis=1 - axis)
+    total = float(mean_chords.sum())
+    if not math.isfinite(total) or total <= 0.0:
+        return uniform
+
+    params = np.concatenate(([0.0], np.cumsum(mean_chords))) / total
+    if not np.all(np.diff(params) > 0.0):
+        return uniform
+    return params.astype(np.float64, copy=False)
+
+
+def _knots_and_multiplicities(knots: NDArray[np.float64]) -> tuple[list[float], list[int]]:
+    """Split a full B-spline knot vector into gmsh's (distinct, multiplicity) pair."""
+
+    values, counts = np.unique(np.round(np.asarray(knots, dtype=np.float64), 12), return_counts=True)
+    return [float(v) for v in values], [int(c) for c in counts]
+
+
+def interpolating_surface_poles(
+    grid: NDArray[np.float64],
+    *,
+    degree_u: int,
+    degree_v: int,
+    v_params: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.float64], tuple[list[float], list[int]], tuple[list[float], list[int]]]:
+    """Poles and knots of the B-spline surface that interpolates ``grid``.
+
+    ``grid`` is ordered ``(n_v, n_u, 3)`` to match the order the patch builders
+    emit point tags in (u fastest). The returned poles carry the same shape, so
+    the caller's tag emission order is unchanged.
+
+    ``v_params`` must be supplied whenever a wall is split into several patches
+    that meet along v-running seams. A clamped interpolating spline reproduces
+    its end data exactly, so neighbouring patches already share the poles of
+    their common boundary curve — but they only trace the *same* curve if they
+    also share its knot vector. Deriving v from each patch's own columns gives
+    each patch a slightly different parameterisation and tears the shell open
+    along every seam.
+    """
+
+    from scipy.interpolate import make_interp_spline
+
+    u_params = _averaged_chord_parameters(grid, axis=1)
+    if v_params is None:
+        v_params = _averaged_chord_parameters(grid, axis=0)
+    v_params = np.asarray(v_params, dtype=np.float64)
+
+    # Interpolate along u first; scipy rolls the interpolated axis to the front
+    # of ``.c``, so this yields (n_u, n_v, 3) and the second pass restores
+    # (n_v, n_u, 3).
+    along_u = make_interp_spline(u_params, grid, k=degree_u, axis=1)
+    along_v = make_interp_spline(v_params, np.asarray(along_u.c), k=degree_v, axis=1)
+
+    poles = np.asarray(along_v.c, dtype=np.float64)
+    return poles, _knots_and_multiplicities(along_u.t), _knots_and_multiplicities(along_v.t)
+
+
+def add_bspline_patch(
+    points: NDArray[np.float64],
+    column_indices: list[int],
+    *,
+    degree_v: int,
+    surface_fit: str = SURFACE_FIT_APPROXIMATE,
+    v_params: NDArray[np.float64] | None = None,
+) -> int:
+    """Emit one OCC B-spline patch spanning ``column_indices`` of a phi-major grid.
+
+    Point tags are emitted v-major with u fastest, which is the order
+    ``addBSplineSurface`` expects for ``numPointsU = len(column_indices)``.
+    """
+
+    gmsh = require_gmsh()
+    n_u = len(column_indices)
+    degree_u = min(3, max(1, n_u - 1))
+    grid = np.ascontiguousarray(np.asarray(points)[column_indices, :, :].transpose(1, 0, 2))
+
+    knots: dict[str, list[float] | list[int]] = {}
+    if surface_fit == SURFACE_FIT_INTERPOLATE:
+        grid, (knots_u, mults_u), (knots_v, mults_v) = interpolating_surface_poles(
+            grid, degree_u=degree_u, degree_v=degree_v, v_params=v_params
+        )
+        knots = {
+            "knotsU": knots_u,
+            "multiplicitiesU": mults_u,
+            "knotsV": knots_v,
+            "multiplicitiesV": mults_v,
+        }
+
+    point_tags = [
+        int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
+        for x, y, z in grid.reshape(-1, 3)
+    ]
+    return int(
+        gmsh.model.occ.addBSplineSurface(
+            point_tags,
+            n_u,
+            degreeU=degree_u,
+            degreeV=degree_v,
+            **knots,
+        )
+    )
+
+
+def grid_v_parameters(points: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Shared v-parameterisation for every patch cut from one phi-major grid."""
+
+    grid = np.ascontiguousarray(np.asarray(points).transpose(1, 0, 2))
+    return _averaged_chord_parameters(grid, axis=0)

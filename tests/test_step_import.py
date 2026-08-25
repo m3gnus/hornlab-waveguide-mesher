@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 import numpy as np
+import pytest
 
 from hornlab_mesher.step_import import (
     OCC_HEALING_FALLBACKS,
@@ -182,3 +183,37 @@ def test_detect_symmetry_planes_does_not_report_a_capped_cut_plane():
 
     assert planes == ("x0",)
     assert detection["plane_free_edge_counts"]["y0"] == 0
+
+
+from hornlab_mesher.step_import import (  # noqa: E402
+    _decode_step_string,
+    _first_step_string,
+    _step_records,
+)
+
+
+def test_a_semicolon_inside_a_label_does_not_truncate_the_record():
+    records = _step_records("#1 = STYLED_ITEM('woofer; left',#2,#3);\n")
+    assert records[1] == "STYLED_ITEM('woofer; left',#2,#3)"
+    assert _first_step_string(records[1]) == "woofer; left"
+
+
+def test_doubled_quotes_still_decode_to_one_quote():
+    assert _first_step_string("X('it''s')") == "it's"
+
+
+@pytest.mark.parametrize(
+    ("encoded", "expected"),
+    [
+        (r"M\X2\00E5\X0\ler", "Måler"),
+        (r"caf\X\E9", "café"),
+        ("\\X4\\0001F600\\X0\\", "\U0001f600"),
+    ],
+)
+def test_iso_10303_escapes_decode(encoded, expected):
+    assert _decode_step_string(encoded) == expected
+
+
+def test_a_malformed_escape_is_left_intact_rather_than_raising():
+    malformed = "\\X2\\ZZZZ\\X0\\"
+    assert _decode_step_string(malformed) == malformed

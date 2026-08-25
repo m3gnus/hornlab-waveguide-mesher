@@ -269,7 +269,16 @@ def _build_acoustic_freestanding_point_grid(
         inner_points,
         closed=geometry.closed,
         phi_groups=phi_groups,
+        surface_fit=geometry.surface_fit,
     )
+    # The outer shell keeps the approximating pole fit regardless of
+    # ``surface_fit``. ``outer_topology`` splices the rear rim onto the wall as
+    # a deliberate sharp corner (z jumps from the rear plane back to the throat
+    # plane), and a cubic *interpolating* spline overshoots such a corner — on
+    # the stock OSSE it dips the rear boundary to z = -9.09 mm instead of the
+    # -6.00 mm rear plane, which stops the rear cap's planar-extreme detection
+    # from ever finding its loop. The acoustic (inner) surface is the one whose
+    # fidelity the BEM result depends on; the outer shell is rigid backing.
     outer_wall = _add_occ_bspline_patch_wall_surfaces(
         outer_topology,
         closed=geometry.closed,

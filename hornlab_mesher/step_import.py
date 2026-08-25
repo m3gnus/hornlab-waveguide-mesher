@@ -93,9 +93,16 @@ class StepFaceMapping:
     missing_reasons: dict[str, str]
 
 
+# A record body is any run of characters that are neither a terminator nor a
+# quote, interleaved with complete single-quoted STEP strings (in which '' is a
+# literal quote). Consuming whole strings is what keeps a ';' *inside* a label
+# -- ``STYLED_ITEM('woofer; left', ...)`` -- from truncating the record.
+_STEP_RECORD_RE = re.compile(r"#(\d+)\s*=\s*((?:[^;']|'(?:[^']|'')*')*);", flags=re.S)
+
+
 def _step_records(step_text: str) -> dict[int, str]:
     records: dict[int, str] = {}
-    for match in re.finditer(r"#(\d+)\s*=\s*(.*?);", step_text, flags=re.S):
+    for match in _STEP_RECORD_RE.finditer(step_text):
         records[int(match.group(1))] = " ".join(match.group(2).split())
     return records
 
@@ -104,11 +111,40 @@ def _step_refs(record: str) -> list[int]:
     return [int(value) for value in re.findall(r"#(\d+)", record)]
 
 
+_STEP_CONTROL_RE = re.compile(r"\\X2\\([0-9A-Fa-f]+)\\X0\\|\\X4\\([0-9A-Fa-f]+)\\X0\\|\\X\\([0-9A-Fa-f]{2})|\\S\\(.)")
+
+
+def _decode_step_string(value: str) -> str:
+    """Decode ISO 10303-21 control directives in a STEP string literal.
+
+    Fusion writes any non-ASCII character in a body or appearance name as an
+    escape (``\\X2\\00E5\\X0\\`` for 'a-ring'), so a manifest label carrying one
+    could never match the raw literal.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        utf16, utf32, byte, shifted = match.groups()
+        try:
+            if utf16 is not None:
+                return bytes.fromhex(utf16).decode("utf-16-be")
+            if utf32 is not None:
+                return bytes.fromhex(utf32).decode("utf-32-be")
+            if byte is not None:
+                return bytes([int(byte, 16)]).decode("latin-1")
+            if shifted is not None:
+                return chr((ord(shifted) + 128) % 0x110000)
+        except (ValueError, UnicodeDecodeError):
+            return match.group(0)
+        return match.group(0)
+
+    return _STEP_CONTROL_RE.sub(replace, value)
+
+
 def _first_step_string(record: str) -> str | None:
     match = re.search(r"'((?:[^']|'')*)'", record)
     if match is None:
         return None
-    return match.group(1).replace("''", "'")
+    return _decode_step_string(match.group(1).replace("''", "'"))
 
 
 def _parse_named_shell_faces(step_path: Path) -> dict[str, list[int]]:
@@ -789,6 +825,9 @@ def _repair_triangle_winding(
         "flipped_global": 0,
         "unjudged_symmetry_components": 0,
         "unjudged_symmetry_no_source": 0,
+        "symmetry_volume_fallback_flipped": 0,
+        "symmetry_volume_fallback_kept": 0,
+        "unresolved_symmetry_components": 0,
     }
     if len(repaired) == 0:
         return repaired, stats
@@ -885,6 +924,26 @@ def _repair_triangle_winding(
             stats["unjudged_symmetry_components"] += 1
             if not np.any(np.isin(component_tags[component], tuple(declared_source_tags))):
                 stats["unjudged_symmetry_no_source"] += 1
+            # The source-cap projection abstains whenever a component was not
+            # cut on exactly two principal planes -- a single-plane cut, the
+            # common Fusion case, is left unjudged by it. Fall back to the
+            # signed volume about the origin, which IS a valid oracle here:
+            # ``symmetry_reduced`` already established that every free edge
+            # lies on a coordinate plane through the origin, so the
+            # divergence-theorem cone terms over those rims vanish. (The rule
+            # that signed volume cannot orient an open shell applies to an
+            # arbitrary rim -- a bare mouth rim off the origin -- not to one
+            # pinned to the cut planes, so the general open-shell path below
+            # still refuses to guess.)
+            volume = _signed_volume(points, component_triangles)
+            if volume < 0.0:
+                repaired[component] = component_triangles[:, [0, 2, 1]]
+                stats["flipped_global"] += int(len(component))
+                stats["symmetry_volume_fallback_flipped"] += 1
+            elif volume > 0.0:
+                stats["symmetry_volume_fallback_kept"] += 1
+            else:
+                stats["unresolved_symmetry_components"] += 1
             continue
         if projection < 0.0:
             repaired[component] = component_triangles[:, [0, 2, 1]]
