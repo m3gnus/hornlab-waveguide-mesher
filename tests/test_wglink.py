@@ -1495,6 +1495,230 @@ def test_windows_private_lock_root_never_reacls_existing_ancestors(
     assert verified == [(root, True), (root, True)]
 
 
+class _FakeWindowsDll:
+    """A stand-in for ``ctypes.WinDLL`` results; attributes are the fakes."""
+
+    def __init__(self, **functions):
+        for name, implementation in functions.items():
+            setattr(self, name, implementation)
+
+
+def _install_fake_windll(monkeypatch, dlls):
+    import ctypes
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda name, *args, **kwargs: dlls[name],
+        raising=False,
+    )
+
+
+def _set_pointer(byref_argument, pointer_type, value):
+    import ctypes
+
+    ctypes.cast(byref_argument, ctypes.POINTER(pointer_type))[0] = value
+
+
+def _fake_verify_security_environment(monkeypatch, *, stamped_owner_marker):
+    """Drive the real ``_windows_verify_owner_only_dacl`` ctypes code.
+
+    SIDs are represented by their pointer values; the fake ``EqualSid``
+    compares those values.  The DACL and its single ACE are real memory so
+    the production casts and ``from_address`` reads operate on the layout
+    Windows would hand back.  ``stamped_owner_marker`` selects which SID the
+    fake ``GetNamedSecurityInfoW`` reports as the object owner.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    file_all_access = 0x001F01FF
+    acl_bytes = bytearray(24)
+    acl_bytes[0] = 2  # AclRevision
+    acl_bytes[2:4] = (24).to_bytes(2, "little")  # AclSize
+    acl_bytes[4:6] = (1).to_bytes(2, "little")  # AceCount
+    acl_bytes[8] = 0  # ACCESS_ALLOWED_ACE_TYPE
+    acl_bytes[9] = 0x03  # OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+    acl_bytes[10:12] = (16).to_bytes(2, "little")  # AceSize
+    acl_bytes[12:16] = file_all_access.to_bytes(4, "little")  # Mask
+    acl_buffer = ctypes.create_string_buffer(bytes(acl_bytes), len(acl_bytes))
+    acl_address = ctypes.addressof(acl_buffer)
+    descriptor_buffer = ctypes.create_string_buffer(16)
+
+    ace_sid = acl_address + 16  # the SID embedded in the single ACE
+    token_user_sid = ace_sid  # the DACL grants FILE_ALL_ACCESS to TokenUser
+    token_owner_sid = 0xAD314  # BUILTIN\Administrators for an admin token
+    third_party_sid = 0xBAD514
+    owners = {
+        "token_user": token_user_sid,
+        "token_owner": token_owner_sid,
+        "third_party": third_party_sid,
+    }
+    stamped_owner = owners[stamped_owner_marker]
+
+    def get_named_security_info(
+        path, object_type, information, owner, group, dacl, sacl, descriptor
+    ):
+        assert object_type == 1  # SE_FILE_OBJECT
+        assert information == 0x1 | 0x4  # OWNER | DACL
+        _set_pointer(owner, ctypes.c_void_p, stamped_owner)
+        _set_pointer(dacl, ctypes.c_void_p, acl_address)
+        _set_pointer(descriptor, ctypes.c_void_p, ctypes.addressof(descriptor_buffer))
+        return 0
+
+    def equal_sid(first, second):
+        def sid_value(sid):
+            return sid if isinstance(sid, int) else int(sid.value or 0)
+
+        return 1 if sid_value(first) == sid_value(second) else 0
+
+    def get_security_descriptor_control(descriptor, control, revision):
+        _set_pointer(control, wintypes.WORD, 0x1000)  # SE_DACL_PROTECTED
+        _set_pointer(revision, wintypes.DWORD, 1)
+        return 1
+
+    def get_ace(dacl, index, ace):
+        assert index == 0
+        _set_pointer(ace, ctypes.c_void_p, acl_address + 8)
+        return 1
+
+    freed: list[object] = []
+    advapi32 = _FakeWindowsDll(
+        GetNamedSecurityInfoW=get_named_security_info,
+        EqualSid=equal_sid,
+        GetSecurityDescriptorControl=get_security_descriptor_control,
+        GetAce=get_ace,
+    )
+    kernel32 = _FakeWindowsDll(LocalFree=lambda handle: freed.append(handle))
+    _install_fake_windll(monkeypatch, {"advapi32": advapi32, "kernel32": kernel32})
+    monkeypatch.setattr(
+        cad_module, "_windows_current_user_sid", lambda: (token_user_sid, None)
+    )
+    monkeypatch.setattr(
+        cad_module,
+        "_windows_current_token_owner_sid",
+        lambda: (token_owner_sid, None),
+    )
+    return acl_buffer, descriptor_buffer
+
+
+def test_windows_apply_owner_only_dacl_sets_token_user_as_owner(
+    monkeypatch, tmp_path
+):
+    import ctypes
+    from ctypes import wintypes
+
+    token_user_sid = 0x51DF00D
+    dacl_address = 0xDAC1
+    sid_text = ctypes.create_unicode_buffer("S-1-5-21-1111-2222-3333-1001")
+    descriptor_buffer = ctypes.create_string_buffer(16)
+    sddl_strings: list[str] = []
+    set_calls: list[tuple] = []
+    verified: list[tuple[Path, bool]] = []
+
+    def convert_sid_to_string_sid(sid, string_pointer):
+        assert sid == token_user_sid
+        _set_pointer(string_pointer, ctypes.c_void_p, ctypes.addressof(sid_text))
+        return 1
+
+    def convert_sddl_to_descriptor(sddl, revision, descriptor, size):
+        sddl_strings.append(sddl)
+        _set_pointer(
+            descriptor, ctypes.c_void_p, ctypes.addressof(descriptor_buffer)
+        )
+        _set_pointer(size, wintypes.DWORD, 16)
+        return 1
+
+    def get_security_descriptor_dacl(descriptor, present, dacl, defaulted):
+        _set_pointer(present, wintypes.BOOL, 1)
+        _set_pointer(dacl, ctypes.c_void_p, dacl_address)
+        _set_pointer(defaulted, wintypes.BOOL, 0)
+        return 1
+
+    def set_named_security_info(
+        path, object_type, information, owner, group, dacl, sacl
+    ):
+        set_calls.append((path, object_type, information, owner, group, dacl, sacl))
+        return 0
+
+    advapi32 = _FakeWindowsDll(
+        ConvertSidToStringSidW=convert_sid_to_string_sid,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW=(
+            convert_sddl_to_descriptor
+        ),
+        GetSecurityDescriptorDacl=get_security_descriptor_dacl,
+        SetNamedSecurityInfoW=set_named_security_info,
+    )
+    kernel32 = _FakeWindowsDll(LocalFree=lambda handle: None)
+    _install_fake_windll(monkeypatch, {"advapi32": advapi32, "kernel32": kernel32})
+    monkeypatch.setattr(
+        cad_module, "_windows_current_user_sid", lambda: (token_user_sid, None)
+    )
+    monkeypatch.setattr(
+        cad_module,
+        "_windows_verify_owner_only_dacl",
+        lambda path, *, directory: verified.append((path, directory)),
+    )
+
+    target = tmp_path / "lock-state-v1"
+    cad_module._windows_apply_owner_only_dacl(target, directory=True)
+
+    assert sddl_strings == ["D:P(A;OICI;FA;;;S-1-5-21-1111-2222-3333-1001)"]
+    assert len(set_calls) == 1
+    path, object_type, information, owner, group, dacl, sacl = set_calls[0]
+    assert path == str(target)
+    assert object_type == 1  # SE_FILE_OBJECT
+    owner_security_information = 0x00000001
+    dacl_security_information = 0x00000004
+    protected_dacl_security_information = 0x80000000
+    assert information == (
+        owner_security_information
+        | dacl_security_information
+        | protected_dacl_security_information
+    )
+    assert owner == token_user_sid
+    assert group is None
+    assert int(dacl.value) == dacl_address
+    assert sacl is None
+    assert verified == [(target, True)]
+
+
+def test_windows_verify_accepts_token_user_owner(monkeypatch, tmp_path):
+    keepalive = _fake_verify_security_environment(
+        monkeypatch, stamped_owner_marker="token_user"
+    )
+
+    cad_module._windows_verify_owner_only_dacl(
+        tmp_path / "lock-state-v1", directory=True
+    )
+    del keepalive
+
+
+def test_windows_verify_accepts_token_owner_stamped_by_admin_token(
+    monkeypatch, tmp_path
+):
+    keepalive = _fake_verify_security_environment(
+        monkeypatch, stamped_owner_marker="token_owner"
+    )
+
+    cad_module._windows_verify_owner_only_dacl(
+        tmp_path / "lock-state-v1", directory=True
+    )
+    del keepalive
+
+
+def test_windows_verify_rejects_third_party_owner(monkeypatch, tmp_path):
+    keepalive = _fake_verify_security_environment(
+        monkeypatch, stamped_owner_marker="third_party"
+    )
+
+    with pytest.raises(MesherError, match="different owner"):
+        cad_module._windows_verify_owner_only_dacl(
+            tmp_path / "lock-state-v1", directory=True
+        )
+    del keepalive
+
+
 def test_publish_lock_rejects_symlink_redirection(tmp_path):
     target = tmp_path / "horn.wglink"
     staging = tmp_path / ".horn.wglink.staged"

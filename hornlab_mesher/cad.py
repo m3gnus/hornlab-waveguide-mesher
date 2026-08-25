@@ -960,7 +960,7 @@ _TRANSACTION_MARKER_SCHEMA = 1
 _TRANSACTION_MARKER_NAME = ".hornlab-publish-owner.json"
 
 
-def _windows_current_user_sid():
+def _windows_token_sid(information_class: int):
     import ctypes
     from ctypes import wintypes
 
@@ -969,6 +969,9 @@ def _windows_current_user_sid():
 
     class TokenUser(ctypes.Structure):
         _fields_ = [("User", SidAndAttributes)]
+
+    class TokenOwner(ctypes.Structure):
+        _fields_ = [("Owner", wintypes.LPVOID)]
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -992,25 +995,52 @@ def _windows_current_user_sid():
 
     token_query = 0x0008
     token_user = 1
+    token_owner = 4
+    if information_class not in (token_user, token_owner):
+        raise MesherError(
+            f"unsupported Windows token information class: {information_class}"
+        )
     process = kernel32.GetCurrentProcess()
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(process, token_query, ctypes.byref(token)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         needed = wintypes.DWORD()
-        advapi32.GetTokenInformation(token, token_user, None, 0, ctypes.byref(needed))
+        advapi32.GetTokenInformation(
+            token, information_class, None, 0, ctypes.byref(needed)
+        )
         buffer = ctypes.create_string_buffer(needed.value)
         if not advapi32.GetTokenInformation(
             token,
-            token_user,
+            information_class,
             buffer,
             needed.value,
             ctypes.byref(needed),
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        return ctypes.cast(buffer, ctypes.POINTER(TokenUser)).contents.User.Sid, buffer
+        if information_class == token_owner:
+            sid = ctypes.cast(buffer, ctypes.POINTER(TokenOwner)).contents.Owner
+        else:
+            sid = ctypes.cast(buffer, ctypes.POINTER(TokenUser)).contents.User.Sid
+        return sid, buffer
     finally:
         kernel32.CloseHandle(token)
+
+
+def _windows_current_user_sid():
+    """The TokenUser SID: the identity of the account running this process."""
+
+    return _windows_token_sid(1)
+
+
+def _windows_current_token_owner_sid():
+    """The TokenOwner SID that Windows stamps on objects this process creates.
+
+    For an elevated or UAC-disabled administrator token this is
+    BUILTIN\\Administrators, not the account's own SID.
+    """
+
+    return _windows_token_sid(4)
 
 
 def _windows_verify_owner_only_dacl(path: Path, *, directory: bool) -> None:
@@ -1078,8 +1108,17 @@ def _windows_verify_owner_only_dacl(path: Path, *, directory: bool) -> None:
     if result:
         raise ctypes.WinError(result)
     current_sid, sid_buffer = _windows_current_user_sid()
+    token_owner_sid, token_owner_buffer = _windows_current_token_owner_sid()
     try:
-        if not advapi32.EqualSid(owner, current_sid):
+        # Windows stamps new objects with the token's TokenOwner SID, which for
+        # an elevated or UAC-disabled administrator token is
+        # BUILTIN\Administrators rather than the account SID.  Accepting the
+        # token's own TokenOwner does not weaken the model: any member of
+        # Administrators can take ownership of any object regardless.  The
+        # owner-only DACL checks below stay unchanged.
+        if not advapi32.EqualSid(owner, current_sid) and not advapi32.EqualSid(
+            owner, token_owner_sid
+        ):
             raise MesherError(f"wglink private state has a different owner: {path}")
         if not dacl:
             raise MesherError(f"wglink private state has no protected DACL: {path}")
@@ -1112,6 +1151,7 @@ def _windows_verify_owner_only_dacl(path: Path, *, directory: bool) -> None:
             raise MesherError(f"wglink private state DACL is not owner-only: {path}")
     finally:
         del sid_buffer
+        del token_owner_buffer
         kernel32.LocalFree(descriptor)
 
 
@@ -1155,55 +1195,66 @@ def _windows_apply_owner_only_dacl(path: Path, *, directory: bool) -> None:
     kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
     kernel32.LocalFree.restype = wintypes.HLOCAL
 
+    owner_security_information = 0x00000001
     dacl_security_information = 0x00000004
     protected_dacl_security_information = 0x80000000
     se_file_object = 1
     sddl_revision_1 = 1
     current_sid, sid_buffer = _windows_current_user_sid()
-    sid_string = wintypes.LPWSTR()
-    if not advapi32.ConvertSidToStringSidW(current_sid, ctypes.byref(sid_string)):
-        raise ctypes.WinError(ctypes.get_last_error())
     try:
-        inheritance = "OICI" if directory else ""
-        sddl = f"D:P(A;{inheritance};FA;;;{sid_string.value})"
-    finally:
-        kernel32.LocalFree(ctypes.cast(sid_string, wintypes.HLOCAL))
-        del sid_buffer
-    descriptor = wintypes.LPVOID()
-    descriptor_size = wintypes.DWORD()
-    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        sddl,
-        sddl_revision_1,
-        ctypes.byref(descriptor),
-        ctypes.byref(descriptor_size),
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        present = wintypes.BOOL()
-        defaulted = wintypes.BOOL()
-        dacl = wintypes.LPVOID()
-        if not advapi32.GetSecurityDescriptorDacl(
-            descriptor,
-            ctypes.byref(present),
-            ctypes.byref(dacl),
-            ctypes.byref(defaulted),
+        sid_string = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(current_sid, ctypes.byref(sid_string)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            inheritance = "OICI" if directory else ""
+            sddl = f"D:P(A;{inheritance};FA;;;{sid_string.value})"
+        finally:
+            kernel32.LocalFree(ctypes.cast(sid_string, wintypes.HLOCAL))
+        descriptor = wintypes.LPVOID()
+        descriptor_size = wintypes.DWORD()
+        if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl,
+            sddl_revision_1,
+            ctypes.byref(descriptor),
+            ctypes.byref(descriptor_size),
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        if not present or not dacl:
-            raise MesherError("could not construct owner-only Windows DACL")
-        result = advapi32.SetNamedSecurityInfoW(
-            str(path),
-            se_file_object,
-            dacl_security_information | protected_dacl_security_information,
-            None,
-            None,
-            dacl,
-            None,
-        )
-        if result:
-            raise ctypes.WinError(result)
+        try:
+            present = wintypes.BOOL()
+            defaulted = wintypes.BOOL()
+            dacl = wintypes.LPVOID()
+            if not advapi32.GetSecurityDescriptorDacl(
+                descriptor,
+                ctypes.byref(present),
+                ctypes.byref(dacl),
+                ctypes.byref(defaulted),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not present or not dacl:
+                raise MesherError("could not construct owner-only Windows DACL")
+            # Also normalize the owner to the TokenUser SID.  Windows stamps a
+            # freshly created object with the token's TokenOwner SID, which for
+            # an elevated or UAC-disabled administrator token is
+            # BUILTIN\Administrators rather than the account SID.  The creator
+            # holds FILE_ALL_ACCESS (a superset of WRITE_OWNER), and setting the
+            # owner to the token's own TokenUser SID is always permitted.
+            result = advapi32.SetNamedSecurityInfoW(
+                str(path),
+                se_file_object,
+                owner_security_information
+                | dacl_security_information
+                | protected_dacl_security_information,
+                current_sid,
+                None,
+                dacl,
+                None,
+            )
+            if result:
+                raise ctypes.WinError(result)
+        finally:
+            kernel32.LocalFree(descriptor)
     finally:
-        kernel32.LocalFree(descriptor)
+        del sid_buffer
     _windows_verify_owner_only_dacl(path, directory=directory)
 
 
