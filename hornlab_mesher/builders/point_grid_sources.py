@@ -6,9 +6,11 @@ import numpy as np
 
 from ..geometry import PointGridHornGeometry
 from ._occ import (
+    SURFACE_FIT_INTERPOLATE,
     extreme_boundary_loop_curves,
     make_planar_fill_from_boundary,
     require_gmsh,
+    throat_boundary_curve,
 )
 from .point_grid_surfaces import (
     _GeoSurfaceBuilder,
@@ -389,10 +391,52 @@ def _add_occ_source_cap_surfaces(
     )
     boundary: list[int] = []
     for indices in spans:
-        boundary.append(builder.bspline_tags([builder.point("inner", i, 0) for i in indices]))
+        boundary.append(
+            _throat_rim_curve(builder, inner_points, list(indices), geometry)
+        )
     if boundary:
         cap.append(builder.surface([*boundary, radial_lines[n_phi - 1], -radial_lines[0]]))
     return cap
+
+
+def _throat_rim_curve(
+    builder: _SharedSurfaceBuilder,
+    inner_points: np.ndarray,
+    indices: list[int],
+    geometry: PointGridHornGeometry,
+) -> int:
+    """The wall patch's own throat edge, re-authored to the same geometry.
+
+    An open sector cap cannot fill on the wall's OCC curves the way a closed one
+    does -- its loop is closed by the two radial curves, which start from the
+    cap builder's own points -- so it authors a coincident rim instead and lets
+    ``mesh.removeDuplicateNodes`` weld the seam. That welds only while the two
+    curves *are* the same curve. A plain pole B-spline through the ring points
+    is the wall's edge under ``surface_fit = "approximate"`` and is not under
+    ``"interpolate"``, where the wall's edge carries the interpolating poles;
+    the mismatch left a free-edge ring at the source on every reduced-domain
+    build. Author whichever curve the wall actually has.
+    """
+
+    ring_tags = [builder.point("inner", i, 0) for i in indices]
+    if geometry.surface_fit != SURFACE_FIT_INTERPOLATE:
+        return builder.bspline_tags(ring_tags)
+
+    poles, (knots, multiplicities), degree = throat_boundary_curve(
+        inner_points, list(indices)
+    )
+    # A clamped interpolating spline reproduces its end data, so the first and
+    # last poles are the ring points themselves; reusing their tags keeps the
+    # rim's endpoints shared with the radial curves that close the loop.
+    pole_tags = [ring_tags[0]]
+    pole_tags.extend(builder.add_point(pole) for pole in poles[1:-1])
+    pole_tags.append(ring_tags[-1])
+    return builder.bspline_with_knots(
+        pole_tags,
+        degree=degree,
+        knots=knots,
+        multiplicities=multiplicities,
+    )
 
 
 def _source_cap_radius(

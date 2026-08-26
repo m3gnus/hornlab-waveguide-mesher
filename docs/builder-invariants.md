@@ -251,6 +251,17 @@ wall sheets may remain separate edge-connected components when Gmsh gives
 their coincident throat rims different 1D discretisations; their semantic
 orientations remain deterministic in either case.
 
+A surface that has to weld to a fitted patch must be authored from that
+patch's own curve, not merely from the same sample points. Gmsh welds these
+seams by coincident mesh nodes, so a rim re-authored as a plain pole B-spline
+welds to the wall only while the wall's edge *is* that curve -- true under
+`surface_fit = "approximate"`, false under `"interpolate"`, whose wall edge
+carries the interpolating poles. A closed wall avoids the question by filling
+its caps on its own OCC boundary curves; an open sector cap cannot, because its
+loop is closed by radial curves that start from the cap builder's own points,
+so it reproduces the wall's throat isocurve pole-for-pole instead
+(`builders/_occ.throat_boundary_curve`).
+
 Bare shells are also checked independently of the repair that produced them,
 because that repair depends on builder-supplied references and a lost or wrong
 reference would otherwise ship silently. The check is the near-throat wall

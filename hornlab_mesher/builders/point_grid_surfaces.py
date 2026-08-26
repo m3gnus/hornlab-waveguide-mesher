@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 from ._occ import (
@@ -28,6 +30,7 @@ class _SharedSurfaceBuilder:
         self.points: dict[tuple[str, int, int], int] = {}
         self.line_cache: dict[tuple[int, int], int] = {}
         self.spline_cache: dict[tuple[int, ...], int] = {}
+        self.knot_spline_cache: dict[tuple[Any, ...], int] = {}
 
     def add_point(self, xyz: np.ndarray | tuple[float, float, float]) -> int:
         x, y, z = xyz
@@ -71,6 +74,41 @@ class _SharedSurfaceBuilder:
         reverse = tuple(reversed(key))
         if reverse != key:
             self.spline_cache[reverse] = -tag
+        return tag
+
+    def bspline_with_knots(
+        self,
+        point_tags: list[int],
+        *,
+        degree: int,
+        knots: list[float],
+        multiplicities: list[int],
+    ) -> int:
+        """A B-spline over an explicit knot vector, for reproducing a surface edge.
+
+        ``addBSpline`` without knots picks its own uniform parameterisation, so
+        a curve that has to trace a fitted patch's boundary exactly must carry
+        that patch's knots as well as its poles.
+        """
+
+        key = (
+            tuple(int(p) for p in point_tags),
+            int(degree),
+            tuple(round(float(k), 12) for k in knots),
+            tuple(int(m) for m in multiplicities),
+        )
+        cached = self.knot_spline_cache.get(key)
+        if cached is not None:
+            return cached
+        tag = int(
+            self.gmsh.model.occ.addBSpline(
+                [int(p) for p in point_tags],
+                degree=int(degree),
+                knots=[float(k) for k in knots],
+                multiplicities=[int(m) for m in multiplicities],
+            )
+        )
+        self.knot_spline_cache[key] = tag
         return tag
 
     def spline(self, points: list[tuple[str, int, int]]) -> int:

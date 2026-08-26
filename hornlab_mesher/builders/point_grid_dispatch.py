@@ -417,6 +417,9 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 throat = make_planar_sector_fill_from_ring(
                     inner_points[:, 0, :],
                     source_axis="z",
+                    wall_grid=inner_points,
+                    wall_columns=list(range(inner_points.shape[0])),
+                    surface_fit=geometry.surface_fit,
                 )
                 if not throat:
                     throat = make_planar_fill_from_boundary(

@@ -315,7 +315,9 @@ Measured on `examples/osse-freestanding.toml`, inner acoustic wall against a
 | `approximate` | 2800 | 0.280 mm | 0.378 mm | 0.432 mm |
 | `interpolate` | 2872 | 0.161 mm | 0.200 mm | 0.261 mm |
 
-Two limits apply.
+Two limits apply. (A third, that every symmetry-reduced domain tore open at
+the source, was a defect rather than a limit and is fixed -- see
+`docs/builder-invariants.md`.)
 
 - `interpolate` is refused on FREEFORM profiles. Their deliberate creases make
   the interpolating patch fit unmeshable — Gmsh grinds past ten minutes inside

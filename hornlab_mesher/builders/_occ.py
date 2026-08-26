@@ -182,8 +182,18 @@ def make_planar_sector_fill_from_ring(
     points: NDArray[np.float64],
     *,
     source_axis: str = "z",
+    wall_grid: NDArray[np.float64] | None = None,
+    wall_columns: list[int] | None = None,
+    surface_fit: str = SURFACE_FIT_APPROXIMATE,
 ) -> list[tuple[int, int]]:
-    """Fill an open symmetry-sector ring as one Gmsh-meshed planar surface."""
+    """Fill an open symmetry-sector ring as one Gmsh-meshed planar surface.
+
+    The ring curve must be the wall's own throat edge, because the seam welds
+    on coincident mesh nodes rather than on shared topology. Pass the wall's
+    grid and column partition so an interpolating wall gets an interpolating
+    rim; without them the rim is the plain pole B-spline the approximating wall
+    has.
+    """
 
     gmsh = require_gmsh()
     arr = np.asarray(points, dtype=np.float64)
@@ -202,7 +212,30 @@ def make_planar_sector_fill_from_ring(
     point_tags = [
         int(gmsh.model.occ.addPoint(float(x), float(y), float(z))) for x, y, z in arr
     ]
-    ring_curve = int(gmsh.model.occ.addBSpline(point_tags))
+    if (
+        surface_fit == SURFACE_FIT_INTERPOLATE
+        and wall_grid is not None
+        and wall_columns is not None
+    ):
+        poles, (knots, multiplicities), degree = throat_boundary_curve(
+            wall_grid, list(wall_columns)
+        )
+        pole_tags = [point_tags[0]]
+        pole_tags.extend(
+            int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
+            for x, y, z in poles[1:-1]
+        )
+        pole_tags.append(point_tags[-1])
+        ring_curve = int(
+            gmsh.model.occ.addBSpline(
+                pole_tags,
+                degree=int(degree),
+                knots=[float(k) for k in knots],
+                multiplicities=[int(m) for m in multiplicities],
+            )
+        )
+    else:
+        ring_curve = int(gmsh.model.occ.addBSpline(point_tags))
     end_to_center = int(gmsh.model.occ.addLine(point_tags[-1], center_tag))
     center_to_start = int(gmsh.model.occ.addLine(center_tag, point_tags[0]))
     loop = gmsh.model.occ.addCurveLoop([ring_curve, end_to_center, center_to_start])
@@ -499,6 +532,42 @@ def add_bspline_patch(
             degreeV=degree_v,
             **knots,
         )
+    )
+
+
+def throat_boundary_curve(
+    points: NDArray[np.float64],
+    column_indices: list[int],
+) -> tuple[NDArray[np.float64], tuple[list[float], list[int]], int]:
+    """Poles and knots of a wall patch's throat (v = 0) boundary curve.
+
+    Gmsh welds the source cap to the wall by *coincident mesh nodes*, not by
+    shared topology, so the cap's rim has to be the same curve the wall's
+    throat edge is -- not merely another curve through the same ring points.
+    Under the approximating fit those two happen to coincide (both are pole
+    fits of the same points, at the same degree), which is why re-authoring the
+    rim worked at all; under the interpolating fit they differ by the fit's own
+    bias and every reduced-domain shell tore open at the source.
+
+    A clamped tensor-product surface's v = 0 isocurve carries its first pole row
+    over the surface's own u knot vector, and a clamped interpolating spline
+    reproduces its end data, so that row is exactly the u-interpolation of the
+    throat ring -- independent of the v parameterisation, and therefore of how
+    the caller chose to share v across patches.
+    """
+
+    from scipy.interpolate import make_interp_spline
+
+    grid = np.ascontiguousarray(
+        np.asarray(points, dtype=np.float64)[column_indices, :, :].transpose(1, 0, 2)
+    )
+    degree_u = min(3, max(1, len(column_indices) - 1))
+    u_params = _averaged_chord_parameters(grid, axis=1)
+    curve = make_interp_spline(u_params, grid[0], k=degree_u)
+    return (
+        np.asarray(curve.c, dtype=np.float64),
+        _knots_and_multiplicities(curve.t),
+        degree_u,
     )
 
 
