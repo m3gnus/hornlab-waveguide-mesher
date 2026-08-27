@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -83,6 +84,37 @@ def _ath_bool(value: Any) -> Any:
     return value
 
 
+# Recognised ``Mesh.*`` keys. Kept beside the mapping tables in
+# ``parse_ath_config`` that consume them -- if you add a name there, add it
+# here or the importer will refuse the very key you just added.
+_KNOWN_MESH_KEYS = frozenset(
+    {
+        "AngularSegments",
+        "CornerSegments",
+        "LengthSegments",
+        "WallThickness",
+        "VerticalOffset",
+        "Quadrants",
+        "ThroatResolution",
+        "MouthResolution",
+        "RearResolution",
+        "SubdomainSlices",
+        "InterfaceOffset",
+        "InterfaceResolution",
+        "SamplingMode",
+        "SurfaceFit",
+        "ZMapPoints",
+        "ZMap",
+        # Recognised only to be refused above, with a better message.
+        "RearShape",
+        "ThroatSegments",
+        # ``Mesh.Enclosure`` names the enclosure block itself; its members
+        # arrive as ``Enclosure.*`` and are skipped by prefix.
+        "Enclosure",
+    }
+)
+
+
 def _reject_unsupported_ath_keys(
     flat: Mapping[str, str],
     profile_items: Mapping[str, str],
@@ -124,6 +156,33 @@ def _reject_unsupported_ath_keys(
         raise ConfigError(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) is implemented")
     if "ThroatSegments" in mesh_items:
         raise ConfigError("Mesh.ThroatSegments is not supported; remove it or use Mesh.ZMapPoints")
+
+    # Every other key in this namespace is read through an explicit whitelist,
+    # so an unrecognised one was silently discarded and the mesher used its
+    # default instead. That is a wrong answer, not a cosmetic gap: mistyping
+    # `Mesh.ThroatResolution` as `Mesh.ThroatResolutin` meshed at the default 4
+    # rather than the requested 9 -- a 16,730-triangle mesh instead of 15,060,
+    # with a clean exit code and no diagnostic. Every downstream solve inherits
+    # it. Real ATH configs only ever use the recognised names (checked across
+    # the 46 configs in the reference archive), so refusing is safe as well as
+    # correct, and it matches how this function already treats every other
+    # unsupported key.
+    unknown = sorted(
+        key
+        for key in mesh_items
+        if key not in _KNOWN_MESH_KEYS and not key.startswith("Enclosure.")
+    )
+    if unknown:
+        details = []
+        for key in unknown:
+            close = get_close_matches(key, sorted(_KNOWN_MESH_KEYS), n=1, cutoff=0.7)
+            details.append(f"Mesh.{key}" + (f" (did you mean Mesh.{close[0]}?)" if close else ""))
+        raise ConfigError(
+            "unrecognised mesh key(s): "
+            + ", ".join(details)
+            + ". They would be ignored and the mesher would silently use its "
+            "defaults, so the mesh would not match the config."
+        )
 
 
 def parse_text_config(content: str) -> dict[str, Any]:
@@ -268,6 +327,12 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("InterfaceOffset", "interfaceOffset"),
             ("InterfaceResolution", "interfaceResolution"),
             ("SamplingMode", "samplingMode"),
+            # Not an ATH key -- ATH has no equivalent -- but this parser also
+            # reads WG-authored text configs, and without a mapping the
+            # acoustic patch fit was reachable from TOML only. That put the
+            # interpolating fit out of reach of exactly the users most likely
+            # to want it: those importing an ATH config.
+            ("SurfaceFit", "surfaceFit"),
         ),
     )
     # ATH SubdomainSlices index the segments 0..LengthSegments-1, where the
