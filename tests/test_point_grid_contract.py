@@ -1197,6 +1197,89 @@ def test_enclosure_curve_loop_orders_unordered_curves():
             gmsh.finalize()
 
 
+def test_curve_endpoint_registry_reverses_for_negative_tags():
+    """A negative tag must report reversed endpoints, as gmsh itself does.
+
+    ``gmsh.model.getBoundary`` swaps the two points for a negative tag even
+    with ``oriented=False``, and ``_ordered_curve_loop`` relies on that to try
+    a chain in the opposite direction. A registry that ignored the sign would
+    make the reversed attempt identical to the forward one.
+    """
+
+    import gmsh
+    from hornlab_mesher.builders.enclosure import (
+        _curve_endpoints,
+        _record_curve,
+        _reset_curve_endpoints,
+    )
+
+    initialized_here = False
+    try:
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            initialized_here = True
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("curve-endpoint-sign-test")
+
+        p0 = gmsh.model.occ.addPoint(0.0, 0.0, 0.0)
+        p1 = gmsh.model.occ.addPoint(1.0, 0.0, 0.0)
+        curve = gmsh.model.occ.addLine(p0, p1)
+        gmsh.model.occ.synchronize()
+
+        # Unrecorded: read back from the model.
+        _reset_curve_endpoints()
+        from_model = (_curve_endpoints(curve), _curve_endpoints(-curve))
+
+        # Recorded: served from the registry, and must agree exactly.
+        _reset_curve_endpoints()
+        _record_curve(curve, p0, p1)
+        from_registry = (_curve_endpoints(curve), _curve_endpoints(-curve))
+
+        assert from_model == ((p0, p1), (p1, p0))
+        assert from_registry == from_model
+    finally:
+        _reset_curve_endpoints()
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()
+
+
+def test_enclosure_build_leaves_no_curve_endpoints_behind(tmp_path):
+    """The registry must not outlive one build.
+
+    Curve tags are only meaningful within one gmsh model and a fresh model
+    reuses them from 1, so a leaked entry is read back against an unrelated
+    curve. That fails silently -- a wrongly ordered loop, not an exception.
+    """
+
+    from hornlab_mesher.builders.enclosure import _CURVE_ENDPOINTS
+
+    msh_path = build_mesh(
+        PointGridHornGeometry(
+            inner_points=_make_point_grid(n_phi=24, n_length=10, r1=90.0),
+            closed=True,
+            preserve_grid=True,
+            enclosure=HornEnclosure(
+                depth_mm=220.0,
+                space_l_mm=45.0,
+                space_t_mm=35.0,
+                space_r_mm=45.0,
+                space_b_mm=35.0,
+                edge_mm=8.0,
+                edge_type=1,
+                plan_type=1,
+                plan_n=2.0,
+                depth_margin_mm=12.0,
+            ),
+        ),
+        MeshDensity(throat_res_mm=8.0, mouth_res_mm=18.0, rear_res_mm=30.0),
+        tmp_path / "registry-leak.msh",
+    )
+
+    assert msh_path
+    assert not _CURVE_ENDPOINTS
+
+
 def test_point_grid_enclosure_mesh_has_canonical_tags(tmp_path):
     msh_path = build_mesh(
         PointGridHornGeometry(

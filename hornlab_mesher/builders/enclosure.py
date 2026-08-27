@@ -513,6 +513,61 @@ def sample_enclosure_plan(
 # Gmsh helpers (mesher style — go through require_gmsh()).
 # ---------------------------------------------------------------------------
 
+# Oriented (start_point, end_point) per curve tag, recorded where this module
+# creates the curve. ``_ordered_curve_loop`` needs endpoints, and reading them
+# back with ``gmsh.model.getBoundary`` requires a synchronized model -- so it
+# used to call ``occ.synchronize()`` once per curve loop. That resync is
+# O(model size), and it is not an occasional fallback: OCC's ``addCurveLoop``
+# has no ``reorient`` argument (only the built-in kernel's does), so the
+# ``except TypeError`` path below runs on every enclosure build. Measured on
+# ``250728solana`` (16,668 triangles): 44 loops, 0.761 s, 30% of the whole
+# build, and the share grows with model size.
+#
+# Curves this module did not author -- the wall's mouth curves -- are seeded in
+# ``build_enclosure_box`` while the model is already synchronized. Anything
+# still unknown falls back to the old ``getBoundary`` read, so correctness does
+# not depend on the registry being complete.
+_CURVE_ENDPOINTS: dict[int, tuple[int, int]] = {}
+
+
+def _reset_curve_endpoints() -> None:
+    """Drop recorded endpoints. Tags are only valid within one gmsh model."""
+
+    _CURVE_ENDPOINTS.clear()
+
+
+def _record_curve(curve_tag: int, start_point: int, end_point: int) -> int:
+    """Record an authored curve's oriented endpoints and return its tag."""
+
+    _CURVE_ENDPOINTS[int(curve_tag)] = (int(start_point), int(end_point))
+    return int(curve_tag)
+
+
+def _seed_curve_endpoints(curve_tags: list[int]) -> None:
+    """Record endpoints for curves authored elsewhere.
+
+    Requires a prior ``occ.synchronize()``. Reading each curve's boundary is
+    cheap; it is the resync that is not, so doing this once beats letting
+    ``_ordered_curve_loop`` resync per loop.
+    """
+
+    gmsh = require_gmsh()
+    for curve_tag in curve_tags:
+        tag = int(curve_tag)
+        if abs(tag) in _CURVE_ENDPOINTS:
+            continue
+        boundary = gmsh.model.getBoundary(
+            [(1, tag)], oriented=False, combined=False
+        )
+        point_tags = [int(t) for dim, t in boundary if int(dim) == 0]
+        if len(point_tags) != 2:
+            # Leave it unknown; _curve_endpoints raises with a better message.
+            continue
+        if tag < 0:
+            point_tags.reverse()
+        _CURVE_ENDPOINTS[abs(tag)] = (point_tags[0], point_tags[1])
+
+
 def _make_wire(
     points: NDArray[np.float64], *, closed: bool = True
 ) -> tuple[int, list[int], tuple[int, int]]:
@@ -532,6 +587,9 @@ def _make_wire(
     if closed:
         pt_tags.append(pt_tags[0])
     spline = int(gmsh.model.occ.addBSpline(pt_tags))
+    # A closed wire's spline returns to its first point; an open one ends at the
+    # last. ``pt_tags`` already carries the closing repeat, so read it back.
+    _record_curve(spline, pt_tags[0], pt_tags[-1])
     wire = int(gmsh.model.occ.addWire([spline]))
     return wire, [spline], (first_pt, last_pt)
 
@@ -560,9 +618,16 @@ def _add_reversed_curve_loop_from_curves(curve_tags: list[int]) -> int:
 
 
 def _curve_endpoints(curve_tag: int) -> tuple[int, int]:
+    tag = int(curve_tag)
+    # gmsh reverses the reported endpoints for a negative tag even with
+    # ``oriented=False``, so the registry must reverse them too.
+    known = _CURVE_ENDPOINTS.get(abs(tag))
+    if known is not None:
+        return known if tag >= 0 else (known[1], known[0])
+
     gmsh = require_gmsh()
-    boundary = gmsh.model.getBoundary([(1, int(curve_tag))], oriented=False, combined=False)
-    point_tags = [int(tag) for dim, tag in boundary if int(dim) == 0]
+    boundary = gmsh.model.getBoundary([(1, tag)], oriented=False, combined=False)
+    point_tags = [int(t) for dim, t in boundary if int(dim) == 0]
     if len(point_tags) != 2:
         raise RuntimeError(f"could not resolve endpoints for curve {curve_tag}")
     return point_tags[0], point_tags[1]
@@ -576,7 +641,11 @@ def _ordered_curve_loop(curve_tags: list[int]) -> list[int]:
     if not tags:
         return tags
 
-    gmsh.model.occ.synchronize()
+    # Only resync when some endpoint has to be read back from the model. With
+    # every curve recorded at creation this never fires, which is the point:
+    # the resync is O(model size) and this runs once per curve loop.
+    if any(abs(tag) not in _CURVE_ENDPOINTS for tag in tags):
+        gmsh.model.occ.synchronize()
 
     def chain_from(start: int, rest: list[int]) -> list[int] | None:
         loop_start, current_end = _curve_endpoints(start)
@@ -775,10 +844,12 @@ def _build_rounded_rectangle_enclosure_sector(
         return int(gmsh.model.occ.addPoint(float(x), float(y), float(z), float(size)))
 
     def line(a: int, b: int) -> int:
-        return int(gmsh.model.occ.addLine(int(a), int(b)))
+        return _record_curve(int(gmsh.model.occ.addLine(int(a), int(b))), a, b)
 
     def arc(a: int, c: int, b: int) -> int:
-        return int(gmsh.model.occ.addCircleArc(int(a), int(c), int(b)))
+        return _record_curve(
+            int(gmsh.model.occ.addCircleArc(int(a), int(c), int(b))), a, b
+        )
 
     sector_edge_type = int(edge_type)
 
@@ -992,6 +1063,36 @@ def build_enclosure_box(
 ) -> dict[str, Any]:
     """Build a closed-domain rear enclosure around the horn mouth.
 
+    Thin wrapper: it confines the curve-endpoint registry to a single build.
+    Tags are only meaningful within one gmsh model, so an entry that outlived
+    this call would be read back against whatever model came next -- a fresh
+    model reuses tags from 1, so the collision is silent and produces a
+    wrongly ordered loop rather than an error.
+    """
+
+    _reset_curve_endpoints()
+    try:
+        return _build_enclosure_box(
+            inner_dimtags=inner_dimtags,
+            inner_points=inner_points,
+            enclosure=enclosure,
+            closed=closed,
+            symmetry_planes=symmetry_planes,
+        )
+    finally:
+        _reset_curve_endpoints()
+
+
+def _build_enclosure_box(
+    *,
+    inner_dimtags: list[tuple[int, int]],
+    inner_points: NDArray[np.float64],
+    enclosure: HornEnclosure,
+    closed: bool = True,
+    symmetry_planes: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Build a closed-domain rear enclosure around the horn mouth.
+
     Returns a dict mirroring WG's ``_build_enclosure_box`` output:
 
     .. code-block:: text
@@ -1077,6 +1178,10 @@ def build_enclosure_box(
     mouth_curves = _boundary_curves_at_z_extreme(inner_dimtags, want_min_z=False)
     if not mouth_curves:
         raise RuntimeError("could not resolve inner-wall mouth boundary curves")
+    # The wall authored these, so record them here -- the model is synchronized
+    # (``_boundary_curves_at_z_extreme`` requires it) and this is the last point
+    # at which that is true for free.
+    _seed_curve_endpoints(mouth_curves)
     if not closed:
         if int(enclosure.plan_type) != 1:
             raise NotImplementedError("Open-domain enclosure currently supports only rounded-rectangle plan_type=1.")
