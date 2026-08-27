@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
@@ -595,33 +595,34 @@ def _make_wire(
 
 
 def _add_curve_loop_from_curves(curve_tags: list[int]) -> int:
+    # The OCC kernel's addCurveLoop takes (curveTags, tag) only -- `reorient`
+    # exists on the built-in geo kernel alone -- so the curves must arrive
+    # already ordered and oriented. Order them here rather than relying on
+    # callers to hand them over in loop order.
     gmsh = require_gmsh()
     try:
-        return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags], reorient=True))
-    except TypeError:
-        try:
-            return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(curve_tags)))
-        except RuntimeError:
-            return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags]))
+        return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(curve_tags)))
+    except RuntimeError:
+        return int(gmsh.model.occ.addCurveLoop([int(c) for c in curve_tags]))
 
 
 def _add_reversed_curve_loop_from_curves(curve_tags: list[int]) -> int:
     gmsh = require_gmsh()
     reversed_tags = [-int(c) for c in reversed(curve_tags)]
     try:
-        return int(gmsh.model.occ.addCurveLoop(reversed_tags, reorient=True))
-    except TypeError:
-        try:
-            return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(reversed_tags)))
-        except RuntimeError:
-            return int(gmsh.model.occ.addCurveLoop(reversed_tags))
+        return int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(reversed_tags)))
+    except RuntimeError:
+        return int(gmsh.model.occ.addCurveLoop(reversed_tags))
 
 
-def _curve_endpoints(curve_tag: int) -> tuple[int, int]:
+def _curve_endpoints(
+    curve_tag: int, endpoints: Mapping[int, tuple[int, int]] | None = None
+) -> tuple[int, int]:
     tag = int(curve_tag)
     # gmsh reverses the reported endpoints for a negative tag even with
     # ``oriented=False``, so the registry must reverse them too.
-    known = _CURVE_ENDPOINTS.get(abs(tag))
+    source = _CURVE_ENDPOINTS if endpoints is None else endpoints
+    known = source.get(abs(tag))
     if known is not None:
         return known if tag >= 0 else (known[1], known[0])
 
@@ -633,8 +634,16 @@ def _curve_endpoints(curve_tag: int) -> tuple[int, int]:
     return point_tags[0], point_tags[1]
 
 
-def _ordered_curve_loop(curve_tags: list[int]) -> list[int]:
-    """Order and orient curve tags for Gmsh builds without addCurveLoop(reorient)."""
+def _ordered_curve_loop(
+    curve_tags: list[int], endpoints: Mapping[int, tuple[int, int]] | None = None
+) -> list[int]:
+    """Order and orient curve tags for Gmsh builds without addCurveLoop(reorient).
+
+    ``endpoints`` lets a caller that recorded its own curves order a loop from
+    that map alone. It is consulted instead of the module registry, never as
+    well as it, so a builder outside ``build_enclosure_box``'s reset lifecycle
+    cannot read stale tags left by an earlier model.
+    """
 
     gmsh = require_gmsh()
     tags = [int(c) for c in curve_tags]
@@ -644,17 +653,18 @@ def _ordered_curve_loop(curve_tags: list[int]) -> list[int]:
     # Only resync when some endpoint has to be read back from the model. With
     # every curve recorded at creation this never fires, which is the point:
     # the resync is O(model size) and this runs once per curve loop.
-    if any(abs(tag) not in _CURVE_ENDPOINTS for tag in tags):
+    source = _CURVE_ENDPOINTS if endpoints is None else endpoints
+    if any(abs(tag) not in source for tag in tags):
         gmsh.model.occ.synchronize()
 
     def chain_from(start: int, rest: list[int]) -> list[int] | None:
-        loop_start, current_end = _curve_endpoints(start)
+        loop_start, current_end = _curve_endpoints(start, endpoints)
         ordered = [start]
         remaining = list(rest)
 
         while remaining:
             for index, curve in enumerate(remaining):
-                curve_start, curve_end = _curve_endpoints(curve)
+                curve_start, curve_end = _curve_endpoints(curve, endpoints)
                 if curve_start == current_end:
                     ordered.append(curve)
                     current_end = curve_end
