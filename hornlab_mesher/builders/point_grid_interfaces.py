@@ -4,6 +4,7 @@ import numpy as np
 
 from ..geometry import HornInterface, PointGridHornGeometry
 from ._occ import require_gmsh
+from .enclosure import _ordered_curve_loop
 
 def _interface_phi_groups(n_phi: int, *, closed: bool) -> list[list[int]]:
     if not closed:
@@ -86,22 +87,33 @@ def _add_offset_interface_surfaces(
         for p in offset
     ]
     center_tag = int(gmsh.model.occ.addPoint(float(center[0]), float(center[1]), float(center[2])))
+    # Every curve below is created here, so its endpoints are known without
+    # asking the model. Keeping them in a call-local map rather than the
+    # enclosure module's registry means no reset lifecycle to get wrong and
+    # nothing to leak into a later model that reuses these tag numbers.
+    endpoints: dict[int, tuple[int, int]] = {}
+
+    def _record(tag: int, start_point: int, end_point: int) -> int:
+        endpoints[int(tag)] = (int(start_point), int(end_point))
+        return int(tag)
+
     radial_lines = {
-        i: int(gmsh.model.occ.addLine(center_tag, offset_tags[i]))
+        i: _record(gmsh.model.occ.addLine(center_tag, offset_tags[i]), center_tag, offset_tags[i])
         for i in range(len(offset_tags))
     }
 
     def spline(tags: list[int]) -> int:
-        return int(gmsh.model.occ.addBSpline([int(tag) for tag in tags]))
+        ordered = [int(tag) for tag in tags]
+        return _record(gmsh.model.occ.addBSpline(ordered), ordered[0], ordered[-1])
 
     def line(a: int, b: int) -> int:
-        return int(gmsh.model.occ.addLine(int(a), int(b)))
+        return _record(gmsh.model.occ.addLine(int(a), int(b)), a, b)
 
     def surface(curves: list[int], *, plane: bool = False) -> tuple[int, int]:
-        try:
-            loop = int(gmsh.model.occ.addCurveLoop([int(c) for c in curves], reorient=True))
-        except TypeError:
-            loop = int(gmsh.model.occ.addCurveLoop([int(c) for c in curves]))
+        # OCC's addCurveLoop has no `reorient` and rejects an out-of-order loop
+        # with "Curve loop is not closed", so order the curves explicitly
+        # instead of depending on callers to pass them in loop order.
+        loop = int(gmsh.model.occ.addCurveLoop(_ordered_curve_loop(curves, endpoints)))
         if plane:
             try:
                 return (2, int(gmsh.model.occ.addPlaneSurface([loop])))
