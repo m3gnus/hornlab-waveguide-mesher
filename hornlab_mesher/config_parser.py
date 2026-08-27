@@ -91,15 +91,22 @@ def _reject_unsupported_ath_keys(
 ) -> None:
     """Fail loudly on imported keys that change geometry we cannot build."""
     # Multi-source ATH models (contour-drawn domes, secondary LF sources,
-    # velocity profiles) define driving surfaces this mesher cannot build; a
-    # silent drop would mesh a default cap source instead of the configured
-    # crossover model.
+    # per-source velocity profiles) define driving surfaces this mesher cannot
+    # build; a silent drop would mesh a default cap source instead of the
+    # configured crossover model.
+    #
+    # Only the indexed ``Source.Velocity.<n>`` form is such a marker. Scalar
+    # ``Source.Velocity`` is a single-source item -- it picks the velocity
+    # DIRECTION of the one driving surface (1 = normal to the element surface,
+    # 2 = axial), per the ATH user guide -- and matching it here rejected two
+    # ordinary single-source configs in the reference archive that carry the
+    # default ``Source.Velocity = 1``. It is validated with the other
+    # ``Source.*`` items instead.
     multi_source_keys = sorted(
         key
         for key in {*flat, *profile_items, *blocks}
         if key == "Source.Contours"
         or key.startswith("LFSource")
-        or key == "Source.Velocity"
         or key.startswith("Source.Velocity.")
     )
     if multi_source_keys:
@@ -384,6 +391,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("Shape", "sourceShape"),
             ("Radius", "sourceRadius"),
             ("Curv", "sourceCurv"),
+            ("Velocity", "sourceVelocity"),
             ("VelocityProfile", "sourceVelocityProfile"),
         ),
     )
@@ -394,6 +402,25 @@ def parse_text_config(content: str) -> dict[str, Any]:
             source["sourceShape"] = 0
         elif ath_shape != 1:
             raise ConfigError(f"Source.Shape = {ath_shape!r} is not supported; use 1 (cap) or 2 (flat disc)")
+    if "sourceVelocity" in source:
+        # ATH enum: 1 = normal to the element surface, 2 = axial (pistonic
+        # motion along z). It selects a boundary condition rather than
+        # geometry -- the cap or disc is meshed identically either way -- so
+        # the exported ``.msh`` cannot carry it and a solver reading only the
+        # mesh would drive an axial model normally. Refuse 2 loudly instead of
+        # meshing it into that; the value is kept on the parsed config so a
+        # consumer that does model velocity direction sees what was asked for.
+        ath_velocity = source["sourceVelocity"]
+        if ath_velocity == 2:
+            raise ConfigError(
+                "Source.Velocity = 2 (axial source motion) is not supported by this mesher; "
+                "only 1 (normal to the element surface) is implemented"
+            )
+        if ath_velocity != 1:
+            raise ConfigError(
+                f"Source.Velocity = {ath_velocity!r} is not supported; "
+                "use 1 (normal to the element surface)"
+            )
 
     _reject_unsupported_ath_keys(flat, profile_items, mesh_items, blocks)
 

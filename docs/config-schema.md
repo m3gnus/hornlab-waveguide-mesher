@@ -416,6 +416,15 @@ Use `[source]` or `[Source]`.
 `sourceVelocityProfile` is imported from text configs but is not currently used
 by the mesh builder.
 
+`sourceVelocity` (ATH `Source.Velocity`) selects the velocity direction of the
+driving elements rather than any geometry: `1` is normal to the element surface
+and `2` is axial (pistonic motion along z). The cap or disc is meshed
+identically either way, so the exported `.msh` cannot carry the distinction and
+a solver reading only the mesh would drive an axial model normally. Only `1`,
+ATH's own default, is accepted; `2` is refused with an explicit error. The
+accepted value is recorded on the parsed config for consumers that do model
+velocity direction.
+
 ## ATH Text Import Boundary
 
 Text import supports OSSE and R-OSSE blocks plus selected flat ATH keys. ICW is
@@ -455,7 +464,10 @@ Imported text mappings include:
   margins.
 - Source: `Source.Shape` (translated from the ATH enum, where 1 = cap and
   2 = flat disc, to the internal 1 = cap / 0 = flat disc convention),
-  `Source.Radius`, `Source.Curv`, and `Source.VelocityProfile`.
+  `Source.Radius`, `Source.Curv`, `Source.Velocity` (direction enum; only 1,
+  normal to the element surface, is supported), and `Source.VelocityProfile`.
+  Multi-source models are refused: `Source.Contours`, `LFSource*`, and the
+  indexed `Source.Velocity.<n>` form.
 
 Text imports inject ATH's own defaults for omitted keys instead of the native
 TOML/JSON defaults: `Throat.Angle` 0, `Term.s` 0.7, `Mesh.WallThickness` 5,

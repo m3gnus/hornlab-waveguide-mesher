@@ -523,7 +523,8 @@ def test_multi_source_ath_configs_are_rejected(tmp_path):
     for snippet in (
         "Source.Contours = {\n1 0 0\n2 10 0\n}\n",
         "LFSource.B = {\nSID = 4\n}\n",
-        "Source.Velocity = 2\n",
+        "Source.Velocity.1 = 1\n",
+        "Source.Velocity.2 = -1\n",
     ):
         cfg_path = tmp_path / "multi-source.cfg"
         cfg_path.write_text(
@@ -531,6 +532,63 @@ def test_multi_source_ath_configs_are_rejected(tmp_path):
         )
         with pytest.raises(ConfigError, match="multi-source"):
             load_config(cfg_path)
+
+
+def test_scalar_source_velocity_is_single_source(tmp_path):
+    # ``Source.Velocity`` is ATH's velocity-DIRECTION enum for the one driving
+    # surface, not a multi-source marker: the default ``= 1`` appears in
+    # ordinary single-source configs and used to be refused as multi-source.
+    cfg_path = tmp_path / "single-source-velocity.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\nSource.Shape = 2\nSource.Curv = 0\n"
+        "Source.Velocity = 1\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(cfg_path)
+
+    # Recorded rather than dropped, so a consumer that models velocity
+    # direction sees what the config asked for.
+    assert config["source"]["sourceVelocity"] == 1
+    assert config["source"]["sourceShape"] == 0
+
+    result = build_from_config(config, tmp_path / "single-source-velocity.msh")
+    assert result.formula == "OSSE"
+    assert result.n_vertices > 0
+    assert result.n_triangles > 0
+
+
+def test_source_velocity_in_block_form_is_single_source(tmp_path):
+    cfg_path = tmp_path / "single-source-velocity-block.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\nSource = {\nVelocity = 1\n}\n",
+        encoding="utf-8",
+    )
+
+    assert load_config(cfg_path)["source"]["sourceVelocity"] == 1
+
+
+def test_axial_source_velocity_is_refused_loudly(tmp_path):
+    # The mesh is identical for either direction, so the ``.msh`` cannot carry
+    # the distinction; meshing 2 would hand a solver an axial model it drives
+    # normally. Both the flat and block spellings must refuse.
+    for snippet in ("Source.Velocity = 2\n", "Source = {\nVelocity = 2\n}\n"):
+        cfg_path = tmp_path / "axial-source.cfg"
+        cfg_path.write_text(
+            ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n" + snippet, encoding="utf-8"
+        )
+        with pytest.raises(ConfigError, match="axial source motion"):
+            load_config(cfg_path)
+
+
+def test_unknown_source_velocity_value_is_refused(tmp_path):
+    cfg_path = tmp_path / "bad-source-velocity.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\nSource.Velocity = 3\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match=r"Source\.Velocity = 3"):
+        load_config(cfg_path)
 
 
 def test_explicit_mode_contradicting_enclosure_depth_raises():
