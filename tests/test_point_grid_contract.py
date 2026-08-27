@@ -3290,3 +3290,130 @@ def test_build_modes_select_their_measured_gmsh_algorithm():
     # INFINITE_BAFFLE returns before the dispatch tail that selects Delaunay,
     # so it is unmeasured and deliberately unchanged.
     assert _built_mesh_algorithm(baffle) is None
+
+
+def test_occ_add_curve_loop_has_no_reorient_parameter():
+    """Pin the reason the reorient fallbacks were removed.
+
+    ``reorient`` exists on the built-in geo kernel's addCurveLoop, not the OCC
+    kernel's. Code that passed it to OCC raised TypeError on every call, so the
+    real work always happened in the except branch. If a future gmsh adds the
+    parameter this test fails and the ordering can be handed back to OCC; until
+    then it stops the dead call being reintroduced as an optimisation.
+    """
+
+    import inspect
+    import gmsh
+
+    assert "reorient" not in inspect.signature(gmsh.model.occ.addCurveLoop).parameters
+    assert "reorient" in inspect.signature(gmsh.model.geo.addCurveLoop).parameters
+
+
+def test_ordered_curve_loop_uses_caller_supplied_endpoints():
+    """A builder that recorded its own curves can order a loop from that map.
+
+    ``point_grid_interfaces`` creates every curve it uses, so it knows the
+    endpoints without asking the model. Ordering from a call-local map keeps it
+    off the enclosure registry, which has a reset lifecycle it does not share.
+    """
+
+    import gmsh
+    from hornlab_mesher.builders.enclosure import _ordered_curve_loop, _reset_curve_endpoints
+
+    initialized_here = False
+    try:
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            initialized_here = True
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("caller-endpoints-test")
+        _reset_curve_endpoints()
+
+        pts = [
+            gmsh.model.occ.addPoint(0.0, 0.0, 0.0),
+            gmsh.model.occ.addPoint(1.0, 0.0, 0.0),
+            gmsh.model.occ.addPoint(1.0, 1.0, 0.0),
+            gmsh.model.occ.addPoint(0.0, 1.0, 0.0),
+        ]
+        c0 = gmsh.model.occ.addLine(pts[0], pts[1])
+        c1 = gmsh.model.occ.addLine(pts[1], pts[2])
+        c2 = gmsh.model.occ.addLine(pts[3], pts[2])   # deliberately reversed
+        c3 = gmsh.model.occ.addLine(pts[0], pts[3])
+        endpoints = {
+            c0: (pts[0], pts[1]),
+            c1: (pts[1], pts[2]),
+            c2: (pts[3], pts[2]),
+            c3: (pts[0], pts[3]),
+        }
+
+        # Out of order and mixed orientation: what OCC itself refuses.
+        ordered = _ordered_curve_loop([c2, c0, c3, c1], endpoints)
+        loop = gmsh.model.occ.addCurveLoop(ordered)
+        surface = gmsh.model.occ.addPlaneSurface([loop])
+        gmsh.model.occ.synchronize()
+
+        assert surface > 0
+        assert gmsh.model.occ.getMass(2, surface) == pytest.approx(1.0, rel=1e-9)
+    finally:
+        _reset_curve_endpoints()
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()
+
+
+def test_caller_supplied_endpoints_replace_rather_than_extend_the_registry():
+    """The caller's map must be consulted *instead of* the module registry.
+
+    A builder outside ``build_enclosure_box``'s reset lifecycle can run while
+    the registry still holds tags from another model. If the two were merged,
+    those stale entries would silently win for tags the caller also supplied
+    and produce a wrongly ordered loop rather than an error.
+    """
+
+    import gmsh
+    from hornlab_mesher.builders.enclosure import (
+        _CURVE_ENDPOINTS,
+        _ordered_curve_loop,
+        _record_curve,
+        _reset_curve_endpoints,
+    )
+
+    initialized_here = False
+    try:
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+            initialized_here = True
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("endpoint-isolation-test")
+        _reset_curve_endpoints()
+
+        pts = [
+            gmsh.model.occ.addPoint(0.0, 0.0, 0.0),
+            gmsh.model.occ.addPoint(1.0, 0.0, 0.0),
+            gmsh.model.occ.addPoint(1.0, 1.0, 0.0),
+            gmsh.model.occ.addPoint(0.0, 1.0, 0.0),
+        ]
+        c0 = gmsh.model.occ.addLine(pts[0], pts[1])
+        c1 = gmsh.model.occ.addLine(pts[1], pts[2])
+        c2 = gmsh.model.occ.addLine(pts[2], pts[3])
+        c3 = gmsh.model.occ.addLine(pts[3], pts[0])
+        truth = {c0: (pts[0], pts[1]), c1: (pts[1], pts[2]),
+                 c2: (pts[2], pts[3]), c3: (pts[3], pts[0])}
+
+        # Poison the registry with endpoints from a notional earlier model that
+        # happened to reuse these tag numbers.
+        for tag in (c0, c1, c2, c3):
+            _record_curve(tag, pts[2], pts[0])
+        assert _CURVE_ENDPOINTS
+
+        ordered = _ordered_curve_loop([c2, c0, c3, c1], truth)
+        loop = gmsh.model.occ.addCurveLoop(ordered)
+        surface = gmsh.model.occ.addPlaneSurface([loop])
+        gmsh.model.occ.synchronize()
+
+        assert gmsh.model.occ.getMass(2, surface) == pytest.approx(1.0, rel=1e-9)
+    finally:
+        _reset_curve_endpoints()
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()

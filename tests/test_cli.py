@@ -726,6 +726,65 @@ def test_ath_text_import_rejects_unsupported_geometry_keys(tmp_path):
     assert params["a0"] == 0
 
 
+def test_ath_text_import_refuses_unrecognised_mesh_keys(tmp_path):
+    """An unknown ``Mesh.*`` key must fail, not fall back to the default.
+
+    Every name in that namespace is read through a whitelist, so anything not
+    on it used to be discarded in silence and the mesher used its own default.
+    Measured: mistyping ``Mesh.ThroatResolution`` as ``Mesh.ThroatResolutin``
+    meshed at the default 4 instead of the requested 9 -- 16,730 triangles
+    rather than 15,060, clean exit code, no diagnostic, and every downstream
+    solve inherits it.
+    """
+
+    typo_path = tmp_path / "typo.cfg"
+    typo_path.write_text(
+        ATH_FLAT_OSSE_CFG + "Mesh.ThroatResolutin = 9\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError) as excinfo:
+        load_config(typo_path)
+    # The near-miss suggestion is the whole point: the message has to name the
+    # key the user meant, or it is just a different way to lose the value.
+    assert "Mesh.ThroatResolutin" in str(excinfo.value)
+    assert "Mesh.ThroatResolution" in str(excinfo.value)
+
+    unknown_path = tmp_path / "unknown.cfg"
+    unknown_path.write_text(ATH_FLAT_OSSE_CFG + "Mesh.Bogus = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Mesh.Bogus"):
+        load_config(unknown_path)
+
+    # Recognised keys, the enclosure sub-block, and a config with no Mesh
+    # additions at all must keep importing.
+    ok_path = tmp_path / "ok.cfg"
+    ok_path.write_text(
+        ATH_FLAT_OSSE_CFG
+        + "Mesh.ThroatResolution = 9\nMesh.Enclosure = {\nDepth = 220\n}\n",
+        encoding="utf-8",
+    )
+    config = load_config(ok_path)
+    assert config["mesh"]["throatResolution"] == 9
+
+
+def test_ath_text_import_reads_surface_fit(tmp_path):
+    """``Mesh.SurfaceFit`` must reach the mesher from a text config.
+
+    It is not an ATH key -- ATH has no equivalent -- but this parser also reads
+    WG-authored text configs, and without a mapping the interpolating acoustic
+    patch fit was reachable from TOML only. That put it out of reach of exactly
+    the users most likely to want it: those importing an ATH config.
+    """
+
+    cfg_path = tmp_path / "fit.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "Mesh.SurfaceFit = interpolate\n", encoding="utf-8"
+    )
+    assert load_config(cfg_path)["mesh"]["surfaceFit"] == "interpolate"
+
+    default_path = tmp_path / "fit-default.cfg"
+    default_path.write_text(ATH_FLAT_OSSE_CFG, encoding="utf-8")
+    assert "surfaceFit" not in load_config(default_path)["mesh"]
+
+
 def test_ath_sim_type_selects_mesh_topology_mode(tmp_path):
     base = ATH_FLAT_OSSE_CFG
 
