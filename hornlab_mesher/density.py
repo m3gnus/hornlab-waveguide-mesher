@@ -25,6 +25,10 @@ _WALL_CLEARANCE_FRACTION = 0.35
 # sagitta grows with the square of the chord, so the target is divided by this
 # before the geometric bound is applied.
 _WALL_CLEARANCE_SIZE_OVERSHOOT = 1.25
+# The same budget for the mouth-side bound, kept as its own constant because the
+# two ends spend it on different things and must be tunable apart -- exactly the
+# separation the rear pair was given. Provisional and empirical like the others.
+_MOUTH_CLEARANCE_FRACTION = 0.35
 _ENCLOSURE_SEAM_SIZE_GRADIENT = 1.0
 _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MIN = 64.0
 _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX = 2000.0
@@ -496,7 +500,9 @@ def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]
     }
 
 
-def _wall_clearance_chord_mm(radius_mm: Any, wall_mm: float) -> Any:
+def _wall_clearance_chord_mm(
+    radius_mm: Any, wall_mm: float, *, fraction: float | None = None
+) -> Any:
     """Largest facet chord whose sagitta stays inside the wall's budget.
 
     A flat facet spanning a chord ``h`` on a surface of local radius ``R``
@@ -506,7 +512,9 @@ def _wall_clearance_chord_mm(radius_mm: Any, wall_mm: float) -> Any:
     shell -- leaving the mouth end at the size the user asked for.
     """
 
-    sagitta = _WALL_CLEARANCE_FRACTION * float(wall_mm)
+    sagitta = (
+        _WALL_CLEARANCE_FRACTION if fraction is None else float(fraction)
+    ) * float(wall_mm)
     radius = np.asarray(radius_mm, dtype=float)
     return (
         2.0
@@ -521,6 +529,7 @@ def _wall_clearance_axial_ramp(
     *,
     wall_mm: float,
     rear_res_fallback: float,
+    fraction: float | None = None,
 ) -> tuple[float, float, float]:
     """Fit the cheapest axial ramp that still respects the chord bound.
 
@@ -546,7 +555,7 @@ def _wall_clearance_axial_ramp(
 
     radius = np.asarray(ring_radius_mm, dtype=float).reshape(-1)
     axial = np.asarray(ring_axial_mm, dtype=float).reshape(-1)
-    bound = _wall_clearance_chord_mm(radius, wall_mm)
+    bound = _wall_clearance_chord_mm(radius, wall_mm, fraction=fraction)
     # A ring with a straight run has an infinite curvature radius there and so
     # an infinite bound: it constrains nothing, and must not be allowed to
     # decide the fit either. Rings whose bound is not finite are simply dropped.
@@ -603,10 +612,42 @@ def _wall_clearance_axial_ramp(
     return base, best[0], best[1]
 
 
-def _wall_clearance_size_formula(
-    axial_expression: str,
+def _mouth_clearance_radial_ramp(
+    station_curvature_radius_mm: Any,
+    station_radial_mm: Any,
     *,
-    rear_res_mm: float,
+    wall_mm: float,
+    size_fallback_mm: float,
+) -> tuple[float, float, float]:
+    """Fit the mouth-side ramp, which runs against radius instead of z.
+
+    Same fit as ``_wall_clearance_axial_ramp`` -- the same chord bound, the same
+    lower convex hull, the same cheapest-admissible-edge cost -- against a
+    different ordering coordinate, so it is that function called with the
+    NEGATED cross-section radius standing in for the axial one. Negated because
+    the fit only considers rising lines, and the mouth bound falls as the radius
+    grows: it is tightest at the rim.
+
+    Radius rather than z because a rollback returns in z. The mouth rim of a
+    stock R-OSSE sits at z 34.9-40.1 mm, and so does the flare that feeds it, so
+    every axial band that contains the rim also contains a stretch of plain
+    flare that needs nothing -- measured, an axial form of this bound costs 2.6x
+    the triangles for the same protection. The two never share a radius.
+    """
+
+    return _wall_clearance_axial_ramp(
+        station_curvature_radius_mm,
+        -np.asarray(station_radial_mm, dtype=float).reshape(-1),
+        wall_mm=wall_mm,
+        rear_res_fallback=size_fallback_mm,
+        fraction=_MOUTH_CLEARANCE_FRACTION,
+    )
+
+
+def _wall_clearance_size_formula(
+    coordinate_expression: str,
+    *,
+    cap_size_mm: float,
     base_mm: float,
     slope_per_mm: float,
     intercept_mm: float,
@@ -619,8 +660,8 @@ def _wall_clearance_size_formula(
     """
 
     return (
-        f"min({float(rear_res_mm):.12g}, max({float(intercept_mm):.12g} + "
-        f"({float(slope_per_mm):.12g})*{axial_expression}, {float(base_mm):.12g}))"
+        f"min({float(cap_size_mm):.12g}, max({float(intercept_mm):.12g} + "
+        f"({float(slope_per_mm):.12g})*{coordinate_expression}, {float(base_mm):.12g}))"
     )
 
 
@@ -632,6 +673,13 @@ def _axis_coordinate_expression(source_axis: str) -> tuple[str, str]:
         axis = "z"
         sign = ""
     return axis, f"(-{axis})" if sign == "-" else axis
+
+
+def _cross_section_radius_expression(axis: str) -> str:
+    """Distance from the model axis, as a Gmsh MathEval expression."""
+
+    other = [name for name in ("x", "y", "z") if name != axis]
+    return f"sqrt({other[0]}^2 + {other[1]}^2)"
 
 
 def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
@@ -739,13 +787,16 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     _axis, coord = _axis_coordinate_expression(geometry.source_axis)
     a0, a1 = geometry.axial_bounds_mm
     span = max(abs(a1 - a0), 1e-9)
-    slope = (mouth_res - throat_res) / span
-    intercept = throat_res - slope * float(a0)
+    axial_slope = (mouth_res - throat_res) / span
+    axial_intercept = throat_res - axial_slope * float(a0)
     # Clamp the throat-to-mouth interpolation so geometry beyond the nominal
     # axial bounds (e.g. R-OSSE rollback) never extrapolates past either size.
     res_lo = min(throat_res, mouth_res)
     res_hi = max(throat_res, mouth_res)
-    axial_formula = f"min(max({intercept:.12g} + ({slope:.12g}) * {coord}, {res_lo:.12g}), {res_hi:.12g})"
+    axial_formula = (
+        f"min(max({axial_intercept:.12g} + ({axial_slope:.12g}) * {coord}, "
+        f"{res_lo:.12g}), {res_hi:.12g})"
+    )
 
     fields: list[int] = []
 
@@ -770,9 +821,135 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             )
         fields.append(restrict)
 
+    # The mouth-side half of the clearance guard. The rear half below bounds the
+    # outer shell where its RINGS are tight; this one bounds the acoustic
+    # surface where its MERIDIAN is, which is the only thing that bites at a
+    # rollback -- there the ring is the mouth circle and the meridian turns at a
+    # few millimetres. Left unbounded, one mouth-resolution element chords the
+    # whole rollback and the acoustic surface itself passes out through the
+    # shell behind it: measured on a stock R-OSSE with a 3 mm wall, 341
+    # self-intersecting pairs at the rim, all of them the bore crossing the
+    # shell rather than the other way round.
+    inner_formula = axial_formula
+    mouth_clearance_target_mm: float | None = None
+    mouth_clearance = geometry.metadata.get("mouthRimClearance")
+    if mouth_clearance:
+        mouth_wall_mm = float(mouth_clearance.get("wallThicknessMm", 0.0) or 0.0)
+        station_curvature = (
+            mouth_clearance.get("stationMinMeridianCurvatureRadiusMm") or []
+        )
+        station_radial = mouth_clearance.get("stationMinRadialMm") or []
+        station_axial_lo = mouth_clearance.get("stationMinAxialMm") or []
+        station_axial_hi = mouth_clearance.get("stationMaxAxialMm") or []
+        if (
+            mouth_wall_mm > 0.0
+            and len(station_curvature)
+            == len(station_radial)
+            == len(station_axial_lo)
+            == len(station_axial_hi)
+            > 0
+        ):
+            # Fit against the stations the throat-to-mouth interpolation does
+            # NOT already satisfy, and only those. Every station constrains a
+            # rising ramp, so one satisfied station in the wrong place flattens
+            # it: on a stock R-OSSE the throat's 14.7 mm meridian licenses only
+            # 8.7 mm of chord, and including it drops the fitted slope from
+            # 0.95 to 0.034 mm per mm, pinning the entire bore at the rim's
+            # size -- 1,672 triangles became 8,072 for a defect confined to the
+            # last 20 mm of radius. The interpolation asks for 4 mm at that
+            # throat already, so the bound was never in danger there.
+            axial_sign = -1.0 if coord.startswith("(-") else 1.0
+
+            def axial_size_at(values: Any) -> np.ndarray:
+                return np.clip(
+                    axial_intercept
+                    + axial_slope
+                    * axial_sign
+                    * np.asarray(values, dtype=float).reshape(-1),
+                    res_lo,
+                    res_hi,
+                )
+
+            # A station spans an axial range once the section is not a circle,
+            # and the size it is really asking for is the largest over that
+            # range -- taking one end would understate it and over-constrain.
+            axial_size = np.maximum(
+                axial_size_at(station_axial_lo), axial_size_at(station_axial_hi)
+            )
+            bound = _wall_clearance_chord_mm(
+                np.asarray(station_curvature, dtype=float).reshape(-1),
+                mouth_wall_mm,
+                fraction=_MOUTH_CLEARANCE_FRACTION,
+            )
+            # ...and only on the rollback: the stations from the meridian's
+            # furthest axial reach onward, which is exactly the stretch that
+            # has turned back on itself and wrapped a shell around its own rim.
+            # A horn that does not roll back has its furthest reach at the last
+            # station, so the set is empty and the cap is never emitted.
+            #
+            # This is a scope, not an optimisation. The bound is expressed as a
+            # ramp that falls with radius, so it can only be tightest at the
+            # widest point; a station that needs it at the NARROW end -- an
+            # OSSE throat turning at 14.7 mm, meshed at a deliberately coarse
+            # 20 mm -- can only be honoured by flooring the whole horn at that
+            # station's size. That end belongs to throat resolution and to the
+            # rear guard, not here, and letting it in cost 796 triangles where
+            # 20 mm asked for far fewer.
+            rollback = int(
+                np.argmax(np.asarray(station_axial_hi, dtype=float).reshape(-1))
+            )
+            binding = np.flatnonzero(bound < axial_size - 1.0e-9)
+            binding = binding[binding >= rollback]
+            base, slope, intercept = (res_hi, 0.0, res_hi)
+            if binding.size:
+                base, slope, intercept = _mouth_clearance_radial_ramp(
+                    np.asarray(station_curvature, dtype=float).reshape(-1)[binding],
+                    np.asarray(station_radial, dtype=float).reshape(-1)[binding],
+                    wall_mm=mouth_wall_mm,
+                    size_fallback_mm=res_hi,
+                )
+            # Inert unless it asks for something the axial interpolation does
+            # not already provide. ``axial_formula`` never exceeds ``res_hi``,
+            # so a floor at or above it can never bind, and emitting a field
+            # that cannot bind would still perturb Gmsh's tie-breaking on
+            # geometry this guard has no business touching.
+            if base < res_hi:
+                # Capped at ``res_hi`` and not at ``mouth_res``: on a design
+                # whose throat is coarser than its mouth the latter would
+                # refine the throat, which this bound says nothing about.
+                inner_formula = "min({}, {})".format(
+                    axial_formula,
+                    _wall_clearance_size_formula(
+                        f"(-{_cross_section_radius_expression(_axis)})",
+                        cap_size_mm=res_hi,
+                        base_mm=base,
+                        slope_per_mm=slope,
+                        intercept_mm=intercept,
+                    ),
+                )
+                mouth_clearance_target_mm = float(base)
+                geometry.metadata["mouthRimClearance"] = {
+                    **{
+                        key: value
+                        for key, value in mouth_clearance.items()
+                        if key
+                        not in {
+                            "stationMinMeridianCurvatureRadiusMm",
+                            "stationMinRadialMm",
+                            "stationMinAxialMm",
+                            "stationMaxAxialMm",
+                        }
+                    },
+                    "clearanceFraction": _MOUTH_CLEARANCE_FRACTION,
+                    "sizeOvershoot": _WALL_CLEARANCE_SIZE_OVERSHOOT,
+                    "requestedMouthResolutionMm": float(mouth_res),
+                    "cappedSizeAtRimMm": float(base),
+                    "capActive": True,
+                }
+
     for group_key in ("inner", "mouth"):
         add_field(
-            axial_formula,
+            inner_formula,
             mesh_groups.get(group_key, []),
             curve_groups.get(group_key, []),
         )
@@ -808,7 +985,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             )
             outer_formula = _wall_clearance_size_formula(
                 coord,
-                rear_res_mm=rear_res,
+                cap_size_mm=rear_res,
                 base_mm=base,
                 slope_per_mm=slope,
                 intercept_mm=intercept,
@@ -1060,6 +1237,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     # quietly undo it.
     if clearance_target_mm is not None:
         sizes.append(float(clearance_target_mm))
+    if mouth_clearance_target_mm is not None:
+        sizes.append(float(mouth_clearance_target_mm))
     sizes.extend(enclosure_resolution_values)
     sizes = [v for v in sizes if math.isfinite(v) and v > 0.0]
     if not sizes:
