@@ -140,7 +140,7 @@ def test_formula_is_parseable_by_gmsh_and_matches_the_fit() -> None:
     )
     formula = _wall_clearance_size_formula(
         "z",
-        rear_res_mm=40.0,
+        cap_size_mm=40.0,
         base_mm=base,
         slope_per_mm=slope,
         intercept_mm=intercept,
@@ -167,7 +167,7 @@ def test_no_wall_means_no_cap() -> None:
 
     assert (
         _wall_clearance_size_formula(
-            "z", rear_res_mm=40.0, base_mm=40.0, slope_per_mm=0.0, intercept_mm=40.0
+            "z", cap_size_mm=40.0, base_mm=40.0, slope_per_mm=0.0, intercept_mm=40.0
         )
         == "min(40, max(40 + (0)*z, 40))"
     )

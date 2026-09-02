@@ -107,6 +107,78 @@ def _ring_curvature_radius_mm(ring_xy: np.ndarray, *, closed: bool) -> np.ndarra
     return radius
 
 
+def _meridian_curvature_radius_mm(meridian: np.ndarray) -> np.ndarray:
+    """Local curvature radius along each meridian of a point grid.
+
+    The three-dimensional circumradius of each consecutive triple *along the
+    length direction*, which is the osculating radius of the meridian curve --
+    the quantity a mouth roundover turns at. ``_ring_curvature_radius_mm``
+    measures the orthogonal direction and cannot see a rollback at all: at the
+    mouth rim of an R-OSSE the ring is a 150 mm circle while the meridian turns
+    at under 4 mm.
+
+    The ends of a meridian have no triple and are left unconstrained; a
+    meridian is never closed, so there is nothing to wrap around.
+    """
+
+    points = np.asarray(meridian, dtype=np.float64)
+    radius = np.full(points.shape[:-1], np.inf, dtype=np.float64)
+    if points.shape[-2] < 3:
+        return radius
+
+    first = points[..., 1:-1, :] - points[..., :-2, :]
+    second = points[..., 2:, :] - points[..., 1:-1, :]
+    third = points[..., 2:, :] - points[..., :-2, :]
+    twice_area = np.linalg.norm(np.cross(first, third), axis=-1)
+    np.divide(
+        np.linalg.norm(first, axis=-1)
+        * np.linalg.norm(second, axis=-1)
+        * np.linalg.norm(third, axis=-1),
+        2.0 * twice_area,
+        out=radius[..., 1:-1],
+        where=twice_area > 0.0,
+    )
+    return radius
+
+
+def _mouth_clearance_metadata(
+    geometry: PointGridHornGeometry, inner_points: np.ndarray
+) -> dict[str, Any]:
+    """Publish what the density stage needs to keep the bore off the shell.
+
+    The sibling of the outer-wall block below, for the other end of the horn
+    and the other surface. The rear guard bounds the outer shell's AZIMUTHAL
+    chord, because near the throat the shell's rings are small. At the mouth
+    the rings are at their largest and that bound never bites, yet an R-OSSE
+    rollback turns the MERIDIAN through more than a right angle inside a few
+    millimetres. One element sized by ``mouth_res_mm`` then chords the whole
+    rollback, and the chord -- which belongs to the acoustic surface, not to
+    the shell -- passes clean through the outer wall behind it.
+
+    Reported per length station as ``(cross-section distance from the axis,
+    tightest meridian radius)``, because the constraint is radial here and not
+    axial: a rollback returns in the axial coordinate, so the rim and the flare
+    share an axial band and no axial bound can separate them. They never share
+    a radius.
+    """
+
+    points = np.asarray(inner_points, dtype=np.float64)
+    curvature = _meridian_curvature_radius_mm(points).min(axis=0)
+    radial = np.hypot(points[..., 0], points[..., 1]).min(axis=0)
+    return {
+        "wallThicknessMm": float(geometry.wall_thickness_mm),
+        "stationMinMeridianCurvatureRadiusMm": [float(v) for v in curvature],
+        "stationMinRadialMm": [float(v) for v in radial],
+        # The axial span of each station, so the density stage can tell which
+        # stations the throat-to-mouth interpolation already satisfies. It
+        # must: the throat's own meridian turns at 14.7 mm on a stock R-OSSE
+        # and would otherwise flatten the fit to a near-constant, pinning the
+        # whole bore at the rim's size for a defect that lives at the rim.
+        "stationMinAxialMm": [float(v) for v in points[..., 2].min(axis=0)],
+        "stationMaxAxialMm": [float(v) for v in points[..., 2].max(axis=0)],
+    }
+
+
 def _wall_clearance_metadata(
     geometry: PointGridHornGeometry, outer_points: np.ndarray
 ) -> dict[str, Any]:
@@ -238,7 +310,8 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         symmetry_snap_tol_mm=1.0,
         mesh_algorithm=MESH_ALGORITHM_FRONTAL_DELAUNAY,
         metadata={
-            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
+            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points),
+            "mouthRimClearance": _mouth_clearance_metadata(geometry, inner_points),
         },
     )
 
@@ -387,6 +460,7 @@ def _build_acoustic_freestanding_point_grid(
         metadata={
             "meshTopologyMode": "acoustic",
             "outerWallClearance": _wall_clearance_metadata(geometry, outer_points),
+            "mouthRimClearance": _mouth_clearance_metadata(geometry, inner_points),
         },
     )
 
@@ -486,6 +560,7 @@ def _build_wg_freestanding_point_grid(
         symmetry_snap_tol_mm=1.0,
         mesh_algorithm=MESH_ALGORITHM_AUTOMATIC,
         metadata={
-            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points)
+            "outerWallClearance": _wall_clearance_metadata(geometry, outer_points),
+            "mouthRimClearance": _mouth_clearance_metadata(geometry, inner_points),
         },
     )
