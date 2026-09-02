@@ -54,6 +54,21 @@ from .cad import (
     write_step_from_config,
     write_wglink,
 )
+from .quality import (
+    ChordDeviationReport,
+    ElementShapeReport,
+    FAIL_CHORD_DEVIATION_MM,
+    FAIL_P1_ANGLE_DEG,
+    QualityGateResult,
+    SLIVER_ANGLE_DEG,
+    WARN_CHORD_DEVIATION_MM,
+    WARN_P1_ANGLE_DEG,
+    chord_deviation_report,
+    element_shape_report,
+    evaluate_quality_gate,
+    gmsh_sicn,
+    mesh_quality_report,
+)
 from .datums import derive_datums
 from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
 from .tags import PhysicalGroup
@@ -110,6 +125,19 @@ def load_config(*args, **kwargs):
 
 
 __all__ = [
+    "ChordDeviationReport",
+    "ElementShapeReport",
+    "FAIL_CHORD_DEVIATION_MM",
+    "FAIL_P1_ANGLE_DEG",
+    "QualityGateResult",
+    "SLIVER_ANGLE_DEG",
+    "WARN_CHORD_DEVIATION_MM",
+    "WARN_P1_ANGLE_DEG",
+    "chord_deviation_report",
+    "element_shape_report",
+    "evaluate_quality_gate",
+    "gmsh_sicn",
+    "mesh_quality_report",
     "CadInfo",
     "SOURCE_INTERFACE_FEATURE",
     "WgLinkIdentity",
