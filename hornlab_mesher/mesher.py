@@ -35,6 +35,7 @@ from .normals import (
     repair_orientation,
     validate_orientation,
 )
+from .quality import evaluate_quality_gate, mesh_quality_report
 from .tags import PHYSICAL_NAMES, PhysicalGroup
 
 
@@ -155,12 +156,22 @@ def build_mesh_with_info(
     density: MeshDensity | str | Path | None = None,
     output_path: str | Path | None = None,
     scale_to_metres: bool = True,
+    quality_gate: str = "report",
 ) -> tuple[Path, MeshInfo]:
     """Build a ``.msh`` file and return it with the inspection info.
 
     Equivalent to ``build_mesh`` followed by ``load_mesh``, but the info is
     collected from the post-processed arrays at write time so the file is not
     read back.
+
+    ``quality_gate`` selects what happens to the element-shape and chord
+    deviation measures in ``info.metadata["quality"]``. ``"report"``, the
+    default, only records them; ``"strict"`` additionally refuses a build whose
+    measures cross the thresholds in ``quality``. The default is ``"report"``
+    for the same reason the self-intersection guard shipped as a warning: seven
+    of the thirty meshes in the application's own library cross the element
+    shape threshold and twelve cross the chord one, so a gate enabled by default
+    would reject a large part of the existing library on the day it landed.
     """
 
     if isinstance(density, (str, Path)) and output_path is None:
@@ -279,6 +290,17 @@ def build_mesh_with_info(
                 )
             if built.metadata:
                 info.metadata.update(built.metadata)
+            if quality_gate == "strict":
+                verdict = evaluate_quality_gate(
+                    info.metadata.get("quality") or {}, strict=True
+                )
+                if not verdict.passed:
+                    raise MesherError("; ".join(verdict.failures))
+            elif quality_gate != "report":
+                raise MesherError(
+                    f"quality_gate must be 'report' or 'strict', "
+                    f"got {quality_gate!r}"
+                )
             _validate_physical_tags(set(info.physical_groups))
             staged_path.replace(out_path)
             staged_path = None
@@ -441,6 +463,16 @@ def _postprocess_mesh(
         # to mislabel a small unscaled build as metres.
         units="m" if scale_to_metres else "mm",
         edge_stats_mm=edge_stats,
+        # Measured here rather than by a caller because this is the one place
+        # that holds the finished arrays and knows their units. Recording it
+        # costs a pass over the triangles; acting on it is the caller's choice.
+        metadata={
+            "quality": mesh_quality_report(
+                points,
+                triangles,
+                vertex_units="m" if scale_to_metres else "mm",
+            )
+        },
     )
 
 
