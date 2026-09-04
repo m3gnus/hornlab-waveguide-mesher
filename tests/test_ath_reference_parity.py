@@ -375,7 +375,14 @@ def test_solana_enclosure_mesh_stays_close_to_ath_reference(case: str, tmp_path:
 @pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
 @pytest.mark.parametrize(
     "case",
-    ["asro2", "250917asro68", "250917asro68q", "250728solana", "250728solana-q"],
+    [
+        "asro2",
+        "250917asro68",
+        "250917asro68q",
+        "250728solana",
+        "250728solana-q",
+        "260330solana",
+    ],
 )
 def test_ath_reference_configs_build_end_to_end(case: str, tmp_path: Path):
     result = build_from_config(load_config(ATH_REFERENCE_ROOT / case / "config.txt"), tmp_path / f"{case}.msh")
