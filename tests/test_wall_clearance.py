@@ -336,3 +336,76 @@ def test_an_open_ring_does_not_wrap_across_the_cut_plane() -> None:
     curvature = _ring_curvature_radius_mm(quarter[:, None, :], closed=False)
     assert math.isinf(float(curvature[0, 0])) and math.isinf(float(curvature[-1, 0]))
     assert float(np.min(curvature[1:-1])) == pytest.approx(30.0, rel=1e-3)
+
+
+def _pinched_shell() -> tuple[np.ndarray, np.ndarray]:
+    """A flaring shell whose offset has collapsed over a few throat rings.
+
+    Shaped after the ATH reference config ``260330solana``, whose OSSE outer
+    offset folds near the throat -- ``profile_sampling`` reports the normal flip
+    on its own -- leaving ring curvature radii of hundredths of a millimetre
+    among otherwise healthy ones.
+    """
+
+    radius, axial = _flaring_shell()
+    radius = radius.copy()
+    radius[2:8] = np.array([0.0079, 0.05, 0.2, 0.44, 0.9, 1.8])
+    return radius, axial
+
+
+def test_a_collapsed_ring_does_not_pin_the_whole_shell() -> None:
+    """The guard may refine inside the requested mesh, not replace it.
+
+    Its bound falls as ``sqrt(R)``, so a ring that has folded drives it toward
+    zero, and the fitted ramp's intercept then carries that size along the
+    entire shell. Measured on ``260330solana``: rings down to 0.44 mm of bound
+    held a horn whose coarsest requested resolution is 15 mm at 1.2 mm.
+    """
+
+    radius, axial = _pinched_shell()
+    finest_requested = 5.0
+
+    unfloored = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=5.0, rear_res_fallback=15.0
+    )
+    floored = _wall_clearance_axial_ramp(
+        radius,
+        axial,
+        wall_mm=5.0,
+        rear_res_fallback=15.0,
+        floor_mm=finest_requested,
+    )
+
+    # The unfloored fit is the defect: a base far below anything requested.
+    assert unfloored[0] < 1.0
+    assert floored[0] == pytest.approx(finest_requested)
+    # And the ramp it carries stays at or above the floor everywhere on the
+    # shell, which is what stops the bore being re-meshed at the fold's size.
+    size = np.maximum(floored[2] + floored[1] * axial, floored[0])
+    assert float(size.min()) >= finest_requested - 1.0e-9
+
+
+def test_the_floor_leaves_a_healthy_shell_untouched() -> None:
+    """It is a backstop, not a policy: a shell that never pinches is inert."""
+
+    radius, axial = _flaring_shell()
+    without = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=3.0, rear_res_fallback=15.0
+    )
+    with_floor = _wall_clearance_axial_ramp(
+        radius, axial, wall_mm=3.0, rear_res_fallback=15.0, floor_mm=0.5
+    )
+    assert with_floor == without
+
+
+def test_the_floor_warns_when_it_binds(caplog) -> None:
+    """Silently coarsening a wall the guard cannot protect would hide it."""
+
+    radius, axial = _pinched_shell()
+    with caplog.at_level("WARNING", logger="hornlab_mesher.density"):
+        _wall_clearance_axial_ramp(
+            radius, axial, wall_mm=5.0, rear_res_fallback=15.0, floor_mm=5.0
+        )
+    assert any(
+        "outer wall clearance wants" in record.message for record in caplog.records
+    )

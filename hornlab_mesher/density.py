@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -9,6 +10,8 @@ from .cost import TRIANGLES_PER_AREA_OVER_H2
 from .geometry import BuiltGeometry, MeshDensity
 from .profile_common import _parse_number_list
 from .tags import PhysicalGroup, SOURCE_TAGS
+
+logger = logging.getLogger(__name__)
 
 
 _PREMESH_TRIANGLE_LIMIT_SLACK = 2.0
@@ -530,6 +533,7 @@ def _wall_clearance_axial_ramp(
     wall_mm: float,
     rear_res_fallback: float,
     fraction: float | None = None,
+    floor_mm: float | None = None,
 ) -> tuple[float, float, float]:
     """Fit the cheapest axial ramp that still respects the chord bound.
 
@@ -559,10 +563,50 @@ def _wall_clearance_axial_ramp(
     # A ring with a straight run has an infinite curvature radius there and so
     # an infinite bound: it constrains nothing, and must not be allowed to
     # decide the fit either. Rings whose bound is not finite are simply dropped.
-    finite = np.isfinite(bound) & np.isfinite(axial)
+    #
+    # A bound of zero is dropped for the opposite reason. It means the sagitta
+    # the wall can afford already exceeds the ring's own curvature radius --
+    # ``2*s*R - s^2 <= 0`` -- so no element size satisfies it and the ring is
+    # asking for a mesh that cannot exist. That is not a meshing problem: it is
+    # an outer offset that has collapsed or turned itself inside out, which
+    # ``_ring_normal_flip_warning`` already reports on its own terms. Left in,
+    # such a ring pins ``base`` at zero and drags the fitted line to a negative
+    # intercept, which floors the ENTIRE shell at ``Mesh.MeshSizeMin``: measured
+    # on the ATH reference config ``260330solana``, one ring of radius 0.0079 mm
+    # near the throat seam took the mesh from ~8k to 85,846 triangles, 85% of
+    # them at 1.2 mm where the config asked for 5-10 mm.
+    finite = np.isfinite(bound) & np.isfinite(axial) & (bound > 0.0)
     if not np.any(finite):
         return float(rear_res_fallback), 0.0, float(rear_res_fallback)
     radius, axial, bound = radius[finite], axial[finite], bound[finite]
+    # The guard may refine within the mesh the user asked for; it may not
+    # silently replace it. Its bound falls as the square root of the ring's
+    # curvature radius, so a shell that pinches anywhere -- a fold, a cusp, an
+    # offset that has begun to turn itself inside out -- drives it toward zero
+    # and, through the fitted ramp's intercept, floors the WHOLE bore there.
+    # Measured on the ATH reference config ``260330solana``: rings down to
+    # 0.44 mm of bound pinned a horn whose coarsest requested resolution is
+    # 15 mm at 1.2 mm, 85,846 triangles against ATH's 8,384, 85% of them below
+    # 2 mm. Clamping at the finest size the user actually requested keeps the
+    # guard's protection everywhere it can be honoured and stops it running
+    # away where it cannot; the run-away case is a wall the mesh cannot save,
+    # and ``profile_sampling`` already reports it in its own terms.
+    if floor_mm is not None and float(floor_mm) > 0.0:
+        clamped = int(np.count_nonzero(bound < float(floor_mm)))
+        if clamped:
+            logger.warning(
+                "[hornlab-mesher] outer wall clearance wants %.3f mm on %d of %d "
+                "rings, finer than the %.3f mm this build requests anywhere; "
+                "holding at %.3f mm. The outer shell may still chord through "
+                "its own wall there -- reduce the wall thickness or open the "
+                "throat curvature. The acoustic (inner) surface is unaffected.",
+                float(np.min(bound)),
+                clamped,
+                int(bound.size),
+                float(floor_mm),
+                float(floor_mm),
+            )
+        bound = np.maximum(bound, float(floor_mm))
     base = float(np.min(bound))
     if len(radius) < 2:
         return base, 0.0, base
@@ -977,11 +1021,19 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         ring_radius = clearance.get("ringMinCurvatureRadiusMm") or []
         ring_axial = clearance.get("ringMaxAxialMm") or []
         if wall_mm > 0.0 and min_radius > 0.0 and len(ring_radius) == len(ring_axial) > 0:
+            requested = [
+                value
+                for value in (throat_res, mouth_res, rear_res, interface_res)
+                if value is not None
+                and math.isfinite(float(value))
+                and float(value) > 0.0
+            ]
             base, slope, intercept = _wall_clearance_axial_ramp(
                 ring_radius,
                 ring_axial,
                 wall_mm=wall_mm,
                 rear_res_fallback=rear_res,
+                floor_mm=min(requested) if requested else None,
             )
             outer_formula = _wall_clearance_size_formula(
                 coord,
