@@ -15,6 +15,7 @@ from hornlab_mesher.cli import build_from_config, build_geometry_params, load_co
 from hornlab_mesher.cli import _bool, _enclosure_from_config, _reshape_grid, _section
 from hornlab_mesher.geometry import PointGridHornGeometry
 from hornlab_mesher.mesher import _triangles_and_physical_tags
+from hornlab_mesher.profile_formulas import calculate_osse, osse_coverage_inversion
 from hornlab_mesher.profiles import build_point_grid, eval_param
 from hornlab_mesher.builders.point_grid import build_point_grid as build_point_grid_geometry
 
@@ -370,6 +371,79 @@ def test_solana_enclosure_mesh_stays_close_to_ath_reference(case: str, tmp_path:
     assert set(actual_areas) == set(reference_areas)
     for tag, reference_area in reference_areas.items():
         assert actual_areas[tag] == pytest.approx(reference_area, rel=0.06)
+
+
+def _ath_wall_nodes_in_horn_frame(case: str, vertical_offset_mm: float) -> np.ndarray:
+    """ATH's wall nodes as ``(phi, radius, z)``, undoing ``Mesh.VerticalOffset``."""
+
+    mesh = meshio.read(_reference_mesh_file(case))
+    points = _points_in_mm(mesh)
+    triangles, tags = _triangles_and_physical_tags(mesh)
+    wall = points[np.unique(triangles[tags == 1])]
+    y = wall[:, 1] - vertical_offset_mm
+    return np.column_stack(
+        (np.arctan2(y, wall[:, 0]), np.hypot(wall[:, 0], y), wall[:, 2])
+    )
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+@pytest.mark.parametrize(
+    ("case", "gcurve_dist", "at_mouth"),
+    [
+        # GCurve.Distance is not an ATH key: ATH leaves the curve at the mouth.
+        ("260330saw", None, True),
+        # GCurve.Dist is, and ATH honours it at half the horn length.
+        ("260330solana", 0.5, False),
+    ],
+)
+def test_guiding_curve_station_matches_the_wall_ath_meshed(
+    case: str, gcurve_dist: float | None, at_mouth: bool
+):
+    """The guiding curve sits where ATH's own mesh says it sits.
+
+    Reading ``GCurve.Distance`` as an alias for ``GCurve.Dist`` moved
+    ``260330saw``'s curve from the mouth to mid-length and missed ATH's wall by
+    89 mm; ``260330solana`` spells the key ``Dist`` and pins the other side of
+    the rule, so a fix that simply stopped placing the curve would fail here.
+
+    Compared over the pre-morph part of the wall (``t <= Morph.FixedPart``),
+    where the surface is exactly the guiding-curve-inverted OS-SE and no morph
+    target is layered on top. ATH's freestanding mesh carries the offset outer
+    shell in the same physical group, so the wall nodes are the ones that land
+    on this mesher's acoustic surface; the rest sit a wall thickness outside.
+    """
+
+    config = load_config(ATH_REFERENCE_ROOT / case / "config.txt")
+    params, _formula, _mode = build_geometry_params(config)
+    # 0 is the builder's "no station given", which the inversion reads as the mouth.
+    assert params["gcurveDist"] == (0 if gcurve_dist is None else gcurve_dist)
+
+    length = float(params["L"])
+    inversion = osse_coverage_inversion(params, 0.0)
+    assert inversion is not None and inversion.at_mouth is at_mouth
+
+    nodes = _ath_wall_nodes_in_horn_frame(
+        case, float(_section(config, "mesh")["verticalOffset"])
+    )
+    pre_morph = nodes[
+        (nodes[:, 2] > 1.0) & (nodes[:, 2] <= float(params["morphFixed"]) * length)
+    ]
+    assert len(pre_morph) > 200
+
+    deviation = np.array(
+        [
+            calculate_osse(float(z), float(phi), params)[1] - radius
+            for phi, radius, z in pre_morph
+        ]
+    )
+    on_surface = np.abs(deviation) <= 0.5
+    # Two thirds of the pre-morph nodes are the acoustic wall itself; with the
+    # curve at the wrong station the fraction collapses to 2%.
+    assert on_surface.mean() > 0.7
+    assert np.max(np.abs(deviation[on_surface])) <= 0.25
+    # Everything else is the outer shell, outside the acoustic wall by roughly
+    # the 5 mm default wall thickness -- not a second population of near misses.
+    assert np.max(deviation[~on_surface]) < -4.0
 
 
 @pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")

@@ -6,6 +6,7 @@ import pytest
 
 from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
 from hornlab_mesher.config_parser import ConfigError
+from hornlab_mesher.profile_formulas import osse_coverage_inversion
 
 
 ROSSE_CFG = """
@@ -291,6 +292,52 @@ Mesh.InterfaceResolution = 12
     assert params["subdomainSlices"] == "3,5"
     assert params["interfaceOffset"] == 10
     assert params["interfaceResolution"] == 12
+
+
+def _gcurve_distance_cfg(distance_key: str) -> str:
+    return f"""
+OSSE = {{
+  Length = 100
+}}
+GCurve.Type = 2
+GCurve.Width = 200
+GCurve.{distance_key} = 0.5
+Mesh.LengthSegments = 4
+"""
+
+
+def test_gcurve_distance_is_ignored_like_ath_and_says_so(tmp_path, caplog):
+    cfg_path = tmp_path / "gcurve-distance.cfg"
+    cfg_path.write_text(_gcurve_distance_cfg("Distance"), encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="hornlab_mesher.config_parser"):
+        config = load_config(cfg_path)
+    params, _formula, _mode = build_geometry_params(config)
+    inversion = osse_coverage_inversion(params, 0.0)
+
+    # ATH reads GCurve.Dist only, so GCurve.Distance leaves the guiding curve
+    # at the mouth. Honouring it as an alias moved the curve to mid-length and
+    # built a different waveguide from the one ATH builds off the same file.
+    assert "gcurveDist" not in config["gcurve"]
+    assert inversion.at_mouth
+    assert inversion.station_z == 100.0
+    assert "GCurve.Distance" in caplog.text
+    assert "GCurve.Dist" in caplog.text
+
+
+def test_gcurve_dist_still_places_the_curve(tmp_path, caplog):
+    cfg_path = tmp_path / "gcurve-dist.cfg"
+    cfg_path.write_text(_gcurve_distance_cfg("Dist"), encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="hornlab_mesher.config_parser"):
+        config = load_config(cfg_path)
+    params, _formula, _mode = build_geometry_params(config)
+    inversion = osse_coverage_inversion(params, 0.0)
+
+    assert config["gcurve"]["gcurveDist"] == 0.5
+    assert not inversion.at_mouth
+    assert inversion.station_z == 50.0
+    assert "GCurve.Distance" not in caplog.text
 
 
 def test_parse_ath_config_preserves_interface_arrays(tmp_path):

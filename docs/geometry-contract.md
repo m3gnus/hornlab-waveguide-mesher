@@ -234,7 +234,12 @@ Canonical rule:
 
 - Compute the target guiding-curve radius `r_g(phi)`.
 - Interpret `GCurve.Dist` in `(0, 1]` as a fraction of the main horn length;
-  values greater than `1` are absolute millimetres.
+  values greater than `1` are absolute millimetres. Absent, the curve sits at
+  the mouth.
+- `GCurve.Distance` is **not** an ATH key and does not move the curve. ATH
+  ignores it; so does this importer, with a warning naming `GCurve.Dist`.
+  Reading it as an alias placed a real archive config's curve at mid-length
+  and missed ATH's own mesh by 89 mm.
 - Invert OS-SE coverage angle `a` so `r_osse(target_z, phi) == r_g(phi)`.
 
 Supported guiding curve targets:

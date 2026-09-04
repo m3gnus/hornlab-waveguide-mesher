@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,6 +12,9 @@ try:  # pragma: no cover - exercised only on Python 3.10
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigError(ValueError):
@@ -190,6 +194,38 @@ def _reject_unsupported_ath_keys(
             + ". They would be ignored and the mesher would silently use its "
             "defaults, so the mesh would not match the config."
         )
+
+
+def _warn_unknown_gcurve_distance(gcurve_items: Mapping[str, str]) -> None:
+    """Say that ``GCurve.Distance`` is not read, because ATH does not read it.
+
+    ATH's key is ``GCurve.Dist``. ``Distance`` was accepted here as an alias for
+    it, which silently moved the guiding curve for archived reference configs
+    that ATH meshes with the curve at its default station -- the mouth.
+    Comparing references with different values confirms that ATH ignores the
+    key rather than interpreting it in another unit.
+
+    So the alias is gone; ignoring the key is what ATH does. Ignoring it
+    *quietly* is not, hence this warning: whoever wrote ``Distance`` meant to
+    move the curve, and in ATH that had no effect either.
+    """
+
+    if "Distance" not in gcurve_items:
+        return
+    if "Dist" in gcurve_items:
+        logger.warning(
+            "[hornlab-mesher] ignoring GCurve.Distance = %s: ATH has no such "
+            "key, and GCurve.Dist = %s is what places the guiding curve.",
+            gcurve_items["Distance"],
+            gcurve_items["Dist"],
+        )
+        return
+    logger.warning(
+        "[hornlab-mesher] ignoring GCurve.Distance = %s: ATH has no such key "
+        "(it reads GCurve.Dist), so the guiding curve stays at the mouth, as "
+        "it does in ATH. Rename it to GCurve.Dist to move it along the horn.",
+        gcurve_items["Distance"],
+    )
 
 
 def parse_text_config(content: str) -> dict[str, Any]:
@@ -402,6 +438,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("GCurve", {}),
         **blocks.get("GCURVE", {}),
     }
+    _warn_unknown_gcurve_distance(gcurve_items)
     gcurve = mapped(
         gcurve_items,
         (
@@ -409,7 +446,6 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("Width", "gcurveWidth"),
             ("AspectRatio", "gcurveAspectRatio"),
             ("Dist", "gcurveDist"),
-            ("Distance", "gcurveDist"),
             ("Rot", "gcurveRot"),
             ("SF", "gcurveSF"),
             ("SF.a", "gcurveSfA"),
