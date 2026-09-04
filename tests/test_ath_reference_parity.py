@@ -446,6 +446,84 @@ def test_guiding_curve_station_matches_the_wall_ath_meshed(
     assert np.max(deviation[~on_surface]) < -4.0
 
 
+def _mouth_outline(case: str) -> tuple[np.ndarray, np.ndarray, float]:
+    """This mesher's mouth ring as ``(phi, radius)``, plus ``VerticalOffset``."""
+
+    config = load_config(ATH_REFERENCE_ROOT / case / "config.txt")
+    params, _formula, _mode = build_geometry_params(config)
+    grid = build_point_grid(params)
+    n_phi = int(grid["grid_n_phi"])
+    n_length = int(grid["grid_n_length"])
+    mouth = np.asarray(grid["inner_points"], dtype=np.float64).reshape(
+        n_phi, n_length + 1, 3
+    )[:, -1, :]
+    phi = np.arctan2(mouth[:, 1], mouth[:, 0])
+    radius = np.hypot(mouth[:, 0], mouth[:, 1])
+    order = np.argsort(phi)
+    return phi[order], radius[order], float(_section(config, "mesh")["verticalOffset"])
+
+
+@pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
+@pytest.mark.parametrize(
+    ("case", "target_half_dimensions"),
+    [
+        # Morph.Width / Morph.Height are not ATH keys: ATH drops them and
+        # derives the target from the raw mouth extents instead. Both of these
+        # write 360 x 220 and ATH still meshes a ~400 x 400 mouth.
+        ("test3_morph_only_shrink", (0, 0)),
+        # Same file with Morph.AllowShrinkage flipped. ATH's two meshes are
+        # byte-identical, which they could not be if the written 360 x 220 were
+        # read: at 60 degrees coverage that target shrinks the mouth by 90 mm.
+        ("test4_morph_only_noshrink", (0, 0)),
+        ("260330saw", (0, 0)),
+        # Morph.TargetWidth / Morph.TargetHeight are, and ATH honours them, so
+        # a fix that ignored every target dimension would fail here.
+        ("260330solana", (320, 320)),
+    ],
+)
+def test_morph_target_matches_the_mouth_ath_meshed(
+    case: str, target_half_dimensions: tuple[float, float]
+):
+    """The morphed mouth is the outline ATH's own mesh carries.
+
+    Reading ``Morph.Width``/``Morph.Height`` as aliases for the canonical
+    ``Morph.TargetWidth``/``Morph.TargetHeight`` morphed these configs onto a
+    mouth ATH never builds -- 54 mm out on ``260330saw`` and 124 mm on
+    ``test3_morph_only_shrink``, where ATH rounds the raw mouth extents up to
+    whole millimetres instead.
+
+    Compared at the mouth ring, where the morph blend has run to completion and
+    the surface is the target outline itself. Deviations are radial, against
+    this mesher's mouth ring interpolated to ATH's azimuths, so they carry the
+    chord error of both angular samplings across the corner arcs.
+    """
+
+    phi, radius, vertical_offset = _mouth_outline(case)
+    params, _formula, _mode = build_geometry_params(
+        load_config(ATH_REFERENCE_ROOT / case / "config.txt")
+    )
+    # 0 is the builder's "no dimension given", which morphs to the raw extents.
+    assert (params["morphWidth"], params["morphHeight"]) == target_half_dimensions
+
+    nodes = _ath_wall_nodes_in_horn_frame(case, vertical_offset)
+    rim = nodes[nodes[:, 2] >= nodes[:, 2].max() - 1.0e-6]
+    assert len(rim) > 20
+
+    # The ring is periodic; wrap one turn either way so the interpolation has
+    # no seam at +/- pi.
+    wrapped_phi = np.concatenate((phi - 2.0 * np.pi, phi, phi + 2.0 * np.pi))
+    wrapped_radius = np.tile(radius, 3)
+    deviation = rim[:, 1] - np.interp(rim[:, 0], wrapped_phi, wrapped_radius)
+    assert np.max(np.abs(deviation)) <= 1.0
+
+    # Sharper than the ring deviation and free of the corner chord error: the
+    # mouth's half-width and half-height are the target dimensions themselves.
+    ath_x = np.max(np.abs(rim[:, 1] * np.cos(rim[:, 0])))
+    ath_y = np.max(np.abs(rim[:, 1] * np.sin(rim[:, 0])))
+    assert ath_x == pytest.approx(np.max(np.abs(radius * np.cos(phi))), abs=0.15)
+    assert ath_y == pytest.approx(np.max(np.abs(radius * np.sin(phi))), abs=0.15)
+
+
 @pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
 @pytest.mark.parametrize(
     "case",

@@ -119,6 +119,42 @@ _KNOWN_MESH_KEYS = frozenset(
 )
 
 
+# ``Morph.*`` and ``GCurve.*`` names, mapped onto the internal parameter names.
+# Both tables carry ATH's own vocabulary; the entries marked below are the only
+# deliberate additions. Anything else in these two namespaces is ignored -- ATH
+# ignores it as well -- and warned about by ``_warn_ignored_ath_keys``, so the
+# tables double as the set of recognised keys.
+_MORPH_KEY_MAP: tuple[tuple[str, str], ...] = (
+    ("TargetShape", "morphTarget"),
+    ("TargetWidth", "morphWidth"),
+    ("TargetHeight", "morphHeight"),
+    ("CornerRadius", "morphCorner"),
+    ("Rate", "morphRate"),
+    ("FixedPart", "morphFixed"),
+    ("AllowShrinkage", "morphAllowShrinkage"),
+    # Not an ATH key -- ATH's morph targets take no exponent -- but this parser
+    # also reads configs written for this mesher, whose superellipse target
+    # (``Morph.TargetShape = 3``) needs one. Same footing as ``Mesh.SurfaceFit``.
+    ("Exponent", "morphExponent"),
+)
+_GCURVE_KEY_MAP: tuple[tuple[str, str], ...] = (
+    ("Type", "gcurveType"),
+    ("Width", "gcurveWidth"),
+    ("AspectRatio", "gcurveAspectRatio"),
+    ("Dist", "gcurveDist"),
+    ("Rot", "gcurveRot"),
+    ("SF", "gcurveSF"),
+    ("SF.a", "gcurveSfA"),
+    ("SF.b", "gcurveSfB"),
+    ("SF.m1", "gcurveSfM1"),
+    ("SF.m2", "gcurveSfM2"),
+    ("SF.n1", "gcurveSfN1"),
+    ("SF.n2", "gcurveSfN2"),
+    ("SF.n3", "gcurveSfN3"),
+    ("SE.n", "gcurveSeN"),
+)
+
+
 def _reject_unsupported_ath_keys(
     flat: Mapping[str, str],
     profile_items: Mapping[str, str],
@@ -196,36 +232,41 @@ def _reject_unsupported_ath_keys(
         )
 
 
-def _warn_unknown_gcurve_distance(gcurve_items: Mapping[str, str]) -> None:
-    """Say that ``GCurve.Distance`` is not read, because ATH does not read it.
+def _warn_ignored_ath_keys(
+    namespace: str,
+    items: Mapping[str, str],
+    key_map: tuple[tuple[str, str], ...],
+) -> None:
+    """Say which keys of an ATH namespace were read and then dropped, and why.
 
-    ATH's key is ``GCurve.Dist``. ``Distance`` was accepted here as an alias for
-    it, which silently moved the guiding curve for archived reference configs
-    that ATH meshes with the curve at its default station -- the mouth.
-    Comparing references with different values confirms that ATH ignores the
-    key rather than interpreting it in another unit.
+    ``Morph.*`` and ``GCurve.*`` names that ATH does not define used to be
+    accepted here as aliases for the ones it does -- ``Morph.Width`` for
+    ``Morph.TargetWidth``, ``GCurve.Distance`` for ``GCurve.Dist``. ATH itself
+    meshes such a config with the key dropped and its default in force, so
+    honouring the written value built a different waveguide from the one ATH
+    builds off the same file. The aliases are gone; ignoring these keys is what
+    ATH does.
 
-    So the alias is gone; ignoring the key is what ATH does. Ignoring it
-    *quietly* is not, hence this warning: whoever wrote ``Distance`` meant to
-    move the curve, and in ATH that had no effect either.
+    Ignoring them *quietly* is not. Whoever wrote the key meant to change the
+    geometry, so name it, name the value going unused, and point at the key
+    that would have done the job. Unlike ``Mesh.*``, an unrecognised name here
+    is a warning rather than a refusal: ATH meshes these configs, and refusing
+    would leave the importer unable to read a file ATH accepts.
     """
 
-    if "Distance" not in gcurve_items:
-        return
-    if "Dist" in gcurve_items:
+    known = sorted(src for src, _dst in key_map)
+    for key in sorted(items):
+        if key in known:
+            continue
+        close = get_close_matches(key, known, n=1, cutoff=0.6)
         logger.warning(
-            "[hornlab-mesher] ignoring GCurve.Distance = %s: ATH has no such "
-            "key, and GCurve.Dist = %s is what places the guiding curve.",
-            gcurve_items["Distance"],
-            gcurve_items["Dist"],
+            "[hornlab-mesher] ignoring %s%s = %s: ATH has no such key, so this "
+            "mesher drops it too; recognized keys and defaults remain in force.%s",
+            namespace,
+            key,
+            items[key],
+            f" Did you mean {namespace}{close[0]}?" if close else "",
         )
-        return
-    logger.warning(
-        "[hornlab-mesher] ignoring GCurve.Distance = %s: ATH has no such key "
-        "(it reads GCurve.Dist), so the guiding curve stays at the mouth, as "
-        "it does in ATH. Rename it to GCurve.Dist to move it along the horn.",
-        gcurve_items["Distance"],
-    )
 
 
 def parse_text_config(content: str) -> dict[str, Any]:
@@ -411,21 +452,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("Morph", {}),
         **blocks.get("MORPH", {}),
     }
-    morph = mapped(
-        morph_items,
-        (
-            ("TargetShape", "morphTarget"),
-            ("TargetWidth", "morphWidth"),
-            ("Width", "morphWidth"),
-            ("TargetHeight", "morphHeight"),
-            ("Height", "morphHeight"),
-            ("CornerRadius", "morphCorner"),
-            ("Exponent", "morphExponent"),
-            ("Rate", "morphRate"),
-            ("FixedPart", "morphFixed"),
-            ("AllowShrinkage", "morphAllowShrinkage"),
-        ),
-    )
+    _warn_ignored_ath_keys("Morph.", morph_items, _MORPH_KEY_MAP)
+    morph = mapped(morph_items, _MORPH_KEY_MAP)
     if "morphTarget" in morph:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
         morph.setdefault("morphCorner", 35)
@@ -438,26 +466,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("GCurve", {}),
         **blocks.get("GCURVE", {}),
     }
-    _warn_unknown_gcurve_distance(gcurve_items)
-    gcurve = mapped(
-        gcurve_items,
-        (
-            ("Type", "gcurveType"),
-            ("Width", "gcurveWidth"),
-            ("AspectRatio", "gcurveAspectRatio"),
-            ("Dist", "gcurveDist"),
-            ("Rot", "gcurveRot"),
-            ("SF", "gcurveSF"),
-            ("SF.a", "gcurveSfA"),
-            ("SF.b", "gcurveSfB"),
-            ("SF.m1", "gcurveSfM1"),
-            ("SF.m2", "gcurveSfM2"),
-            ("SF.n1", "gcurveSfN1"),
-            ("SF.n2", "gcurveSfN2"),
-            ("SF.n3", "gcurveSfN3"),
-            ("SE.n", "gcurveSeN"),
-        ),
-    )
+    _warn_ignored_ath_keys("GCurve.", gcurve_items, _GCURVE_KEY_MAP)
+    gcurve = mapped(gcurve_items, _GCURVE_KEY_MAP)
 
     enc_items = {**prefixed("Mesh.Enclosure."), **blocks.get("Mesh.Enclosure", {})}
     enclosure: dict[str, Any] = {}

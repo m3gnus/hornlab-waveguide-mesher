@@ -280,9 +280,16 @@ Implementation rules:
 - `Morph.TargetShape = 0` leaves the raw mouth outline unchanged.
 - `Morph.TargetShape = 1` targets a rounded rectangle.
 - `Morph.TargetShape = 2` targets a circle.
+- `Morph.TargetWidth` and `Morph.TargetHeight` are the target half-dimensions.
+  `Morph.Width` and `Morph.Height` are **not** ATH keys and set nothing. ATH
+  ignores them; so does this importer, with a warning naming the canonical
+  keys. Reading them as aliases morphed archive configs onto a mouth ATH never
+  builds — 54 mm out on one, 124 mm on another. Rename them to
+  `Morph.TargetWidth` / `Morph.TargetHeight` to restore the written intent.
 - `TargetWidth = 0` or `TargetHeight = 0` derives that half-dimension
   implicitly by rounding the raw mouth extent up to whole millimetres
-  (ATH m2-clone: raw 228.414/203.515 -> targets 229/204).
+  (ATH m2-clone: raw 228.414/203.515 -> targets 229/204), which is what ATH
+  does with a config that gives no target dimensions at all.
 - If shrinkage is disabled, the target half-dimensions are floored at the raw
   mouth extents; the mouth still becomes the exact (enlarged) target curve
   rather than a per-azimuth max of target and raw.

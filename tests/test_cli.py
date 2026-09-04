@@ -340,6 +340,68 @@ def test_gcurve_dist_still_places_the_curve(tmp_path, caplog):
     assert "GCurve.Distance" not in caplog.text
 
 
+def _morph_target_cfg(width_key: str, height_key: str) -> str:
+    return f"""
+OSSE = {{
+  Length = 100
+}}
+Morph.TargetShape = 1
+Morph.{width_key} = 360
+Morph.{height_key} = 220
+Mesh.LengthSegments = 4
+"""
+
+
+def test_morph_width_and_height_are_ignored_like_ath_and_say_so(tmp_path, caplog):
+    cfg_path = tmp_path / "morph-width.cfg"
+    cfg_path.write_text(_morph_target_cfg("Width", "Height"), encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="hornlab_mesher.config_parser"):
+        config = load_config(cfg_path)
+
+    # ATH reads Morph.TargetWidth/TargetHeight only, so these leave the target
+    # dimensions unset and the mouth morphs to its own extents. Honouring them
+    # as aliases built a mouth ATH never meshes off the same file.
+    assert "morphWidth" not in config["morph"]
+    assert "morphHeight" not in config["morph"]
+    assert "Morph.Width" in caplog.text
+    assert "Morph.TargetWidth" in caplog.text
+    assert "Morph.Height" in caplog.text
+    assert "Morph.TargetHeight" in caplog.text
+
+
+def test_morph_target_width_and_height_still_set_the_target(tmp_path, caplog):
+    cfg_path = tmp_path / "morph-target-width.cfg"
+    cfg_path.write_text(_morph_target_cfg("TargetWidth", "TargetHeight"), encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="hornlab_mesher.config_parser"):
+        config = load_config(cfg_path)
+
+    assert config["morph"]["morphWidth"] == 360
+    assert config["morph"]["morphHeight"] == 220
+    assert caplog.text == ""
+
+
+def test_unrecognised_morph_and_gcurve_keys_are_named_in_the_warning(tmp_path, caplog):
+    cfg_path = tmp_path / "morph-typo.cfg"
+    cfg_path.write_text(
+        _morph_target_cfg("TargetWidth", "TargetHeight")
+        + "Morph.Size = 202\nGCurve.Type = 2\nGCurve.Widht = 200\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="hornlab_mesher.config_parser"):
+        config = load_config(cfg_path)
+
+    # Neither namespace refuses an unknown key -- ATH meshes such a config --
+    # so the warning is the only thing standing between a typo and a mesh built
+    # to the default it never mentions.
+    assert "gcurveWidth" not in config["gcurve"]
+    assert "Morph.Size = 202" in caplog.text
+    assert "GCurve.Widht = 200" in caplog.text
+    assert "Did you mean GCurve.Width?" in caplog.text
+
+
 def test_parse_ath_config_preserves_interface_arrays(tmp_path):
     cfg_path = tmp_path / "interfaces.cfg"
     cfg_path.write_text(
@@ -1139,3 +1201,20 @@ def test_subdomain_slices_keep_their_requested_axial_position_after_grid_fit():
     interfaces = _interfaces_from_params(params, 144)
     assert [i.slice_index for i in interfaces] == [36, 72, 144]
     assert [i.slice_index / 144 for i in interfaces] == [0.25, 0.5, 1.0]
+
+
+def test_ignored_alias_warning_does_not_override_explicit_canonical_value(tmp_path, caplog):
+    cfg_path = tmp_path / "canonical-with-alias.cfg"
+    cfg_path.write_text(
+        _morph_target_cfg("TargetWidth", "TargetHeight")
+        + "Morph.Width = 999\nGCurve.Type = 2\nGCurve.Dist = 37\nGCurve.Distance = 90\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING", logger="hornlab_mesher.config_parser"):
+        config = load_config(cfg_path)
+    assert config["morph"]["morphWidth"] == 360
+    assert config["gcurve"]["gcurveDist"] == 37
+    assert "Morph.Width = 999" in caplog.text
+    assert "GCurve.Distance = 90" in caplog.text
+    assert "recognized keys and defaults remain in force" in caplog.text
+    assert "uses the default" not in caplog.text

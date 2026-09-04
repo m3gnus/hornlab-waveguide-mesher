@@ -390,7 +390,9 @@ Use `[morph]` or `[MORPH]`.
 | `morph_fixed` | `morphFixed` | `0` |
 | `morph_allow_shrinkage` | `morphAllowShrinkage` | `0` |
 
-See `docs/geometry-contract.md` for target-shape semantics.
+ATH text imports spell the two dimensions `Morph.TargetWidth` and
+`Morph.TargetHeight`. See `docs/geometry-contract.md` for target-shape
+semantics.
 
 ## Guiding Curve Keys
 
@@ -468,10 +470,20 @@ Imported text mappings include:
   `Mesh.RearResolution`, `Mesh.SubdomainSlices` (shifted by one onto grid
   rings), `Mesh.InterfaceOffset`, `Mesh.InterfaceResolution`,
   `Mesh.SamplingMode`, and `Mesh.ZMapPoints`.
-- Morph: `Morph.*`, `MORPH.*`, `[Morph]`, and `[MORPH]` for target shape,
-  width, height, corner radius, rate, fixed part, and shrinkage
-  (`AllowShrinkage` accepts ATH boolean literals).
+- Morph: `Morph.*`, `MORPH.*`, `[Morph]`, and `[MORPH]` for
+  `Morph.TargetShape`, `Morph.TargetWidth`, `Morph.TargetHeight`,
+  `Morph.CornerRadius`, `Morph.Rate`, `Morph.FixedPart`, and
+  `Morph.AllowShrinkage` (which accepts ATH boolean literals).
 - Guiding curve: `GCurve.*`, `GCURVE.*`, `[GCurve]`, and `[GCURVE]`.
+
+Names outside those two namespaces' ATH vocabularies — `Morph.Width`,
+`Morph.Height`, `GCurve.Distance` — are ignored with a warning naming the value
+that went unused and the canonical key, because ATH ignores them too and
+meshes the config anyway. Rename them (`Morph.Width` -> `Morph.TargetWidth`,
+`Morph.Height` -> `Morph.TargetHeight`, `GCurve.Distance` -> `GCurve.Dist`) to
+get the geometry they were written for; leaving them alone keeps ATH's
+geometry. Unrecognised `Mesh.*` keys are refused instead, since a mesh key that
+silently falls back to a default changes the mesh with nothing to show for it.
 - Enclosure: `Mesh.Enclosure.Depth`, `EdgeRadius`, `EdgeType`,
   `FrontResolution`, `BackResolution`, and `Spacing` as four comma-separated
   margins.
