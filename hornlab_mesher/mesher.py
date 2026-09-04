@@ -234,7 +234,24 @@ def build_mesh_with_info(
                 int(built.mesh_algorithm or MESH_ALGORITHM_MESHADAPT),
             )
             gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
-            gmsh.model.mesh.generate(2)
+            # A very coarse closed interpolating spline can otherwise be
+            # sampled with only three curve points. Gmsh then produces an
+            # nonmanifold edge on small bare horns. Keep at least five
+            # samples on these curves, independent of the model's units.
+            if (
+                isinstance(acoustic_geometry, PointGridHornGeometry)
+                and acoustic_geometry.surface_fit == "interpolate"
+            ):
+                previous_curve_points = gmsh.option.getNumber("Mesh.MinimumCurvePoints")
+                try:
+                    gmsh.option.setNumber(
+                        "Mesh.MinimumCurvePoints", max(previous_curve_points, 5)
+                    )
+                    gmsh.model.mesh.generate(2)
+                finally:
+                    gmsh.option.setNumber("Mesh.MinimumCurvePoints", previous_curve_points)
+            else:
+                gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
 
             with tempfile.NamedTemporaryFile(

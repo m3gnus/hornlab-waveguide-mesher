@@ -279,23 +279,17 @@ def test_the_throat_boundary_curve_reproduces_the_patch_edge():
         assert np.allclose(curve(u), grid[columns[index], 0, :], atol=1e-9)
 
 
-def test_the_automatic_fit_falls_back_rather_than_failing_a_build(tmp_path):
-    """A default may not fail a build that the previous default completed.
-
-    An OSSE bare shell at r0 1 mm, a 2 mm, L 4 mm meshes to one nonmanifold edge
-    under the interpolating fit at every resolution tried, while the same shape
-    at r0 12.7 mm is clean -- an absolute tolerance under the interpolating path,
-    tracked separately. ``auto`` absorbs it; an explicit request does not.
-    """
+@pytest.mark.parametrize("scale", [0.1, 1.0, 12.7])
+def test_coarse_small_interpolating_shell_remains_manifold(tmp_path, caplog, scale):
+    """Curve sampling must preserve topology even below the default mesh size."""
 
     pytest.importorskip("gmsh")
     from hornlab_mesher.config_builder import build_from_config
-    from hornlab_mesher.mesher import MesherError
 
     config = {
         "formula": "OSSE",
         "mode": "bare",
-        "profile": {"r0": 1.0, "a": 2.0, "a0": 0.0, "L": 4.0},
+        "profile": {"r0": scale, "a": 2.0, "a0": 0.0, "L": 4.0 * scale},
         "mesh": {
             "angularSegments": 12,
             "lengthSegments": 4,
@@ -308,5 +302,57 @@ def test_the_automatic_fit_falls_back_rather_than_failing_a_build(tmp_path):
     assert result.n_triangles > 0
 
     pinned = {**config, "mesh": {**config["mesh"], "surface_fit": "interpolate"}}
-    with pytest.raises(MesherError):
-        build_from_config(pinned, tmp_path / "pinned.msh")
+    interpolated = build_from_config(pinned, tmp_path / "pinned.msh")
+    assert interpolated.n_triangles > 0
+    assert "falling back" not in caplog.text
+
+
+def _small_shell_config(surface_fit="auto"):
+    return {
+        "formula": "OSSE", "mode": "bare",
+        "profile": {"r0": 1.0, "a": 2.0, "a0": 0.0, "L": 4.0},
+        "mesh": {"angularSegments": 12, "lengthSegments": 4,
+                 "scaleToMetres": False, "surface_fit": surface_fit},
+        "source": {"sourceShape": 0},
+    }
+
+
+def test_interpolating_mesh_preserves_callers_curve_sampling_option(tmp_path):
+    gmsh = pytest.importorskip("gmsh")
+    from hornlab_mesher.config_builder import build_from_config
+
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("Mesh.MinimumCurvePoints", 11)
+        result = build_from_config(_small_shell_config("interpolate"), tmp_path / "caller.msh")
+        assert result.n_triangles > 0
+        assert gmsh.isInitialized()
+        assert gmsh.option.getNumber("Mesh.MinimumCurvePoints") == 11
+    finally:
+        gmsh.finalize()
+
+
+def test_auto_fit_recovers_from_failure_but_explicit_fit_propagates(tmp_path, monkeypatch, caplog):
+    pytest.importorskip("gmsh")
+    import hornlab_mesher.config_builder as builder
+    from hornlab_mesher.mesher import MesherError
+
+    original = builder.build_mesh_with_info
+    attempts = []
+
+    def fail_interpolation(geometry, *args, **kwargs):
+        attempts.append(geometry.surface_fit)
+        if geometry.surface_fit == "interpolate":
+            raise MesherError("injected interpolation failure")
+        return original(geometry, *args, **kwargs)
+
+    monkeypatch.setattr(builder, "build_mesh_with_info", fail_interpolation)
+    result = builder.build_from_config(_small_shell_config(), tmp_path / "recovered.msh")
+    assert result.n_triangles > 0
+    assert attempts == ["interpolate", "approximate"]
+    assert "falling back" in caplog.text
+    attempts.clear()
+    with pytest.raises(MesherError, match="injected interpolation failure"):
+        builder.build_from_config(_small_shell_config("interpolate"), tmp_path / "explicit.msh")
+    assert attempts == ["interpolate"]
+    assert not (tmp_path / "explicit.msh").exists()

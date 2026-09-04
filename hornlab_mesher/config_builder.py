@@ -2673,13 +2673,9 @@ def build_from_config(
             scale_to_metres=resolved.scale_to_metres,
         )
     except MesherError:
-        # ``auto`` is a default, and a default may not make a build fail that
-        # the previous one completed. The interpolating fit is known to break
-        # on very small models -- an OSSE bare shell of r0 1 mm, a 2 mm, L 4 mm
-        # meshes to one nonmanifold edge at every resolution tried, while the
-        # same shape at r0 12.7 mm is clean, so an absolute tolerance is
-        # implicated somewhere under it. That is a defect worth finding on its
-        # own; it is not a reason for every such config to stop building today.
+        # Automatic fitting can retry a geometry that the interpolating
+        # surface could not mesh. Keep this general recovery path even though
+        # the coarse small-horn sampling defect is covered in the mesher.
         #
         # Only the automatic choice falls back. An explicit
         # ``surface_fit = "interpolate"`` still fails loudly, because someone
