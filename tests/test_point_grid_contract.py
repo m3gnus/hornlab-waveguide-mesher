@@ -3079,6 +3079,10 @@ def test_open_occ_source_cap_builds_only_endpoint_radials(monkeypatch):
         closed=False,
         source_shape=1,
         source_radius_mm=30.0,
+        # This cap topology belongs to the approximating fit: under the
+        # interpolating fit the throat rim is a knotted B-spline instead, and
+        # the radial count below is not its contract.
+        surface_fit="approximate",
     )
 
     cap = _add_occ_source_cap_surfaces(builder, inner, geometry)
@@ -3100,6 +3104,10 @@ def test_rounded_cap_radial_controls_match_occ_and_faceted_paths(monkeypatch):
         closed=False,
         source_shape=1,
         source_radius_mm=30.0,
+        # This cap topology belongs to the approximating fit: under the
+        # interpolating fit the throat rim is a knotted B-spline instead, and
+        # the radial count below is not its contract.
+        surface_fit="approximate",
     )
 
     def radial_controls(add_cap):

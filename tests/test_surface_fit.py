@@ -110,9 +110,33 @@ def test_degenerate_rings_fall_back_to_a_uniform_parameterisation():
     assert np.all(np.isfinite(poles))
 
 
-def test_surface_fit_defaults_to_the_approximating_pole_fit():
+def test_surface_fit_defaults_to_the_interpolating_fit():
+    """``auto`` is the default and resolves to the fit that is measurably truer.
+
+    Over twelve ATH reference configs the interpolating fit moves the median
+    ``rms x triangles`` against the analytic surface from 0.93x of ATH's to
+    1.24x, at a triangle count that moves by at most 4%.
+    """
+
     geometry = PointGridHornGeometry(inner_points=_revolved_grid())
+    assert geometry.surface_fit == SURFACE_FIT_INTERPOLATE
+
+
+def test_auto_resolves_to_the_approximating_fit_on_freeform():
+    """The one family the interpolating fit cannot mesh keeps the old one."""
+
+    geometry = PointGridHornGeometry(
+        inner_points=_revolved_grid(), freeform_report={"axis": "z"}
+    )
     assert geometry.surface_fit == SURFACE_FIT_APPROXIMATE
+
+
+def test_naming_a_fit_explicitly_still_pins_it():
+    for mode in (SURFACE_FIT_APPROXIMATE, SURFACE_FIT_INTERPOLATE):
+        geometry = PointGridHornGeometry(
+            inner_points=_revolved_grid(), surface_fit=mode
+        )
+        assert geometry.surface_fit == mode
 
 
 def test_surface_fit_rejects_an_unknown_mode():
@@ -123,7 +147,8 @@ def test_surface_fit_rejects_an_unknown_mode():
 def test_config_reads_both_surface_fit_spellings():
     from hornlab_mesher.config_builder import ConfigError, _mesh_surface_fit
 
-    assert _mesh_surface_fit({}) == SURFACE_FIT_APPROXIMATE
+    assert _mesh_surface_fit({}) == "auto"
+    assert _mesh_surface_fit({"surface_fit": "approximate"}) == SURFACE_FIT_APPROXIMATE
     assert _mesh_surface_fit({"surface_fit": "interpolate"}) == SURFACE_FIT_INTERPOLATE
     assert _mesh_surface_fit({"surfaceFit": "Interpolate"}) == SURFACE_FIT_INTERPOLATE
     with pytest.raises(ConfigError, match="surface_fit"):
@@ -252,3 +277,36 @@ def test_the_throat_boundary_curve_reproduces_the_patch_edge():
     curve = BSpline(full, rim_poles, rim_degree)
     for index, u in enumerate(np.linspace(full[0], full[-1], len(columns))):
         assert np.allclose(curve(u), grid[columns[index], 0, :], atol=1e-9)
+
+
+def test_the_automatic_fit_falls_back_rather_than_failing_a_build(tmp_path):
+    """A default may not fail a build that the previous default completed.
+
+    An OSSE bare shell at r0 1 mm, a 2 mm, L 4 mm meshes to one nonmanifold edge
+    under the interpolating fit at every resolution tried, while the same shape
+    at r0 12.7 mm is clean -- an absolute tolerance under the interpolating path,
+    tracked separately. ``auto`` absorbs it; an explicit request does not.
+    """
+
+    pytest.importorskip("gmsh")
+    from hornlab_mesher.config_builder import build_from_config
+    from hornlab_mesher.mesher import MesherError
+
+    config = {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {"r0": 1.0, "a": 2.0, "a0": 0.0, "L": 4.0},
+        "mesh": {
+            "angularSegments": 12,
+            "lengthSegments": 4,
+            "scaleToMetres": False,
+        },
+        "source": {"sourceShape": 0},
+    }
+
+    result = build_from_config(config, tmp_path / "auto.msh")
+    assert result.n_triangles > 0
+
+    pinned = {**config, "mesh": {**config["mesh"], "surface_fit": "interpolate"}}
+    with pytest.raises(MesherError):
+        build_from_config(pinned, tmp_path / "pinned.msh")

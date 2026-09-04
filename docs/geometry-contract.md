@@ -374,12 +374,13 @@ The codebase should use explicit names for compatibility behavior:
   point-grid topology is intentionally requested. Ordinary solve meshes use
   `topology_mode = "acoustic"` so geometry sampling does not dictate BEM
   topology.
-- `surface_fit = "approximate"` is the default because it is what every existing
-  mesh was built with, not because it is the more faithful fit. It is a
-  compatibility default: OCC reads the sampled grid as control points, so the
-  meshed wall sits inside the designed one by roughly `R * dtheta^2 / 6` for a
-  cubic pole fit, and refining the mesh converges onto that biased surface
-  rather than onto the sampled one.
+- `surface_fit = "auto"` is the default, and resolves to `interpolate` wherever
+  it is meshable. `approximate` was the default until it was measured: it is
+  what every existing mesh had been built with, not the more faithful fit. OCC
+  reads the sampled grid as control points, so the meshed wall sits inside the
+  designed one by roughly `R * dtheta^2 / 6` for a cubic pole fit, and refining
+  the mesh converges onto that biased surface rather than onto the sampled one.
+  It remains available by name for anyone who needs the old nodes back.
 
 `surface_fit = "interpolate"` removes that bias by solving for the poles whose
 surface passes through the sampled grid, at the same control-point and triangle

@@ -187,9 +187,17 @@ class PointGridHornGeometry:
     # ``approximate`` hands the sampled grid to OCC as B-spline control points,
     # which biases the meshed surface inward (see builders/_occ.py).
     # ``interpolate`` solves for poles whose surface passes through the grid at
-    # the same control-point count, and so at the same triangle count. It stays
-    # opt-in because it moves the nodes of every acoustic mesh.
-    surface_fit: Literal["approximate", "interpolate"] = "approximate"
+    # the same control-point count, and so at the same triangle count.
+    #
+    # ``auto`` -- the default -- is ``interpolate`` everywhere it is meshable,
+    # and ``approximate`` on FREEFORM, whose creases it cannot mesh (see
+    # ``__post_init__``). Measured against the analytic surface over twelve ATH
+    # reference configs, the flip moves the median ``rms x triangles`` from
+    # 0.93x of ATH to 1.24x, improving eleven of twelve at a triangle count that
+    # moves by at most 4%. Naming either mode explicitly still pins it, and an
+    # explicit ``interpolate`` on FREEFORM is still refused rather than
+    # downgraded.
+    surface_fit: Literal["auto", "approximate", "interpolate"] = "auto"
     preserve_grid: bool = False
     closed: bool = True
     outer_points: NDArray[np.float64] | None = None
@@ -223,8 +231,18 @@ class PointGridHornGeometry:
     def __post_init__(self) -> None:
         if self.topology_mode not in {"acoustic", "legacy"}:
             raise ValueError("topology_mode must be 'acoustic' or 'legacy'")
-        if self.surface_fit not in {"approximate", "interpolate"}:
-            raise ValueError("surface_fit must be 'approximate' or 'interpolate'")
+        if self.surface_fit not in {"auto", "approximate", "interpolate"}:
+            raise ValueError(
+                "surface_fit must be 'auto', 'approximate' or 'interpolate'"
+            )
+        if self.surface_fit == "auto":
+            # Resolved here, once, so nothing downstream ever sees the sentinel:
+            # every builder takes ``surface_fit`` as a plain string.
+            object.__setattr__(
+                self,
+                "surface_fit",
+                "approximate" if self.freeform_report is not None else "interpolate",
+            )
         if self.surface_fit == "interpolate" and self.freeform_report is not None:
             # FREEFORM profiles carry deliberate creases, and an interpolating
             # spline does not merely round them badly: on examples/freeform-bare

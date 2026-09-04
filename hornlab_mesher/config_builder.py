@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,7 +26,7 @@ from .geometry import (
     PointGridHornGeometry,
     validate_mesh_density,
 )
-from .mesher import build_mesh_with_info
+from .mesher import MesherError, build_mesh_with_info
 from .profile_common import (
     _normalise_quadrants as _normalise_quadrants_common,
     _parse_number_list,
@@ -1247,16 +1247,17 @@ def _mesh_topology_mode(mesh: Mapping[str, Any]) -> str:
 def _mesh_surface_fit(mesh: Mapping[str, Any]) -> str:
     """Read mesh.surface_fit, the acoustic B-spline patch fitting mode.
 
-    Defaults to ``approximate`` so existing configs keep byte-identical meshes;
+    Defaults to ``auto``, which ``PointGridHornGeometry`` resolves to
+    ``interpolate`` on everything it can mesh and ``approximate`` on FREEFORM.
     ``interpolate`` removes the inward pole-fit bias at the same triangle count.
     """
 
-    raw = _pick(
-        mesh, names=("surface_fit", "surfaceFit"), default="approximate"
-    )
-    mode = str(raw or "approximate").strip().lower()
-    if mode not in {"approximate", "interpolate"}:
-        raise ConfigError("mesh surface_fit must be 'approximate' or 'interpolate'")
+    raw = _pick(mesh, names=("surface_fit", "surfaceFit"), default="auto")
+    mode = str(raw or "auto").strip().lower()
+    if mode not in {"auto", "approximate", "interpolate"}:
+        raise ConfigError(
+            "mesh surface_fit must be 'auto', 'approximate' or 'interpolate'"
+        )
     return mode
 
 
@@ -2659,12 +2660,45 @@ def build_from_config(
     allow_large_mesh: bool | None = None,
 ) -> BuildResult:
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
-    mesh_path, info = build_mesh_with_info(
-        resolved.geometry,
-        resolved.density,
-        output_path,
-        scale_to_metres=resolved.scale_to_metres,
+    geometry = resolved.geometry
+    chose_automatically = (
+        _mesh_surface_fit(_section(config, "mesh")) == "auto"
+        and getattr(geometry, "surface_fit", None) == "interpolate"
     )
+    try:
+        mesh_path, info = build_mesh_with_info(
+            geometry,
+            resolved.density,
+            output_path,
+            scale_to_metres=resolved.scale_to_metres,
+        )
+    except MesherError:
+        # ``auto`` is a default, and a default may not make a build fail that
+        # the previous one completed. The interpolating fit is known to break
+        # on very small models -- an OSSE bare shell of r0 1 mm, a 2 mm, L 4 mm
+        # meshes to one nonmanifold edge at every resolution tried, while the
+        # same shape at r0 12.7 mm is clean, so an absolute tolerance is
+        # implicated somewhere under it. That is a defect worth finding on its
+        # own; it is not a reason for every such config to stop building today.
+        #
+        # Only the automatic choice falls back. An explicit
+        # ``surface_fit = "interpolate"`` still fails loudly, because someone
+        # who named it wants to know.
+        if not chose_automatically:
+            raise
+        logger.warning(
+            "[hornlab-mesher] the interpolating surface fit could not mesh this "
+            "geometry; falling back to the approximating fit, whose acoustic "
+            "wall sits slightly inside the design. Set mesh.surface_fit "
+            "explicitly to choose either one and see the failure."
+        )
+        geometry = replace(geometry, surface_fit="approximate")
+        mesh_path, info = build_mesh_with_info(
+            geometry,
+            resolved.density,
+            output_path,
+            scale_to_metres=resolved.scale_to_metres,
+        )
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     freeform_report = resolved.freeform_report
     return BuildResult(
