@@ -837,8 +837,22 @@ def _repair_triangle_winding(
     Watertight components retain the signed-volume outwardness contract.
     Symmetry-reduced open components instead use their tagged source cap:
     positive source-normal projection on the one non-cut principal axis is the
-    Metal aperture contract. Reduced components without a usable source anchor
-    are deliberately left unjudged and counted rather than guessed.
+    Metal aperture contract.
+
+    A reduced component **with no source cap at all** is deliberately left
+    unjudged and counted rather than guessed, because nothing in it says which
+    side the fluid is on.
+
+    A reduced component that *has* a source cap whose projection still
+    abstained -- no unique non-cut axis to project onto, or a degenerate net
+    cap normal along it -- falls back to the signed volume about the origin,
+    which is well defined once every free edge lies on a cut plane through it.
+    That fallback answers "outward from the capped region", which is the
+    acoustic contract only where the meshed region is the solid, so it still
+    inverts a bore-facing acoustic component. ``normals`` carries the
+    measurement that does not share the limitation, ``open_shell_bore_alignment``
+    -- but it is a validator returning a wall-agreement fraction, needs a
+    primary source of its own, and is not wired into this function.
     """
     repaired = triangles.copy()
     stats = {
@@ -944,18 +958,41 @@ def _repair_triangle_winding(
         if projection is None:
             stats["unjudged_symmetry_components"] += 1
             if not np.any(np.isin(component_tags[component], tuple(declared_source_tags))):
+                # No source cap at all, so nothing establishes which side of
+                # this surface the fluid is on. Signed volume answers a
+                # different question -- which way is out of the region the cut
+                # planes cap -- and the two agree only where the meshed region
+                # is the solid. For an acoustic bare shell they are opposed:
+                # ``normals.open_shell_bore_alignment`` records that the volume
+                # "reports the *wrong* sign for correctly wound rollback
+                # profiles", and the consuming add-in pins a reduced component
+                # whose walls face the bore, and whose volume is therefore
+                # negative, as correct (hornlab-fusion-addin,
+                # test_symmetry_reduced_source_anchor_wins_when_signed_volume
+                # _disagrees). Orienting that outward inverts every normal.
+                #
+                # Abstention rather than a guess is the decision this contract
+                # was built on: hornlab-fusion-addin commit 3cf7d31 deleted a
+                # signed-volume predicate here and replaced it with the source
+                # anchor. A component can also reach this branch source-less
+                # because its STEP label did not match and the caller passed
+                # ``skip_missing_groups`` -- recorded in ``missing_reasons``,
+                # so not silent, but arriving here indistinguishable from a
+                # body that never had a cap. Count it and let the caller say so.
                 stats["unjudged_symmetry_no_source"] += 1
-            # The source-cap projection abstains whenever a component was not
-            # cut on exactly two principal planes -- a single-plane cut, the
-            # common Fusion case, is left unjudged by it. Fall back to the
-            # signed volume about the origin, which IS a valid oracle here:
-            # ``symmetry_reduced`` already established that every free edge
-            # lies on a coordinate plane through the origin, so the
-            # divergence-theorem cone terms over those rims vanish. (The rule
-            # that signed volume cannot orient an open shell applies to an
-            # arbitrary rim -- a bare mouth rim off the origin -- not to one
-            # pinned to the cut planes, so the general open-shell path below
-            # still refuses to guess.)
+                continue
+            # This component DOES carry a source cap, but the projection
+            # abstained anyway: the cut planes leave no unique non-cut axis to
+            # project onto (a single-plane cut, the common Fusion case, or a
+            # three-plane octant), or the cap's net normal along that axis is
+            # degenerate. Fall back to the signed volume about the origin:
+            # ``symmetry_reduced`` already established
+            # that every free edge lies on a coordinate plane through the
+            # origin, so the divergence-theorem cone terms over those rims
+            # vanish and the sign is well defined. (The rule that signed volume
+            # cannot orient an open shell applies to an arbitrary rim -- a bare
+            # mouth rim off the origin -- not to one pinned to the cut planes,
+            # so the general open-shell path below still refuses to guess.)
             volume = _signed_volume(points, component_triangles)
             if abs(volume) <= _signed_volume_noise_floor(points, component_triangles):
                 # Degenerate enough that the sign is accumulated rounding.

@@ -370,6 +370,25 @@ def _half_box_cut_on_x() -> tuple[np.ndarray, np.ndarray]:
     return points, triangles
 
 
+#: Physical tag for the source cap in these fixtures, matching ``SOURCE_TAG_BASE``
+#: in the add-in's prepare script. The z = 0 face (triangles 0 and 1 of
+#: ``_half_box_cut_on_x``) stands in for the throat cap.
+_SOURCE_TAG = 2
+
+
+def _half_box_tags_with_source_cap(triangles: np.ndarray) -> np.ndarray:
+    """Tag the z = 0 face as the source cap, everything else as rigid wall.
+
+    The signed-volume fallback is only reached by a component that HAS a source
+    cap and whose two-plane projection still abstained -- a single-plane cut has
+    no unique non-cut axis to project onto. A source-less component abstains
+    outright, so these fixtures must carry a cap to exercise the fallback at all.
+    """
+    tags = np.full(len(triangles), 1, dtype=np.int64)
+    tags[0:2] = _SOURCE_TAG
+    return tags
+
+
 def test_single_plane_cut_orientation_is_resolved_by_signed_volume():
     """The Fusion-common one-plane cut used to be left unjudged.
 
@@ -384,8 +403,8 @@ def test_single_plane_cut_orientation_is_resolved_by_signed_volume():
     repaired, stats = _repair_triangle_winding(
         points,
         inverted,
-        tags=np.zeros(len(inverted), dtype=np.int64),
-        source_tags=set(),
+        tags=_half_box_tags_with_source_cap(inverted),
+        source_tags={_SOURCE_TAG},
         symmetry_planes=("x0",),
         tolerance=1e-6,
     )
@@ -418,8 +437,8 @@ def test_a_near_degenerate_component_is_left_unresolved_not_flipped():
     repaired, stats = _repair_triangle_winding(
         flattened,
         triangles,
-        tags=np.zeros(len(triangles), dtype=np.int64),
-        source_tags=set(),
+        tags=_half_box_tags_with_source_cap(triangles),
+        source_tags={_SOURCE_TAG},
         symmetry_planes=("x0",),
         tolerance=1e-6,
     )
@@ -441,11 +460,99 @@ def test_already_outward_single_plane_cut_is_left_alone():
     repaired, stats = _repair_triangle_winding(
         points,
         triangles,
-        tags=np.zeros(len(triangles), dtype=np.int64),
-        source_tags=set(),
+        tags=_half_box_tags_with_source_cap(triangles),
+        source_tags={_SOURCE_TAG},
         symmetry_planes=("x0",),
         tolerance=1e-6,
     )
     assert stats["symmetry_volume_fallback_kept"] == 1
     assert stats["symmetry_volume_fallback_flipped"] == 0
     assert np.array_equal(repaired, triangles)
+
+
+def test_reduced_component_without_a_source_cap_is_left_unjudged():
+    """No source cap means no evidence, and the answer is abstention.
+
+    This pins the decision commit 3cf7d31 made when it replaced the signed-volume
+    predicate with the source anchor. The coverage moved out of the add-in with
+    the code and was not re-created here, which is how a later change could
+    reinstate the volume oracle on a green suite.
+    """
+    points, outward = _half_box_cut_on_x()
+    acoustic = outward[:, [0, 2, 1]]  # walls face into the bore
+    tags = np.full(len(acoustic), 1, dtype=np.int64)
+
+    assert _signed_volume(points, acoustic) < 0.0, "the hazard is a negative volume"
+
+    repaired, stats = _repair_triangle_winding(
+        points,
+        acoustic,
+        tags=tags,
+        source_tags={_SOURCE_TAG},
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+
+    assert np.array_equal(repaired, acoustic), "a source-less component must not be flipped"
+    assert stats["flipped_global"] == 0
+    assert stats["unjudged_symmetry_components"] == 1
+    assert stats["unjudged_symmetry_no_source"] == 1
+    assert stats["symmetry_volume_fallback_flipped"] == 0
+    assert stats["symmetry_volume_fallback_kept"] == 0
+
+
+def test_source_less_abstention_does_not_depend_on_the_volume_sign():
+    """Abstention is about missing evidence, not about which sign turned up.
+
+    The outward-wound twin of the test above must be left alone for the same
+    reason -- not flipped, and not *kept* by the volume fallback either, which
+    would mean the fallback ran and merely agreed.
+    """
+    points, outward = _half_box_cut_on_x()
+    tags = np.full(len(outward), 1, dtype=np.int64)
+
+    assert _signed_volume(points, outward) > 0.0
+
+    repaired, stats = _repair_triangle_winding(
+        points,
+        outward,
+        tags=tags,
+        source_tags={_SOURCE_TAG},
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+
+    assert np.array_equal(repaired, outward)
+    assert stats["unjudged_symmetry_no_source"] == 1
+    assert stats["symmetry_volume_fallback_kept"] == 0
+
+
+def test_declaring_no_source_tags_at_all_abstains_for_every_component():
+    """``source_tags=set()`` means every component is source-less.
+
+    ``np.isin(tags, ())`` is all-False, so an empty declaration abstains
+    everywhere rather than falling back on the volume. That is the intended
+    reading -- a caller that declares no source has given no anchor for any
+    component -- but it is one ``np.isin`` away from silently re-enabling the
+    fallback for every caller at once, so pin it.
+
+    No production caller reaches this: the add-in requires at least one
+    ``--source`` and re-raises when none resolve, and waveguide-generator's
+    only reduced-mesh call site builds its specs from a manifest whose required
+    sources cannot be skipped. This is a contract test, not a scenario.
+    """
+    points, outward = _half_box_cut_on_x()
+
+    repaired, stats = _repair_triangle_winding(
+        points,
+        outward,
+        tags=_half_box_tags_with_source_cap(outward),
+        source_tags=set(),
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
+    )
+
+    assert np.array_equal(repaired, outward)
+    assert stats["unjudged_symmetry_no_source"] == 1
+    assert stats["symmetry_volume_fallback_kept"] == 0
+    assert stats["symmetry_volume_fallback_flipped"] == 0
