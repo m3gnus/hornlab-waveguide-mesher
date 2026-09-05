@@ -764,8 +764,11 @@ def _rounded_rect_quadrant_angles(
 
     ``arc_subdivision`` splits every arc interval into that many equal
     sub-intervals, leaving the wall budget untouched. It defaults to 1, so the
-    public/ATH sampling is unchanged; only the acoustic control-grid fit raises
-    it, because ATH's fixed three intervals pin the corner chord at
+    public/ATH sampling is unchanged; the acoustic control-grid fit raises it,
+    and so does one consumer outside this repository -- see
+    ``profile_sampling._morph_corner_arc_subdivision`` for both, and for what
+    they rely on. It exists because ATH's fixed three intervals pin the corner
+    chord at
     ``2*R*sin(15 deg)`` no matter how large the angular budget grows. Splitting
     into ``3k`` equal intervals keeps ATH's four canonical profiles as an exact
     subset (indices ``k``, ``2k``, ``3k`` reproduce the same arc parameters).

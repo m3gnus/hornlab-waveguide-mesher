@@ -44,7 +44,10 @@ from .profile_morph import (
 )
 
 # Private params key: acoustic-only corner-arc subdivision (see
-# ``_morph_corner_arc_subdivision``). Never set by user configs.
+# ``_morph_corner_arc_subdivision``). Never set by user configs, and set by two
+# callers only -- one here, one in Waveguide Generator. Both are named in that
+# function's docstring, because a caller outside this repository cannot be found
+# by grepping it.
 logger = logging.getLogger(__name__)
 
 ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY = "_acousticCornerArcSubdivision"
@@ -102,8 +105,27 @@ def _mirror_quadrant_angles(q1: np.ndarray) -> np.ndarray:
 def _morph_corner_arc_subdivision(params: Mapping[str, Any]) -> int:
     """Private acoustic-only override; 1 keeps ATH's fixed three arc intervals.
 
-    Only ``config_builder._build_acoustic_sampling_grid`` sets this, so the
-    public grid, the viewport preview and the ATH reference path are unaffected.
+    The default leaves the public grid, the viewport preview and the ATH
+    reference path untouched. Two callers raise it, and this docstring is the
+    only place the second one is visible from here:
+
+    * ``config_builder._build_acoustic_sampling_grid``, when a corner-arc
+      violation needs the arc refined rather than the angular budget grown.
+    * **Waveguide Generator's inner-surface STEP planner**, on the params it
+      hands ``build_point_grid`` to build the *reference* it measures the
+      written loft against -- never the grid the file is written from. It needs
+      the reference to hold samples between the arc's fixed breakpoints, because
+      that is where the ring spline it is checking overshoots and raising
+      ``angularSegments`` alone can never put a sample there.
+
+    What that consumer depends on is the refinement property
+    ``_rounded_rect_quadrant_angles`` documents: subdividing splits each arc
+    interval and leaves the wall budget alone, so a subdivided grid is the
+    unsubdivided one plus extra arc azimuths, with every shared azimuth giving
+    the same point. A change that broke that -- or that stopped honouring the
+    key -- would not fail here; it would quietly make that planner's measurement
+    blind again. It has a counterpart test on its own side, and this note is the
+    matching half of that contract.
     """
 
     try:
