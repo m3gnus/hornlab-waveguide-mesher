@@ -1121,13 +1121,17 @@ def test_freestanding_half_models_build_with_single_cut_plane(tmp_path):
     assert results["1234"].native_symmetry_plane is None
 
     # A half spans one mirror; its count sits between the quarter and the full
-    # model and the two halves match each other.
+    # model and the two halves match each other. "Match" is within a small
+    # tolerance, not bitwise: gmsh triangulates the two cut orientations
+    # identically on macOS but two triangles apart on Linux and Windows CI
+    # (388/390, 392/394 observed), and that platform noise is not a contract.
     assert (
         results["1"].n_triangles
         < results["12"].n_triangles
         < results["1234"].n_triangles
     )
-    assert results["12"].n_triangles == results["14"].n_triangles
+    halves = (results["12"].n_triangles, results["14"].n_triangles)
+    assert abs(halves[0] - halves[1]) <= 0.02 * max(halves), halves
 
 
 def test_freestanding_subdomain_interfaces_raise(tmp_path):
