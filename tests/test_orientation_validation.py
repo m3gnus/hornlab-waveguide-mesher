@@ -389,35 +389,70 @@ def _half_box_tags_with_source_cap(triangles: np.ndarray) -> np.ndarray:
     return tags
 
 
-def test_single_plane_cut_orientation_is_resolved_by_signed_volume():
-    """The Fusion-common one-plane cut used to be left unjudged.
+def _faces_the_bore(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """Per-triangle: does the normal point toward the body's own centre?"""
+    normals = np.cross(
+        points[triangles[:, 1]] - points[triangles[:, 0]],
+        points[triangles[:, 2]] - points[triangles[:, 0]],
+    )
+    centroids = points[triangles].mean(axis=1) - np.array([5.0, 5.0, 5.0])
+    return np.einsum("ij,ij->i", normals, centroids) < 0.0
 
-    Every free edge of a symmetry-reduced component lies on a coordinate plane
-    through the origin, so the divergence-theorem cone terms vanish and the
-    signed volume about the origin is a valid oracle -- unlike for an arbitrary
-    open rim.
+
+def test_single_plane_cut_orientation_is_resolved_by_the_throat_collar():
+    """The Fusion-common one-plane cut is judged, and judged acoustically.
+
+    A cap that cannot be projected onto a single axis is still an anchor: the
+    throat collar builds both its references out of the cap itself, so it needs
+    no unconstrained axis. The verdict it gives is the acoustic one -- walls
+    face the bore -- which is the opposite of what the signed volume says here,
+    and the volume is the one that is wrong (see
+    ``normals.open_shell_bore_alignment``).
     """
-    points, triangles = _half_box_cut_on_x()
-    inverted = triangles[:, [0, 2, 1]]
+    points, outward = _half_box_cut_on_x()
+    acoustic = outward[:, [0, 2, 1]]  # walls face the bore
 
     repaired, stats = _repair_triangle_winding(
         points,
-        inverted,
-        tags=_half_box_tags_with_source_cap(inverted),
+        outward,
+        tags=_half_box_tags_with_source_cap(outward),
         source_tags={_SOURCE_TAG},
         symmetry_planes=("x0",),
         tolerance=1e-6,
     )
+
     assert stats["unjudged_symmetry_components"] == 1
-    assert stats["symmetry_volume_fallback_flipped"] == 1
-    assert np.array_equal(np.sort(repaired, axis=1), np.sort(triangles, axis=1))
-    # and the repaired winding is the outward one
-    normals = np.cross(
-        points[repaired[:, 1]] - points[repaired[:, 0]],
-        points[repaired[:, 2]] - points[repaired[:, 0]],
+    assert stats["bore_alignment_flipped"] == 1
+    assert stats["symmetry_volume_fallback_flipped"] == 0
+    assert np.array_equal(repaired, acoustic)
+    assert np.all(_faces_the_bore(points, repaired))
+
+
+def test_the_collar_verdict_contradicts_the_volume_and_wins():
+    """Pins the disagreement itself, so a silent revert cannot pass.
+
+    Signed volume calls the acoustic winding wrong (it is negative) and the
+    outward winding right. The collar says the reverse. If the volume oracle
+    were ever restored on this path, this test fails rather than a consumer's.
+    """
+    points, outward = _half_box_cut_on_x()
+    acoustic = outward[:, [0, 2, 1]]
+
+    assert _signed_volume(points, acoustic) < 0.0
+    assert _signed_volume(points, outward) > 0.0
+
+    repaired, stats = _repair_triangle_winding(
+        points,
+        acoustic,
+        tags=_half_box_tags_with_source_cap(acoustic),
+        source_tags={_SOURCE_TAG},
+        symmetry_planes=("x0",),
+        tolerance=1e-6,
     )
-    centroids = points[repaired].mean(axis=1) - np.array([5.0, 5.0, 5.0])
-    assert np.all(np.einsum("ij,ij->i", normals, centroids) > 0.0)
+
+    assert np.array_equal(repaired, acoustic), "the volume's verdict must not win"
+    assert stats["bore_alignment_kept"] == 1
+    assert stats["flipped_global"] == 0
 
 
 def test_a_near_degenerate_component_is_left_unresolved_not_flipped():
@@ -455,19 +490,30 @@ def test_a_healthy_reduced_shell_clears_the_noise_floor_by_orders_of_magnitude()
     assert abs(_signed_volume(points, triangles)) > 1.0e6 * floor
 
 
-def test_already_outward_single_plane_cut_is_left_alone():
-    points, triangles = _half_box_cut_on_x()
+def test_an_already_acoustic_single_plane_cut_is_left_alone():
+    """The keep case, which is the winding the solver wants.
+
+    This replaces a test that asserted an already-OUTWARD component was left
+    alone. That was the old contract and it is now inverted deliberately: with
+    a tagged cap the component is an acoustic one, so outward is the winding
+    that gets corrected and bore-facing is the one left untouched.
+    """
+    points, outward = _half_box_cut_on_x()
+    acoustic = outward[:, [0, 2, 1]]
+
     repaired, stats = _repair_triangle_winding(
         points,
-        triangles,
-        tags=_half_box_tags_with_source_cap(triangles),
+        acoustic,
+        tags=_half_box_tags_with_source_cap(acoustic),
         source_tags={_SOURCE_TAG},
         symmetry_planes=("x0",),
         tolerance=1e-6,
     )
-    assert stats["symmetry_volume_fallback_kept"] == 1
-    assert stats["symmetry_volume_fallback_flipped"] == 0
-    assert np.array_equal(repaired, triangles)
+
+    assert stats["bore_alignment_kept"] == 1
+    assert stats["bore_alignment_flipped"] == 0
+    assert stats["symmetry_volume_fallback_kept"] == 0
+    assert np.array_equal(repaired, acoustic)
 
 
 def test_reduced_component_without_a_source_cap_is_left_unjudged():
@@ -556,3 +602,108 @@ def test_declaring_no_source_tags_at_all_abstains_for_every_component():
     assert stats["unjudged_symmetry_no_source"] == 1
     assert stats["symmetry_volume_fallback_kept"] == 0
     assert stats["symmetry_volume_fallback_flipped"] == 0
+
+
+def _half_solid_of_revolution(profile, n_theta=24, mouth_tag=1):
+    """A closed-modulo-x=0 half solid of revolution, wound OUTWARD.
+
+    Every free edge lies on the x=0 cut plane, which is what makes it a
+    symmetry-reduced component in the sense `_repair_triangle_winding` means.
+    A bare flared shell is not: its mouth rim is a free edge off the cut plane,
+    so it never reaches the branch under test.
+
+    Throat cap is tagged `_SOURCE_TAG`, the lateral wall and the cut face 1,
+    and the mouth cap `mouth_tag` so a second declared cap can be simulated.
+    """
+    prof = np.asarray(profile, dtype=float)
+    nz = len(prof)
+    th = np.linspace(-np.pi / 2, np.pi / 2, n_theta + 1)
+    pts, idx = [], {}
+    for i in range(nz):
+        r, z = prof[i]
+        for j, t in enumerate(th):
+            idx[(i, j)] = len(pts)
+            pts.append([r * np.cos(t), r * np.sin(t), z])
+    a0 = len(pts); pts.append([0.0, 0.0, prof[0][1]])
+    a1 = len(pts); pts.append([0.0, 0.0, prof[-1][1]])
+    axnodes = []
+    for i in range(nz):
+        axnodes.append(len(pts))
+        pts.append([0.0, 0.0, prof[i][1]])
+    pts = np.asarray(pts, dtype=np.float64)
+
+    tris, tags = [], []
+    for i in range(nz - 1):                                   # lateral wall
+        for j in range(n_theta):
+            a, b = idx[(i, j)], idx[(i, j + 1)]
+            c, d = idx[(i + 1, j + 1)], idx[(i + 1, j)]
+            tris += [[a, b, c], [a, c, d]]; tags += [1, 1]
+    for j in range(n_theta):                                  # throat cap, -z
+        tris.append([a0, idx[(0, j + 1)], idx[(0, j)]]); tags.append(_SOURCE_TAG)
+    for j in range(n_theta):                                  # mouth cap, +z
+        tris.append([a1, idx[(nz - 1, j)], idx[(nz - 1, j + 1)]]); tags.append(mouth_tag)
+    for j, outward in ((0, np.array([0.0, -1.0, 0.0])), (n_theta, np.array([0.0, 1.0, 0.0]))):
+        for i in range(nz - 1):                               # x = 0 cut face
+            p_, q_ = idx[(i, j)], idx[(i + 1, j)]
+            A, B = axnodes[i], axnodes[i + 1]
+            for tri in ([A, B, q_], [A, q_, p_]):
+                n = np.cross(pts[tri[1]] - pts[tri[0]], pts[tri[2]] - pts[tri[0]])
+                if n @ outward < 0:
+                    tri = [tri[0], tri[2], tri[1]]
+                tris.append(tri); tags.append(1)
+    return pts, np.asarray(tris, np.int64), np.asarray(tags, np.int32)
+
+
+def _flare(mouth_radius, throat_radius=25.0, length=100.0, n=14):
+    z = np.linspace(0.0, length, n)
+    return list(zip(throat_radius + (mouth_radius - throat_radius) * (z / length) ** 2, z))
+
+
+def test_a_flared_half_horn_is_judged_by_its_collar_in_both_windings():
+    """The shape the collar exists for, checked both ways round.
+
+    The solid is built outward; the acoustic winding is its inverse, walls
+    facing the bore. Both must end up acoustic.
+    """
+    points, outward, tags = _half_solid_of_revolution(_flare(150.0))
+    acoustic = outward[:, [0, 2, 1]]
+
+    kept, kept_stats = _repair_triangle_winding(
+        points, acoustic, tags=tags, source_tags={_SOURCE_TAG},
+        symmetry_planes=("x0",), tolerance=1e-6,
+    )
+    assert np.array_equal(kept, acoustic)
+    assert kept_stats["bore_alignment_kept"] == 1
+    assert kept_stats["symmetry_volume_fallback_kept"] == 0
+
+    fixed, fixed_stats = _repair_triangle_winding(
+        points, outward, tags=tags, source_tags={_SOURCE_TAG},
+        symmetry_planes=("x0",), tolerance=1e-6,
+    )
+    assert np.array_equal(fixed, acoustic), "an outward horn must be corrected"
+    assert fixed_stats["bore_alignment_flipped"] == 1
+    assert fixed_stats["symmetry_volume_fallback_flipped"] == 0
+
+
+def test_a_second_declared_cap_never_yields_a_confident_wrong_verdict():
+    """Regression: averaging two caps put the radial reference outside the body.
+
+    With a 25 mm throat cap and a large mouth cap both declared, the combined
+    area-weighted centroid lands far off the bore axis and the radial test is
+    taken about a line that misses the body. Measured before the fix, an
+    OUTWARD (non-acoustic) mesh read 0.867 and was recorded as an acoustic
+    keep. Asking each cap separately and requiring agreement gives the throat
+    cap's reading instead, which is correct.
+    """
+    for mouth_radius in (80.0, 150.0, 250.0, 400.0):
+        points, outward, tags = _half_solid_of_revolution(
+            _flare(mouth_radius), mouth_tag=3
+        )
+        both = {_SOURCE_TAG, 3}
+        _, stats = _repair_triangle_winding(
+            points, outward, tags=tags, source_tags=both,
+            symmetry_planes=("x0",), tolerance=1e-6,
+        )
+        assert stats["bore_alignment_kept"] == 0, (
+            f"mouth_radius={mouth_radius}: an outward mesh was kept as acoustic"
+        )

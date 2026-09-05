@@ -18,6 +18,7 @@ from types import TracebackType
 import meshio
 import numpy as np
 
+from .normals import open_shell_bore_alignment
 from .step_prepare import OccSurfaceRole, snap_symmetry_plane_vertices
 
 
@@ -773,6 +774,87 @@ def _free_edges_on_expected_planes(
     )
 
 
+#: Why :func:`_symmetry_source_projection_detail` declined to judge a component.
+#: The distinction is load-bearing: ``no_source`` means there is no evidence and
+#: the caller must abstain, while ``no_open_axis`` and ``degenerate_projection``
+#: mean a cap exists but this particular measure cannot read it, so a different
+#: oracle may still be able to.
+_SYMMETRY_PROJECTION_OK = "ok"
+_SYMMETRY_PROJECTION_NO_SOURCE = "no_source"
+_SYMMETRY_PROJECTION_NO_OPEN_AXIS = "no_open_axis"
+_SYMMETRY_PROJECTION_DEGENERATE = "degenerate_projection"
+_SYMMETRY_PROJECTION_EMPTY = "empty_component"
+
+#: How far the throat-collar bore fraction must sit from 0.5 before it counts as
+#: a reading. At exactly half the collar reports that as much wall area faces
+#: the bore as faces away, which is not a winding verdict at any threshold.
+#:
+#: Measured on flared half-horns, shallow waveguides and straight ducts, a
+#: single-cap component reads exactly 1.0 wound correctly and exactly 0.0
+#: inverted -- the intermediate values all come from geometries where the
+#: radial reference is not the bore axis, and those are shapes to decline
+#: rather than close calls to decide. 0.25 is therefore loose, not tight; it
+#: exists to reject an even split, not to discriminate near one.
+#:
+#: It is deliberately NOT waveguide-generator's 0.9 bare-shell threshold
+#: (server/mesh/integrity.py). That gate judges a whole finished mesh and can
+#: demand near-perfection; this one picks a direction for one component and
+#: must not turn a readable component into an unjudged one.
+_BORE_ALIGNMENT_MARGIN = 0.25
+
+
+def _symmetry_source_projection_detail(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    tags: np.ndarray,
+    *,
+    source_tags: set[int],
+    symmetry_planes: tuple[str, ...],
+) -> tuple[float | None, str]:
+    """:func:`_symmetry_source_normal_projection`, plus why it abstained.
+
+    Collapsing four different outcomes onto a bare ``None`` is what let a
+    caller treat "this component has no source at all" and "this component has
+    a source I cannot project" as the same situation, and apply one fallback to
+    both. They need opposite responses, so the reason travels with the value.
+
+    The value half is identical to :func:`_symmetry_source_normal_projection`,
+    which delegates here. That function keeps its exact signature and return
+    type because it is re-exported and called directly by the consuming Fusion
+    add-in; widening it in place would have broken that consumer silently.
+    """
+    if len(triangles) == 0 or len(tags) != len(triangles):
+        return None, _SYMMETRY_PROJECTION_EMPTY
+
+    cut_axes = {
+        {"x0": 0, "y0": 1, "z0": 2}[plane]
+        for plane in symmetry_planes
+    }
+    open_axes = sorted({0, 1, 2} - cut_axes)
+
+    source_mask = np.isin(tags, tuple(source_tags))
+    if not np.any(source_mask):
+        # Checked before the axis count so that a component with no cap reports
+        # the reason that actually governs the caller's decision, whatever its
+        # cut geometry happens to be.
+        return None, _SYMMETRY_PROJECTION_NO_SOURCE
+
+    if len(cut_axes) != 2 or len(open_axes) != 1:
+        return None, _SYMMETRY_PROJECTION_NO_OPEN_AXIS
+
+    source_triangles = triangles[source_mask]
+    p0 = points[source_triangles[:, 0]]
+    p1 = points[source_triangles[:, 1]]
+    p2 = points[source_triangles[:, 2]]
+    area_vectors = np.cross(p1 - p0, p2 - p0)
+    total_area_vector = np.sum(area_vectors, axis=0)
+    total_area = float(np.sum(np.linalg.norm(area_vectors, axis=1)))
+    projection = float(total_area_vector[open_axes[0]])
+    if total_area <= 0.0 or abs(projection) <= 1.0e-12 * total_area:
+        return None, _SYMMETRY_PROJECTION_DEGENERATE
+    return projection, _SYMMETRY_PROJECTION_OK
+
+
 def _symmetry_source_normal_projection(
     points: np.ndarray,
     triangles: np.ndarray,
@@ -794,33 +876,72 @@ def _symmetry_source_normal_projection(
     ``None`` means the component cannot be judged without guessing: it has no
     tagged source cap, does not have exactly two distinct principal cut
     planes, or its cap has no resolvable projection on the remaining axis.
+    :func:`_symmetry_source_projection_detail` says which of those it was.
+
+    Kept as a thin wrapper rather than widened in place: the Fusion add-in
+    re-exports this name and calls it directly, so its signature and return
+    type are a cross-repository contract.
     """
-    if len(triangles) == 0 or len(tags) != len(triangles):
-        return None
-
-    cut_axes = {
-        {"x0": 0, "y0": 1, "z0": 2}[plane]
-        for plane in symmetry_planes
-    }
-    open_axes = sorted({0, 1, 2} - cut_axes)
-    if len(cut_axes) != 2 or len(open_axes) != 1:
-        return None
-
-    source_mask = np.isin(tags, tuple(source_tags))
-    if not np.any(source_mask):
-        return None
-
-    source_triangles = triangles[source_mask]
-    p0 = points[source_triangles[:, 0]]
-    p1 = points[source_triangles[:, 1]]
-    p2 = points[source_triangles[:, 2]]
-    area_vectors = np.cross(p1 - p0, p2 - p0)
-    total_area_vector = np.sum(area_vectors, axis=0)
-    total_area = float(np.sum(np.linalg.norm(area_vectors, axis=1)))
-    projection = float(total_area_vector[open_axes[0]])
-    if total_area <= 0.0 or abs(projection) <= 1.0e-12 * total_area:
-        return None
+    projection, _reason = _symmetry_source_projection_detail(
+        points,
+        triangles,
+        tags,
+        source_tags=source_tags,
+        symmetry_planes=symmetry_planes,
+    )
     return projection
+
+
+def _bore_alignment_verdict(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    tags: np.ndarray,
+    *,
+    source_tags: set[int],
+) -> bool | None:
+    """Is this component wound with its walls facing the bore?
+
+    ``True`` keep, ``False`` flip, ``None`` no verdict.
+
+    One cap at a time, and they must agree. ``open_shell_bore_alignment``
+    derives its axis and radial origin from the caps it is given, so handing it
+    several at once averages them into a reference that need not lie in the
+    body at all: measured on a flared half-horn with a 25 mm throat cap and a
+    400 mm mouth cap both declared, the combined centroid sat 169 mm off axis
+    and an INVERTED mesh read 0.867 -- confident, and wrong. Asked about the
+    throat cap alone the same mesh reads 0.0.
+
+    So each declared cap present in the component is asked separately. A cap
+    that cannot judge (no collar, a cancelling net area, or a fraction too near
+    an even split to be a reading) simply does not vote; the mouth cap of a
+    horn usually abstains this way. Disagreement between two caps that both
+    voted is itself a reason to decline -- one of them is being measured about
+    the wrong axis and this function cannot tell which.
+    """
+    present = [
+        int(tag)
+        for tag in np.unique(tags).tolist()
+        if int(tag) in source_tags
+    ]
+    if not present:
+        return None
+    wall_tags = set(np.unique(tags).tolist()) - source_tags
+
+    votes: set[bool] = set()
+    for tag in present:
+        alignment = open_shell_bore_alignment(
+            points,
+            triangles,
+            tags,
+            source_tags={tag},
+            wall_tags=wall_tags,
+        )
+        if alignment is None or abs(alignment - 0.5) <= _BORE_ALIGNMENT_MARGIN:
+            continue
+        votes.add(alignment > 0.5)
+    if len(votes) != 1:
+        return None
+    return votes.pop()
 
 
 def _repair_triangle_winding(
@@ -845,14 +966,15 @@ def _repair_triangle_winding(
 
     A reduced component that *has* a source cap whose projection still
     abstained -- no unique non-cut axis to project onto, or a degenerate net
-    cap normal along it -- falls back to the signed volume about the origin,
-    which is well defined once every free edge lies on a cut plane through it.
-    That fallback answers "outward from the capped region", which is the
-    acoustic contract only where the meshed region is the solid, so it still
-    inverts a bore-facing acoustic component. ``normals`` carries the
-    measurement that does not share the limitation, ``open_shell_bore_alignment``
-    -- but it is a validator returning a wall-agreement fraction, needs a
-    primary source of its own, and is not wired into this function.
+    cap normal along it -- is judged by its throat collar instead, via
+    ``normals.open_shell_bore_alignment`` asked one cap at a time. That measure
+    takes both its references from the cap, so it needs no unconstrained axis.
+
+    The signed volume is only the last resort, when the collar declines. It
+    answers "outward from the capped region", which is the acoustic contract
+    only where the meshed region is the solid, so it inverts a bore-facing
+    acoustic component and is counted separately from a collar verdict for
+    exactly that reason.
     """
     repaired = triangles.copy()
     stats = {
@@ -863,6 +985,8 @@ def _repair_triangle_winding(
         "symmetry_volume_fallback_flipped": 0,
         "symmetry_volume_fallback_kept": 0,
         "unresolved_symmetry_components": 0,
+        "bore_alignment_flipped": 0,
+        "bore_alignment_kept": 0,
     }
     if len(repaired) == 0:
         return repaired, stats
@@ -948,7 +1072,7 @@ def _repair_triangle_winding(
         if not symmetry_reduced:
             continue
 
-        projection = _symmetry_source_normal_projection(
+        projection, projection_reason = _symmetry_source_projection_detail(
             points,
             component_triangles,
             component_tags[component],
@@ -957,7 +1081,7 @@ def _repair_triangle_winding(
         )
         if projection is None:
             stats["unjudged_symmetry_components"] += 1
-            if not np.any(np.isin(component_tags[component], tuple(declared_source_tags))):
+            if projection_reason == _SYMMETRY_PROJECTION_NO_SOURCE:
                 # No source cap at all, so nothing establishes which side of
                 # this surface the fluid is on. Signed volume answers a
                 # different question -- which way is out of the region the cut
@@ -985,19 +1109,54 @@ def _repair_triangle_winding(
             # abstained anyway: the cut planes leave no unique non-cut axis to
             # project onto (a single-plane cut, the common Fusion case, or a
             # three-plane octant), or the cap's net normal along that axis is
-            # degenerate. Fall back to the signed volume about the origin:
-            # ``symmetry_reduced`` already established
-            # that every free edge lies on a coordinate plane through the
-            # origin, so the divergence-theorem cone terms over those rims
-            # vanish and the sign is well defined. (The rule that signed volume
-            # cannot orient an open shell applies to an arbitrary rim -- a bare
-            # mouth rim off the origin -- not to one pinned to the cut planes,
-            # so the general open-shell path below still refuses to guess.)
+            # degenerate.
+            #
+            # Degeneracy first, and on the volume, exactly as before. A
+            # component enclosing a volume indistinguishable from zero is not a
+            # body this function can orient by any means, and the collar below
+            # will still return a confident fraction for one -- measured: the
+            # 10 x 10 x 1e-8 sliver in the tests reads 0.0, not None, because
+            # the wall normals of a collapsed box are perfectly well defined
+            # even though the box is not. Keeping this guard in front preserves
+            # an abstention that predates this change rather than quietly
+            # spending it.
             volume = _signed_volume(points, component_triangles)
             if abs(volume) <= _signed_volume_noise_floor(points, component_triangles):
-                # Degenerate enough that the sign is accumulated rounding.
                 stats["unresolved_symmetry_components"] += 1
-            elif volume < 0.0:
+                continue
+
+            # A cap is still an anchor even when it cannot be projected onto a
+            # single axis, so ask the throat collar instead of the volume. The
+            # collar measure builds both its references out of the cap itself --
+            # the cap's area-weighted centroid and its net area vector -- so it
+            # needs no axis from the cut planes and survives translation,
+            # rotation and reduced domains. Where the volume oracle and this one
+            # disagree, this one is right: the volume answers "outward from the
+            # region the cut planes cap", which inverts a bore-facing acoustic
+            # component, and that inversion was live on exactly this path.
+            verdict = _bore_alignment_verdict(
+                points,
+                component_triangles,
+                component_tags[component],
+                source_tags=declared_source_tags,
+            )
+            if verdict is not None:
+                if verdict is False:
+                    # The walls face away from the bore, so the component is
+                    # inverted relative to the acoustic contract.
+                    repaired[component] = component_triangles[:, [0, 2, 1]]
+                    stats["flipped_global"] += int(len(component))
+                    stats["bore_alignment_flipped"] += 1
+                else:
+                    stats["bore_alignment_kept"] += 1
+                continue
+            # The collar could not judge it -- no wall band, a cancelling cap,
+            # or a fraction too close to half to be a reading rather than a
+            # verdict. Fall back to the signed volume, already computed above
+            # and already known to clear its noise floor. It remains the wrong
+            # question for an acoustic component, so it is counted separately
+            # and the caller reports it.
+            if volume < 0.0:
                 repaired[component] = component_triangles[:, [0, 2, 1]]
                 stats["flipped_global"] += int(len(component))
                 stats["symmetry_volume_fallback_flipped"] += 1

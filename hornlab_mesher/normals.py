@@ -139,6 +139,8 @@ def open_shell_bore_alignment(
     tags: NDArray[np.int32],
     *,
     band_fraction: float = 0.2,
+    source_tags: set[int] | None = None,
+    wall_tags: set[int] | None = None,
 ) -> float | None:
     """Return the near-throat wall area fraction whose normal faces the bore.
 
@@ -158,14 +160,41 @@ def open_shell_bore_alignment(
     kept near the throat because a rollback deliberately reverses the
     bore-facing normal's radial component further out.
 
-    Returns ``None`` when the mesh carries no primary source, no rigid wall, a
-    cap whose area vectors cancel, or no nondegenerate axial wall collar --
-    cases this measure cannot judge.
+    Returns ``None`` when the mesh carries no source, no wall, a cap whose area
+    vectors cancel, or no nondegenerate axial wall collar -- cases this measure
+    cannot judge.
+
+    ``source_tags`` and ``wall_tags`` name which physical tags play those two
+    roles. They default to this package's own canonical groups, so a caller
+    that omits them gets exactly the behaviour this function has always had.
+    STEP import cannot use the canonical groups: its tags are allocated per
+    imported source by the caller, so ``PRIMARY_SOURCE`` names nothing there
+    and a multi-source import carries tags 3 and up that the canonical mask
+    would drop silently.
     """
 
-    wall_mask = tags == int(PhysicalGroup.RIGID_WALL)
-    source_mask = tags == int(PhysicalGroup.PRIMARY_SOURCE)
+    resolved_sources = (
+        {int(PhysicalGroup.PRIMARY_SOURCE)} if source_tags is None else {int(t) for t in source_tags}
+    )
+    resolved_walls = (
+        {int(PhysicalGroup.RIGID_WALL)} if wall_tags is None else {int(t) for t in wall_tags}
+    )
+    if not resolved_sources or not resolved_walls:
+        return None
+    wall_mask = np.isin(tags, tuple(resolved_walls))
+    source_mask = np.isin(tags, tuple(resolved_sources))
     if not np.any(wall_mask) or not np.any(source_mask):
+        return None
+
+    # More than one declared cap in the same component makes the references
+    # below meaningless, so decline rather than average them. `cap_centroid` is
+    # the area-weighted centroid of every cap at once: with a small throat cap
+    # and a large mouth cap it lands nowhere near either axis, and the radial
+    # test is then measured about a line outside the body. Measured on a flared
+    # half-horn with caps 2 and 3 declared and a 400 mm mouth, an INVERTED mesh
+    # read 0.867 -- a confident verdict, in the wrong direction, which is worse
+    # than no verdict. One cap is the case this collar was derived for.
+    if len(np.unique(tags[source_mask])) > 1:
         return None
 
     s0 = points[triangles[source_mask, 0]]
