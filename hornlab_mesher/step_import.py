@@ -28,12 +28,14 @@ from .step_text import (  # noqa: F401
     BODY_ENTITIES,
     SOLID_BODY_ENTITIES,
     SURFACE_BODY_ENTITIES,
+    VOIDED_SOLID_BODY_ENTITIES,
     StepBody,
     advanced_face_order,
     blank_step_strings,
     count_step_bodies,
     decode_step_string,
     first_step_string,
+    occ_make_solids_is_safe,
     parse_named_shell_faces,
     parse_solid_brep_faces,
     parse_styled_face_groups,
@@ -68,6 +70,17 @@ ANCHOR_MAX_AREA_REL_DIFF = 0.02
 ANCHOR_MAX_CENTROID_DISTANCE_MM = 5.0
 
 SurfaceGeometry = tuple[tuple[float, float, float], float]
+# Each rung names the Gmsh geometry options a caller must set to 1 for that
+# repair. This is a repair-STRATEGY contract, shared by consumers whose STEP
+# files are not the same universe as ours, and a consumer reads it as "set each
+# of these to 1".
+#
+# Geometry.OCCMakeSolids therefore does NOT belong here, however tempting the
+# pairing looks. Sewing dissolves a solid body, and MakeSolids is what puts the
+# volume back -- but whether that rebuild restores the geometry or corrupts it
+# is a property of the FILE, not of the rung: on a body with an interior void
+# it fills the cavity. Ask hornlab_mesher.step_text.occ_make_solids_is_safe of
+# the STEP text instead, and see tests/test_step_import.py for the measurement.
 OCC_HEALING_FALLBACKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Start with sewing: it resolves many Fusion periodic-face imports without
     # removing small valid faces. The broader repair remains a last resort.

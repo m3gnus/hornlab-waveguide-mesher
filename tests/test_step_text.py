@@ -8,6 +8,7 @@ from hornlab_mesher import step_import, step_text
 from hornlab_mesher.step_text import (
     advanced_face_order_from_text,
     count_step_bodies,
+    occ_make_solids_is_safe,
     parse_named_shell_faces_from_text,
     parse_solid_brep_faces_from_text,
     record_entity_types,
@@ -49,6 +50,7 @@ def test_step_import_re_exports_the_text_layer():
         "parse_solid_brep_faces",
         "parse_styled_face_groups",
         "advanced_face_order",
+        "occ_make_solids_is_safe",
     ):
         assert getattr(step_import, name) is getattr(step_text, name)
     for private, public in (
@@ -162,6 +164,65 @@ def test_a_voided_solid_reports_its_void_faces_too():
     assert count_step_bodies(text) == 1
     assert inventory[0].kind == "solid"
     assert sorted(inventory[0].face_ids) == [10, 11]
+
+
+# Numbered clear of _TWO_BODY_STEP so the two can be concatenated into one
+# file without their record ids colliding.
+_VOIDED_SOLID_STEP = (
+    "#110=ADVANCED_FACE('outer',(),$,.T.);"
+    "#111=ADVANCED_FACE('void',(),$,.T.);"
+    "#120=CLOSED_SHELL('',(#110));"
+    "#121=CLOSED_SHELL('',(#111));"
+    "#122=ORIENTED_CLOSED_SHELL('',*,#121,.F.);"
+    "#130=BREP_WITH_VOIDS('Voided',#120,(#122));"
+)
+
+
+def test_a_plain_solid_may_be_rebuilt():
+    """Sewing dissolves it and MakeSolids restores it; nothing else changes."""
+    assert occ_make_solids_is_safe(_TWO_BODY_STEP) is True
+
+
+def test_a_body_with_interior_voids_may_never_be_rebuilt():
+    """Measured: rebuilding fills the cavity and deletes its inner shell.
+
+    A 40 mm box minus an enclosed r=10 sphere goes from mass 59811.21 to
+    64000.00 -- the solid box -- while the volume count stays 1, so no
+    counting gate in this family can see it.
+    """
+    assert occ_make_solids_is_safe(_VOIDED_SOLID_STEP) is False
+
+
+def test_one_voided_body_disqualifies_a_file_that_also_holds_a_plain_solid():
+    """The option is per-file, so the hollow body would be filled anyway."""
+    mixed = _TWO_BODY_STEP + _VOIDED_SOLID_STEP
+
+    assert count_step_bodies(mixed) == 3
+    assert occ_make_solids_is_safe(mixed) is False
+
+
+def test_a_file_with_no_solid_body_has_nothing_to_rebuild():
+    """Nothing to restore, and coincident sheets would sew into a phantom."""
+    surface_only = "#30=SHELL_BASED_SURFACE_MODEL('Exterior sheet',(#21));"
+
+    assert occ_make_solids_is_safe(surface_only) is False
+    assert occ_make_solids_is_safe("") is False
+
+
+def test_being_a_solid_body_and_being_safe_to_rebuild_are_different_questions():
+    """The one entity where the two answers differ is the whole point.
+
+    A hollow body is ONE solid body -- so it counts as one, and
+    ``SOLID_BODY_ENTITIES`` must keep matching it -- and it is exactly the
+    body OCC must not re-solidify. Answering the second question with the
+    first turns a loud failure into silent geometry corruption.
+    """
+    inventory = step_body_inventory(_VOIDED_SOLID_STEP)
+
+    assert [body.kind for body in inventory] == ["solid"]
+    assert inventory[0].entity in step_text.SOLID_BODY_ENTITIES
+    assert inventory[0].entity in step_text.VOIDED_SOLID_BODY_ENTITIES
+    assert occ_make_solids_is_safe(_VOIDED_SOLID_STEP) is False
 
 
 def test_a_complex_record_still_declares_its_keywords():

@@ -40,7 +40,12 @@ _STEP_CONTROL_RE = re.compile(
 # body *named* "MANIFOLD_SOLID_BREP" from reading as one.
 _STEP_KEYWORD_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\(")
 
-SOLID_BODY_ENTITIES: tuple[str, ...] = ("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS")
+# A hollow solid is ONE solid body, so BREP_WITH_VOIDS belongs in
+# SOLID_BODY_ENTITIES. It is named separately because "is this a solid body?"
+# and "may OCC rebuild this solid?" are different questions with different
+# answers for exactly this entity -- see occ_make_solids_is_safe.
+VOIDED_SOLID_BODY_ENTITIES: tuple[str, ...] = ("BREP_WITH_VOIDS",)
+SOLID_BODY_ENTITIES: tuple[str, ...] = ("MANIFOLD_SOLID_BREP",) + VOIDED_SOLID_BODY_ENTITIES
 SURFACE_BODY_ENTITIES: tuple[str, ...] = ("SHELL_BASED_SURFACE_MODEL",)
 BODY_ENTITIES: tuple[str, ...] = SOLID_BODY_ENTITIES + SURFACE_BODY_ENTITIES
 
@@ -377,3 +382,46 @@ def count_step_bodies(step_text: str) -> int:
     module exists to remove.
     """
     return len(step_body_inventory(step_text))
+
+
+def occ_make_solids_is_safe(step_text: str) -> bool:
+    """Return whether OCC may safely rebuild solids for this STEP text.
+
+    ``Geometry.OCCSewFaces`` dissolves a solid body -- gmsh imports it as
+    orphan faces with no volume at all -- and ``Geometry.OCCMakeSolids`` is
+    what puts the volume back. Whether that rebuild is a *restoration* or a
+    *corruption* depends on the file, which is why this is a function of the
+    text and must not be an option carried inside a healing rung: a rung is a
+    repair strategy, and a consumer that reads a rung as "set each of these to
+    1" would have the choice made for it by a repository that never saw its
+    files.
+
+    Measured on gmsh 4.15.2, a 40 mm box minus a fully enclosed r=10 sphere --
+    which the OCC writer emits as one ``BREP_WITH_VOIDS``:
+
+        unhealed          volumes=1  surfaces=7  mass=59811.21
+        sew only          volumes=0  surfaces=7  mass=None
+        sew + MakeSolids  volumes=1  surfaces=6  mass=64000.00
+
+    64000 is the solid box. The cavity is filled and its inner shell deleted,
+    and because both volume counts read 1 no entity-counting gate can see it.
+
+    Hence:
+
+    * ``False`` if ANY body carries interior voids. A file mixing a hollow
+      body with a plain one would have the hollow one silently filled, so one
+      voided body disqualifies the whole file.
+    * ``False`` if there is no solid body at all. There is nothing to restore,
+      and two coincident sheets would sew into a phantom zero-volume solid.
+    * ``True`` only for at least one plain ``MANIFOLD_SOLID_BREP`` and no
+      voided one.
+
+    Deliberately NOT the same question as :attr:`StepBody.kind`: a hollow body
+    *is* one solid body, and it is precisely the body OCC must not
+    re-solidify. Conflating the two turns a loud failure into silent geometry
+    corruption.
+    """
+    bodies = step_body_inventory(step_text)
+    if any(body.entity in VOIDED_SOLID_BODY_ENTITIES for body in bodies):
+        return False
+    return any(body.kind == "solid" for body in bodies)
