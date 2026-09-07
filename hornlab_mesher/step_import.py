@@ -20,6 +20,30 @@ import numpy as np
 
 from .normals import open_shell_bore_alignment
 from .step_prepare import OccSurfaceRole, snap_symmetry_plane_vertices
+# Re-exported, not merely used: callers have always imported the STEP text
+# parsers from this module, and several names below have no other use here.
+from .step_text import (  # noqa: F401
+    _STEP_CONTROL_RE,
+    _STEP_RECORD_RE,
+    BODY_ENTITIES,
+    SOLID_BODY_ENTITIES,
+    SURFACE_BODY_ENTITIES,
+    StepBody,
+    advanced_face_order,
+    blank_step_strings,
+    count_step_bodies,
+    decode_step_string,
+    first_step_string,
+    parse_named_shell_faces,
+    parse_solid_brep_faces,
+    parse_styled_face_groups,
+    read_step_text,
+    record_entity_types,
+    step_body_inventory,
+    step_records,
+    step_refs,
+    strip_step_comments,
+)
 
 
 class _LazyGmsh:
@@ -94,197 +118,18 @@ class StepFaceMapping:
     missing_reasons: dict[str, str]
 
 
-# A record body is any run of characters that are neither a terminator nor a
-# quote, interleaved with complete single-quoted STEP strings (in which '' is a
-# literal quote). Consuming whole strings is what keeps a ';' *inside* a label
-# -- ``STYLED_ITEM('woofer; left', ...)`` -- from truncating the record.
-_STEP_RECORD_RE = re.compile(r"#(\d+)\s*=\s*((?:[^;']|'(?:[^']|'')*')*);", flags=re.S)
-
-
-def _step_records(step_text: str) -> dict[int, str]:
-    records: dict[int, str] = {}
-    for match in _STEP_RECORD_RE.finditer(step_text):
-        records[int(match.group(1))] = " ".join(match.group(2).split())
-    return records
-
-
-def _step_refs(record: str) -> list[int]:
-    return [int(value) for value in re.findall(r"#(\d+)", record)]
-
-
-_STEP_CONTROL_RE = re.compile(r"\\X2\\([0-9A-Fa-f]+)\\X0\\|\\X4\\([0-9A-Fa-f]+)\\X0\\|\\X\\([0-9A-Fa-f]{2})|\\S\\(.)")
-
-
-def _decode_step_string(value: str) -> str:
-    """Decode ISO 10303-21 control directives in a STEP string literal.
-
-    Fusion writes any non-ASCII character in a body or appearance name as an
-    escape (``\\X2\\00E5\\X0\\`` for 'a-ring'), so a manifest label carrying one
-    could never match the raw literal.
-    """
-
-    def replace(match: re.Match[str]) -> str:
-        utf16, utf32, byte, shifted = match.groups()
-        try:
-            if utf16 is not None:
-                return bytes.fromhex(utf16).decode("utf-16-be")
-            if utf32 is not None:
-                return bytes.fromhex(utf32).decode("utf-32-be")
-            if byte is not None:
-                return bytes([int(byte, 16)]).decode("latin-1")
-            if shifted is not None:
-                return chr((ord(shifted) + 128) % 0x110000)
-        except (ValueError, UnicodeDecodeError):
-            return match.group(0)
-        return match.group(0)
-
-    return _STEP_CONTROL_RE.sub(replace, value)
-
-
-def _first_step_string(record: str) -> str | None:
-    match = re.search(r"'((?:[^']|'')*)'", record)
-    if match is None:
-        return None
-    return _decode_step_string(match.group(1).replace("''", "'"))
-
-
-def _parse_named_shell_faces(step_path: Path) -> dict[str, list[int]]:
-    """Return STEP shell/surface model name -> ADVANCED_FACE ids.
-
-    Fusion STEP exports commonly encode named surface bodies as
-    ``SHELL_BASED_SURFACE_MODEL('name', (#open_shell))``. Gmsh often drops
-    those names on import, so we recover them from STEP text and map the face
-    order onto imported OCC surface tags.
-    """
-    records = _step_records(step_path.read_text(encoding="ascii", errors="replace"))
-    shell_to_faces: dict[int, list[int]] = {}
-    for rec_id, record in records.items():
-        if record.startswith(("OPEN_SHELL", "CLOSED_SHELL")):
-            shell_to_faces[rec_id] = [
-                ref for ref in _step_refs(record)
-                if records.get(ref, "").startswith("ADVANCED_FACE")
-            ]
-
-    out: dict[str, list[int]] = {}
-    for record in records.values():
-        if not record.startswith("SHELL_BASED_SURFACE_MODEL"):
-            continue
-        name = _first_step_string(record)
-        if not name:
-            continue
-        faces: list[int] = []
-        for ref in _step_refs(record):
-            faces.extend(shell_to_faces.get(ref, []))
-        if faces:
-            out[name] = faces
-    return out
-
-
-def _parse_solid_brep_faces(step_path: Path) -> set[int]:
-    """Return ADVANCED_FACE ids owned by STEP solid BReps.
-
-    Fusion FEM air volumes are exported as ``MANIFOLD_SOLID_BREP`` while the
-    exterior BEM acoustic model is normally an open shell.  The main mesher can
-    therefore exclude the solid volume from the exterior surface mesh without
-    relying on Fusion visibility state or body-name preservation.
-    """
-    records = _step_records(step_path.read_text(encoding="ascii", errors="replace"))
-    shell_faces: dict[int, set[int]] = {}
-    for rec_id, record in records.items():
-        if record.startswith("CLOSED_SHELL"):
-            shell_faces[rec_id] = {
-                ref
-                for ref in _step_refs(record)
-                if records.get(ref, "").startswith("ADVANCED_FACE")
-            }
-    faces: set[int] = set()
-    for record in records.values():
-        if not record.startswith(("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS")):
-            continue
-        for ref in _step_refs(record):
-            faces.update(shell_faces.get(ref, set()))
-    return faces
-
-
-def _parse_styled_face_groups(step_path: Path) -> dict[str, list[int]]:
-    """Return STEP presentation/appearance label -> ADVANCED_FACE ids.
-
-    Fusion split faces cannot be named directly in the Browser, but they can
-    carry per-face appearance overrides. STEP exports those overrides through
-    presentation styles. This parser follows ``STYLED_ITEM`` records to either
-    direct ``ADVANCED_FACE`` targets or named shell/surface targets.
-    """
-    records = _step_records(step_path.read_text(encoding="ascii", errors="replace"))
-    shell_faces: dict[int, list[int]] = {}
-    model_faces: dict[int, list[int]] = {}
-    for rec_id, record in records.items():
-        if record.startswith(("OPEN_SHELL", "CLOSED_SHELL")):
-            shell_faces[rec_id] = [
-                ref for ref in _step_refs(record)
-                if records.get(ref, "").startswith("ADVANCED_FACE")
-            ]
-    for rec_id, record in records.items():
-        if record.startswith("SHELL_BASED_SURFACE_MODEL"):
-            faces: list[int] = []
-            for ref in _step_refs(record):
-                faces.extend(shell_faces.get(ref, []))
-            if faces:
-                model_faces[rec_id] = faces
-
-    def _collect_labels(ref: int, seen: set[int] | None = None) -> set[str]:
-        if seen is None:
-            seen = set()
-        if ref in seen:
-            return set()
-        seen.add(ref)
-        record = records.get(ref, "")
-        labels = set()
-        label = _first_step_string(record)
-        if label:
-            labels.add(label)
-        for child in _step_refs(record):
-            labels.update(_collect_labels(child, seen))
-        return labels
-
-    out: dict[str, list[int]] = {}
-    for record in records.values():
-        if not record.startswith("STYLED_ITEM"):
-            continue
-        refs = _step_refs(record)
-        if len(refs) < 2:
-            continue
-        target = refs[-1]
-        target_record = records.get(target, "")
-        if target_record.startswith("ADVANCED_FACE"):
-            faces = [target]
-        elif target in model_faces:
-            faces = model_faces[target]
-        elif target in shell_faces:
-            faces = shell_faces[target]
-        else:
-            continue
-
-        labels: set[str] = set()
-        styled_name = _first_step_string(record)
-        if styled_name:
-            labels.add(styled_name)
-        for style_ref in refs[:-1]:
-            labels.update(_collect_labels(style_ref))
-        for label in labels:
-            if not label:
-                continue
-            out.setdefault(label, [])
-            out[label].extend(faces)
-
-    return {label: sorted(set(faces)) for label, faces in out.items()}
-
-
-def _advanced_face_order(step_path: Path) -> list[int]:
-    records = _step_records(step_path.read_text(encoding="ascii", errors="replace"))
-    return [
-        rec_id for rec_id, record in records.items()
-        if record.startswith("ADVANCED_FACE")
-    ]
+# The Part 21 text layer lives in ``step_text`` because it must be importable
+# where numpy and meshio are not -- an embedded CAD Python runs the same body
+# rule. These aliases keep the private spellings this module and its tests have
+# always used.
+_step_records = step_records
+_step_refs = step_refs
+_decode_step_string = decode_step_string
+_first_step_string = first_step_string
+_parse_named_shell_faces = parse_named_shell_faces
+_parse_solid_brep_faces = parse_solid_brep_faces
+_parse_styled_face_groups = parse_styled_face_groups
+_advanced_face_order = advanced_face_order
 
 
 def map_step_face_groups(
@@ -1730,26 +1575,6 @@ def run_occ_healing_fallbacks(
     if callable(add_note):
         add_note(note)
     raise original_mesh_error.with_traceback(original_traceback)
-
-
-def parse_named_shell_faces(step_path: Path) -> dict[str, list[int]]:
-    """Return named STEP shell and surface-model face identifiers."""
-    return _parse_named_shell_faces(step_path)
-
-
-def parse_solid_brep_faces(step_path: Path) -> set[int]:
-    """Return face identifiers owned by solid STEP B-reps."""
-    return _parse_solid_brep_faces(step_path)
-
-
-def parse_styled_face_groups(step_path: Path) -> dict[str, list[int]]:
-    """Return STEP presentation labels and their face identifiers."""
-    return _parse_styled_face_groups(step_path)
-
-
-def advanced_face_order(step_path: Path) -> list[int]:
-    """Return STEP ADVANCED_FACE identifiers in file order."""
-    return _advanced_face_order(step_path)
 
 
 def gmsh_surface_tags() -> list[int]:
