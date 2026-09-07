@@ -1674,7 +1674,15 @@ def run_occ_healing_fallbacks(
                 occ_healing_options=occ_healing_options,
                 surface_order_reference=surface_order_reference,
             )
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
+            # A rung is rejected, not fatal: try the next one. ValueError is
+            # here because a caller's own scope-gate exception is commonly a
+            # ValueError subclass -- one such gate firing inside run_attempt
+            # used to escape the ladder entirely and REPLACE the original
+            # unhealed mesh error, so the ladder both stopped early and
+            # misreported why. Nothing is swallowed: every rejection reason is
+            # returned in rejected_attempts and attached to the original error
+            # as a note if no rung succeeds.
             reason = (
                 f"OCC {healing_mode} repair rejected before meshing "
                 f"({type(exc).__name__}): {exc}"

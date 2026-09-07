@@ -125,6 +125,67 @@ def test_healing_fallback_returns_rejected_rung_records():
     ]
 
 
+class _ScopeGateError(ValueError):
+    """Stands in for a caller gate that raises a ValueError subclass.
+
+    The Waveguide Generator server's ImportedMeshError is exactly this shape,
+    which is why the ladder used to lose it.
+    """
+
+
+def test_a_caller_gate_raising_a_value_error_only_rejects_that_rung():
+    """A rejected rung must not kill the ladder, nor replace the real error.
+
+    Before this, ``run_occ_healing_fallbacks`` caught only RuntimeError, so a
+    scope-gate ValueError raised inside run_attempt escaped the ladder, skipped
+    every remaining rung, and surfaced instead of the unhealed mesh failure the
+    user actually needed to see.
+    """
+    original = RuntimeError("unhealed failed")
+    calls = 0
+
+    def attempt(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _ScopeGateError("STEP contains 17 exterior bodies; manifest declares 1")
+        return {"mesh_generation_error": None, "mesh": "ok"}
+
+    state, mode, rejected = run_occ_healing_fallbacks(
+        attempt,
+        original_mesh_error=original,
+        original_traceback=original.__traceback__,
+        surface_order_reference=[],
+    )
+
+    assert calls == 2
+    assert state["mesh"] == "ok"
+    assert mode == "full"
+    assert len(rejected) == 1
+    assert rejected[0]["mode"] == "sew"
+    assert "_ScopeGateError" in rejected[0]["reason"]
+    assert "manifest declares 1" in rejected[0]["reason"]
+
+
+def test_every_rung_rejected_by_a_value_error_still_raises_the_original():
+    """The unhealed mesh failure is the diagnosis; a rejection is a footnote."""
+    original = RuntimeError("unhealed failed")
+
+    def attempt(**_kwargs):
+        raise _ScopeGateError("scope gate refused")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run_occ_healing_fallbacks(
+            attempt,
+            original_mesh_error=original,
+            original_traceback=original.__traceback__,
+            surface_order_reference=[],
+        )
+
+    assert excinfo.value is original
+    assert any("scope gate refused" in note for note in getattr(original, "__notes__", []))
+
+
 # A quarter box on the +x/+y side, lifted clear of z=0 so that no rim edge
 # lies on two coordinate planes at once except the x0/y0 corner.
 _QUARTER_BOX_VERTICES = [
