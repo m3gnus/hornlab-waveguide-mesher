@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 
 from hornlab_mesher import build_meridian, circsym_rejection_reasons
-from hornlab_mesher.config_builder import build_geometry_params
+from hornlab_mesher.builders.point_grid_dispatch import (
+    build_point_grid as build_point_grid_geometry,
+)
+from hornlab_mesher.config_builder import build_geometry_params, resolve_geometry
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.profiles import build_point_grid, profile_points
 from hornlab_mesher.tags import PhysicalGroup
@@ -224,7 +227,81 @@ def test_circsym_geometry_sampling_does_not_force_meridian_segments():
         ).segments.shape[0]
         for value in (8, 16, 64, 256)
     }
-    assert counts == {45}
+    assert counts == {44}
+
+
+def test_legacy_circsym_coarse_topology_uses_a_fine_private_generating_curve():
+    """A legacy 3D topology count must not become CircSym geometry error."""
+
+    config = {
+        "formula": "R-OSSE",
+        "mode": "freestanding",
+        "profile": {
+            "R": 160.0,
+            "a": 22.0,
+            "a0": 15.5,
+            "b": 0.4,
+            "k": 4.0,
+            "m": 0.84,
+            "q": 4.0,
+            "r": 0.35,
+            "r0": 12.7,
+        },
+        "mesh": {
+            "angularSegments": 64,
+            "lengthSegments": 8,
+            "topology": "legacy",
+            "quadrants": 1234,
+            "wallThickness": 6.0,
+            "throatResolution": 6.0,
+            "mouthResolution": 10.0,
+            "rearResolution": 25.0,
+        },
+        "source": {"sourceShape": 0},
+        "cross_section": {"exponent": 2.0, "aspectRatio": 1.0},
+        "morph": {"morphTarget": 0},
+    }
+    fine_config = {
+        **config,
+        "mesh": {**config["mesh"], "lengthSegments": 1024},
+    }
+
+    coarse = build_meridian(config)
+    fine = build_meridian(fine_config)
+
+    def inner_profile(meridian):
+        start = int(meridian.metadata["sourceSegmentCount"])
+        stop = start + int(meridian.metadata["innerSegmentCount"]) + 1
+        return np.asarray(meridian.nodes[start:stop], dtype=np.float64)
+
+    def distances_to_polyline(points, polyline):
+        starts = polyline[:-1]
+        deltas = polyline[1:] - starts
+        offsets = points[:, np.newaxis, :] - starts[np.newaxis, :, :]
+        parameters = np.clip(
+            np.sum(offsets * deltas[np.newaxis, :, :], axis=2)
+            / np.sum(deltas * deltas, axis=1)[np.newaxis, :],
+            0.0,
+            1.0,
+        )
+        closest = starts[np.newaxis, :, :] + parameters[:, :, np.newaxis] * deltas
+        return np.min(
+            np.linalg.norm(points[:, np.newaxis, :] - closest, axis=2), axis=1
+        )
+
+    coarse_profile = inner_profile(coarse)
+    fine_profile = inner_profile(fine)
+    deviation_m = np.concatenate(
+        (
+            distances_to_polyline(coarse_profile, fine_profile),
+            distances_to_polyline(fine_profile, coarse_profile),
+        )
+    )
+
+    assert coarse.metadata["geometrySampleSegments"] >= 64
+    assert float(np.max(deviation_m)) <= 2.0e-5
+    # The private CircSym refinement must not mutate public legacy 3D topology.
+    assert resolve_geometry(config).geometry.inner_points.shape[1] == 9
 
 
 def test_build_meridian_rejects_non_circular_config():
@@ -352,7 +429,7 @@ def test_circsym_meridian_endpoints_are_closed_on_the_axis():
         assert abs(float(meridian.nodes[-1, 0])) <= 1.0e-12
 
 
-def test_rosse_freestanding_lip_closure_matches_ath_semicircle_nodes():
+def test_rosse_freestanding_mouth_closure_is_ruled_end_face():
     config = {
         "formula": "R-OSSE",
         "mode": "freestanding",
@@ -388,35 +465,92 @@ def test_rosse_freestanding_lip_closure_matches_ath_semicircle_nodes():
         ]
         * 1000.0
     )
-    # The lip caps a 5 mm wall between r=250 and r=245, and the rollback leaves
-    # the mouth rim tangent within 0.01 deg of the axis -- so the closure is a
-    # half circle of radius 2.5 mm about r=247.5, swept in equal angular steps
-    # and sitting in a plane of constant z. Asserting the construction rather
-    # than six pasted coordinates keeps the check meaningful if the sample map
-    # or segment count ever moves.
-    #
-    # This used to compare against nodes labelled "ATH V2025-12 nodes 257..262",
-    # which put the outer end 0.065 mm behind the inner one -- a rim normal
-    # tilted 0.741 deg off radial. That tilt is the offset-normal artifact fixed
-    # in profile_sampling._grid_surface_normals (the old face-normal average was
-    # off by 0.885 deg here, so it matched by erring the same way), and no
-    # project in the ATH reference archive has this R, wall or segment count.
-    # The mesher no longer reproduces it; ATH's own nodes miss a true semicircle
-    # by 0.065 mm.
-    assert rim_count == 5
-
-    centre_r_mm = 247.5
-    radius_mm = 2.5
-    angles = np.linspace(0.0, np.pi, rim_count + 1)
-    expected_z_r_mm = np.column_stack(
-        (
-            actual_z_r_mm[0, 0] - radius_mm * np.sin(angles),
-            centre_r_mm + radius_mm * np.cos(angles),
-        )
+    # Wall thickness creates an offset outer shell, while the product's mouth
+    # rim is its straight end face. There is no independent lip-radius control
+    # in this configuration, so CircSym must not invent a semicircular bulb.
+    assert rim_count == 1
+    assert np.allclose(
+        actual_z_r_mm,
+        np.linspace(actual_z_r_mm[0], actual_z_r_mm[-1], rim_count + 1),
+        rtol=0.0,
+        atol=1.0e-12,
     )
-
-    assert np.allclose(actual_z_r_mm, expected_z_r_mm, rtol=0.0, atol=2.0e-3)
-    # Anchored to the inner rim, so the arc cannot drift off the horn with it.
     assert abs(float(actual_z_r_mm[0, 0]) - 97.692) <= 0.02
     assert abs(float(actual_z_r_mm[0, 1]) - 250.0) <= 1.0e-6
     assert abs(float(actual_z_r_mm[-1, 1]) - 245.0) <= 1.0e-6
+
+
+@pytest.mark.parametrize(
+    ("topology", "surface_fit"),
+    [
+        ("acoustic", "interpolate"),
+        ("acoustic", "approximate"),
+        ("legacy", "interpolate"),
+    ],
+)
+def test_freestanding_meridian_mouth_matches_full_3d_ruled_surface(
+    topology, surface_fit
+):
+    """The CircSym trace and both public full-3D paths close the same shell."""
+
+    config = _round_osse_config(
+        mesh={"topology": topology, "surface_fit": surface_fit}
+    )
+    meridian = build_meridian(config)
+    source_count = int(meridian.metadata["sourceSegmentCount"])
+    inner_count = int(meridian.metadata["innerSegmentCount"])
+    rim_count = int(meridian.metadata["mouthRimSegmentCount"])
+    rim_start = source_count + inner_count
+    rim_mm = meridian.nodes[rim_start : rim_start + rim_count + 1] * 1000.0
+
+    # The meridian can subdivide for resolution, but every node remains on the
+    # straight inner-to-outer span used to generate the 3D ruled end face.
+    expected_rim = np.linspace(rim_mm[0], rim_mm[-1], rim_count + 1)
+    assert np.allclose(rim_mm, expected_rim, rtol=0.0, atol=1.0e-12)
+
+    gmsh = pytest.importorskip("gmsh")
+    initialized_here = False
+    if not gmsh.isInitialized():
+        gmsh.initialize(interruptible=False)
+        initialized_here = True
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add(f"mouth-contract-{topology}")
+        geometry = resolve_geometry(config).geometry
+        built = build_point_grid_geometry(geometry)
+        gmsh.model.geo.synchronize()
+        gmsh.model.occ.synchronize()
+        mouth_tags = [int(tag) for tag in built.mesh_surface_groups["mouth"]]
+
+        # Probe between azimuth samples too. An approximating angular B-spline
+        # passes the configured ring at a symmetry edge but bows inward between
+        # samples, which would make its closure a different body of revolution.
+        for alpha in np.linspace(0.0, 1.0, 9):
+            rho_z = (1.0 - alpha) * rim_mm[0] + alpha * rim_mm[-1]
+            for phi in np.linspace(0.0, 2.0 * np.pi, 33, endpoint=False):
+                expected_xyz = np.asarray(
+                    [
+                        rho_z[0] * np.cos(phi),
+                        rho_z[0] * np.sin(phi),
+                        rho_z[1],
+                    ]
+                )
+                distances = []
+                for tag in mouth_tags:
+                    closest, _params = gmsh.model.getClosestPoint(
+                        2, tag, expected_xyz.tolist()
+                    )
+                    distances.append(
+                        float(np.linalg.norm(np.asarray(closest) - expected_xyz))
+                    )
+                # Polynomial splines approximate a circle between samples.
+                # Acoustic topology uses the angular-only fitted OCC surface;
+                # legacy topology retains its coarser interpolating GEO spans.
+                # Both bounds exclude a wall-thickness-scale shape mismatch.
+                tolerance_mm = 1.0e-3 if topology == "acoustic" else 1.0e-1
+                assert min(distances) <= tolerance_mm
+    finally:
+        gmsh.clear()
+        if initialized_here and gmsh.isInitialized():
+            gmsh.finalize()

@@ -472,6 +472,7 @@ def _add_occ_bspline_patch_wall_surfaces(
     closed: bool,
     phi_groups: list[list[int]] | None = None,
     surface_fit: str = SURFACE_FIT_APPROXIMATE,
+    interpolate_u: bool = False,
 ) -> list[tuple[int, int]]:
     """Build enclosure-mode horn walls as large OCC BSpline patches.
 
@@ -497,6 +498,7 @@ def _add_occ_bspline_patch_wall_surfaces(
                     degree_v=degree_v,
                     surface_fit=surface_fit,
                     v_params=v_params,
+                    interpolate_u=interpolate_u,
                 ),
             )
         )

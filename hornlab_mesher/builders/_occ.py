@@ -489,6 +489,30 @@ def interpolating_surface_poles(
     return poles, _knots_and_multiplicities(along_u.t), _knots_and_multiplicities(along_v.t)
 
 
+def angular_interpolating_surface_poles(
+    grid: NDArray[np.float64],
+    *,
+    degree_u: int,
+) -> tuple[NDArray[np.float64], tuple[list[float], list[int]]]:
+    """Interpolate only a patch's angular (u) direction.
+
+    The freestanding outer shell must retain its approximating axial fit: its
+    topology includes a deliberate sharp rear corner that a cubic axial
+    interpolant overshoots.  Its angular boundary rings have no such corner,
+    however, and treating their samples as poles makes a circular shell bow
+    inward between azimuth samples.  Solving only the u-direction fit keeps
+    the stable axial construction while making every sampled ring describe
+    the same cross-section as the meridian that is revolved by CircSym.
+    """
+
+    from scipy.interpolate import make_interp_spline
+
+    u_params = _averaged_chord_parameters(grid, axis=1)
+    along_u = make_interp_spline(u_params, grid, k=degree_u, axis=1)
+    poles = np.asarray(along_u.c, dtype=np.float64).transpose(1, 0, 2)
+    return poles, _knots_and_multiplicities(along_u.t)
+
+
 def add_bspline_patch(
     points: NDArray[np.float64],
     column_indices: list[int],
@@ -496,6 +520,7 @@ def add_bspline_patch(
     degree_v: int,
     surface_fit: str = SURFACE_FIT_APPROXIMATE,
     v_params: NDArray[np.float64] | None = None,
+    interpolate_u: bool = False,
 ) -> int:
     """Emit one OCC B-spline patch spanning ``column_indices`` of a phi-major grid.
 
@@ -518,6 +543,14 @@ def add_bspline_patch(
             "multiplicitiesU": mults_u,
             "knotsV": knots_v,
             "multiplicitiesV": mults_v,
+        }
+    elif interpolate_u:
+        grid, (knots_u, mults_u) = angular_interpolating_surface_poles(
+            grid, degree_u=degree_u
+        )
+        knots = {
+            "knotsU": knots_u,
+            "multiplicitiesU": mults_u,
         }
 
     point_tags = [

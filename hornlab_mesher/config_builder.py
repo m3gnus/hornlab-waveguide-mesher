@@ -39,6 +39,7 @@ from .profile_sampling import (
 )
 from .profiles import azimuthal_mean, build_point_grid, eval_param, profile_points
 from .builders.point_grid_freestanding import (
+    _freestanding_mouth_closure_points,
     _outer_wall_axial_ring_indices,
     _restored_outer_throat_points,
 )
@@ -1554,55 +1555,6 @@ def _append_subdivided_meridian_points(
     return added
 
 
-def _semicircular_meridian_join_points(
-    start: tuple[float, float],
-    end: tuple[float, float],
-    *,
-    incoming_tangent: tuple[float, float],
-    target_segment_mm: float,
-    minimum_segments: int = 2,
-) -> np.ndarray:
-    """ATH-compatible rounded closure between inner and outer mouth points.
-
-    The free-standing CircSym body closes its wall thickness with the
-    semicircle whose diameter is the inner-to-outer mouth chord.  Choose the
-    half-circle that continues the incoming inner-wall tangent, then retain
-    ATH's five-segment minimum while refining further when the frequency
-    budget requires it.
-    """
-
-    p0 = np.asarray(start, dtype=np.float64)
-    p1 = np.asarray(end, dtype=np.float64)
-    midpoint = 0.5 * (p0 + p1)
-    radius_vector = p0 - midpoint
-    radius = float(np.linalg.norm(radius_vector))
-    if radius <= 1.0e-12:
-        return np.asarray([p0, p1], dtype=np.float64)
-
-    tangent_vector = np.asarray(incoming_tangent, dtype=np.float64)
-    arc_direction = np.asarray(
-        [radius_vector[1], -radius_vector[0]],
-        dtype=np.float64,
-    )
-    if float(np.dot(arc_direction, tangent_vector)) < 0.0:
-        arc_direction *= -1.0
-
-    arc_length = math.pi * radius
-    segment_count = max(
-        int(minimum_segments),
-        int(math.ceil(arc_length / max(float(target_segment_mm), 1.0e-9))),
-    )
-    angles = np.linspace(0.0, math.pi, segment_count + 1, dtype=np.float64)
-    points = (
-        midpoint[None, :]
-        + np.cos(angles)[:, None] * radius_vector[None, :]
-        + np.sin(angles)[:, None] * arc_direction[None, :]
-    )
-    points[0] = p0
-    points[-1] = p1
-    return points
-
-
 def _profile_arc_length_mm(params: Mapping[str, Any]) -> float:
     base_segments = max(64, int(params.get("lengthSegments") or 32))
     sample_count = max(513, min(4097, 8 * base_segments + 1))
@@ -1652,8 +1604,10 @@ def _circsym_resolution_budget(
 ) -> dict[str, float | int]:
     arc_length_mm = _profile_arc_length_mm(params)
     finest = min(float(density.throat_res_mm), float(density.mouth_res_mm))
-    # Internal geometry sampling is deliberately denser than the requested
-    # final meridian. It improves profile fitting without creating BEM nodes.
+    # Legacy 3D topology deliberately preserves the public axial grid, but a
+    # CircSym solve must not turn that topology knob into a geometry-accuracy
+    # knob. Build its private generating curve from a denser grid, then
+    # resample to the public millimetre targets below.
     geometry_segments = max(
         64,
         min(4096, int(math.ceil(4.0 * arc_length_mm / max(finest, 1.0e-9)))),
@@ -1814,17 +1768,48 @@ def build_meridian(
         )
 
     resolution = _circsym_resolution_budget(params, density)
-    params = dict(params)
-    params["lengthSegments"] = int(resolution["geometry_segments"])
     target_throat_mm = float(resolution["throat_target_mm"])
     target_mouth_mm = float(resolution["mouth_target_mm"])
     target_outer_mm = float(resolution["outer_target_mm"])
     target_aperture_mm = float(resolution["aperture_target_mm"])
 
-    grid = build_point_grid(params)
+    # Start from the same config-resolved point grid as the full-3D builder.
+    # The final meridian is still independently resampled to its millimetre
+    # targets below; sharing this geometry grid only keeps endpoints and offset
+    # normals from describing a different physical shell.
+    grid, _sampling_metadata_unused = _build_acoustic_sampling_grid(
+        params,
+        density,
+        topology_mode=topology_mode,
+    )
+    shared_grid = grid
+    legacy_refined = False
+    if topology_mode != "acoustic":
+        geometry_segments = int(resolution["geometry_segments"])
+        if int(grid["grid_n_length"]) < geometry_segments:
+            meridian_params = dict(params)
+            meridian_params["lengthSegments"] = geometry_segments
+            grid = build_point_grid(meridian_params)
+            legacy_refined = int(grid["grid_n_length"]) > int(
+                shared_grid["grid_n_length"]
+            )
     n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
     inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    if legacy_refined:
+        shared_n_phi = int(shared_grid["grid_n_phi"])
+        shared_n_length = int(shared_grid["grid_n_length"])
+        shared_inner = _reshape_grid(
+            shared_grid["inner_points"],
+            shared_n_phi,
+            shared_n_length,
+            "shared inner_points",
+        )
+        # Offset normals depend on the adjacent axial sample. Pin the private
+        # curve to the public legacy grid at both ends so its source and mouth
+        # closure remain the exact endpoints used by the 3D legacy builder.
+        inner_points[:, 0, :] = shared_inner[:, 0, :]
+        inner_points[:, -1, :] = shared_inner[:, -1, :]
     inner_profile = _radial_profile_from_grid(inner_points, name="inner profile")
     inner_profile = _resample_polyline_by_local_size(
         inner_profile,
@@ -1838,11 +1823,47 @@ def build_meridian(
         outer_points = _reshape_grid(
             grid["outer_points"], n_phi, n_length, "outer_points"
         )
+        if legacy_refined and shared_grid.get("outer_points") is not None:
+            shared_outer = _reshape_grid(
+                shared_grid["outer_points"],
+                int(shared_grid["grid_n_phi"]),
+                int(shared_grid["grid_n_length"]),
+                "shared outer_points",
+            )
+            outer_points[:, 0, :] = shared_outer[:, 0, :]
+            outer_points[:, -1, :] = shared_outer[:, -1, :]
         outer_points = _restored_outer_throat_points(
             inner_points,
             outer_points,
             wall_thickness_mm=float(params["wallThickness"] or 0.0),
         )
+        outer_indices = _outer_wall_axial_ring_indices(inner_points)
+        if legacy_refined and shared_grid.get("outer_points") is not None:
+            shared_inner = _reshape_grid(
+                shared_grid["inner_points"],
+                int(shared_grid["grid_n_phi"]),
+                int(shared_grid["grid_n_length"]),
+                "shared inner_points",
+            )
+            shared_outer = _reshape_grid(
+                shared_grid["outer_points"],
+                int(shared_grid["grid_n_phi"]),
+                int(shared_grid["grid_n_length"]),
+                "shared outer_points",
+            )
+            shared_outer = _restored_outer_throat_points(
+                shared_inner,
+                shared_outer,
+                wall_thickness_mm=float(params["wallThickness"] or 0.0),
+            )
+            shared_outer_indices = _outer_wall_axial_ring_indices(shared_inner)
+            if outer_indices and shared_outer_indices:
+                # The freestanding outer topology deliberately stops before
+                # the maximum-z ring. Preserve that effective terminal ring,
+                # not merely the unused final raw offset sample.
+                outer_points[:, outer_indices[-1], :] = shared_outer[
+                    :, shared_outer_indices[-1], :
+                ]
         outer_profile_grid = _radial_profile_from_grid(
             outer_points,
             name="outer profile",
@@ -1857,7 +1878,6 @@ def build_meridian(
             name="rear cap",
             require_axisymmetric=False,
         )[0:1, :]
-        outer_indices = _outer_wall_axial_ring_indices(inner_points)
         topology_rows = [rear_profile[0], outer_profile_grid[0]]
         topology_rows.extend(outer_profile_grid[index] for index in outer_indices)
         outer_profile = _resample_polyline_by_local_size(
@@ -1939,21 +1959,14 @@ def build_meridian(
     if outer_profile is not None and rear_profile is not None:
         outer_reversed = outer_profile[::-1]
         if nodes_mm and outer_reversed.shape[0] > 0:
-            incoming = (
-                float(nodes_mm[-1][0] - nodes_mm[-2][0]),
-                float(nodes_mm[-1][1] - nodes_mm[-2][1]),
-            )
-            rounded_mouth = _semicircular_meridian_join_points(
-                nodes_mm[-1],
-                (float(outer_reversed[0, 0]), float(outer_reversed[0, 1])),
-                incoming_tangent=incoming,
-                target_segment_mm=min(target_mouth_mm, target_outer_mm),
-                minimum_segments=5 if topology_mode == "legacy" else 2,
+            mouth_closure = _freestanding_mouth_closure_points(
+                np.asarray(nodes_mm[-1], dtype=np.float64),
+                outer_reversed[0],
             )
             mouth_rim_segment_count = _append_subdivided_meridian_points(
                 nodes_mm,
                 tags,
-                rounded_mouth,
+                mouth_closure,
                 tag=int(PhysicalGroup.RIGID_WALL),
                 target_segment_mm=min(target_mouth_mm, target_outer_mm),
             )
@@ -2032,7 +2045,7 @@ def build_meridian(
         "outerTargetSegmentM": target_outer_mm * 0.001,
         "apertureTargetSegmentM": target_aperture_mm * 0.001,
         "profileArcLengthM": float(resolution["profile_arc_length_mm"]) * 0.001,
-        "geometrySampleSegments": int(params["lengthSegments"]),
+        "geometrySampleSegments": int(n_length),
         "sourceSegmentCount": int(source_segment_count),
         "sourceSweptAreaM2": source_swept_area_mm2 * 1.0e-6,
         "innerSegmentCount": int(inner_segment_count),

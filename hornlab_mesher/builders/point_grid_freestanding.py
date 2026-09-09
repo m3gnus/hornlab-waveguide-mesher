@@ -34,6 +34,45 @@ from .point_grid_surfaces import (
 )
 
 
+def _freestanding_mouth_closure_points(
+    inner_mouth: np.ndarray,
+    outer_mouth: np.ndarray,
+) -> np.ndarray:
+    """Return the ruled end-face profile between corresponding mouth points.
+
+    ``wall_thickness_mm`` defines an offset outer shell; it does not define a
+    separate lip radius. The freestanding mouth therefore closes that shell
+    with the straight span from each inner-mouth point to its corresponding
+    outer-mouth point. Stacking the endpoints here gives the CircSym trace and
+    the full-3D surface builders one pure geometry contract.
+    """
+
+    inner = np.asarray(inner_mouth, dtype=np.float64)
+    outer = np.asarray(outer_mouth, dtype=np.float64)
+    if inner.shape != outer.shape or inner.ndim not in {1, 2}:
+        raise ValueError(
+            "freestanding mouth rings must have matching point-array shapes"
+        )
+    if inner.shape[-1] not in {2, 3}:
+        raise ValueError("freestanding mouth points must be 2D meridian or 3D points")
+    if not np.all(np.isfinite(inner)) or not np.all(np.isfinite(outer)):
+        raise ValueError("freestanding mouth points must be finite")
+    return np.stack((inner, outer), axis=-2)
+
+
+def _grid_is_axisymmetric(points: np.ndarray) -> bool:
+    """Whether every sampled station is a circle in a common axial plane."""
+
+    grid = np.asarray(points, dtype=np.float64)
+    radial = np.hypot(grid[..., 0], grid[..., 1])
+    return bool(
+        np.allclose(radial, radial[0:1, :], rtol=1.0e-10, atol=1.0e-8)
+        and np.allclose(
+            grid[..., 2], grid[0:1, :, 2], rtol=1.0e-10, atol=1.0e-8
+        )
+    )
+
+
 def _restored_outer_throat_points(
     inner_points: np.ndarray,
     outer_points: np.ndarray,
@@ -241,6 +280,9 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
     outer_topology = np.empty((n_phi, n_len + 1, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1:, :] = outer_points
+    mouth_closure = _freestanding_mouth_closure_points(
+        inner_points[:, -1, :], outer_topology[:, -1, :]
+    )
 
     builder = _SharedSurfaceBuilder()
     builder.add_grid("inner", inner_points)
@@ -263,7 +305,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
     )
     mouth_dimtags = _add_mouth_rim_surfaces(
         builder,
-        n_phi=n_phi,
+        n_phi=mouth_closure.shape[0],
         n_len=n_len,
         outer_len=outer_topology.shape[1],
         closed=geometry.closed,
@@ -338,30 +380,39 @@ def _build_acoustic_freestanding_point_grid(
     outer_topology[:, 1, :] = outer_points[:, 0, :]
     for out_j, src_j in enumerate(outer_indices, start=2):
         outer_topology[:, out_j, :] = outer_points[:, src_j, :]
+    mouth_closure = _freestanding_mouth_closure_points(
+        inner_points[:, -1, :], outer_topology[:, -1, :]
+    )
 
     phi_groups = _bspline_patch_phi_groups(
         n_phi,
         closed=geometry.closed,
         n_sectors=1,
     )
+    axisymmetric = _grid_is_axisymmetric(inner_points)
     inner_wall = _add_occ_bspline_patch_wall_surfaces(
         inner_points,
         closed=geometry.closed,
         phi_groups=phi_groups,
         surface_fit=geometry.surface_fit,
+        # Explicit ``approximate`` may approximate the meridian direction, but
+        # must not turn a circular cross-section into an azimuth-dependent one.
+        interpolate_u=axisymmetric,
     )
-    # The outer shell keeps the approximating pole fit regardless of
+    # The outer shell keeps the approximating axial pole fit regardless of
     # ``surface_fit``. ``outer_topology`` splices the rear rim onto the wall as
     # a deliberate sharp corner (z jumps from the rear plane back to the throat
-    # plane), and a cubic *interpolating* spline overshoots such a corner — on
-    # the stock OSSE it dips the rear boundary to z = -9.09 mm instead of the
+    # plane), and a cubic axial interpolant overshoots such a corner — on the
+    # stock OSSE it dips the rear boundary to z = -9.09 mm instead of the
     # -6.00 mm rear plane, which stops the rear cap's planar-extreme detection
-    # from ever finding its loop. The acoustic (inner) surface is the one whose
-    # fidelity the BEM result depends on; the outer shell is rigid backing.
+    # from ever finding its loop. Angular interpolation is safe and necessary:
+    # without it a nominally circular mouth ring bows inward between samples,
+    # so the 3D closure is not the revolution of the CircSym closure.
     outer_wall = _add_occ_bspline_patch_wall_surfaces(
         outer_topology,
         closed=geometry.closed,
         phi_groups=phi_groups,
+        interpolate_u=(axisymmetric or geometry.surface_fit == "interpolate"),
     )
     gmsh = require_gmsh()
     gmsh.model.occ.synchronize()
@@ -397,10 +448,10 @@ def _build_acoustic_freestanding_point_grid(
         phi_groups, inner_wall, outer_wall, strict=True
     ):
         inner_curve = boundary_curve_nearest_points(
-            inner_surface, inner_points[np.asarray(indices), -1, :]
+            inner_surface, mouth_closure[np.asarray(indices), 0, :]
         )
         outer_curve = boundary_curve_nearest_points(
-            outer_surface, outer_topology[np.asarray(indices), -1, :]
+            outer_surface, mouth_closure[np.asarray(indices), 1, :]
         )
         inner_wire = int(gmsh.model.occ.addWire([inner_curve], checkClosed=False))
         outer_wire = int(gmsh.model.occ.addWire([outer_curve], checkClosed=False))
@@ -486,6 +537,9 @@ def _build_wg_freestanding_point_grid(
     outer_topology[:, 1, :] = outer_points[:, 0, :]
     for out_j, src_j in enumerate(outer_indices, start=2):
         outer_topology[:, out_j, :] = outer_points[:, src_j, :]
+    mouth_closure = _freestanding_mouth_closure_points(
+        inner_points[:, -1, :], outer_topology[:, -1, :]
+    )
 
     builder = _GeoSurfaceBuilder()
     # These per-point sizes are inert: density.py sets MeshSizeFromPoints=0
@@ -512,7 +566,7 @@ def _build_wg_freestanding_point_grid(
     )
     mouth_dimtags = _add_geo_spline_span_mouth_rim_surfaces(
         builder,
-        n_phi=n_phi,
+        n_phi=mouth_closure.shape[0],
         inner_len=inner_len,
         outer_len=outer_topology.shape[1],
         closed=geometry.closed,

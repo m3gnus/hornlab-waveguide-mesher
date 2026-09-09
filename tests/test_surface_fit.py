@@ -14,6 +14,7 @@ import pytest
 from hornlab_mesher.builders._occ import (
     SURFACE_FIT_APPROXIMATE,
     SURFACE_FIT_INTERPOLATE,
+    angular_interpolating_surface_poles,
     grid_v_parameters,
     interpolating_surface_poles,
 )
@@ -68,6 +69,25 @@ def test_interpolating_poles_reproduce_the_sampled_grid_exactly():
         for ui, u in enumerate(u_params):
             worst = max(worst, float(np.linalg.norm(BSpline(full_u, row, 3)(u) - patch[vi, ui])))
     assert worst < 1e-9, worst
+
+
+def test_angular_only_fit_reproduces_ring_samples_without_fitting_axially():
+    """Outer shells can fix ring sag without interpolating their rear corner."""
+
+    from scipy.interpolate import BSpline
+
+    grid = _revolved_grid()
+    columns = list(range(grid.shape[0] // 4 + 1))
+    patch = np.ascontiguousarray(grid[columns, :, :].transpose(1, 0, 2))
+    poles, (knots_u, mults_u) = angular_interpolating_surface_poles(
+        patch, degree_u=3
+    )
+
+    full_u = np.repeat(knots_u, mults_u)
+    u_params = np.linspace(full_u[0], full_u[-1], patch.shape[1])
+    actual = np.stack([BSpline(full_u, row, 3)(u_params) for row in poles])
+    assert poles.shape == patch.shape
+    assert np.allclose(actual, patch, rtol=0.0, atol=1.0e-10)
 
 
 def test_seam_poles_coincide_so_a_closed_patch_still_closes():

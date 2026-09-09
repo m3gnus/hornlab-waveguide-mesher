@@ -301,6 +301,25 @@ Implementation rules:
   quadrant (m2-clone: 100 + 4 -> 104; solana: 36 + 1 -> 40). Wall spans split
   the remaining segments proportionally to their angular extents.
 
+## Freestanding Mouth Closure
+
+A freestanding wall is defined by the acoustic inner surface and its
+`wall_thickness_mm` offset outer surface. At the mouth, the material ends on a
+ruled face: each inner mouth-ring point connects by a straight span to the
+corresponding terminal point of the outer wall. Revolving that span is the
+CircSym mouth closure; lofting all spans is the full-3D mouth surface.
+
+For an axisymmetric grid, both terminal rings remain circular between sampled
+azimuths. This angular invariant also applies when `surface_fit = "approximate"`:
+that option may retain the approximating axial profile, but it must not give a
+nominally circular ring an azimuth-dependent radius.
+
+Wall thickness does not also imply a rounded lip. No freestanding lip-radius
+parameter exists in the public config, so a solver-specific semicircle would
+describe a different body. A future rounded closure therefore requires an
+explicit geometry option implemented by every preview, CAD, full-3D, and
+CircSym consumer.
+
 ## Geometry Grid vs Mesh Density
 
 ATH separates the geometry grid from the final BEM mesh density:
@@ -392,7 +411,11 @@ The codebase should use explicit names for compatibility behavior:
   reads the sampled grid as control points, so the meshed wall sits inside the
   designed one by roughly `R * dtheta^2 / 6` for a cubic pole fit, and refining
   the mesh converges onto that biased surface rather than onto the sampled one.
-  It remains available by name for anyone who needs the old nodes back.
+  It remains available by name for callers that need the legacy pole fit.
+  Freestanding axisymmetric shells are the narrow exception: their angular
+  direction is interpolated even in `approximate` mode so a circular ring does
+  not acquire an azimuth-dependent radius; the axial direction retains the
+  requested pole fit.
 
 `surface_fit = "interpolate"` removes that bias by solving for the poles whose
 surface passes through the sampled grid, at the same control-point and triangle
