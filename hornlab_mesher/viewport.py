@@ -173,7 +173,10 @@ def build_enclosure_viewport_grid(
 
 
 def build_viewport_geometry_from_config(
-    config: Mapping[str, Any], *, point_lists: bool = True
+    config: Mapping[str, Any],
+    *,
+    point_lists: bool = True,
+    defer_osse_offset_repair: bool = False,
 ) -> dict[str, Any]:
     """Build point-grid horn and optional enclosure viewport data from config.
 
@@ -181,13 +184,17 @@ def build_viewport_geometry_from_config(
     ``inner_points``/``outer_points`` lists.  A caller that stays in-process
     can pass ``False`` and read the ``inner_grid``/``outer_grid`` arrays
     instead, which is the same data without a list round trip per surface.
+    Adaptive previews can defer a folded OSSE offset until they have selected
+    their render grid. They must then repair it before exposing the outer wall.
     """
 
     params, formula, mode = build_geometry_params(config)
     mesh = _section(config, "mesh")
     enclosure_cfg = _section(config, "enclosure")
     enclosure = _enclosure_from_config(config, mesh, enclosure_cfg)
-    grid = build_point_grid_arrays(params)
+    grid = build_point_grid_arrays(
+        params, defer_osse_offset_repair=defer_osse_offset_repair
+    )
 
     inner_points = grid["inner_grid"]
     # build_point_grid emits the grid at the origin and reports Mesh.VerticalOffset

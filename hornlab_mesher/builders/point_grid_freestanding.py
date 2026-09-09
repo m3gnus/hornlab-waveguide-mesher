@@ -61,10 +61,26 @@ def _freestanding_mouth_closure_points(
 
 
 def _grid_is_axisymmetric(points: np.ndarray) -> bool:
-    """Whether every sampled station is a circle in a common axial plane."""
+    """Whether stations are coaxial circles, independently of rigid placement."""
 
     grid = np.asarray(points, dtype=np.float64)
-    radial = np.hypot(grid[..., 0], grid[..., 1])
+    if grid.ndim != 3 or grid.shape[-1] != 3 or grid.shape[0] < 3:
+        return False
+    # A reduced circular arc's centroid is not its center. Fit the throat
+    # circle in local coordinates, then require every station to share that
+    # same transverse center; a shifted or elliptical mouth must still fail.
+    throat = grid[:, 0, :2]
+    origin = throat.mean(axis=0)
+    local = throat - origin
+    center, _residual, rank, _singular = np.linalg.lstsq(
+        2.0 * (local[1:] - local[0]),
+        np.sum(local[1:] ** 2, axis=1) - np.sum(local[0] ** 2),
+        rcond=None,
+    )
+    if rank < 2:
+        return False
+    centered = grid[..., :2] - (origin + center)
+    radial = np.hypot(centered[..., 0], centered[..., 1])
     return bool(
         np.allclose(radial, radial[0:1, :], rtol=1.0e-10, atol=1.0e-8)
         and np.allclose(

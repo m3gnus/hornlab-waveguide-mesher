@@ -57,6 +57,35 @@ Implementation rules:
   or mouth.
 - A final `Rot` transforms the computed 2D profile around `(0, r0)`.
 
+For a freestanding OSSE wall, a regular normal offset is preserved exactly.
+When neighboring normals cross inside a concave throat or guiding-curve groove,
+the exterior remains the constant-distance envelope: the internal loops are
+not part of the material boundary. The mesher computes that envelope from the
+sampled acoustic surface's symmetric quad-center triangle fans, offset faces,
+edge cylinders and vertex spheres, then samples its farthest radial intersection
+in the original angular order. This applies to folds at any axial station,
+including non-leading ones.
+The acoustic grid and requested wall thickness are unchanged. The envelope is
+exact for the sampled triangulation; its approximation to the analytic surface
+therefore remains limited by the grid resolution.
+
+If the original outer axial stations roll back, they are redistributed in
+proportion to the input axial progress between the same throat and mouth
+stations. The repair requires monotone input axial stations and must pass the
+existing normal-flip and self-intersection checks. A rotated profile that fails
+those preconditions retains its explicit fold diagnostic. FREEFORM's rejection
+contract and the other profile families' offset behavior are unchanged.
+
+Adaptive previews repair a folded offset after selecting their render grid,
+including deferred rounded-rectangle morph walls. Healthy offsets keep their
+existing path. Acoustic control-grid fitting likewise repairs only the accepted
+grid, after all inner chord and curvature checks, not discarded probe grids.
+Exact geometric bounds discard interior offset features, and
+rotational reuse requires the entire sampled surface and resolved station
+schedule to agree within floating-point noise; equivalent rows share both the
+evaluated radius and station. These shortcuts retain the requested preview
+detail. Rigid vertical placement is applied after intrinsic offset evaluation.
+
 ## R-OSSE Profile
 
 R-OSSE is parametric. It is not a single-valued radius function of `z`; this is

@@ -2988,6 +2988,7 @@ def build_preview_geometry(
     def _sample_and_select(axial: int):
         """Sample the canonical master at ``axial`` and choose the render grid."""
 
+        nonlocal canonical_ms, deferred_wall
         sampling_config = _adaptive_lod_config(
             config, angular_master, axial, power=axial_power
         )
@@ -2999,12 +3000,17 @@ def build_preview_geometry(
             sampling_config["mesh"] = mesh
         # The preview never spells the grid's flat vertex lists: it reads the
         # arrays they would be built from.
-        nonlocal canonical_ms
         sampling_start = time.perf_counter()
         output = build_viewport_geometry_from_config(
-            sampling_config, point_lists=False
+            sampling_config, point_lists=False, defer_osse_offset_repair=True
         )
         canonical_ms += (time.perf_counter() - sampling_start) * 1000.0
+        if str(_parsed_formula) == "OSSE" and output["grid"].get("outer_offset_fold"):
+            # The canonical master is used to select the acoustic render grid;
+            # computing a dense envelope there would be discarded immediately.
+            # Healthy normal offsets keep their existing master-grid path.
+            deferred_wall = wall_mm
+            output["grid"]["outer_grid"] = None
         if has_corners:
             _replace_grid_with_corner_refinement(output, corner_intervals)
         if deferred_wall > 0.0:
@@ -3168,13 +3174,18 @@ def build_preview_geometry(
                 silhouette_target=silhouette_target,
             )
     elif deferred_wall > 0.0:
+        offset_inner = selected_inner.copy()
+        vertical_offset = float(grid_data.get("vertical_offset_mm", 0.0) or 0.0)
+        offset_inner[:, :, 1] -= vertical_offset
         selected_outer = _outer_offset_shell(
-            selected_inner,
+            offset_inner,
             deferred_wall,
             full_circle=closed_phi,
+            repair_osse=str(_parsed_formula) == "OSSE",
             t_coordinates=master_t[t_indices],
             phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
         )
+        selected_outer[:, :, 1] += vertical_offset
         outer_canonical = selected_outer
         if options.include_outer:
             selected_outer_master = _surface_grid(selected_outer)

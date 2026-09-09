@@ -2293,6 +2293,15 @@ def _build_acoustic_sampling_grid(
     if not working.get("zMapPoints") and formula != "FREEFORM":
         working["samplingMode"] = "ath-default-zmap"
 
+    def finish_grid(grid, fitted_params):
+        # Only the accepted acoustic control net becomes a surface. Oversized
+        # seeds and refinement probes may be discarded, so do not calculate an
+        # expensive exterior envelope for them. All inner-fit checks below and
+        # the final offset validation stay unchanged.
+        if formula == "OSSE" and grid.get("outer_offset_fold"):
+            grid = build_point_grid(fitted_params)
+        return grid, _sampling_metadata(fitted_params, grid)
+
     # The sagitta limit is a smooth-curvature heuristic, so it is only applied
     # where the target is smooth. A morph target can carry a genuine vertex (a
     # sharp rectangle is the default WG corner setting) whose sagitta decays as
@@ -2315,7 +2324,7 @@ def _build_acoustic_sampling_grid(
     best: tuple[dict[str, Any], dict[str, Any]] | None = None
     trims_left = 6
     for attempt in range(attempts):
-        grid = build_point_grid(working)
+        grid = build_point_grid(working, defer_osse_offset_repair=formula == "OSSE")
         _check_effective_grid_caps(grid, density)
         n_phi = int(grid["grid_n_phi"])
         n_length = int(grid["grid_n_length"])
@@ -2453,11 +2462,11 @@ def _build_acoustic_sampling_grid(
             if trims_left > 0 and any(slack.values()):
                 trims_left -= 1
             else:
-                return grid, _sampling_metadata(working, grid)
+                return finish_grid(grid, working)
         elif best is not None:
             # The trim overshot; the last fit that met every limit stands.
             good_grid, good_working = best
-            return good_grid, _sampling_metadata(good_working, good_grid)
+            return finish_grid(good_grid, good_working)
 
         current_angular = int(working["angularSegments"])
         current_length = int(working["lengthSegments"])
@@ -2498,7 +2507,7 @@ def _build_acoustic_sampling_grid(
         ):
             if best is not None:
                 good_grid, good_working = best
-                return good_grid, _sampling_metadata(good_working, good_grid)
+                return finish_grid(good_grid, good_working)
             stop_reason = _saturated_reason(
                 working, max_segments, max_arc_subdivision, ordinary_factor,
                 corner_factor, axial_factor,

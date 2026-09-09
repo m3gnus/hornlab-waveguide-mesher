@@ -254,6 +254,27 @@ def test_fitted_grid_is_essentially_independent_of_the_requested_segments(seed):
     )
 
 
+def test_discarded_oversized_probe_does_not_repair_its_outer_offset(monkeypatch):
+    import hornlab_mesher.profile_sampling as sampling
+
+    original = sampling.regularize_outer_offset
+    repaired_shapes = []
+
+    def tracked(inner, outer, wall, *, full_circle):
+        repaired_shapes.append(inner.shape)
+        return original(inner, outer, wall, full_circle=full_circle)
+
+    monkeypatch.setattr(sampling, "regularize_outer_offset", tracked)
+    (grid, meta), density = _acoustic_grid(
+        _config(angularSegments=1200, lengthSegments=600)
+    )
+    expected = (int(grid["grid_n_phi"]), int(grid["grid_n_length"]) + 1, 3)
+    assert repaired_shapes == [expected]
+    assert grid["outer_offset_fold"] is None
+    assert "outerOffsetFold" not in meta
+    assert float(_angular_ratios(grid, density).max()) <= 1.0
+
+
 def test_metadata_reports_the_effective_grid_not_just_the_nominal_segments():
     config = _config(mouthResolution=5.0, morph=_rounded_rect_morph(20.0))
     (grid, meta), _ = _acoustic_grid(config)

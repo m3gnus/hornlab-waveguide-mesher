@@ -537,12 +537,29 @@ def test_morph_target_matches_the_mouth_ath_meshed(
     ],
 )
 def test_ath_reference_configs_build_end_to_end(case: str, tmp_path: Path):
-    result = build_from_config(load_config(ATH_REFERENCE_ROOT / case / "config.txt"), tmp_path / f"{case}.msh")
+    config = load_config(ATH_REFERENCE_ROOT / case / "config.txt")
+    if case == "260330solana":
+        # This folded-offset regression must pass the requested interpolating
+        # build itself, without the automatic approximating-fit fallback.
+        config["mesh"]["surface_fit"] = "interpolate"
+    result = build_from_config(config, tmp_path / f"{case}.msh")
 
     assert result.n_vertices > 0
     assert result.n_triangles > 0
     assert result.physical_groups[1] == "SD1G0"
     assert result.physical_groups[2] == "SD1D1001"
+    if case == "260330solana":
+        from hornlab_mesher.normals import validate_orientation
+
+        assert not result.metadata.get("outerOffsetFold")
+        assert result.n_triangles < 18000
+        mesh = meshio.read(result.mesh_path)
+        triangles, tags = _triangles_and_physical_tags(mesh)
+        validate_orientation(
+            mesh.points, triangles, tags,
+            require_watertight=True,
+            require_edge_consistency=True,
+        )
     if case.startswith("250728solana"):
         assert result.physical_groups[3] == "SD2G0"
         assert result.physical_groups[4] == "I1-2"

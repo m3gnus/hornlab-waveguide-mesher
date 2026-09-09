@@ -21,6 +21,7 @@ from .profile_common import (
     _symmetry_planes_for_quadrants,
     eval_param,
 )
+from .offset_envelope import regularize_outer_offset
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -610,6 +611,7 @@ def _outer_offset_shell(
     full_circle: bool,
     t_coordinates: np.ndarray | None = None,
     phi_coordinates: np.ndarray | None = None,
+    repair_osse: bool = False,
 ) -> np.ndarray:
     n_phi, n_cols, _ = inner.shape
     n_length = n_cols - 1
@@ -669,16 +671,36 @@ def _outer_offset_shell(
     # fixed.
     #
     # Nothing required it: ATH places the outer throat point on the exact normal
-    # offset too. Note this does NOT make the offset globally safe -- a throat
-    # whose meridian curvature radius is smaller than the wall self-intersects
-    # whatever row 0 does, which is what ``validate_outer_offset_grid`` below
-    # reports. Measured numbers live in the tests, not here, because they are
-    # per-config and go stale in a comment.
+    # offset too. This normal parameterization can still contain internal loops
+    # when the wall exceeds a concavity's curvature radius. The caller validates
+    # it and, for OSSE, resamples the exterior envelope when necessary.
     outer_vertices = vertices + offset_sign * wall * unit
 
-    return np.ascontiguousarray(
+    outer = np.ascontiguousarray(
         outer_vertices.reshape(n_cols, n_phi, 3).transpose(1, 0, 2)[:, :, (0, 2, 1)]
     )
+    if repair_osse:
+        try:
+            validate_outer_offset_grid(
+                inner, outer, full_circle=full_circle, label="OSSE"
+            )
+        except ValueError:
+            try:
+                candidate = regularize_outer_offset(
+                    inner, outer, wall, full_circle=full_circle
+                )
+                validate_outer_offset_grid(
+                    inner, candidate, full_circle=full_circle, label="OSSE"
+                )
+            except ValueError:
+                pass  # The caller retains the original fold diagnosis.
+            else:
+                outer = candidate
+                logger.info(
+                    "[hornlab-mesher] resolved OSSE outer offset loops "
+                    "using the constant-distance exterior envelope"
+                )
+    return outer
 
 
 def _lookup_curve(
@@ -1247,10 +1269,14 @@ def _freeform_raw_radial_grid(
     )
 
 
-def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
+def build_point_grid(
+    params: Mapping[str, Any], *, defer_osse_offset_repair: bool = False
+) -> dict[str, Any]:
     """Point grid with the vertex data as the published flat lists."""
 
-    grid = build_point_grid_arrays(params)
+    grid = build_point_grid_arrays(
+        params, defer_osse_offset_repair=defer_osse_offset_repair
+    )
     inner = grid.pop("inner_grid")
     outer = grid.pop("outer_grid")
     return {
@@ -1260,7 +1286,9 @@ def build_point_grid(params: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
+def build_point_grid_arrays(
+    params: Mapping[str, Any], *, defer_osse_offset_repair: bool = False
+) -> dict[str, Any]:
     """The same grid, with the vertices left as ``(phi, t, xyz)`` arrays.
 
     ``inner_points``/``outer_points`` are a flat-list wire contract, and every
@@ -1477,6 +1505,7 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
             inner,
             wall,
             full_circle=full_circle,
+            repair_osse=formula == "OSSE" and not defer_osse_offset_repair,
             t_coordinates=np.asarray(t_values, dtype=np.float64),
             # ``phi_grid`` is (phi, t); the derivative helper wants (t, phi).
             # Outside FREEFORM only the morph angle list is non-uniform, but it
@@ -1492,12 +1521,10 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
         # FREEFORM rejects a folded shell outright: its profile is user-drawn,
         # so a fold means the input is wrong and refusing is the right answer.
         #
-        # Every other formula only WARNS. A fold there means the requested wall
-        # exceeds the throat's concave curvature radius, which is a real defect
-        # -- but 11 of 16 reference designs, including this repository's own
-        # examples, have folded for as long as the offset has existed. Raising
-        # would reject configs that build and solve today, so surface it and let
-        # the caller decide.
+        # OSSE's normal correspondence can fold inside concave guiding-curve
+        # grooves at any axial station. The constant-distance exterior still
+        # exists there: discard the internal loops by resampling its envelope.
+        # Other formulas retain the existing warning contract.
         if formula == "FREEFORM":
             validate_outer_offset_grid(inner, outer, full_circle=full_circle)
         else:
@@ -1512,12 +1539,13 @@ def build_point_grid_arrays(params: Mapping[str, Any]) -> dict[str, Any]:
                 # surface is unaffected" is true of the analytic profile, not of
                 # what the solver ends up integrating over.
                 outer_fold = str(exc)
-                logger.warning(
-                    "[hornlab-mesher] outer wall self-intersects near the throat: %s "
-                    "Reduce the wall thickness or open the throat curvature; the "
-                    "acoustic (inner) surface is unaffected.",
-                    exc,
-                )
+                if not (formula == "OSSE" and defer_osse_offset_repair):
+                    logger.warning(
+                        "[hornlab-mesher] outer wall self-intersects: %s "
+                        "Reduce the wall thickness or open the local curvature; the "
+                        "acoustic (inner) surface is unaffected.",
+                        exc,
+                    )
 
     return {
         "inner_grid": inner,
