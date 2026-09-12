@@ -100,6 +100,12 @@ Related reference docs:
   orientation when needed, validates the result, scales to metres by default,
   and writes the final file.
 
+`hornlab_mesher.native_env`
+
+- `preserve_native_windows_path()` restores the process's native Windows PATH
+  after a Gmsh session call. A no-op off Windows.
+- See "Gmsh Sessions" below for where it applies.
+
 `hornlab_mesher.normals`
 
 - Removes degenerate triangles.
@@ -116,6 +122,44 @@ Related reference docs:
   - `3`: enclosure wall, `SD2G0`
   - `4`: interface, `I1-2`
   - `12`: infinite-baffle mouth aperture, `mouth_aperture`
+
+## Gmsh Sessions
+
+The mesher opens a Gmsh session in exactly two places, and each opens one only
+when no session is already active (`gmsh.isInitialized()` is false):
+
+- `mesher.build_mesh_with_info`, which every `.msh` build reaches
+  (`build_mesh`, `build_from_config`, `experimental.cabinet`);
+- `cad.write_step`, which every STEP export reaches (`write_step_from_config`,
+  `write_wglink`).
+
+A session opened there is closed by the same call. A caller that has already
+opened a session keeps it: the mesher reuses it, never initializes or finalizes
+it, and the caller owns everything about it, including the guard below.
+
+On Windows, `gmsh.initialize()` has been measured truncating the process's
+native PATH while `os.environ` keeps the old value, so later bare-name
+executable lookups and PATH-based DLL loads fail invisibly. Both session opens
+and their matching closes therefore run inside
+`native_env.preserve_native_windows_path()`, which restores the native PATH
+and is a no-op elsewhere. A caller that owns its own session needs the same
+guard around its own open and close. Waveguide Generator's counterpart is
+`_preserve_native_windows_path` in `server/mesh/gmsh_worker.py`; change the
+two together. `tests/test_native_env.py` pins the wiring on every platform and,
+on Windows, the restore against an injected truncation.
+
+Where the application meets these opens (traced by call graph at Waveguide
+Generator `da913132`, consuming this repository at `8a63fe76`): every
+application path that reaches `build_from_config`, `write_step_from_config` or
+`write_wglink` runs as a callback on the application's single gmsh worker
+thread. That thread has already opened a session under its own guard, so the
+mesher's own open is skipped. The application's CAD-import child process opens
+its session under the same guard. Its Gmsh work goes through `step_import` and
+`step_prepare` helpers, which use a session but never open one, and its other
+mesher calls are pure. Every other
+mesher call the application makes is pure geometry and never touches Gmsh. The
+mesher's own guard therefore protects direct callers, such as the CLI, scripts
+and other integrations, rather than a known application path.
 
 ## Geometry Modes
 

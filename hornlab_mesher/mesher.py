@@ -29,6 +29,7 @@ from .geometry import (
     PointGridHornGeometry,
     validate_mesh_density,
 )
+from .native_env import preserve_native_windows_path
 from .normals import (
     MeshOrientationError,
     remove_degenerate_triangles,
@@ -202,8 +203,16 @@ def build_mesh_with_info(
             if not gmsh.isInitialized():
                 # interruptible=False skips gmsh's SIGINT handler, which only
                 # the main thread may install — required for worker threads.
-                gmsh.initialize(interruptible=False)
-                initialized_here = True
+                #
+                # On Windows the open can truncate the native PATH, so it runs
+                # inside the guard. Counterparts: the session open in
+                # cad.write_step, and the application's own guarded session
+                # (Waveguide Generator server/mesh/gmsh_worker.py). Recording
+                # the open inside the guard means a failed PATH restore still
+                # closes the session below.
+                with preserve_native_windows_path():
+                    gmsh.initialize(interruptible=False)
+                    initialized_here = True
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
@@ -334,7 +343,8 @@ def build_mesh_with_info(
             if owns_out_path and not build_succeeded:
                 out_path.unlink(missing_ok=True)
             if initialized_here and gmsh.isInitialized():
-                gmsh.finalize()
+                with preserve_native_windows_path():
+                    gmsh.finalize()
 
 
 def load_mesh(path: str | Path) -> MeshInfo:

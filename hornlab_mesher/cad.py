@@ -55,6 +55,7 @@ from .geometry import (
     PointGridHornGeometry,
 )
 from .mesher import _GMSH_LOCK, MesherError, _dispatch_builder
+from .native_env import preserve_native_windows_path
 
 CadBody = Literal["solid", "surface"]
 
@@ -415,8 +416,15 @@ def write_step(
         staged_path: Path | None = None
         try:
             if not gmsh.isInitialized():
-                gmsh.initialize(interruptible=False)
-                initialized_here = True
+                # On Windows the open can truncate the native PATH, so it runs
+                # inside the guard. Counterparts: the session open in
+                # mesher.build_mesh_with_info, and the application's own
+                # guarded session (Waveguide Generator
+                # server/mesh/gmsh_worker.py). Recording the open inside the
+                # guard means a failed PATH restore still closes the session.
+                with preserve_native_windows_path():
+                    gmsh.initialize(interruptible=False)
+                    initialized_here = True
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("General.Verbosity", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
@@ -531,7 +539,8 @@ def write_step(
             if owns_out_path and not wrote:
                 out_path.unlink(missing_ok=True)
             if initialized_here and gmsh.isInitialized():
-                gmsh.finalize()
+                with preserve_native_windows_path():
+                    gmsh.finalize()
 
 
 def write_step_from_config(
