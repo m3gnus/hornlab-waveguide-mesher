@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import warnings
 
 import numpy as np
@@ -348,8 +349,16 @@ def test_later_station_defect_wins_over_earlier_morph_failure() -> None:
         "FREEFORM crossSections span 0..1 produces a non-convex outline"
     )
     assert "t=0.59375" in message
-    assert "minimum feasible corner radius here is ~0.4 mm" in message
+    assert "minimum feasible corner radius here is ~2.1 mm" in message
     assert "morph to" not in message
+
+    # The hinted radius clears the station defect this message reports; the
+    # morph failure it outranks is still reported on its own.
+    params["crossSections"][1]["cornerRadiusMm"] = 2.1
+    with pytest.raises(ValueError, match="morph to the circle target"):
+        build_freeform_geometry(params)
+    params["morphTarget"] = 0
+    assert build_freeform_geometry(params).length_mm == 100.0
 
 
 def test_rectangle_morph_corner_15_still_builds() -> None:
@@ -359,6 +368,41 @@ def test_rectangle_morph_corner_15_still_builds() -> None:
         ).length_mm
         == 100.0
     )
+
+
+def _flared_rectangle_morph_params(corner: float) -> dict:
+    # A 320 x 220 mm mouth morphing from the throat onward.
+    return {
+        "profileH": {"points": [[0.0, 12.7], [120.0, 160.0]], "throatAngleDeg": 15.5},
+        "profileV": {"points": [[0.0, 12.7], [120.0, 110.0]], "throatAngleDeg": 15.5},
+        "crossSections": [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "ellipse"},
+        ],
+        "morphTarget": 1,
+        "morphCorner": corner,
+        "morphFixed": 0.0,
+    }
+
+
+def test_rectangle_morph_corner_hint_is_a_corner_ingest_accepts() -> None:
+    # The hint used to round the feasible corner down: it printed ~12.2 mm,
+    # and entering 12.2 mm failed with the same hint.
+    with pytest.raises(ValueError) as error:
+        build_freeform_geometry(_flared_rectangle_morph_params(0.0))
+    match = re.search(
+        r"minimum feasible morphCorner is ~([0-9]+\.[0-9]+) mm", str(error.value)
+    )
+    assert match is not None, str(error.value)
+    hinted = float(match.group(1))
+
+    assert (
+        build_freeform_geometry(_flared_rectangle_morph_params(hinted)).length_mm
+        == 120.0
+    )
+    # The hint is also the smallest accepted corner at the precision it prints.
+    with pytest.raises(ValueError, match="morph to the rectangle target"):
+        build_freeform_geometry(_flared_rectangle_morph_params(round(hinted - 0.1, 1)))
 
 
 def test_walled_rectangle_morph_builds_without_outer_offset_fold() -> None:

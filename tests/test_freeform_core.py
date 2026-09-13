@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 import subprocess
 import sys
 
@@ -417,10 +418,70 @@ def test_convexity_guard_reports_minimum_feasible_corner_radius() -> None:
     assert str(error.value) == (
         "FREEFORM crossSections span 0..1 produces a non-convex outline near "
         "t=0.6875; adjust its shape, aspect, or corner setting; for "
-        "crossSections[1], minimum feasible corner radius here is ~1.0 mm"
+        "crossSections[1], minimum feasible corner radius here is ~3.4 mm"
     )
 
+    assert build_freeform_geometry(_convexity_window_params(3.4)).length_mm == 120.0
     assert build_freeform_geometry(_convexity_window_params(6.0)).length_mm == 120.0
+
+
+_STATION_CORNER_HINT = re.compile(
+    r"minimum feasible corner radius here is ~([0-9]+\.[0-9]+) mm"
+)
+
+
+def _mouth_window_params(
+    corner_radius_mm: float,
+    mouth_mm: tuple[float, float],
+    middle_mm: tuple[float, float],
+) -> dict:
+    params = _profiles(
+        [[0.0, 12.7], [60.0, middle_mm[0]], [120.0, mouth_mm[0] / 2.0]],
+        [[0.0, 12.7], [60.0, middle_mm[1]], [120.0, mouth_mm[1] / 2.0]],
+    )
+    params["crossSections"] = [
+        {"t": 0.0, "shape": "circle"},
+        {
+            "t": 1.0,
+            "shape": "rounded_rectangle",
+            "cornerRadiusMm": corner_radius_mm,
+        },
+    ]
+    return params
+
+
+@pytest.mark.parametrize(
+    ("mouth_mm", "middle_mm", "corner_radius_mm"),
+    [
+        # A 180 x 110 mm mouth. Checked on 256 uniform azimuths, the hint
+        # accepted the smallest allowed radius, 1.1 mm, which ingest rejects.
+        ((180.0, 110.0), (45.0, 27.5), 1.2),
+        # A 320 x 220 mm mouth whose hint was 2.2 mm, also rejected by ingest.
+        ((320.0, 220.0), (56.0, 38.5), 3.0),
+    ],
+)
+def test_station_corner_hint_is_a_radius_ingest_accepts(
+    mouth_mm: tuple[float, float],
+    middle_mm: tuple[float, float],
+    corner_radius_mm: float,
+) -> None:
+    with pytest.raises(ValueError) as error:
+        build_freeform_geometry(
+            _mouth_window_params(corner_radius_mm, mouth_mm, middle_mm)
+        )
+    match = _STATION_CORNER_HINT.search(str(error.value))
+    assert match is not None, str(error.value)
+    hinted = float(match.group(1))
+
+    geometry = build_freeform_geometry(
+        _mouth_window_params(hinted, mouth_mm, middle_mm)
+    )
+    assert geometry.stations[-1]["cornerRadiusMm"] == hinted
+    # The hint is also the smallest accepted radius at the precision it prints.
+    with pytest.raises(ValueError):
+        build_freeform_geometry(
+            _mouth_window_params(round(hinted - 0.1, 1), mouth_mm, middle_mm)
+        )
 
 
 def test_convexity_ingest_rejects_shallow_rounded_rectangle_blend() -> None:

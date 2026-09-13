@@ -26,7 +26,7 @@ import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -1439,6 +1439,19 @@ def _convexity_ingest_samples(stations: Sequence[Mapping[str, Any]]) -> np.ndarr
     return np.unique(np.asarray(samples, dtype=float))
 
 
+def _ingest_convexity_violations(
+    geometry: FreeformGeometry, t_samples: np.ndarray
+) -> list[float]:
+    """Run the convexity check exactly as geometry ingest does.
+
+    A diagnostic that proposes a remedy must judge its candidates with this
+    same call. A remedy checked on a coarser azimuth grid than ingest's can be
+    one that ingest then rejects.
+    """
+
+    return convexity_violations(geometry, t_samples, n_phi=None)
+
+
 def _station_span_name(stations: list[dict[str, Any]], t: float) -> str:
     for first, second in zip(stations[:-1], stations[1:]):
         if float(first["t"]) - 1.0e-12 <= t <= float(second["t"]) + 1.0e-12:
@@ -1592,13 +1605,46 @@ def _geometry_with_morph_corner(
     )
 
 
+def _smallest_accepted_hint_value(
+    accepts: Callable[[float], bool], lower: float, upper: float
+) -> str | None:
+    """Return the smallest printed value in ``[lower, upper]`` that ``accepts``.
+
+    A hint is only useful if typing it back in builds. Candidates therefore lie
+    on the grid the message prints -- 0.1 mm, refined only when no 0.1 mm value
+    fits the range -- and the returned text is exactly a value ``accepts``
+    returned True for, so rounding the report can never turn a feasible value
+    into a rejected one. The search assumes acceptance is monotone in the
+    value; where it is not, the answer is still accepted, just possibly not the
+    smallest.
+    """
+
+    for decimals in (1, 2, 3):
+        scale = 10**decimals
+        # The validators compare their bounds with a relative tolerance, so a
+        # grid value within float rounding of either bound stays a candidate.
+        low = math.ceil(lower * scale - 1.0e-6)
+        high = math.floor(upper * scale + 1.0e-6)
+        if low > high or not accepts(high / scale):
+            continue
+        if accepts(low / scale):
+            return f"{low / scale:.{decimals}f}"
+        rejected, accepted = low, high
+        while accepted - rejected > 1:
+            midpoint = (rejected + accepted) // 2
+            if accepts(midpoint / scale):
+                accepted = midpoint
+            else:
+                rejected = midpoint
+        return f"{accepted / scale:.{decimals}f}"
+    return None
+
+
 def _minimum_feasible_morph_corner_hint(
     geometry: FreeformGeometry,
     t_samples: np.ndarray,
-    *,
-    n_phi: int | None,
 ) -> str:
-    """Suggest the smallest scalar rectangle morph corner that is convex."""
+    """Suggest the smallest scalar rectangle morph corner that ingest accepts."""
 
     if geometry._morph_target != 1 or not all(
         geometry._morph_params.get(key) is None
@@ -1627,35 +1673,26 @@ def _minimum_feasible_morph_corner_hint(
     if lower >= upper:
         return ""
 
-    def schedule_is_convex(value: float) -> bool:
+    def accepts(value: float) -> bool:
         trial = _geometry_with_morph_corner(geometry, value)
-        return not convexity_violations(trial, t_samples, n_phi)
+        return not _ingest_convexity_violations(trial, t_samples)
 
-    if not schedule_is_convex(upper):
+    feasible = _smallest_accepted_hint_value(accepts, lower, upper)
+    if feasible is None:
         return ""
-    if schedule_is_convex(lower):
-        feasible = lower
-    else:
-        infeasible = lower
-        feasible = upper
-        for _iteration in range(12):
-            midpoint = 0.5 * (infeasible + feasible)
-            if schedule_is_convex(midpoint):
-                feasible = midpoint
-            else:
-                infeasible = midpoint
-
-    return f"; minimum feasible morphCorner is ~{feasible:.1f} mm"
+    return f"; minimum feasible morphCorner is ~{feasible} mm"
 
 
 def _minimum_feasible_corner_radius_hint(
     geometry: FreeformGeometry,
     t_samples: np.ndarray,
     offending_t: float,
-    *,
-    n_phi: int,
 ) -> str:
-    """Characterize a convexity failure by increasing an involved corner."""
+    """Characterize a convexity failure by increasing an involved corner.
+
+    A suggested radius has passed the same corner-range and convexity checks
+    that ingest applies to ``geometry``, so entering it clears this error.
+    """
 
     blend = _resolve_active_station_blend(geometry.stations, offending_t)
     candidates = [
@@ -1676,27 +1713,20 @@ def _minimum_feasible_corner_radius_hint(
         lower = 0.02 * station_limit
         upper = _maximum_feasible_station_corner_radius_mm(geometry, index)
 
-        def schedule_is_convex(value: float) -> bool:
+        def accepts(value: float, index: int = index) -> bool:
             trial = _geometry_with_station_corner(geometry, index, value)
-            return not convexity_violations(trial, t_samples, n_phi)
+            try:
+                _validate_station_corner_radii(trial)
+            except ValueError:
+                return False
+            return not _ingest_convexity_violations(trial, t_samples)
 
-        if not schedule_is_convex(upper):
+        feasible = _smallest_accepted_hint_value(accepts, lower, upper)
+        if feasible is None:
             continue
-        if schedule_is_convex(lower):
-            feasible = lower
-        else:
-            infeasible = lower
-            feasible = upper
-            for _iteration in range(12):
-                midpoint = 0.5 * (infeasible + feasible)
-                if schedule_is_convex(midpoint):
-                    feasible = midpoint
-                else:
-                    infeasible = midpoint
-
         return (
             f"; for crossSections[{index}], minimum feasible corner radius here "
-            f"is ~{feasible:.1f} mm"
+            f"is ~{feasible} mm"
         )
 
     station_names = ", ".join(f"crossSections[{index}]" for index in candidates)
@@ -1893,16 +1923,12 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     _validate_station_corner_radii(geometry)
 
     convexity_samples = _convexity_ingest_samples(stations)
-    violations = convexity_violations(
-        geometry,
-        convexity_samples,
-        n_phi=None,
-    )
+    violations = _ingest_convexity_violations(geometry, convexity_samples)
     if violations:
         offending_t = violations[0]
         unmorphed = _geometry_without_morph(geometry)
-        unmorphed_violations = convexity_violations(
-            unmorphed, convexity_samples, n_phi=None
+        unmorphed_violations = _ingest_convexity_violations(
+            unmorphed, convexity_samples
         )
         morph_induced = (
             geometry._morph_target in {1, 2, 3} and not unmorphed_violations
@@ -1913,9 +1939,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             ]
             if geometry._morph_target == 1:
                 morph_corner_hint = _minimum_feasible_morph_corner_hint(
-                    geometry,
-                    convexity_samples,
-                    n_phi=None,
+                    geometry, convexity_samples
                 )
                 remedy = (
                     "increase morphCorner or reduce how far the target departs "
@@ -1934,10 +1958,7 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
             diagnostic_geometry = unmorphed
         span = _station_span_name(stations, offending_t)
         corner_hint = _minimum_feasible_corner_radius_hint(
-            diagnostic_geometry,
-            convexity_samples,
-            offending_t,
-            n_phi=256,
+            diagnostic_geometry, convexity_samples, offending_t
         )
         raise ValueError(
             f"FREEFORM crossSections span {span} produces a non-convex outline "
