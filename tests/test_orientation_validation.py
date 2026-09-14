@@ -707,3 +707,268 @@ def test_a_second_declared_cap_never_yields_a_confident_wrong_verdict():
         assert stats["bore_alignment_kept"] == 0, (
             f"mouth_radius={mouth_radius}: an outward mesh was kept as acoustic"
         )
+
+
+# ------------------------------------------- reduced domain vs its full parent
+
+from hornlab_mesher.step_import import (  # noqa: E402
+    REDUCED_ORIENTATION_MIRRORED_PARENT,
+    REDUCED_ORIENTATION_SOURCE_ANCHOR,
+    postprocess_mesh,
+)
+
+#: Physical tag of the mouth cap in ``_solid_of_revolution``.
+_MOUTH_TAG = 3
+
+
+def _solid_of_revolution(profile, n_theta=16):
+    """A closed solid of revolution about z, wound OUTWARD.
+
+    ``n_theta`` is a multiple of four, so the x=0 and y=0 planes split it along
+    mesh edges and a quarter can be taken without cutting a triangle. The
+    throat cap faces -z and is tagged ``_SOURCE_TAG``: a SOLID whose tagged
+    source faces away from the open axis, which is what a return tagging the
+    rear face of a closed throat plug looks like. The mouth cap faces +z and is
+    tagged ``_MOUTH_TAG``; the wall is 1.
+    """
+    assert n_theta % 4 == 0
+    prof = np.asarray(profile, dtype=float)
+    theta = 2.0 * np.pi * np.arange(n_theta) / n_theta
+    pts = [[r * np.cos(t), r * np.sin(t), z] for r, z in prof for t in theta]
+    def ring(i, j):
+        return i * n_theta + (j % n_theta)
+
+    bottom = len(pts); pts.append([0.0, 0.0, prof[0][1]])
+    top = len(pts); pts.append([0.0, 0.0, prof[-1][1]])
+    pts = np.asarray(pts, dtype=np.float64)
+    # Exact zeros on the split planes, as snapping leaves a real cut rim.
+    pts[np.abs(pts) < 1.0e-12] = 0.0
+
+    tris, tags = [], []
+    for i in range(len(prof) - 1):
+        for j in range(n_theta):
+            a, b = ring(i, j), ring(i, j + 1)
+            c, d = ring(i + 1, j + 1), ring(i + 1, j)
+            tris += [[a, b, c], [a, c, d]]; tags += [1, 1]
+    last = len(prof) - 1
+    for j in range(n_theta):
+        tris.append([bottom, ring(0, j + 1), ring(0, j)]); tags.append(_SOURCE_TAG)
+        tris.append([top, ring(last, j), ring(last, j + 1)]); tags.append(_MOUTH_TAG)
+    return pts, np.asarray(tris, np.int64), np.asarray(tags, np.int32)
+
+
+def _retain(points, triangles, tags, keep_vertex):
+    """Triangles whose vertices are all kept, re-indexed onto the ones they use."""
+    mask = np.all(keep_vertex[triangles], axis=1)
+    kept = triangles[mask]
+    used = np.unique(kept)
+    remap = np.full(len(points), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return points[used], remap[kept], tags[mask]
+
+
+def _quarter(points, triangles, tags):
+    keep = (points[:, 0] >= 0.0) & (points[:, 1] >= 0.0)
+    return _retain(points, triangles, tags, keep)
+
+
+def _half(points, triangles, tags):
+    return _retain(points, triangles, tags, points[:, 0] >= 0.0)
+
+
+def _repair(points, triangles, tags, planes, mode, source_tags=frozenset({_SOURCE_TAG})):
+    return _repair_triangle_winding(
+        points,
+        triangles,
+        tags=tags,
+        source_tags=set(source_tags),
+        symmetry_planes=planes,
+        tolerance=1e-9,
+        reduced_orientation=mode,
+    )
+
+
+def test_a_rear_facing_source_inverts_the_quarter_under_the_source_anchor():
+    """The hazard itself, measured against the full domain it was cut from.
+
+    The full solid is closed, so the closed branch keeps its outward winding --
+    rear cap included, facing -z. Its quarter carries the same triangles. The
+    source anchor demands +z of the cap and flips the WHOLE component, so the
+    quarter is wound opposite to the very body it mirrors back into. That is
+    still the default contract (the add-in's), so it is pinned here -- but it
+    must never be silent: the disagreement with the parent is counted.
+    """
+    full_p, full_t, full_tags = _solid_of_revolution(_flare(60.0))
+    kept_full, full_stats = _repair(
+        full_p, full_t, full_tags, (), REDUCED_ORIENTATION_SOURCE_ANCHOR
+    )
+    assert full_stats["flipped_global"] == 0
+    assert np.array_equal(kept_full, full_t)
+    assert _signed_volume(full_p, full_t) > 0.0
+
+    q_p, q_t, q_tags = _quarter(full_p, full_t, full_tags)
+    assert 4.0 * _signed_volume(q_p, q_t) == pytest.approx(
+        _signed_volume(full_p, full_t), rel=1.0e-9
+    ), "the quarter's origin-based volume is exactly a quarter of its parent's"
+
+    repaired, stats = _repair(
+        q_p, q_t, q_tags, ("x0", "y0"), REDUCED_ORIENTATION_SOURCE_ANCHOR
+    )
+    assert np.array_equal(repaired, q_t[:, [0, 2, 1]]), "inverted against the full body"
+    assert stats["flipped_global"] == len(q_t)
+    assert stats["symmetry_source_parent_conflicts"] == 1
+    assert stats["symmetry_parent_volume_kept"] == 0
+
+
+def test_mirrored_parent_orients_the_quarter_as_the_full_domain_is_oriented():
+    """The fix: a reduced component follows the body it was cut from."""
+    full_p, full_t, full_tags = _solid_of_revolution(_flare(60.0))
+    q_p, q_t, q_tags = _quarter(full_p, full_t, full_tags)
+
+    kept, kept_stats = _repair(
+        q_p, q_t, q_tags, ("x0", "y0"), REDUCED_ORIENTATION_MIRRORED_PARENT
+    )
+    assert np.array_equal(kept, q_t), "the quarter must keep the full domain's winding"
+    assert kept_stats["flipped_global"] == 0
+    assert kept_stats["symmetry_parent_volume_kept"] == 1
+    # The source cap still disagrees, and that is still recorded.
+    assert kept_stats["symmetry_source_parent_conflicts"] == 1
+
+    inverted = q_t[:, [0, 2, 1]]
+    fixed, fixed_stats = _repair(
+        q_p, inverted, q_tags, ("x0", "y0"), REDUCED_ORIENTATION_MIRRORED_PARENT
+    )
+    assert np.array_equal(fixed, q_t), "an inward quarter is corrected to the full winding"
+    assert fixed_stats["symmetry_parent_volume_flipped"] == 1
+    assert fixed_stats["flipped_global"] == len(q_t)
+    assert fixed_stats["symmetry_source_parent_conflicts"] == 1
+
+
+def test_the_two_contracts_agree_when_the_source_faces_the_open_axis():
+    """A bore-facing (+z) source is the common case, and both modes agree on it."""
+    full_p, full_t, full_tags = _solid_of_revolution(_flare(60.0))
+    q_p, q_t, q_tags = _quarter(full_p, full_t, full_tags)
+
+    for mode in (REDUCED_ORIENTATION_SOURCE_ANCHOR, REDUCED_ORIENTATION_MIRRORED_PARENT):
+        for wound, expected_flips in ((q_t, 0), (q_t[:, [0, 2, 1]], len(q_t))):
+            repaired, stats = _repair(
+                q_p, wound, q_tags, ("x0", "y0"), mode, source_tags={_MOUTH_TAG}
+            )
+            assert np.array_equal(repaired, q_t), mode
+            assert stats["flipped_global"] == expected_flips, mode
+            assert stats["symmetry_source_parent_conflicts"] == 0, mode
+
+
+def test_mirrored_parent_needs_neither_an_open_axis_nor_a_source_cap():
+    """A half has no unique open axis, and a cap-less quarter no anchor at all.
+
+    The source anchor falls back to the throat collar on the half -- which
+    reads the outer wall of a solid plug as facing away from the bore and
+    flips it -- and abstains on the cap-less quarter. The parent's volume
+    decides both, the same way the closed branch decides the whole body.
+    """
+    full_p, full_t, full_tags = _solid_of_revolution(_flare(60.0))
+
+    h_p, h_t, h_tags = _half(full_p, full_t, full_tags)
+    anchored, anchored_stats = _repair(
+        h_p, h_t, h_tags, ("x0",), REDUCED_ORIENTATION_SOURCE_ANCHOR
+    )
+    assert anchored_stats["bore_alignment_flipped"] == 1
+    assert anchored_stats["symmetry_source_parent_conflicts"] == 1
+    assert np.array_equal(anchored, h_t[:, [0, 2, 1]])
+
+    parent, parent_stats = _repair(
+        h_p, h_t, h_tags, ("x0",), REDUCED_ORIENTATION_MIRRORED_PARENT
+    )
+    assert np.array_equal(parent, h_t)
+    assert parent_stats["symmetry_parent_volume_kept"] == 1
+    assert parent_stats["bore_alignment_flipped"] == 0
+    assert parent_stats["unjudged_symmetry_components"] == 0
+
+    q_p, q_t, _ = _quarter(full_p, full_t, full_tags)
+    capless = np.ones(len(q_t), dtype=np.int32)
+    _, abstained = _repair(
+        q_p, q_t[:, [0, 2, 1]], capless, ("x0", "y0"), REDUCED_ORIENTATION_SOURCE_ANCHOR
+    )
+    assert abstained["unjudged_symmetry_no_source"] == 1
+    assert abstained["flipped_global"] == 0
+    oriented, oriented_stats = _repair(
+        q_p, q_t[:, [0, 2, 1]], capless, ("x0", "y0"), REDUCED_ORIENTATION_MIRRORED_PARENT
+    )
+    assert np.array_equal(oriented, q_t)
+    assert oriented_stats["symmetry_parent_volume_flipped"] == 1
+    assert oriented_stats["unjudged_symmetry_no_source"] == 0
+
+
+def _open_unit_box_inward():
+    """The add-in's acoustic-domain box: open on x=0 and y=0, walls facing in.
+
+    Copied from hornlab-fusion-addin's ``_open_unit_box(inward=True)`` with the
+    z=0 face tagged as the source, so the default contract that repository pins
+    (test_symmetry_reduced_source_anchor_wins_when_signed_volume_disagrees) is
+    also pinned where the code lives.
+    """
+    points = np.asarray(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+         [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]],
+        dtype=np.float64,
+    )
+    outward = np.asarray(
+        [[1, 3, 7], [1, 7, 5], [2, 6, 7], [2, 7, 3],
+         [0, 2, 3], [0, 3, 1], [4, 5, 7], [4, 7, 6]],
+        dtype=np.int64,
+    )
+    tags = np.asarray([1, 1, 1, 1, _SOURCE_TAG, _SOURCE_TAG, 1, 1], dtype=np.int32)
+    return points, outward[:, [0, 2, 1]], tags
+
+
+def test_an_acoustic_domain_box_keeps_its_source_anchor_by_default():
+    """Why the default stays ``source-anchor``: here the anchor is the contract.
+
+    The box encloses FLUID, so its parent's signed volume is negative and
+    ``mirrored-parent`` would turn it outward. The default leaves it alone and
+    counts the disagreement; a caller whose meshed regions are solids opts in.
+    """
+    points, inward, tags = _open_unit_box_inward()
+    kept, stats = _repair(points, inward, tags, ("x0", "y0"), REDUCED_ORIENTATION_SOURCE_ANCHOR)
+    assert np.array_equal(kept, inward)
+    assert stats["flipped_global"] == 0
+    assert stats["symmetry_source_parent_conflicts"] == 1
+
+    _, parent_stats = _repair(
+        points, inward, tags, ("x0", "y0"), REDUCED_ORIENTATION_MIRRORED_PARENT
+    )
+    assert parent_stats["symmetry_parent_volume_flipped"] == 1
+
+
+def test_postprocess_mesh_echoes_and_validates_the_reduced_orientation():
+    full_p, full_t, full_tags = _solid_of_revolution(_flare(60.0))
+    q_p, q_t, q_tags = _quarter(full_p, full_t, full_tags)
+    mesh = meshio.Mesh(
+        points=q_p,
+        cells=[("triangle", q_t)],
+        cell_data={"gmsh:physical": [q_tags]},
+    )
+
+    _, default_repair, _ = postprocess_mesh(
+        mesh, [], symmetry_planes=("x0", "y0"), tolerance=1e-6
+    )
+    assert default_repair["reduced_orientation"] == REDUCED_ORIENTATION_SOURCE_ANCHOR
+
+    _, repair, topology = postprocess_mesh(
+        mesh,
+        [],
+        symmetry_planes=("x0", "y0"),
+        tolerance=1e-6,
+        reduced_orientation=REDUCED_ORIENTATION_MIRRORED_PARENT,
+    )
+    assert repair["reduced_orientation"] == REDUCED_ORIENTATION_MIRRORED_PARENT
+    assert repair["flipped_global"] == 0
+    assert repair["symmetry_parent_volume_kept"] == 1
+    assert topology["signed_volume_step_units3"] > 0.0
+
+    with pytest.raises(ValueError, match="reduced_orientation"):
+        postprocess_mesh(
+            mesh, [], symmetry_planes=("x0", "y0"), tolerance=1e-6,
+            reduced_orientation="outward",
+        )

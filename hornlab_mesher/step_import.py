@@ -802,6 +802,130 @@ def _bore_alignment_verdict(
     return votes.pop()
 
 
+#: Which rule :func:`_source_anchored_verdict` used. Each is counted separately
+#: by :func:`_repair_triangle_winding`, because they carry different confidence
+#: and consumers warn about some and not others.
+_SOURCE_RULE_PROJECTION = "projection"
+_SOURCE_RULE_NO_SOURCE = "no_source"
+_SOURCE_RULE_UNRESOLVED = "unresolved"
+_SOURCE_RULE_BORE_ALIGNMENT = "bore_alignment"
+_SOURCE_RULE_VOLUME_FALLBACK = "volume_fallback"
+
+
+def _source_anchored_verdict(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    tags: np.ndarray,
+    *,
+    source_tags: set[int],
+    symmetry_planes: tuple[str, ...],
+) -> tuple[bool | None, str]:
+    """Orient one symmetry-reduced component from its tagged source cap.
+
+    ``True`` keep, ``False`` flip, ``None`` no verdict -- together with the
+    rule that decided, which the caller counts.
+
+    Positive source-normal projection on the one non-cut principal axis is the
+    Metal aperture contract, and it is tried first. A component with no source
+    cap at all is left unjudged, because nothing in it says which side the
+    fluid is on. A component whose cap cannot be projected is judged by its
+    throat collar, and the signed volume is only the last resort.
+    """
+    projection, projection_reason = _symmetry_source_projection_detail(
+        points,
+        triangles,
+        tags,
+        source_tags=source_tags,
+        symmetry_planes=symmetry_planes,
+    )
+    if projection is not None:
+        return projection > 0.0, _SOURCE_RULE_PROJECTION
+    if projection_reason == _SYMMETRY_PROJECTION_NO_SOURCE:
+        # No source cap at all, so nothing establishes which side of this
+        # surface the fluid is on. Signed volume answers a different question
+        # -- which way is out of the region the cut planes cap -- and the two
+        # agree only where the meshed region is the solid. For an acoustic bare
+        # shell they are opposed: ``normals.open_shell_bore_alignment`` records
+        # that the volume "reports the *wrong* sign for correctly wound rollback
+        # profiles", and the consuming add-in pins a reduced component whose
+        # walls face the bore, and whose volume is therefore negative, as
+        # correct (hornlab-fusion-addin,
+        # test_symmetry_reduced_source_anchor_wins_when_signed_volume
+        # _disagrees). Orienting that outward inverts every normal.
+        #
+        # Abstention rather than a guess is the decision this contract was
+        # built on: hornlab-fusion-addin commit 3cf7d31 deleted a signed-volume
+        # predicate here and replaced it with the source anchor. A component
+        # can also reach this branch source-less because its STEP label did not
+        # match and the caller passed ``skip_missing_groups`` -- recorded in
+        # ``missing_reasons``, so not silent, but arriving here
+        # indistinguishable from a body that never had a cap. Count it and let
+        # the caller say so.
+        return None, _SOURCE_RULE_NO_SOURCE
+    # This component DOES carry a source cap, but the projection abstained
+    # anyway: the cut planes leave no unique non-cut axis to project onto (a
+    # single-plane cut, the common Fusion case, or a three-plane octant), or
+    # the cap's net normal along that axis is degenerate.
+    #
+    # Degeneracy first, and on the volume, exactly as before. A component
+    # enclosing a volume indistinguishable from zero is not a body this
+    # function can orient by any means, and the collar below will still return
+    # a confident fraction for one -- measured: the 10 x 10 x 1e-8 sliver in the
+    # tests reads 0.0, not None, because the wall normals of a collapsed box
+    # are perfectly well defined even though the box is not. Keeping this guard
+    # in front preserves an abstention that predates this change rather than
+    # quietly spending it.
+    volume = _signed_volume(points, triangles)
+    if abs(volume) <= _signed_volume_noise_floor(points, triangles):
+        return None, _SOURCE_RULE_UNRESOLVED
+
+    # A cap is still an anchor even when it cannot be projected onto a single
+    # axis, so ask the throat collar instead of the volume. The collar measure
+    # builds both its references out of the cap itself -- the cap's
+    # area-weighted centroid and its net area vector -- so it needs no axis
+    # from the cut planes and survives translation, rotation and reduced
+    # domains. Where the volume oracle and this one disagree, this one is right
+    # for an acoustic component: the volume answers "outward from the region
+    # the cut planes cap", which inverts a bore-facing acoustic component, and
+    # that inversion was live on exactly this path.
+    verdict = _bore_alignment_verdict(
+        points,
+        triangles,
+        tags,
+        source_tags=source_tags,
+    )
+    if verdict is not None:
+        return verdict, _SOURCE_RULE_BORE_ALIGNMENT
+    # The collar could not judge it -- no wall band, a cancelling cap, or a
+    # fraction too close to half to be a reading rather than a verdict. Fall
+    # back to the signed volume, already known to clear its noise floor. It
+    # remains the wrong question for an acoustic component, so it is counted
+    # separately and the caller reports it.
+    return volume > 0.0, _SOURCE_RULE_VOLUME_FALLBACK
+
+
+#: How :func:`_repair_triangle_winding` orients a symmetry-reduced component.
+#:
+#: ``source-anchor`` (the default) trusts the tagged source cap, which is the
+#: contract of the Fusion add-in: its reduced components may enclose FLUID
+#: (a bore-facing acoustic shell), and for those the signed volume is inverted.
+#:
+#: ``mirrored-parent`` orients the component as its mirrored, watertight parent
+#: would be oriented by the closed branch: outward from the enclosed region.
+#: That is the right contract for a caller whose meshed regions are solids and
+#: whose full-domain mesh is oriented by signed volume -- because it is the
+#: only one under which the reduced domain and the same body meshed whole
+#: always agree. A tagged source facing away from the open axis (the rear face
+#: of a throat plug, say) is correct in the full domain and would be inverted,
+#: with every other triangle of the component, by the source anchor.
+REDUCED_ORIENTATION_SOURCE_ANCHOR = "source-anchor"
+REDUCED_ORIENTATION_MIRRORED_PARENT = "mirrored-parent"
+REDUCED_ORIENTATIONS = (
+    REDUCED_ORIENTATION_SOURCE_ANCHOR,
+    REDUCED_ORIENTATION_MIRRORED_PARENT,
+)
+
+
 def _repair_triangle_winding(
     points: np.ndarray,
     triangles: np.ndarray,
@@ -810,30 +934,38 @@ def _repair_triangle_winding(
     source_tags: set[int] | None = None,
     symmetry_planes: tuple[str, ...] = (),
     tolerance: float = 0.0,
+    reduced_orientation: str = REDUCED_ORIENTATION_SOURCE_ANCHOR,
 ) -> tuple[np.ndarray, dict[str, int]]:
     """Repair manifold winding and orient components with a valid anchor.
 
     Watertight components retain the signed-volume outwardness contract.
-    Symmetry-reduced open components instead use their tagged source cap:
-    positive source-normal projection on the one non-cut principal axis is the
-    Metal aperture contract.
 
-    A reduced component **with no source cap at all** is deliberately left
-    unjudged and counted rather than guessed, because nothing in it says which
-    side the fluid is on.
+    A symmetry-reduced open component -- every free edge on a cut plane, so
+    its mirrored parent is watertight -- is oriented according to
+    ``reduced_orientation`` (see ``REDUCED_ORIENTATIONS``):
 
-    A reduced component that *has* a source cap whose projection still
-    abstained -- no unique non-cut axis to project onto, or a degenerate net
-    cap normal along it -- is judged by its throat collar instead, via
-    ``normals.open_shell_bore_alignment`` asked one cap at a time. That measure
-    takes both its references from the cap, so it needs no unconstrained axis.
+    * ``source-anchor``, the default, uses the tagged source cap as
+      :func:`_source_anchored_verdict` describes: the source projection on the
+      one non-cut axis, then the throat collar, then the signed volume, and no
+      verdict at all for a component without a cap.
+    * ``mirrored-parent`` uses the parent's signed volume, which is the
+      component's own origin-based signed volume (see below), and falls back to
+      the source anchor only when that volume is within its noise floor.
 
-    The signed volume is only the last resort, when the collar declines. It
-    answers "outward from the capped region", which is the acoustic contract
-    only where the meshed region is the solid, so it inverts a bore-facing
-    acoustic component and is counted separately from a collar verdict for
-    exactly that reason.
+    Both verdicts are taken for every reduced component, and a disagreement is
+    counted in ``symmetry_source_parent_conflicts`` whichever mode wins. The
+    two disagree where the source-anchored rules misread a solid -- a tagged
+    source facing away from the open axis, or a throat collar read on the
+    outside of a wall -- or where the component encloses fluid rather than
+    solid. Which of them is right there depends on what the meshed region is,
+    and only the caller knows that. A flip against the other contract is never
+    silent.
     """
+    if reduced_orientation not in REDUCED_ORIENTATIONS:
+        raise ValueError(
+            f"reduced_orientation must be one of {REDUCED_ORIENTATIONS}, "
+            f"not {reduced_orientation!r}"
+        )
     repaired = triangles.copy()
     stats = {
         "flipped_consistency": 0,
@@ -845,6 +977,9 @@ def _repair_triangle_winding(
         "unresolved_symmetry_components": 0,
         "bore_alignment_flipped": 0,
         "bore_alignment_kept": 0,
+        "symmetry_parent_volume_flipped": 0,
+        "symmetry_parent_volume_kept": 0,
+        "symmetry_source_parent_conflicts": 0,
     }
     if len(repaired) == 0:
         return repaired, stats
@@ -930,98 +1065,60 @@ def _repair_triangle_winding(
         if not symmetry_reduced:
             continue
 
-        projection, projection_reason = _symmetry_source_projection_detail(
+        source_keep, source_rule = _source_anchored_verdict(
             points,
             component_triangles,
             component_tags[component],
             source_tags=declared_source_tags,
             symmetry_planes=symmetry_planes,
         )
-        if projection is None:
-            stats["unjudged_symmetry_components"] += 1
-            if projection_reason == _SYMMETRY_PROJECTION_NO_SOURCE:
-                # No source cap at all, so nothing establishes which side of
-                # this surface the fluid is on. Signed volume answers a
-                # different question -- which way is out of the region the cut
-                # planes cap -- and the two agree only where the meshed region
-                # is the solid. For an acoustic bare shell they are opposed:
-                # ``normals.open_shell_bore_alignment`` records that the volume
-                # "reports the *wrong* sign for correctly wound rollback
-                # profiles", and the consuming add-in pins a reduced component
-                # whose walls face the bore, and whose volume is therefore
-                # negative, as correct (hornlab-fusion-addin,
-                # test_symmetry_reduced_source_anchor_wins_when_signed_volume
-                # _disagrees). Orienting that outward inverts every normal.
-                #
-                # Abstention rather than a guess is the decision this contract
-                # was built on: hornlab-fusion-addin commit 3cf7d31 deleted a
-                # signed-volume predicate here and replaced it with the source
-                # anchor. A component can also reach this branch source-less
-                # because its STEP label did not match and the caller passed
-                # ``skip_missing_groups`` -- recorded in ``missing_reasons``,
-                # so not silent, but arriving here indistinguishable from a
-                # body that never had a cap. Count it and let the caller say so.
-                stats["unjudged_symmetry_no_source"] += 1
-                continue
-            # This component DOES carry a source cap, but the projection
-            # abstained anyway: the cut planes leave no unique non-cut axis to
-            # project onto (a single-plane cut, the common Fusion case, or a
-            # three-plane octant), or the cap's net normal along that axis is
-            # degenerate.
-            #
-            # Degeneracy first, and on the volume, exactly as before. A
-            # component enclosing a volume indistinguishable from zero is not a
-            # body this function can orient by any means, and the collar below
-            # will still return a confident fraction for one -- measured: the
-            # 10 x 10 x 1e-8 sliver in the tests reads 0.0, not None, because
-            # the wall normals of a collapsed box are perfectly well defined
-            # even though the box is not. Keeping this guard in front preserves
-            # an abstention that predates this change rather than quietly
-            # spending it.
-            volume = _signed_volume(points, component_triangles)
-            if abs(volume) <= _signed_volume_noise_floor(points, component_triangles):
-                stats["unresolved_symmetry_components"] += 1
-                continue
+        # What the mirrored parent says. Every free edge of this component lies
+        # on a cut plane through the origin, so mirroring closes it: the parent
+        # is watertight. The cut-plane caps a closed piece would need add
+        # nothing to the origin-based volume sum either, because r . n vanishes
+        # on a plane through the origin. This component's own signed volume is
+        # therefore exactly 1/2^k of its parent's, sign included -- the verdict
+        # the closed branch above gives the same body meshed whole.
+        volume = _signed_volume(points, component_triangles)
+        parent_keep = (
+            None
+            if abs(volume) <= _signed_volume_noise_floor(points, component_triangles)
+            else volume > 0.0
+        )
+        if (
+            source_keep is not None
+            and parent_keep is not None
+            and source_keep != parent_keep
+        ):
+            stats["symmetry_source_parent_conflicts"] += 1
 
-            # A cap is still an anchor even when it cannot be projected onto a
-            # single axis, so ask the throat collar instead of the volume. The
-            # collar measure builds both its references out of the cap itself --
-            # the cap's area-weighted centroid and its net area vector -- so it
-            # needs no axis from the cut planes and survives translation,
-            # rotation and reduced domains. Where the volume oracle and this one
-            # disagree, this one is right: the volume answers "outward from the
-            # region the cut planes cap", which inverts a bore-facing acoustic
-            # component, and that inversion was live on exactly this path.
-            verdict = _bore_alignment_verdict(
-                points,
-                component_triangles,
-                component_tags[component],
-                source_tags=declared_source_tags,
-            )
-            if verdict is not None:
-                if verdict is False:
-                    # The walls face away from the bore, so the component is
-                    # inverted relative to the acoustic contract.
-                    repaired[component] = component_triangles[:, [0, 2, 1]]
-                    stats["flipped_global"] += int(len(component))
-                    stats["bore_alignment_flipped"] += 1
-                else:
-                    stats["bore_alignment_kept"] += 1
-                continue
-            # The collar could not judge it -- no wall band, a cancelling cap,
-            # or a fraction too close to half to be a reading rather than a
-            # verdict. Fall back to the signed volume, already computed above
-            # and already known to clear its noise floor. It remains the wrong
-            # question for an acoustic component, so it is counted separately
-            # and the caller reports it.
-            if volume < 0.0:
+        if (
+            reduced_orientation == REDUCED_ORIENTATION_MIRRORED_PARENT
+            and parent_keep is not None
+        ):
+            if parent_keep:
+                stats["symmetry_parent_volume_kept"] += 1
+            else:
                 repaired[component] = component_triangles[:, [0, 2, 1]]
                 stats["flipped_global"] += int(len(component))
-                stats["symmetry_volume_fallback_flipped"] += 1
-            else:
-                stats["symmetry_volume_fallback_kept"] += 1
+                stats["symmetry_parent_volume_flipped"] += 1
             continue
-        if projection < 0.0:
+
+        if source_rule != _SOURCE_RULE_PROJECTION:
+            stats["unjudged_symmetry_components"] += 1
+        if source_rule == _SOURCE_RULE_NO_SOURCE:
+            stats["unjudged_symmetry_no_source"] += 1
+        elif source_rule == _SOURCE_RULE_UNRESOLVED:
+            stats["unresolved_symmetry_components"] += 1
+        elif source_rule == _SOURCE_RULE_BORE_ALIGNMENT:
+            stats["bore_alignment_kept" if source_keep else "bore_alignment_flipped"] += 1
+        elif source_rule == _SOURCE_RULE_VOLUME_FALLBACK:
+            stats[
+                "symmetry_volume_fallback_kept"
+                if source_keep
+                else "symmetry_volume_fallback_flipped"
+            ] += 1
+        if source_keep is False:
             repaired[component] = component_triangles[:, [0, 2, 1]]
             stats["flipped_global"] += int(len(component))
 
@@ -1155,8 +1252,14 @@ def postprocess_mesh(
     symmetry_planes: tuple[str, ...] | str,
     tolerance: float,
     symmetry_snap_tolerance: float | None = None,
+    reduced_orientation: str = REDUCED_ORIENTATION_SOURCE_ANCHOR,
 ) -> tuple[meshio.Mesh, dict[str, object], dict[str, object]]:
-    """Repair and validate a tagged surface mesh without interpreting roles."""
+    """Repair and validate a tagged surface mesh without interpreting roles.
+
+    ``reduced_orientation`` selects how a symmetry-reduced component is
+    oriented; see ``REDUCED_ORIENTATIONS`` and :func:`_repair_triangle_winding`.
+    The mode used is echoed in the repair report.
+    """
     points, triangles, tags = _mesh_triangle_data(mesh)
     before_edge_stats = _edge_direction_stats(triangles)
     before_signed_volume = _signed_volume(points, triangles)
@@ -1186,6 +1289,7 @@ def postprocess_mesh(
         source_tags={spec.tag for spec in source_specs},
         symmetry_planes=symmetry_planes,
         tolerance=symmetry_tolerance,
+        reduced_orientation=reduced_orientation,
     )
     repair_stats["welded_vertices"] = int(welded_vertices)
     after_edge_stats = _edge_direction_stats(repaired_triangles)
@@ -1234,6 +1338,7 @@ def postprocess_mesh(
     )
     repair = {
         "degenerate_triangles_removed": int(degenerate_removed),
+        "reduced_orientation": reduced_orientation,
         **repair_stats,
         "before": {
             **before_edge_stats,
