@@ -398,77 +398,120 @@ def evaluate_occ_plane_symmetry(
     )
 
 
-#: A surface counts as wholly removed only when its OCC box ends this far
-#: (relative to the model span) inside the removed half-space. OCC boxes bound
-#: a surface from outside, so this never calls a surviving surface removed.
-AUTO_CUT_REMOVED_GAP_REL = 1.0e-6
+def _claim_evidence(parent: int, child: int, *, tolerance: float, grid: int) -> str:
+    """Whether a cut child lies on a copy of the parent it was reported from.
 
-
-def _wholly_removed_surfaces(
-    boxes: dict[int, tuple[float, ...]], planes: tuple[str, ...], gap: float
-) -> set[int]:
-    """Surfaces the positive-side box cannot reach, read before the cut.
-
-    A surface lying in a cut plane is kept (it is on the box's face), so a
-    surface is removed only when it reaches no further than ``gap`` towards
-    the kept side and extends past ``gap`` into the removed side.
+    ``"off"`` is proof that it does not: a sample of the child is further than
+    ``tolerance`` from the parent's carrier surface, or lies on the carrier
+    outside the parent's trim and further than ``tolerance`` from its trim
+    boundary. A real piece of the parent can do neither. ``"on"`` means every
+    sample lies on the trimmed parent; ``"unknown"`` means the geometry could
+    not decide.
     """
-    removed: set[int] = set()
-    for surface, box in boxes.items():
-        for plane in planes:
-            axis = SYMMETRY_AXIS_FOR_PLANE[plane]
-            if box[axis + 3] <= gap and box[axis] < -gap:
-                removed.add(surface)
-                break
-    return removed
+    points = sample_occ_surface_points(child, grid=grid)
+    if not len(points):
+        return "unknown"
+    undecided = False
+    for point in points:
+        try:
+            closest, parametric = gmsh.model.getClosestPoint(2, parent, list(point))
+        except Exception:
+            undecided = True
+            continue
+        if float(np.linalg.norm(np.asarray(closest) - point)) > tolerance:
+            return "off"
+        try:
+            inside = int(gmsh.model.isInside(2, parent, list(parametric[:2]), parametric=True)) > 0
+        except Exception:
+            undecided = True
+            continue
+        if inside:
+            continue
+        edge = _distance_to_boundary(parent, point)
+        if edge is not None and edge > tolerance:
+            return "off"
+        undecided = True
+    return "unknown" if undecided else "on"
 
 
-def _drop_reused_tag_claims(
-    mapping: dict[int, list[int]], removed: set[int], remaining: list[int]
-) -> dict[int, list[int]]:
-    """Remove the out_map entries gmsh invents for wholly removed surfaces.
+def _distance_to_boundary(surface: int, point: np.ndarray) -> float | None:
+    try:
+        curves = [
+            abs(tag)
+            for dim, tag in gmsh.model.getBoundary(
+                [(2, surface)], combined=False, oriented=False, recursive=False
+            )
+            if dim == 1
+        ]
+        distances = [
+            float(np.linalg.norm(np.asarray(gmsh.model.getClosestPoint(1, curve, list(point))[0]) - point))
+            for curve in curves
+        ]
+    except Exception:
+        return None
+    return min(distances) if distances else None
+
+
+def _verify_cut_parentage(
+    mapping: dict[int, list[int]],
+    copies: dict[int, int],
+    remaining: list[int],
+    *,
+    tolerance: float,
+    grid: int,
+) -> tuple[dict[int, list[int]], set[tuple[int, int]], int]:
+    """Keep only the out_map claims the geometry does not disprove.
 
     Gmsh (4.15) frees the tags of removed objects before numbering the new
     pieces of a split surface, so a new piece can take a removed surface's
-    tag. The removed surface's out_map entry then names that piece, exactly
-    as if it had survived unchanged. Tag numbers cannot tell that apart from
-    real shared ancestry -- overlapping or coincident input surfaces all
-    claim the same output -- so only geometry decides: a surface the
-    positive-side box cannot reach has no pieces, whatever out_map says.
-    Every other claim is kept as gmsh reported it. A surviving surface that
-    is left with no parent is refused rather than silently left out of every
-    group.
+    tag, and out_map then reports the removed surface as kept under it. Tag
+    numbers and bounding boxes cannot tell that from real shared ancestry --
+    overlapping or coincident inputs share children -- so each claim is
+    checked against a copy of its parent taken before the cut. A claim is
+    dropped only on proof; one the geometry cannot decide is kept and
+    returned, so the caller can refuse it where it would matter. A surviving
+    surface left with no parent is refused.
     """
-    cleaned = {
-        parent: ([] if parent in removed else list(children))
-        for parent, children in mapping.items()
-    }
+    cleaned: dict[int, list[int]] = {}
+    undecided: set[tuple[int, int]] = set()
+    disproved = 0
+    for parent, children in mapping.items():
+        kept: list[int] = []
+        for child in children:
+            verdict = _claim_evidence(copies[parent], child, tolerance=tolerance, grid=grid)
+            if verdict == "off":
+                disproved += 1
+                continue
+            if verdict == "unknown":
+                undecided.add((parent, child))
+            kept.append(child)
+        cleaned[parent] = kept
     claimed = {child for children in cleaned.values() for child in children}
     unclaimed = sorted(set(remaining) - claimed)
     if unclaimed:
         raise RuntimeError(f"OCC cut left surfaces {unclaimed} with no parent")
-    return cleaned
+    return cleaned, undecided, disproved
 
 
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
     bbox: tuple[float, float, float, float, float, float],
-) -> tuple[dict[int, list[int]], dict[str, object]]:
+    tolerance: float,
+    grid: int,
+) -> tuple[dict[int, list[int]], set[tuple[int, int]], dict[str, object]]:
     volumes = gmsh.model.getEntities(3)
     if volumes:
         gmsh.model.occ.remove(volumes, recursive=False)
         gmsh.model.occ.synchronize()
     surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
+    # The cut deletes the originals; their parentage claims are checked
+    # against these copies, which are removed again below.
+    copies = {
+        surface: gmsh.model.occ.copy([(2, surface)])[0][1] for surface in surfaces
+    }
+    gmsh.model.occ.synchronize()
     span = max(bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2])
-    removed = _wholly_removed_surfaces(
-        {
-            surface: tuple(float(value) for value in gmsh.model.getBoundingBox(2, surface))
-            for surface in surfaces
-        },
-        planes,
-        AUTO_CUT_REMOVED_GAP_REL * span,
-    )
     pad = AUTO_CUT_BOX_PAD_REL * span + 1.0
     lo = [bbox[0] - pad, bbox[1] - pad, bbox[2] - pad]
     hi = [bbox[3] + pad, bbox[4] + pad, bbox[5] + pad]
@@ -489,8 +532,17 @@ def _cut_occ_geometry_to_positive_side(
         surface: [tag for dim, tag in (out_map[index] if index < len(out_map) else []) if dim == 2]
         for index, surface in enumerate(surfaces)
     }
-    remaining = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
-    mapping = _drop_reused_tag_claims(mapping, removed, remaining)
+    copy_tags = set(copies.values())
+    remaining = [
+        tag for _dim, tag in sorted(gmsh.model.getEntities(2)) if tag not in copy_tags
+    ]
+    try:
+        mapping, undecided, disproved = _verify_cut_parentage(
+            mapping, copies, remaining, tolerance=tolerance, grid=grid
+        )
+    finally:
+        gmsh.model.occ.remove([(2, tag) for tag in copy_tags], recursive=True)
+        gmsh.model.occ.synchronize()
     stats = {
         "planes": list(planes),
         "half_space_box_step_units": [float(value) for value in lo + hi],
@@ -499,8 +551,10 @@ def _cut_occ_geometry_to_positive_side(
         "surfaces_dropped": sum(not children for children in mapping.values()),
         "surfaces_split": sum(len(children) > 1 for children in mapping.values()),
         "residual_volumes": len(gmsh.model.getEntities(3)),
+        "parentage_claims_disproved": disproved,
+        "parentage_claims_undecided": len(undecided),
     }
-    return mapping, stats
+    return mapping, undecided, stats
 
 
 def auto_cut_occ_geometry(
@@ -590,9 +644,22 @@ def auto_cut_occ_geometry(
         report["cut"] = None
         return OccAutoCutResult((), groups, {}, report)
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
-    parentage, cut_stats = _cut_occ_geometry_to_positive_side(
-        accepted_planes, bbox=model_bbox
+    parentage, undecided, cut_stats = _cut_occ_geometry_to_positive_side(
+        accepted_planes, bbox=model_bbox, tolerance=tolerance, grid=grid
     )
+    # A claim the geometry could not decide is harmless inside one role, but
+    # it must not put a surface into a group of another role.
+    claimants: dict[int, set[str]] = {}
+    for parent, children in parentage.items():
+        for child in children:
+            claimants.setdefault(child, set()).add(roles.get(parent, ""))
+    for parent, child in sorted(undecided):
+        if len(claimants[child]) > 1:
+            raise RuntimeError(
+                f"OCC cut reports surface {child} as a piece of surface {parent} "
+                f"(role {roles.get(parent, '')!r}), which the geometry cannot confirm, "
+                f"while other roles also claim it: {sorted(claimants[child])}"
+            )
     remapped_groups = tuple(
         OccSurfaceGroup(
             group.name,

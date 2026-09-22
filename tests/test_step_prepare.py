@@ -386,21 +386,253 @@ def test_auto_cut_refuses_a_surviving_surface_that_no_parent_claims(monkeypatch)
             auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
 
 
-@pytest.mark.parametrize(
-    ("box", "planes", "removed"),
-    [
-        ((-2.0, 0, 0, -1.0, 1, 1), ("x0",), True),     # wholly on the removed side
-        ((-2.0, 0, 0, 0.0, 1, 1), ("x0",), True),      # touches the plane on an edge
-        ((0.0, 0, 0, 0.0, 1, 1), ("x0",), False),      # lies in the plane
-        ((-2.0, 0, 0, 0.5, 1, 1), ("x0",), False),     # straddles it
-        ((-2.0, 0, 0, 2.0e-6, 1, 1), ("x0",), False),  # reaches just past the gap
-        ((1.0, -2.0, 0, 2.0, -1.0, 1), ("x0",), False),
-        ((1.0, -2.0, 0, 2.0, -1.0, 1), ("x0", "y0"), True),
-    ],
-)
-def test_only_a_surface_the_kept_box_cannot_reach_counts_as_removed(box, planes, removed):
-    result = step_prepare._wholly_removed_surfaces({7: box}, planes, 1.0e-6)
-    assert result == ({7} if removed else set())
+def _cut_groups(groups, planes=("x0",), grid=5):
+    result = auto_cut_occ_geometry(groups, grid=grid, planes=planes)
+    return result, {group.name: list(group.selector.surface_tags) for group in result.groups}
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.0e3, 1.0e6])
+def test_auto_cut_keeps_a_strip_that_survives_just_past_the_plane(scale):
+    """A partition seam just past x0 leaves face 1 a real, kept strip."""
+    with _gmsh_session():
+        eps = 1.0e-6
+        tags = [
+            gmsh.model.occ.addRectangle(-scale, -scale, 0, (1 + eps) * scale, 2 * scale),
+            gmsh.model.occ.addRectangle(eps * scale, -scale, 0, (1 - eps) * scale, 2 * scale),
+        ]
+        gmsh.model.occ.synchronize()
+
+        result, groups = _cut_groups(
+            [OccSurfaceGroup("all", OccSurfaceSelector(tags), OccSurfaceRole("rigid"))]
+        )
+
+        assert result.planes == ("x0",)
+        assert all(len(result.parent_to_children[tag]) == 1 for tag in tags)
+        assert len(groups["all"]) == 2
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.0e3, 1.0e6])
+def test_auto_cut_keeps_mirrored_inclined_sheets_that_meet_past_the_plane(scale):
+    with _gmsh_session():
+        occ = gmsh.model.occ
+        tags = []
+        for sign in (1, -1):
+            points = [
+                occ.addPoint(sign * x * scale, y * scale, x * scale)
+                for x, y in ((-1, -1), (1.0e-6, -1), (1.0e-6, 1), (-1, 1))
+            ]
+            lines = [occ.addLine(points[i], points[(i + 1) % 4]) for i in range(4)]
+            tags.append(occ.addPlaneSurface([occ.addCurveLoop(lines)]))
+        occ.synchronize()
+
+        result, groups = _cut_groups(
+            [OccSurfaceGroup("all", OccSurfaceSelector(tags), OccSurfaceRole("rigid"))]
+        )
+
+        assert result.planes == ("x0",)
+        assert groups["all"]
+
+
+def _cylinder_and_sources(scale, make_source):
+    occ = gmsh.model.occ
+    occ.addCylinder(0, 0, -scale, 0, 0, 2 * scale, scale)
+    occ.synchronize()
+    rigid = [tag for _dim, tag in gmsh.model.getEntities(2)]
+    sources = [make_source(sign) for sign in (1, -1)]
+    occ.synchronize()
+    return rigid, sources
+
+
+def _rigid_and_source_groups(rigid, sources):
+    return [
+        OccSurfaceGroup("rigid", OccSurfaceSelector(rigid), OccSurfaceRole("rigid")),
+        OccSurfaceGroup("source", OccSurfaceSelector(sources), OccSurfaceRole("source")),
+    ]
+
+
+@pytest.mark.parametrize("width", [1.0, 100.0])
+def test_a_removed_bspline_source_whose_box_reaches_the_kept_side_gets_nothing(width):
+    """The negative patch lies at x <= -2, but its OCC box reaches x = +1."""
+    with _gmsh_session():
+        occ = gmsh.model.occ
+
+        def patch(sign):
+            # x(u) = -sign * (-5 + 12u - 12u^2): the sign = -1 patch sits at x <= -2.
+            points = [
+                occ.addPoint(-sign * x, y, z)
+                for y in (-width / 2, width / 2)
+                for x, z in ((-5, -1), (1, 0), (-5, 1))
+            ]
+            return occ.addBSplineSurface(points, 3, degreeU=2, degreeV=1)
+
+        rigid, sources = _cylinder_and_sources(1.0, patch)
+        assert gmsh.model.getBoundingBox(2, sources[1])[3] > 0.5
+
+        result, groups = _cut_groups(_rigid_and_source_groups(rigid, sources), grid=7)
+
+        assert result.planes == ("x0",)
+        assert result.parent_to_children[sources[1]] == []
+        assert groups["source"] == [sources[0]]
+        assert not set(groups["rigid"]) & set(groups["source"])
+
+
+@pytest.mark.parametrize("scale", [1.0, 0.1, 0.01, 0.001])
+def test_a_removed_source_touching_the_plane_gets_nothing_at_any_scale(scale):
+    with _gmsh_session():
+
+        def rectangle(sign):
+            x = 0.0 if sign > 0 else -3.0
+            return gmsh.model.occ.addRectangle(x * scale, -0.5 * scale, 2 * scale, 3 * scale, scale)
+
+        rigid, sources = _cylinder_and_sources(scale, rectangle)
+
+        result, groups = _cut_groups(_rigid_and_source_groups(rigid, sources))
+
+        assert result.planes == ("x0",)
+        assert result.parent_to_children[sources[1]] == []
+        assert groups["source"] == [sources[0]]
+
+
+def _inject_claim(monkeypatch, parent_index, child_of_index):
+    """Make out_map also list parent ``parent_index`` as a parent of the
+    first child of input ``child_of_index`` -- the shape of gmsh's stale claim."""
+    intersect = gmsh.model.occ.intersect
+
+    def stale(*args, **kwargs):
+        out, out_map = intersect(*args, **kwargs)
+        out_map = [list(children) for children in out_map]
+        out_map[parent_index] = out_map[parent_index] + [out_map[child_of_index][0]]
+        return out, out_map
+
+    monkeypatch.setattr(gmsh.model.occ, "intersect", stale)
+
+
+def test_a_claim_on_a_piece_off_the_parents_surface_is_dropped(monkeypatch):
+    with _gmsh_session():
+        low = gmsh.model.occ.addRectangle(-1.0, -1.0, 0.0, 2.0, 2.0)
+        high = gmsh.model.occ.addRectangle(-1.0, -1.0, 1.0, 2.0, 2.0)
+        gmsh.model.occ.synchronize()
+        _inject_claim(monkeypatch, 0, 1)
+
+        result, _groups = _cut_groups(
+            [
+                OccSurfaceGroup("low", OccSurfaceSelector([low]), OccSurfaceRole("a")),
+                OccSurfaceGroup("high", OccSurfaceSelector([high]), OccSurfaceRole("b")),
+            ]
+        )
+
+        assert len(result.parent_to_children[low]) == 1
+        assert not set(result.parent_to_children[low]) & set(result.parent_to_children[high])
+        assert result.report["cut"]["parentage_claims_disproved"] == 1
+
+
+def test_a_claim_on_a_coplanar_piece_outside_the_parents_trim_is_dropped(monkeypatch):
+    with _gmsh_session():
+        outer = gmsh.model.occ.addRectangle(-2.0, -1.0, 0.0, 4.0, 2.0)
+        # The pads lie on the outer face's own plane, so only the trim can
+        # tell the removed left pad's claim apart.
+        right = gmsh.model.occ.addRectangle(1.0, -0.5, 0.0, 0.5, 1.0)
+        left = gmsh.model.occ.addRectangle(-1.5, -0.5, 0.0, 0.5, 1.0)
+        gmsh.model.occ.synchronize()
+        _inject_claim(monkeypatch, 2, 0)  # the removed left face claims outer's piece
+
+        result, groups = _cut_groups(
+            [
+                OccSurfaceGroup("outer", OccSurfaceSelector([outer]), OccSurfaceRole("rigid")),
+                OccSurfaceGroup("pads", OccSurfaceSelector([right, left]), OccSurfaceRole("pad")),
+            ]
+        )
+
+        assert result.parent_to_children[left] == []
+        assert groups["pads"] == [right]
+        assert result.report["cut"]["parentage_claims_disproved"] == 1
+
+
+def test_a_sample_outside_the_trim_but_near_its_edge_does_not_disprove_a_claim(monkeypatch):
+    """A kept strip narrower than the tolerance is all edge; trim noise there is doubt."""
+    with _gmsh_session():
+        eps = 1.0e-6
+        tags = [
+            gmsh.model.occ.addRectangle(-1.0, -1.0, 0, 1 + eps, 2.0),
+            gmsh.model.occ.addRectangle(eps, -1.0, 0, 1 - eps, 2.0),
+        ]
+        gmsh.model.occ.synchronize()
+        evidence = step_prepare._claim_evidence
+
+        def noisy_trim(parent, child, **kwargs):
+            with monkeypatch.context() as patch:
+                patch.setattr(gmsh.model, "isInside", lambda *_a, **_k: 0)
+                return evidence(parent, child, **kwargs)
+
+        monkeypatch.setattr(step_prepare, "_claim_evidence", noisy_trim)
+
+        result, groups = _cut_groups(
+            [OccSurfaceGroup("all", OccSurfaceSelector(tags), OccSurfaceRole("rigid"))]
+        )
+
+        assert result.parent_to_children[tags[0]]
+        assert len(groups["all"]) == 2
+
+
+def _undecided_for(monkeypatch, parent_of):
+    evidence = step_prepare._claim_evidence
+
+    def unsure(parent, child, **kwargs):
+        verdict = evidence(parent, child, **kwargs)
+        return "unknown" if parent == parent_of["copy"] else verdict
+
+    monkeypatch.setattr(step_prepare, "_claim_evidence", unsure)
+    copy = gmsh.model.occ.copy
+
+    def remember(dimtags):
+        out = copy(dimtags)
+        if dimtags[0][1] == parent_of["original"]:
+            parent_of["copy"] = out[0][1]
+        return out
+
+    monkeypatch.setattr(gmsh.model.occ, "copy", remember)
+
+
+def test_an_undecided_claim_into_another_roles_surface_is_refused(monkeypatch):
+    with _gmsh_session():
+        low = gmsh.model.occ.addRectangle(-1.0, -1.0, 0.0, 2.0, 2.0)
+        high = gmsh.model.occ.addRectangle(-1.0, -1.0, 1.0, 2.0, 2.0)
+        gmsh.model.occ.synchronize()
+        _inject_claim(monkeypatch, 0, 1)
+        _undecided_for(monkeypatch, {"original": low, "copy": None})
+        groups = [
+            OccSurfaceGroup("low", OccSurfaceSelector([low]), OccSurfaceRole("a")),
+            OccSurfaceGroup("high", OccSurfaceSelector([high]), OccSurfaceRole("b")),
+        ]
+        with pytest.raises(RuntimeError, match="cannot confirm"):
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+
+def test_an_undecided_claim_within_one_role_is_kept(monkeypatch):
+    with _gmsh_session():
+        low = gmsh.model.occ.addRectangle(-1.0, -1.0, 0.0, 2.0, 2.0)
+        high = gmsh.model.occ.addRectangle(-1.0, -1.0, 1.0, 2.0, 2.0)
+        gmsh.model.occ.synchronize()
+        _inject_claim(monkeypatch, 0, 1)
+        _undecided_for(monkeypatch, {"original": low, "copy": None})
+
+        result, _groups = _cut_groups(
+            [OccSurfaceGroup("all", OccSurfaceSelector([low, high]), OccSurfaceRole("rigid"))]
+        )
+
+        assert len(result.parent_to_children[low]) == 2
+        assert result.report["cut"]["parentage_claims_undecided"] >= 1
+
+
+def test_the_cut_leaves_no_parent_copies_behind():
+    with _gmsh_session():
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        result, groups = _cut_groups(
+            [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))]
+        )
+        remaining = {tag for _dim, tag in gmsh.model.getEntities(2)}
+        assert remaining == set(groups["all"])
+        assert len(remaining) == 5
 
 
 def test_snap_band_uses_step_units_conversion():
