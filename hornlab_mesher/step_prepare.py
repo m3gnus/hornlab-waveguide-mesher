@@ -398,35 +398,53 @@ def evaluate_occ_plane_symmetry(
     )
 
 
+#: A surface counts as wholly removed only when its OCC box ends this far
+#: (relative to the model span) inside the removed half-space. OCC boxes bound
+#: a surface from outside, so this never calls a surviving surface removed.
+AUTO_CUT_REMOVED_GAP_REL = 1.0e-6
+
+
+def _wholly_removed_surfaces(
+    boxes: dict[int, tuple[float, ...]], planes: tuple[str, ...], gap: float
+) -> set[int]:
+    """Surfaces the positive-side box cannot reach, read before the cut.
+
+    A surface lying in a cut plane is kept (it is on the box's face), so a
+    surface is removed only when it reaches no further than ``gap`` towards
+    the kept side and extends past ``gap`` into the removed side.
+    """
+    removed: set[int] = set()
+    for surface, box in boxes.items():
+        for plane in planes:
+            axis = SYMMETRY_AXIS_FOR_PLANE[plane]
+            if box[axis + 3] <= gap and box[axis] < -gap:
+                removed.add(surface)
+                break
+    return removed
+
+
 def _drop_reused_tag_claims(
-    mapping: dict[int, list[int]], remaining: list[int]
+    mapping: dict[int, list[int]], removed: set[int], remaining: list[int]
 ) -> dict[int, list[int]]:
     """Remove the out_map entries gmsh invents for wholly removed surfaces.
 
     Gmsh (4.15) frees the tags of removed objects before numbering the new
     pieces of a split surface, so a new piece can take a removed surface's
     tag. The removed surface's out_map entry then names that piece, exactly
-    as if it had survived unchanged. The piece is also listed under the
-    surface it really came from, which is how the invented entry is told
-    apart: a child claimed both by its own tag and by another parent belongs
-    to the other parent. Anything else that leaves a child with no single
-    parent is refused rather than guessed.
+    as if it had survived unchanged. Tag numbers cannot tell that apart from
+    real shared ancestry -- overlapping or coincident input surfaces all
+    claim the same output -- so only geometry decides: a surface the
+    positive-side box cannot reach has no pieces, whatever out_map says.
+    Every other claim is kept as gmsh reported it. A surviving surface that
+    is left with no parent is refused rather than silently left out of every
+    group.
     """
-    claimants: dict[int, list[int]] = {}
-    for parent, children in mapping.items():
-        for child in children:
-            claimants.setdefault(child, []).append(parent)
-    cleaned = {parent: list(children) for parent, children in mapping.items()}
-    for child, parents in claimants.items():
-        if len(parents) == 1:
-            continue
-        genuine = [parent for parent in parents if parent != child]
-        if child not in parents or len(genuine) != 1:
-            raise RuntimeError(
-                f"OCC cut reported surface {child} as a piece of surfaces {sorted(parents)}"
-            )
-        cleaned[child] = [tag for tag in cleaned[child] if tag != child]
-    unclaimed = sorted(set(remaining) - set(claimants))
+    cleaned = {
+        parent: ([] if parent in removed else list(children))
+        for parent, children in mapping.items()
+    }
+    claimed = {child for children in cleaned.values() for child in children}
+    unclaimed = sorted(set(remaining) - claimed)
     if unclaimed:
         raise RuntimeError(f"OCC cut left surfaces {unclaimed} with no parent")
     return cleaned
@@ -443,6 +461,14 @@ def _cut_occ_geometry_to_positive_side(
         gmsh.model.occ.synchronize()
     surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
     span = max(bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2])
+    removed = _wholly_removed_surfaces(
+        {
+            surface: tuple(float(value) for value in gmsh.model.getBoundingBox(2, surface))
+            for surface in surfaces
+        },
+        planes,
+        AUTO_CUT_REMOVED_GAP_REL * span,
+    )
     pad = AUTO_CUT_BOX_PAD_REL * span + 1.0
     lo = [bbox[0] - pad, bbox[1] - pad, bbox[2] - pad]
     hi = [bbox[3] + pad, bbox[4] + pad, bbox[5] + pad]
@@ -464,7 +490,7 @@ def _cut_occ_geometry_to_positive_side(
         for index, surface in enumerate(surfaces)
     }
     remaining = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
-    mapping = _drop_reused_tag_claims(mapping, remaining)
+    mapping = _drop_reused_tag_claims(mapping, removed, remaining)
     stats = {
         "planes": list(planes),
         "half_space_box_step_units": [float(value) for value in lo + hi],

@@ -296,6 +296,113 @@ def test_auto_cut_never_hands_a_removed_face_the_piece_that_reused_its_tag():
         assert rigid | {source[0]} == remaining
 
 
+def test_a_quarter_cut_drops_the_reused_tag_claims_of_both_removed_faces():
+    """Both planes are one intersection; the wall seam is turned so it splits."""
+    with _gmsh_session():
+        cylinder = gmsh.model.occ.addCylinder(0.0, 0.0, -1.0, 0.0, 0.0, 2.0, 1.0)
+        gmsh.model.occ.rotate([(3, cylinder)], 0, 0, 0, 0, 0, 1, np.pi / 4)
+        gmsh.model.occ.synchronize()
+        wall = [
+            tag
+            for dim, tag in gmsh.model.getBoundary(
+                [(3, cylinder)], combined=False, oriented=False
+            )
+            if dim == 2
+        ]
+        boxes = [
+            _box_surfaces(x, y, -0.5, 1.0, 1.0, 1.0)
+            for x, y in ((2.0, 2.0), (-3.0, 2.0), (2.0, -3.0), (-3.0, -3.0))
+        ]
+        everything = wall + [surface for box in boxes for surface in box]
+        groups = [
+            OccSurfaceGroup("all", OccSurfaceSelector(everything), OccSurfaceRole("rigid"))
+        ]
+
+        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0", "y0"))
+
+        assert result.planes == ("x0", "y0")
+        assert result.report["cut"]["surfaces_split"] >= 1
+        for box in boxes[1:]:
+            for surface in box:
+                assert result.parent_to_children[surface] == [], surface
+        remaining = {tag for _dim, tag in gmsh.model.getEntities(2)}
+        assert set(result.group("all").selector.surface_tags) == remaining
+
+
+def test_auto_cut_keeps_the_genuine_claims_of_overlapping_surfaces():
+    """Overlapping inputs really share a child; only the removed one loses it."""
+    with _gmsh_session():
+        outer = gmsh.model.occ.addRectangle(-2.0, -1.0, 0.0, 4.0, 2.0)
+        right = gmsh.model.occ.addRectangle(0.5, -0.5, 0.0, 1.0, 1.0)
+        left = gmsh.model.occ.addRectangle(-1.5, -0.5, 0.0, 1.0, 1.0)
+        gmsh.model.occ.synchronize()
+        groups = [
+            OccSurfaceGroup("outer", OccSurfaceSelector([outer]), OccSurfaceRole("rigid")),
+            OccSurfaceGroup(
+                "inner", OccSurfaceSelector([right, left]), OccSurfaceRole("rigid")
+            ),
+        ]
+
+        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+        assert result.planes == ("x0",)
+        assert result.parent_to_children[right] == [right]
+        assert result.parent_to_children[left] == []
+        assert list(result.group("inner").selector.surface_tags) == [right]
+        assert right in result.group("outer").selector.surface_tags
+
+
+@pytest.mark.parametrize("copies", [2, 3])
+def test_auto_cut_accepts_coincident_surfaces_that_straddle_the_plane(copies):
+    with _gmsh_session():
+        tags = [
+            gmsh.model.occ.addRectangle(-1.0, -1.0, 0.0, 2.0, 2.0) for _ in range(copies)
+        ]
+        gmsh.model.occ.synchronize()
+        groups = [OccSurfaceGroup("all", OccSurfaceSelector(tags), OccSurfaceRole("rigid"))]
+
+        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+        assert result.planes == ("x0",)
+        children = [result.parent_to_children[tag] for tag in tags]
+        assert all(len(kids) == 1 for kids in children)
+        assert len(result.group("all").selector.surface_tags) == 1
+
+
+def test_auto_cut_refuses_a_surviving_surface_that_no_parent_claims(monkeypatch):
+    with _gmsh_session():
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        intersect = gmsh.model.occ.intersect
+
+        def forgetful(*args, **kwargs):
+            out, out_map = intersect(*args, **kwargs)
+            return out, [list(children) for children in out_map[:-2]] + [[], []]
+
+        monkeypatch.setattr(gmsh.model.occ, "intersect", forgetful)
+        groups = [
+            OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))
+        ]
+        with pytest.raises(RuntimeError, match="with no parent"):
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+
+@pytest.mark.parametrize(
+    ("box", "planes", "removed"),
+    [
+        ((-2.0, 0, 0, -1.0, 1, 1), ("x0",), True),     # wholly on the removed side
+        ((-2.0, 0, 0, 0.0, 1, 1), ("x0",), True),      # touches the plane on an edge
+        ((0.0, 0, 0, 0.0, 1, 1), ("x0",), False),      # lies in the plane
+        ((-2.0, 0, 0, 0.5, 1, 1), ("x0",), False),     # straddles it
+        ((-2.0, 0, 0, 2.0e-6, 1, 1), ("x0",), False),  # reaches just past the gap
+        ((1.0, -2.0, 0, 2.0, -1.0, 1), ("x0",), False),
+        ((1.0, -2.0, 0, 2.0, -1.0, 1), ("x0", "y0"), True),
+    ],
+)
+def test_only_a_surface_the_kept_box_cannot_reach_counts_as_removed(box, planes, removed):
+    result = step_prepare._wholly_removed_surfaces({7: box}, planes, 1.0e-6)
+    assert result == ({7} if removed else set())
+
+
 def test_snap_band_uses_step_units_conversion():
     assert millimetres_to_step_units(1.0e-4, 1.0e-3) == pytest.approx(1.0e-4)
     assert millimetres_to_step_units(1.0e-4, 1.0) == pytest.approx(1.0e-7)
