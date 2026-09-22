@@ -236,6 +236,66 @@ def test_auto_cut_rejects_overlapping_group_selectors():
             auto_cut_occ_geometry(groups)
 
 
+def test_auto_cut_never_hands_a_removed_face_the_piece_that_reused_its_tag():
+    """A wholly removed face maps to nothing, even when its tag is reused.
+
+    Gmsh frees the tags of the removed objects before numbering the new
+    pieces, so a face split into two gets the lowest free tags -- here the
+    removed half's. Its out_map entry then names the new piece as if the
+    removed face had survived unchanged. The cylinder wall's seam lies on +x,
+    so the cut splits it in two; the -x box is numbered last and dropped
+    whole, and its source face held the tag the first new piece reuses.
+    """
+    with _gmsh_session():
+        cylinder = gmsh.model.occ.addCylinder(0.0, 0.0, -1.0, 0.0, 0.0, 2.0, 1.0)
+        gmsh.model.occ.synchronize()
+        wall = [
+            tag
+            for dim, tag in gmsh.model.getBoundary(
+                [(3, cylinder)],
+                combined=False,
+                oriented=False,
+            )
+            if dim == 2
+        ]
+        right = _box_surfaces(2.0, -0.5, -0.5, 1.0, 1.0, 1.0)
+        left = _box_surfaces(-3.0, -0.5, -0.5, 1.0, 1.0, 1.0)
+
+        def facing(surfaces, x):
+            return next(
+                surface
+                for surface in surfaces
+                if abs(gmsh.model.occ.getCenterOfMass(2, surface)[0] - x) < 1.0e-9
+            )
+
+        # The two inner faces are one source, mirror images across x0. The
+        # wall's two new pieces take the two lowest freed tags, and the left
+        # source face holds one of them.
+        source = [facing(right, 2.0), facing(left, -2.0)]
+        survivors = max(wall + right)
+        assert source[1] in (survivors + 1, survivors + 2) and min(left) > survivors
+        groups = [
+            OccSurfaceGroup(
+                "rigid",
+                OccSurfaceSelector(set(wall + right + left) - set(source)),
+                OccSurfaceRole("rigid"),
+            ),
+            OccSurfaceGroup("mf", OccSurfaceSelector(source), OccSurfaceRole("mf")),
+        ]
+
+        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+        assert result.planes == ("x0",)
+        assert result.report["cut"]["surfaces_split"] >= 1
+        for surface in left:
+            assert result.parent_to_children[surface] == [], surface
+        assert list(result.group("mf").selector.surface_tags) == [source[0]]
+        rigid = set(result.group("rigid").selector.surface_tags)
+        assert not rigid & {source[0]}
+        remaining = {tag for _dim, tag in gmsh.model.getEntities(2)}
+        assert rigid | {source[0]} == remaining
+
+
 def test_snap_band_uses_step_units_conversion():
     assert millimetres_to_step_units(1.0e-4, 1.0e-3) == pytest.approx(1.0e-4)
     assert millimetres_to_step_units(1.0e-4, 1.0) == pytest.approx(1.0e-7)

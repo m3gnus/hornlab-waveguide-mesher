@@ -398,6 +398,40 @@ def evaluate_occ_plane_symmetry(
     )
 
 
+def _drop_reused_tag_claims(
+    mapping: dict[int, list[int]], remaining: list[int]
+) -> dict[int, list[int]]:
+    """Remove the out_map entries gmsh invents for wholly removed surfaces.
+
+    Gmsh (4.15) frees the tags of removed objects before numbering the new
+    pieces of a split surface, so a new piece can take a removed surface's
+    tag. The removed surface's out_map entry then names that piece, exactly
+    as if it had survived unchanged. The piece is also listed under the
+    surface it really came from, which is how the invented entry is told
+    apart: a child claimed both by its own tag and by another parent belongs
+    to the other parent. Anything else that leaves a child with no single
+    parent is refused rather than guessed.
+    """
+    claimants: dict[int, list[int]] = {}
+    for parent, children in mapping.items():
+        for child in children:
+            claimants.setdefault(child, []).append(parent)
+    cleaned = {parent: list(children) for parent, children in mapping.items()}
+    for child, parents in claimants.items():
+        if len(parents) == 1:
+            continue
+        genuine = [parent for parent in parents if parent != child]
+        if child not in parents or len(genuine) != 1:
+            raise RuntimeError(
+                f"OCC cut reported surface {child} as a piece of surfaces {sorted(parents)}"
+            )
+        cleaned[child] = [tag for tag in cleaned[child] if tag != child]
+    unclaimed = sorted(set(remaining) - set(claimants))
+    if unclaimed:
+        raise RuntimeError(f"OCC cut left surfaces {unclaimed} with no parent")
+    return cleaned
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -430,6 +464,7 @@ def _cut_occ_geometry_to_positive_side(
         for index, surface in enumerate(surfaces)
     }
     remaining = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
+    mapping = _drop_reused_tag_claims(mapping, remaining)
     stats = {
         "planes": list(planes),
         "half_space_box_step_units": [float(value) for value in lo + hi],
