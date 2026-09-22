@@ -593,7 +593,7 @@ def _undecided_for(monkeypatch, parent_of):
     monkeypatch.setattr(gmsh.model.occ, "copy", remember)
 
 
-def test_an_undecided_claim_into_another_roles_surface_is_refused(monkeypatch):
+def test_an_undecided_claim_into_another_groups_surface_is_refused(monkeypatch):
     with _gmsh_session():
         low = gmsh.model.occ.addRectangle(-1.0, -1.0, 0.0, 2.0, 2.0)
         high = gmsh.model.occ.addRectangle(-1.0, -1.0, 1.0, 2.0, 2.0)
@@ -608,7 +608,7 @@ def test_an_undecided_claim_into_another_roles_surface_is_refused(monkeypatch):
             auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
 
 
-def test_an_undecided_claim_within_one_role_is_kept(monkeypatch):
+def test_an_undecided_claim_within_one_group_is_kept(monkeypatch):
     with _gmsh_session():
         low = gmsh.model.occ.addRectangle(-1.0, -1.0, 0.0, 2.0, 2.0)
         high = gmsh.model.occ.addRectangle(-1.0, -1.0, 1.0, 2.0, 2.0)
@@ -622,6 +622,80 @@ def test_an_undecided_claim_within_one_role_is_kept(monkeypatch):
 
         assert len(result.parent_to_children[low]) == 2
         assert result.report["cut"]["parentage_claims_undecided"] >= 1
+
+
+def test_an_undecided_claim_between_two_sources_of_one_role_is_refused(monkeypatch):
+    """Two strips narrower than the tolerance: the removed one's stale claim on
+    the kept one lies outside its trim but within tolerance of its edge, so the
+    real evidence is undecided. Both are sources, and still two sources."""
+    with _gmsh_session():
+        removed = gmsh.model.occ.addRectangle(-1.0e-4, -1.0, 0.0, 1.0e-4, 2.0)
+        kept = gmsh.model.occ.addRectangle(0.0, -1.0, 0.0, 1.0e-4, 2.0)
+        rigid = gmsh.model.occ.addRectangle(-1.0, -1.0, 1.0, 2.0, 2.0)
+        gmsh.model.occ.synchronize()
+        _inject_claim(monkeypatch, 0, 1)
+        groups = [
+            OccSurfaceGroup("lf", OccSurfaceSelector([removed]), OccSurfaceRole("source")),
+            OccSurfaceGroup("mf", OccSurfaceSelector([kept]), OccSurfaceRole("source")),
+            OccSurfaceGroup("rigid", OccSurfaceSelector([rigid]), OccSurfaceRole("rigid")),
+        ]
+        with pytest.raises(RuntimeError, match="cannot confirm"):
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+
+def _fail_on_call(monkeypatch, owner, name, call):
+    real = getattr(owner, name)
+    count = {"n": 0}
+
+    def failing(*args, **kwargs):
+        count["n"] += 1
+        if count["n"] == call:
+            raise RuntimeError(f"injected {name} failure")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(owner, name, failing)
+
+
+@pytest.mark.parametrize(
+    ("owner", "name", "call"),
+    [
+        ("occ", "copy", 1),
+        ("occ", "copy", 2),
+        ("occ", "synchronize", 1),   # after the copies
+        ("occ", "addBox", 1),
+        ("occ", "synchronize", 2),   # after the box
+        ("occ", "intersect", 1),
+        ("occ", "synchronize", 3),   # after the intersect
+        ("mesher", "_verify_cut_parentage", 1),
+    ],
+)
+def test_no_temporary_geometry_survives_a_failure_during_the_cut(monkeypatch, owner, name, call):
+    with _gmsh_session():
+        tags = [gmsh.model.occ.addRectangle(-1.0, -1.0, z, 2.0, 2.0) for z in (0.0, 1.0)]
+        gmsh.model.occ.synchronize()
+        copies = []
+        copy = gmsh.model.occ.copy
+
+        def recording(dimtags):
+            out = copy(dimtags)
+            copies.extend(tag for _dim, tag in out)
+            return out
+
+        monkeypatch.setattr(gmsh.model.occ, "copy", recording)
+        target = step_prepare if owner == "mesher" else gmsh.model.occ
+        _fail_on_call(monkeypatch, target, name, call)
+        groups = [OccSurfaceGroup("all", OccSurfaceSelector(tags), OccSurfaceRole("rigid"))]
+
+        with pytest.raises(RuntimeError, match="injected"):
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+
+        monkeypatch.undo()
+        gmsh.model.occ.synchronize()
+        present = set(gmsh.model.occ.getEntities())
+        assert not {(2, tag) for tag in copies} & present
+        assert not [entity for entity in present if entity[0] == 3]
+        surfaces = [tag for dim, tag in present if dim == 2]
+        assert len(surfaces) == len(tags)
 
 
 def test_the_cut_leaves_no_parent_copies_behind():

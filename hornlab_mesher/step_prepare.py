@@ -493,6 +493,17 @@ def _verify_cut_parentage(
     return cleaned, undecided, disproved
 
 
+def _remove_temporary_geometry(copies: Iterable[int], box: int | None) -> None:
+    """Remove whichever of the cut's temporary entities still exist."""
+    present = {(dim, tag) for dim, tag in gmsh.model.occ.getEntities()}
+    doomed = [(2, tag) for tag in copies if (2, tag) in present]
+    if box is not None and (3, box) in present:
+        doomed.append((3, box))
+    if doomed:
+        gmsh.model.occ.remove(doomed, recursive=True)
+    gmsh.model.occ.synchronize()
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -505,44 +516,47 @@ def _cut_occ_geometry_to_positive_side(
         gmsh.model.occ.remove(volumes, recursive=False)
         gmsh.model.occ.synchronize()
     surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
-    # The cut deletes the originals; their parentage claims are checked
-    # against these copies, which are removed again below.
-    copies = {
-        surface: gmsh.model.occ.copy([(2, surface)])[0][1] for surface in surfaces
-    }
-    gmsh.model.occ.synchronize()
     span = max(bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2])
     pad = AUTO_CUT_BOX_PAD_REL * span + 1.0
     lo = [bbox[0] - pad, bbox[1] - pad, bbox[2] - pad]
     hi = [bbox[3] + pad, bbox[4] + pad, bbox[5] + pad]
     for plane in planes:
         lo[SYMMETRY_AXIS_FOR_PLANE[plane]] = 0.0
-    box = gmsh.model.occ.addBox(
-        lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
-    )
-    gmsh.model.occ.synchronize()
-    _out, out_map = gmsh.model.occ.intersect(
-        [(2, surface) for surface in surfaces],
-        [(3, box)],
-        removeObject=True,
-        removeTool=True,
-    )
-    gmsh.model.occ.synchronize()
-    mapping = {
-        surface: [tag for dim, tag in (out_map[index] if index < len(out_map) else []) if dim == 2]
-        for index, surface in enumerate(surfaces)
-    }
-    copy_tags = set(copies.values())
-    remaining = [
-        tag for _dim, tag in sorted(gmsh.model.getEntities(2)) if tag not in copy_tags
-    ]
+    # The cut deletes the originals; their parentage claims are checked
+    # against these copies. The copies and the clipping box are temporary,
+    # and must not outlive this call on any path -- a leftover copy would be
+    # meshed as part of the model.
+    copies: dict[int, int] = {}
+    box: int | None = None
     try:
+        for surface in surfaces:
+            copies[surface] = gmsh.model.occ.copy([(2, surface)])[0][1]
+        gmsh.model.occ.synchronize()
+        box = gmsh.model.occ.addBox(
+            lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
+        )
+        gmsh.model.occ.synchronize()
+        _out, out_map = gmsh.model.occ.intersect(
+            [(2, surface) for surface in surfaces],
+            [(3, box)],
+            removeObject=True,
+            removeTool=True,
+        )
+        box = None
+        gmsh.model.occ.synchronize()
+        mapping = {
+            surface: [tag for dim, tag in (out_map[index] if index < len(out_map) else []) if dim == 2]
+            for index, surface in enumerate(surfaces)
+        }
+        copy_tags = set(copies.values())
+        remaining = [
+            tag for _dim, tag in sorted(gmsh.model.getEntities(2)) if tag not in copy_tags
+        ]
         mapping, undecided, disproved = _verify_cut_parentage(
             mapping, copies, remaining, tolerance=tolerance, grid=grid
         )
     finally:
-        gmsh.model.occ.remove([(2, tag) for tag in copy_tags], recursive=True)
-        gmsh.model.occ.synchronize()
+        _remove_temporary_geometry(copies.values(), box)
     stats = {
         "planes": list(planes),
         "half_space_box_step_units": [float(value) for value in lo + hi],
@@ -647,18 +661,24 @@ def auto_cut_occ_geometry(
     parentage, undecided, cut_stats = _cut_occ_geometry_to_positive_side(
         accepted_planes, bbox=model_bbox, tolerance=tolerance, grid=grid
     )
-    # A claim the geometry could not decide is harmless inside one role, but
-    # it must not put a surface into a group of another role.
+    # A claim the geometry could not decide is harmless inside one group, but
+    # it must not hand a surface to a second group -- not even one of the same
+    # role, since two sources share a role and are still two sources.
+    owners = {
+        int(surface): group.name
+        for group in groups
+        for surface in group.selector.surface_tags
+    }
     claimants: dict[int, set[str]] = {}
     for parent, children in parentage.items():
         for child in children:
-            claimants.setdefault(child, set()).add(roles.get(parent, ""))
+            claimants.setdefault(child, set()).add(owners.get(parent, ""))
     for parent, child in sorted(undecided):
         if len(claimants[child]) > 1:
             raise RuntimeError(
                 f"OCC cut reports surface {child} as a piece of surface {parent} "
-                f"(role {roles.get(parent, '')!r}), which the geometry cannot confirm, "
-                f"while other roles also claim it: {sorted(claimants[child])}"
+                f"(group {owners.get(parent, '')!r}), which the geometry cannot confirm, "
+                f"while other groups also claim it: {sorted(claimants[child])}"
             )
     remapped_groups = tuple(
         OccSurfaceGroup(
