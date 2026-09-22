@@ -1,9 +1,8 @@
 """Acoustic-role mesh sizing and pre-mesh size/cost prediction.
 
-This module is shared by the gmsh-side preparation script
-(``prepare_step_for_wg_metal.py``) and the Fusion add-in dialog
-(``fusion-addins/WGMetalPipeline``). It is intentionally pure Python with no
-gmsh/numpy/Fusion imports so the Fusion embedded interpreter can import it for
+The frozen standalone WG Metal app uses this sizing logic in its mesh
+preparation and Fusion dialog. It is intentionally pure Python with no
+gmsh/numpy/Fusion imports so Fusion's embedded interpreter can use it for
 the live size/cost readout while the dials change.
 
 Two ideas drive it:

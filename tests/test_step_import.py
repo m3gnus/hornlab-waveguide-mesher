@@ -196,8 +196,8 @@ def test_no_healing_rung_names_make_solids():
     sewing, and whether that undo restores the geometry or corrupts it depends
     on the FILE -- see the two measurements below. A consumer reads a rung as
     "set each of these to 1"
-    (``hornlab-fusion-addin/scripts/prepare_step_for_wg_metal.py`` does exactly
-    that, immediately after setting this option to 0 on purpose), so an option
+    (as the frozen standalone WG Metal app does, immediately after setting
+    this option to 0 on purpose), so an option
     travelling inside a rung silently overrides a decision made by the only
     party that has seen the file. Ask
     :func:`hornlab_mesher.step_text.occ_make_solids_is_safe` instead.
