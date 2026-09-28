@@ -154,7 +154,8 @@ application path that reaches `build_from_config`, `write_step_from_config` or
 `write_wglink` runs as a callback on the application's single gmsh worker
 thread. That thread has already opened a session under its own guard, so the
 mesher's own open is skipped. The application's CAD-import child process opens
-its session under the same guard. Its Gmsh work goes through `step_import` and
+its session under the same guard. Its Gmsh work goes through `step_import` (a
+re-export of `step_mapping`, `mesh_repair` and `mesh_validation`) and
 `step_prepare` helpers, which use a session but never open one, and its other
 mesher calls are pure. Every other
 mesher call the application makes is pure geometry and never touches Gmsh. The

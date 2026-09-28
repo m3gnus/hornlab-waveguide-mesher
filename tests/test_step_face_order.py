@@ -16,16 +16,12 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.step_import import (
-    StepFaceGroup,
     StepFaceOrderError,
-    StepLabelSelector,
     advanced_face_order,
     advanced_face_order_for_surfaces,
     gmsh_surface_tags,
-    map_step_face_groups,
-    named_shell_gmsh_surfaces,
+    parse_named_shell_faces,
 )
-from hornlab_mesher.step_prepare import OccSurfaceRole
 from hornlab_mesher.step_text import (
     advanced_face_placements_from_text,
     advanced_face_vertices_from_text,
@@ -158,18 +154,14 @@ def test_a_named_sheet_label_lands_on_the_sheet(tmp_path):
         text.replace("SHELL_BASED_SURFACE_MODEL('',", "SHELL_BASED_SURFACE_MODEL('driver',"),
         encoding="ascii",
     )
-    group = StepFaceGroup(
-        name="driver",
-        selector=StepLabelSelector("driver"),
-        role=OccSurfaceRole("source"),
-        tag=2,
-    )
     with _gmsh_session() as gmsh:
         gmsh.model.occ.importShapes(str(step_path), highestDimOnly=False)
         gmsh.model.occ.synchronize()
         (sheet,) = [tag for _dim, tag in gmsh.model.getEntities(2) if len(gmsh.model.getAdjacencies(2, tag)[0]) == 0]
-        assert map_step_face_groups(step_path, [group]).surfaces == {"driver": [sheet]}
-        assert named_shell_gmsh_surfaces(step_path, gmsh_surface_tags()) == {"driver": [sheet]}
+        surfaces = gmsh_surface_tags()
+        face_to_surface = dict(zip(advanced_face_order_for_surfaces(step_path, surfaces), surfaces))
+        (driver_face,) = parse_named_shell_faces(step_path)["driver"]
+        assert face_to_surface[driver_face] == sheet
 
 
 def test_a_moved_model_needs_the_move_and_refuses_without_it(tmp_path):

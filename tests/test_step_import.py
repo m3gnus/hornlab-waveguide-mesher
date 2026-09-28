@@ -14,76 +14,11 @@ from hornlab_mesher.step_import import (
     StepFaceGroup,
     StepLabelSelector,
     detect_symmetry_planes,
-    map_step_face_groups,
     occ_make_solids_is_safe,
     postprocess_mesh,
     run_occ_healing_fallbacks,
 )
 from hornlab_mesher.step_prepare import OccSurfaceRole
-
-
-def test_step_face_mapping_matches_the_caller_label_and_keeps_roles_opaque(tmp_path):
-    """The mapper matches the string it is handed and never interprets it.
-
-    The role is an arbitrary caller string and must come back untouched -- this
-    module has no vocabulary of its own, which is what D4 requires of it.
-    """
-    step_path = tmp_path / "model.step"
-    step_path.write_text("#10=ADVANCED_FACE('',(),$,.T.);\n", encoding="ascii")
-    role = OccSurfaceRole("caller-owned-role")
-    group = StepFaceGroup(
-        name="requested-label",
-        selector=StepLabelSelector("requested-label"),
-        role=role,
-        tag=7,
-        resolution_mm=3.5,
-    )
-
-    result = map_step_face_groups(
-        step_path,
-        [group],
-        gmsh_surfaces=[101],
-        named_faces={},
-        styled_faces={"requested-label": [10]},
-        face_order=[10],
-    )
-
-    assert group.role is role
-    assert result.surfaces == {"requested-label": [101]}
-    assert result.origins == {"requested-label": "appearance/style"}
-    assert result.missing_reasons == {}
-
-
-def test_step_face_mapping_does_not_fall_back_to_another_label(tmp_path):
-    """A label that is absent is MISSING, never quietly satisfied by another.
-
-    Guards the deletion of the PORT_EXIT_L/_R alias: across 471 recorded runs
-    that fallback never once fired, so silently resolving a different label is
-    behaviour nothing has ever depended on and nobody should reintroduce by
-    accident.
-    """
-    step_path = tmp_path / "model.step"
-    step_path.write_text("#10=ADVANCED_FACE('',(),$,.T.);\n", encoding="ascii")
-    group = StepFaceGroup(
-        name="requested-label",
-        selector=StepLabelSelector("requested-label"),
-        role=OccSurfaceRole("caller-owned-role"),
-        tag=7,
-        resolution_mm=3.5,
-    )
-
-    result = map_step_face_groups(
-        step_path,
-        [group],
-        skip_missing_groups=True,
-        gmsh_surfaces=[101],
-        named_faces={},
-        styled_faces={"some-other-label": [10]},
-        face_order=[10],
-    )
-
-    assert result.surfaces == {}
-    assert "requested-label" in result.missing_reasons
 
 
 def test_step_import_keeps_application_vocabulary_out_of_mesher():
@@ -519,26 +454,6 @@ def _revolved_mesh(profile, *, n_theta=24, cap_first=True, cap_last=False):
     )
 
 
-def test_auto_symmetry_does_not_mirror_a_full_horn_whose_mouth_lies_on_z0():
-    """A capped cone opening onto z=0 is a whole horn, not half of a pair.
-
-    Its mouth rim is a free-edge loop on z=0 with the whole mesh on one side,
-    which is all the detector asks for; "auto" used to reflect it and report
-    ``expected_symmetry_planes == ['z0']``.
-    """
-    profile = [(10.0 + 30.0 * (k / 8), -50.0 + 50.0 * (k / 8)) for k in range(9)]
-    mesh = _revolved_mesh(profile, cap_first=True)
-
-    detected, detection = detect_symmetry_planes(mesh.points, mesh.cells_dict["triangle"], tolerance=1e-6)
-    assert detected == ("z0",)  # the raw detector is unchanged; WG reads it
-    assert detection["rim_normal_component"]["z0"] > 0.5
-
-    _mesh, _repair, topology = postprocess_mesh(mesh, [], symmetry_planes="auto", tolerance=1e-6)
-    assert topology["symmetry_plane_detection"]["detected_planes"] == []
-    assert topology["symmetry_plane_detection"]["rejected_non_mirror_planes"] == ["z0"]
-    assert topology["axis_normalization"]["symmetry_planes"] == []
-
-
 def _half_cylinder():
     import meshio
 
@@ -554,12 +469,28 @@ def _half_cylinder():
     )
 
 
-def test_auto_symmetry_still_reads_a_real_half_model():
+def test_the_rim_report_tells_a_full_horn_mouth_from_a_cut():
+    """A capped cone opening onto z=0 is a whole horn, not half of a pair.
+
+    The detector reports its mouth rim (that is its contract, and WG reads
+    it), but the rim is not met squarely, which a real cut always is.
+    """
+    profile = [(10.0 + 30.0 * (k / 8), -50.0 + 50.0 * (k / 8)) for k in range(9)]
+    mesh = _revolved_mesh(profile, cap_first=True)
+    detected, detection = detect_symmetry_planes(mesh.points, mesh.cells_dict["triangle"], tolerance=1e-6)
+    assert detected == ("z0",)
+    assert detection["rim_normal_component"]["z0"] > 0.5
+
     half = _half_cylinder()
-    _mesh, _repair, topology = postprocess_mesh(half, [], symmetry_planes="auto", tolerance=1e-6)
-    detection = topology["symmetry_plane_detection"]
-    assert detection["detected_planes"] == ["x0"]
-    assert detection["rejected_non_mirror_planes"] == []
+    detected, detection = detect_symmetry_planes(half.points, half.cells_dict["triangle"], tolerance=1e-6)
+    assert detected == ("x0",)
+    assert detection["rim_normal_component"]["x0"] < 0.25
+
+
+def test_postprocess_mesh_needs_declared_planes():
+    """The "auto" guess served only the frozen legacy pipeline."""
+    with pytest.raises(ValueError, match="symmetry_planes must be a tuple"):
+        postprocess_mesh(_half_cylinder(), [], symmetry_planes="auto", tolerance=1e-6)
 
 
 def test_postprocess_mesh_leaves_the_callers_mesh_alone():
@@ -709,22 +640,3 @@ def test_postprocess_mesh_welds_in_millimetres_whatever_the_mesh_unit():
     # 1 um apart: inside the 5 um weld in millimetres and in metres alike.
     assert welded(1.0, 1.0e-3) == 1
     assert welded(1.0e-3, 1.0) == 1
-
-
-def test_step_face_mapping_refuses_more_surfaces_than_faces(tmp_path):
-    """Extra gmsh surfaces (a repeated assembly instance) used to pass the
-    ``<`` guard and fall silently to rigid."""
-    step_path = tmp_path / "model.step"
-    step_path.write_text("#10=ADVANCED_FACE('',(),$,.T.);\n", encoding="ascii")
-    group = StepFaceGroup(
-        name="label", selector=StepLabelSelector("label"), role=OccSurfaceRole("r")
-    )
-    with pytest.raises(RuntimeError, match="1 ADVANCED_FACE records but gmsh imported 2"):
-        map_step_face_groups(
-            step_path,
-            [group],
-            gmsh_surfaces=[101, 102],
-            named_faces={},
-            styled_faces={"label": [10]},
-            face_order=[10],
-        )
