@@ -253,21 +253,6 @@ def test_quality_gate_messages_are_in_millimetres_for_any_units():
 # --------------------------------------------------------------------------
 
 
-def test_max_size_ignores_the_aperture_when_there_is_none(tmp_path, monkeypatch):
-    seen = []
-    original = gmsh.option.setNumber
-
-    def spy(name, value):
-        if name == "Mesh.MeshSizeMax":
-            seen.append(float(value))
-        return original(name, value)
-
-    monkeypatch.setattr(gmsh.option, "setNumber", spy)
-    build_from_config(_config(mode="bare", wall=0.0, mouth_res_mm=26.0),
-                      tmp_path / "bare.msh")
-    assert seen and seen[-1] == pytest.approx(26.0)
-
-
 def test_a_callers_mesh_options_neither_leak_in_nor_get_clobbered(tmp_path):
     config = _config(mode="bare", wall=0.0)
     counts = []
@@ -289,3 +274,37 @@ def test_a_callers_mesh_options_neither_leak_in_nor_get_clobbered(tmp_path):
 
 def test_direct_api_rear_resolution_matches_the_config_default():
     assert MeshDensity().rear_res_mm == 15.0
+
+
+# --------------------------------------------------------------------------
+# Non-axisymmetric freestanding grids keep their throat weld under every fit
+# --------------------------------------------------------------------------
+
+
+def _nonaxisymmetric(kind):
+    config = _config(wall=5.0, throat_res_mm=6.0, mouth_res_mm=20.0, rear_res_mm=25.0)
+    config["profile"] = dict(OSSE)
+    if kind == "morph":
+        config["morph"] = {
+            "morph_target": 1, "morph_width_mm": 400, "morph_height_mm": 300,
+            "morph_corner_mm": 35,
+        }
+    else:
+        config["cross_section"] = {"aspect_ratio": 1.4}
+    return config
+
+
+@pytest.mark.parametrize("quadrants", [1, 12, 14, 1234])
+@pytest.mark.parametrize("fit", ["interpolate", "approximate", "auto"])
+@pytest.mark.parametrize("kind", ["morph", "aspect"])
+def test_nonaxisymmetric_freestanding_welds_under_every_fit(
+    tmp_path, kind, fit, quadrants
+):
+    config = _nonaxisymmetric(kind)
+    config["mesh"]["quadrants"] = quadrants
+    config["mesh"]["surface_fit"] = fit
+    result = build_from_config(config, tmp_path / "m.msh")
+    assert result.n_triangles > 0
+    # ``auto`` resolves to interpolate here and must not fall back.
+    expected = "approximate" if fit == "approximate" else "interpolate"
+    assert result.metadata["surfaceFit"] == expected

@@ -11,7 +11,11 @@ from ..geometry import (
     PointGridHornGeometry,
 )
 from ..tags import PhysicalGroup
-from ._occ import make_planar_fill_from_boundary, require_gmsh
+from ._occ import (
+    SURFACE_FIT_INTERPOLATE,
+    make_planar_fill_from_boundary,
+    require_gmsh,
+)
 from .point_grid_sources import (
     _add_occ_source_cap_surfaces,
     _add_geo_source_cap_surfaces,
@@ -495,13 +499,15 @@ def _build_acoustic_freestanding_point_grid(
         geometry,
         boundary_phi_groups=phi_groups,
         wall_dimtags=inner_wall,
-        # The inner wall above forces the interpolating u-fit whenever the
-        # grid is axisymmetric, regardless of ``geometry.surface_fit`` (see
-        # its comment). The cap's throat rim must match that actual decision,
+        # The inner wall above interpolates whenever the grid is axisymmetric
+        # (regardless of ``surface_fit``) or ``surface_fit`` is interpolate:
+        # that is its effective u-fit, and the rim must be the same curve. The cap's throat rim must match that actual decision,
         # not re-derive it from ``surface_fit`` alone, or the two rims mesh
         # different node rings and the throat seam tears (freestanding +
         # reduced domain + ``surface_fit = "approximate"``).
-        throat_interpolate_u=axisymmetric,
+        throat_interpolate_u=(
+            axisymmetric or geometry.surface_fit == SURFACE_FIT_INTERPOLATE
+        ),
     )
     gmsh.model.occ.synchronize()
 

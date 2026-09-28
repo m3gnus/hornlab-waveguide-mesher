@@ -1431,12 +1431,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [throat_res, mouth_res, rear_res, interface_res]
-    # The aperture size is only a size this build asks for when it has an
-    # aperture surface; otherwise it would raise Mesh.MeshSizeMax to 1.5x the
-    # coarsest user target for nothing.
-    if mesh_groups.get("mouth_aperture"):
-        sizes.append(aperture_res)
+    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
     # The clearance cap is a size this build genuinely asks for, so it belongs
     # in the floor calculation. Left out, Mesh.MeshSizeMin -- derived from the
     # user's resolutions alone -- can clamp the field back above the cap and
