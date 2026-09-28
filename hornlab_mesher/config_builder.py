@@ -28,6 +28,7 @@ from .geometry import (
 )
 from .mesher import MesherError, TriangleBudgetExceeded, build_mesh_with_info
 from .profile_common import (
+    _normalise_formula as _normalise_formula_common,
     _normalise_quadrants as _normalise_quadrants_common,
     _parse_number_list,
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
@@ -222,15 +223,12 @@ def _bool(*sources: Mapping[str, Any], names: tuple[str, ...], default: bool) ->
 
 
 def _normalise_formula(value: Any) -> str:
-    raw = str(value or "OSSE").strip().upper().replace("_", "-")
-    if raw == "ROSSE":
-        raw = "R-OSSE"
-    if raw not in {"OSSE", "R-OSSE", "LOOKUP", "ICW", "FREEFORM"}:
-        raise ConfigError(
-            "formula must be OSSE, R-OSSE/ROSSE, LOOKUP, ICW, or FREEFORM, "
-            f"got {value!r}"
-        )
-    return raw
+    """:func:`profile_common._normalise_formula`, raising :class:`ConfigError`."""
+
+    try:
+        return _normalise_formula_common(value)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from None
 
 
 def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:

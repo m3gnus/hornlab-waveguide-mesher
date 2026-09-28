@@ -30,10 +30,12 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from .profile_common import _is_true, eval_param
+from .profile_common import _is_true, _lossless_key_value, eval_param
 from .profile_morph import (
+    _continuous_morph_start,
     _morph_factor,
     _morph_target_radius_at_angle,
+    _resolve_morph_half_dimensions,
     _rounded_rect_radii,
     _superellipse_radii,
 )
@@ -215,12 +217,7 @@ class FreeformGeometry:
         if scalar_morph:
             # FREEFORM t is a scalar, so plain-number scheduling parameters
             # produce one factor for the entire ring.
-            configured_start = eval_param(
-                self._morph_params.get("morphFixed"), 0.0, 0.0
-            )
-            morph_start = min(
-                math.nextafter(1.0, 0.0), max(0.0, configured_start)
-            )
+            morph_start = _continuous_morph_start(self._morph_params, 0.0)
             factor = _morph_factor(
                 t,
                 0.0,
@@ -249,13 +246,9 @@ class FreeformGeometry:
             )
 
         if scalar_morph:
-            width = eval_param(self._morph_params.get("morphWidth"), 0.0, 0.0)
-            height = eval_param(self._morph_params.get("morphHeight"), 0.0, 0.0)
-            half_width = width / 2.0 if width > 0.0 else mouth_a
-            half_height = height / 2.0 if height > 0.0 else mouth_b
-            if not _is_true(self._morph_params.get("morphAllowShrinkage")):
-                half_width = max(half_width, mouth_a)
-                half_height = max(half_height, mouth_b)
+            half_width, half_height = _resolve_morph_half_dimensions(
+                self._morph_params, 0.0, mouth_a, mouth_b, round_implicit_up=False
+            )
 
             if self._morph_target == 1:
                 corner = eval_param(
@@ -297,23 +290,13 @@ class FreeformGeometry:
         flat_base = np.asarray(base_radius, dtype=float).reshape(-1)
         flat_mouth = np.asarray(mouth_base, dtype=float).reshape(-1)
         flat_result = result.reshape(-1)
-        allow_shrinkage = _is_true(self._morph_params.get("morphAllowShrinkage"))
         for index, angle in enumerate(flat_phi):
             phi_value = float(angle)
-            width = eval_param(self._morph_params.get("morphWidth"), phi_value, 0.0)
-            height = eval_param(self._morph_params.get("morphHeight"), phi_value, 0.0)
-            half_width = width / 2.0 if width > 0.0 else mouth_a
-            half_height = height / 2.0 if height > 0.0 else mouth_b
-            if not allow_shrinkage:
-                half_width = max(half_width, mouth_a)
-                half_height = max(half_height, mouth_b)
+            half_width, half_height = _resolve_morph_half_dimensions(
+                self._morph_params, phi_value, mouth_a, mouth_b, round_implicit_up=False
+            )
 
-            configured_start = eval_param(
-                self._morph_params.get("morphFixed"), phi_value, 0.0
-            )
-            morph_start = min(
-                math.nextafter(1.0, 0.0), max(0.0, configured_start)
-            )
+            morph_start = _continuous_morph_start(self._morph_params, phi_value)
             factor = _morph_factor(
                 t,
                 phi_value,
@@ -504,37 +487,7 @@ class FreeformGeometry:
 _FREEFORM_GEOMETRY_CACHE: "OrderedDict[str, FreeformGeometry]" = OrderedDict()
 
 
-def _freeform_key_normalise(value: Any) -> Any:
-    """Recursively encode arrays and numeric sequences without precision loss."""
-    if isinstance(value, np.ndarray):
-        array = np.ascontiguousarray(value)
-        return [
-            "__ndarray__",
-            list(array.shape),
-            str(array.dtype),
-            array.tobytes().hex(),
-        ]
-    if isinstance(value, (list, tuple)):
-        try:
-            array = np.ascontiguousarray(np.asarray(value, dtype=np.float64))
-        except (OverflowError, TypeError, ValueError):
-            return ["__seq__", [_freeform_key_normalise(item) for item in value]]
-        if array.ndim >= 1:
-            return [
-                "__ndarray__",
-                list(array.shape),
-                str(array.dtype),
-                array.tobytes().hex(),
-            ]
-        return ["__seq__", [_freeform_key_normalise(item) for item in value]]
-    if isinstance(value, Mapping):
-        return {
-            str(key): _freeform_key_normalise(value[key])
-            for key in sorted(value, key=str)
-        }
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
+_freeform_key_normalise = _lossless_key_value
 
 
 def _freeform_cache_key(params: Mapping[str, Any]) -> str:
@@ -1657,13 +1610,9 @@ def _minimum_feasible_morph_corner_hint(
     mouth_h, mouth_v = geometry.evaluate_radii(np.asarray(mouth_z))
     mouth_a = float(mouth_h)
     mouth_b = float(mouth_v)
-    width = eval_param(geometry._morph_params.get("morphWidth"), 0.0, 0.0)
-    height = eval_param(geometry._morph_params.get("morphHeight"), 0.0, 0.0)
-    half_width = width / 2.0 if width > 0.0 else mouth_a
-    half_height = height / 2.0 if height > 0.0 else mouth_b
-    if not _is_true(geometry._morph_params.get("morphAllowShrinkage")):
-        half_width = max(half_width, mouth_a)
-        half_height = max(half_height, mouth_b)
+    half_width, half_height = _resolve_morph_half_dimensions(
+        geometry._morph_params, 0.0, mouth_a, mouth_b, round_implicit_up=False
+    )
 
     lower = max(
         0.0,
@@ -2085,7 +2034,7 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
             f"{scaled_throat_radius:g} mm from {throat_radius:g} mm at scale {scale:g})"
         )
 
-    wall_thickness = float(profile_params.get("wallThickness") or 0.0)
+    wall_thickness = float(eval_param(profile_params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(profile_params.get("encDepth") or 0.0)
     if wall_thickness > 0.0 and enc_depth <= 0.0:
         geometry_scale = float(profile_params.get("scale") or 1.0)

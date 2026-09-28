@@ -27,12 +27,14 @@ from .profile_formulas import (
     calculate_osse_curve,
     calculate_rosse_curve,
     icw_meridian_points,
+    lookup_profile_array,
     osse_coverage_angle,
     osse_length_config,
     rosse_axial_layout,
     _rosse_tmax,
 )
 from .profile_morph import (
+    _continuous_morph_start,
     _guiding_curve_type,
     _guiding_curve_active,
     _morph_factor,
@@ -40,6 +42,7 @@ from .profile_morph import (
     _morph_factors,
     _morph_target_radius_at_angle,
     _morph_target_shape,
+    _resolve_morph_half_dimensions,
     _validate_static_morph_target,
     _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
@@ -250,16 +253,7 @@ def _angle_list(
     )
     q = _normalise_quadrants(params.get("quadrants", "1234"))
     if morphed_full is not None:
-        if not q or q == "1234":
-            return morphed_full, True
-        if q == "1":
-            return morphed_full[morphed_full <= math.pi / 2.0 + 1.0e-12], False
-        if q == "12":
-            return morphed_full[morphed_full <= math.pi + 1.0e-12], False
-        if q == "14":
-            selected = morphed_full[(morphed_full <= math.pi / 2.0 + 1.0e-12) | (morphed_full >= 3.0 * math.pi / 2.0 - 1.0e-12)]
-            selected = np.where(selected > math.pi, selected - math.tau, selected)
-            return np.sort(selected), False
+        return _restrict_to_quadrants(morphed_full, q)
     if not q or q == "1234":
         return np.linspace(0.0, math.tau, int(angular_segments), endpoint=False, dtype=np.float64), True
     spans = {
@@ -743,24 +737,15 @@ def _lookup_curve(
     axial sample positions; with a dense source profile the interpolation
     error is negligible. ``z(t)`` is linear over the profile's z-range.
     """
-    raw = params.get("lookupProfile", params.get("lookup_profile"))
-    if raw is None:
-        raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
+    profile = lookup_profile_array(params)
     for key in ("throatExtLength", "throatExtAngle", "slotLength"):
         if eval_param(params.get(key), 0.0, 0.0) != 0.0:
             raise ValueError(
                 f"LOOKUP formula does not support {key}: the lookupProfile defines "
                 "the whole meridian; build the extension into the lookupProfile"
             )
-    profile = np.asarray(raw, dtype=np.float64)
-    if profile.ndim != 2 or profile.shape[1] != 2 or profile.shape[0] < 2:
-        raise ValueError("lookupProfile must be an array of at least two [z, r] pairs")
-    if not np.all(np.isfinite(profile)):
-        raise ValueError("lookupProfile must contain only finite values")
     z_src = profile[:, 0]
     r_src = profile[:, 1]
-    if np.any(np.diff(z_src) <= 0.0):
-        raise ValueError("lookupProfile z values must be strictly increasing")
     z0 = float(z_src[0])
     z1 = float(z_src[-1])
     z_at_t = z0 + np.asarray(t_unit_values, dtype=np.float64) * (z1 - z0)
@@ -973,10 +958,13 @@ def _pin_axial_stations(
     return np.sort(np.concatenate((values, np.asarray(extra, dtype=np.float64))))
 
 
-def _freeform_quadrant_angles(
-    q1: np.ndarray, quadrants: str
-) -> tuple[np.ndarray, bool]:
-    full = _mirror_quadrant_angles(q1)
+def _restrict_to_quadrants(full: np.ndarray, quadrants: str) -> tuple[np.ndarray, bool]:
+    """Select a symmetry domain from a mirrored full-circle azimuth list.
+
+    ``quadrants`` is already normalised to ``1``/``12``/``14``/``1234``. The
+    ``14`` half is returned on ``[-pi/2, pi/2]`` so it stays increasing.
+    """
+
     if not quadrants or quadrants == "1234":
         return full, True
     if quadrants == "1":
@@ -991,6 +979,12 @@ def _freeform_quadrant_angles(
         selected = np.where(selected > math.pi, selected - math.tau, selected)
         return np.sort(selected), False
     return full, True
+
+
+def _freeform_quadrant_angles(
+    q1: np.ndarray, quadrants: str
+) -> tuple[np.ndarray, bool]:
+    return _restrict_to_quadrants(_mirror_quadrant_angles(q1), quadrants)
 
 
 @functools.lru_cache(maxsize=128)
@@ -1230,10 +1224,7 @@ def _freeform_raw_radial_grid(
             int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))),
         )
         arc_subdivision = _morph_corner_arc_subdivision(params)
-        configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
-        morph_start = min(
-            math.nextafter(1.0, 0.0), max(0.0, configured_morph_start)
-        )
+        morph_start = _continuous_morph_start(params, 0.0)
         morph_corner = eval_param(params.get("morphCorner"), 0.0, 0.0)
 
         def effective_outline_parameters(
@@ -1577,23 +1568,16 @@ def build_point_grid_arrays(
     resolved_half_width: float | None = None
     resolved_half_height: float | None = None
     if morph_target in {1, 2, 3}:
-        width = eval_param(params.get("morphWidth"), 0.0, 0.0)
-        height = eval_param(params.get("morphHeight"), 0.0, 0.0)
-        if morph_target == 3:
-            # A shape-only superellipse morph preserves the exact raw mouth
-            # extents instead of inheriting ATH's whole-millimetre rounding.
-            resolved_half_width = width / 2.0 if width > 0.0 else raw_half_width
-            resolved_half_height = height / 2.0 if height > 0.0 else raw_half_height
-        else:
-            # ATH derives implicit target extents by rounding the raw mouth
-            # extents up to whole millimetres per half-dimension.
-            resolved_half_width = width / 2.0 if width > 0.0 else float(math.ceil(raw_half_width - 1.0e-9))
-            resolved_half_height = height / 2.0 if height > 0.0 else float(math.ceil(raw_half_height - 1.0e-9))
-        if not _is_true(params.get("morphAllowShrinkage")):
-            # No-shrinkage gates the target dimensions against the raw mouth
-            # extents; the mouth still becomes the exact (enlarged) target.
-            resolved_half_width = max(resolved_half_width, raw_half_width)
-            resolved_half_height = max(resolved_half_height, raw_half_height)
+        # A shape-only superellipse morph (3) preserves the exact raw mouth
+        # extents; ATH rounds the implicit rectangle/circle extents up to whole
+        # millimetres per half-dimension.
+        resolved_half_width, resolved_half_height = _resolve_morph_half_dimensions(
+            params,
+            0.0,
+            raw_half_width,
+            raw_half_height,
+            round_implicit_up=morph_target != 3,
+        )
         if morph_target == 1:
             new_angles, full_circle = _angle_list(
                 params,
@@ -1619,7 +1603,7 @@ def build_point_grid_arrays(
         throat_prefix=throat_prefix,
     )
 
-    # _apply_morphing is a per-point no-op unless morphTarget resolves to a
+    # The morph is a per-point no-op unless morphTarget resolves to a
     # morph shape (1/2/3). When the param is absent or a plain non-morph
     # constant it cannot activate at any azimuth — skip the n_phi * n_length
     # no-op calls. Expression values may vary with phi, so they keep the

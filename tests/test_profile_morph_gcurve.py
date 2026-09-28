@@ -7,7 +7,6 @@ import pytest
 
 from hornlab_mesher.profiles import (
     _angle_list,
-    _apply_morphing,
     _guiding_curve_target_radius,
     _morph_target_radius_at_angle,
     _rounded_rect_radius,
@@ -493,20 +492,19 @@ def test_zero_morph_dimensions_preserve_raw_mouth_dimensions_for_interior_slices
         "morphAllowShrinkage": 1,
     }
 
-    assert math.isclose(
-        _apply_morphing(
-            50.0,
-            100.0,
-            0.5,
-            0.0,
-            params,
-            implicit_half_width=100.0,
-            implicit_half_height=80.0,
-        ),
-        50.0,
-        rel_tol=0.0,
-        abs_tol=1.0e-9,
+    # The grid's rule: r + factor * (target(phi) - r_mouth), as the sampler
+    # applies it per meridian.
+    from hornlab_mesher.profile_morph import _morph_factor
+
+    target = _morph_target_radius_at_angle(
+        100.0,
+        0.0,
+        params,
+        implicit_half_width=100.0,
+        implicit_half_height=80.0,
     )
+    morphed = 50.0 + (target - 100.0) * _morph_factor(0.5, 0.0, params)
+    assert math.isclose(morphed, 50.0, rel_tol=0.0, abs_tol=1.0e-9)
 
 
 def test_guiding_curve_inverts_coverage_so_profile_passes_through_curve():

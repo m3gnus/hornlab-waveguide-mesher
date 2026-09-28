@@ -19,7 +19,6 @@ from .profile_formulas import (
     rosse_total_length,
 )
 from .profile_morph import (
-    _apply_morphing,
     _guiding_curve_target_radius,
     _morph_target_radius_at_angle,
     _rounded_rect_radius,

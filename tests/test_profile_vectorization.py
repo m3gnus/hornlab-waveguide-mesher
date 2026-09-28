@@ -40,8 +40,37 @@ from hornlab_mesher.profile_morph import (
     _morph_factor,
     _morph_factors,
     _rounded_rect_radii,
-    _rounded_rect_radius,
 )
+
+# The independent single-azimuth implementation the package used before
+# ``_rounded_rect_radius`` became a one-element call of the array form; kept
+# here as the oracle so this test still checks two derivations.
+def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corner_radius: float) -> float:
+    abs_cos = abs(math.cos(phi))
+    abs_sin = abs(math.sin(phi))
+    if abs_cos < 1.0e-9:
+        return half_height
+    if abs_sin < 1.0e-9:
+        return half_width
+
+    r = min(max(corner_radius, 0.0), half_width, half_height)
+    if r <= 1.0e-9:
+        return min(half_width / abs_cos, half_height / abs_sin)
+
+    y_at_x = (half_width * abs_sin) / abs_cos
+    if y_at_x <= half_height - r + 1.0e-9:
+        return half_width / abs_cos
+    x_at_y = (half_height * abs_cos) / abs_sin
+    if x_at_y <= half_width - r + 1.0e-9:
+        return half_height / abs_sin
+
+    cx = half_width - r
+    cy = half_height - r
+    b = -2.0 * (abs_cos * cx + abs_sin * cy)
+    c = cx * cx + cy * cy - r * r
+    disc = max(0.0, b * b - 4.0 * c)
+    return (-b + math.sqrt(disc)) / 2.0
+
 
 _TOLERANCE_EPS = 64.0
 _EPS = float(np.finfo(np.float64).eps)

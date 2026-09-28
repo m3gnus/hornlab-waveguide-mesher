@@ -5,7 +5,7 @@ from typing import Any, Callable, Literal, Mapping, NamedTuple
 
 import numpy as np
 
-from .profile_common import _osse_radius, _parse_number_list, eval_param
+from .profile_common import _is_true, _osse_radius, _parse_number_list, eval_param
 
 def _guiding_curve_type(params: Mapping[str, Any], p: float) -> int:
     return int(round(eval_param(params.get("gcurveType"), p, 0.0)))
@@ -381,30 +381,18 @@ def _morph_active(params: Mapping[str, Any], p: float) -> bool:
 
 
 def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corner_radius: float) -> float:
-    abs_cos = abs(math.cos(phi))
-    abs_sin = abs(math.sin(phi))
-    if abs_cos < 1.0e-9:
-        return half_height
-    if abs_sin < 1.0e-9:
-        return half_width
+    """One azimuth of :func:`_rounded_rect_radii`.
 
-    r = min(max(corner_radius, 0.0), half_width, half_height)
-    if r <= 1.0e-9:
-        return min(half_width / abs_cos, half_height / abs_sin)
+    The array form selects the same four cases in the same priority order and
+    evaluates the same expressions, so this is bit-identical to the former
+    independent scalar implementation (checked over 200,000 random inputs plus
+    the axis cases); that implementation survives as the test oracle in
+    ``tests/test_profile_vectorization.py``.
+    """
 
-    y_at_x = (half_width * abs_sin) / abs_cos
-    if y_at_x <= half_height - r + 1.0e-9:
-        return half_width / abs_cos
-    x_at_y = (half_height * abs_cos) / abs_sin
-    if x_at_y <= half_width - r + 1.0e-9:
-        return half_height / abs_sin
-
-    cx = half_width - r
-    cy = half_height - r
-    b = -2.0 * (abs_cos * cx + abs_sin * cy)
-    c = cx * cx + cy * cy - r * r
-    disc = max(0.0, b * b - 4.0 * c)
-    return (-b + math.sqrt(disc)) / 2.0
+    return float(
+        _rounded_rect_radii(np.asarray([float(phi)]), half_width, half_height, corner_radius)[0]
+    )
 
 
 def _rounded_rect_radii(
@@ -462,6 +450,40 @@ def _rounded_rect_radii(
     # scalar's two leading returns.
     result = np.where(sin_degenerate, half_width, result)
     return np.where(cos_degenerate, half_height, result)
+
+
+def _resolve_morph_half_dimensions(
+    params: Mapping[str, Any],
+    phi: float,
+    raw_half_width: float,
+    raw_half_height: float,
+    *,
+    round_implicit_up: bool,
+) -> tuple[float, float]:
+    """Target half-dimensions: configured, implicit, and the no-shrink floor.
+
+    The one rule the OSSE-family grid and both FREEFORM morph paths share.
+    ``Morph.TargetWidth/Height`` are full widths; a zero width takes the raw
+    mouth extent, rounded up to whole millimetres when ``round_implicit_up``
+    (ATH's implicit targets for the rectangle and circle shapes). Unless
+    shrinkage is allowed the targets are floored at the raw extents; the mouth
+    still becomes the exact (enlarged) target curve.
+    """
+
+    width = eval_param(params.get("morphWidth"), phi, 0.0)
+    height = eval_param(params.get("morphHeight"), phi, 0.0)
+    if round_implicit_up:
+        implicit_width = float(math.ceil(raw_half_width - 1.0e-9))
+        implicit_height = float(math.ceil(raw_half_height - 1.0e-9))
+    else:
+        implicit_width = raw_half_width
+        implicit_height = raw_half_height
+    half_width = width / 2.0 if width > 0.0 else implicit_width
+    half_height = height / 2.0 if height > 0.0 else implicit_height
+    if not _is_true(params.get("morphAllowShrinkage")):
+        half_width = max(half_width, raw_half_width)
+        half_height = max(half_height, raw_half_height)
+    return half_width, half_height
 
 
 def _configured_morph_half_dimension(
@@ -619,6 +641,17 @@ def _morph_rate(params: Mapping[str, Any], phi: float) -> float:
     return rate
 
 
+def _continuous_morph_start(params: Mapping[str, Any], phi: float) -> float:
+    """``Morph.FixedPart`` as FREEFORM uses it: unsnapped, clamped to ``[0, 1)``.
+
+    FREEFORM's ``t`` is a continuous axial position, so the start is not
+    snapped to a grid station (that is an ATH axial-table artefact).
+    """
+
+    configured = eval_param(params.get("morphFixed"), phi, 0.0)
+    return min(math.nextafter(1.0, 0.0), max(0.0, configured))
+
+
 def _morph_factor(
     t: float,
     phi: float,
@@ -670,35 +703,6 @@ def _morph_factors(
         ** rate
     )
     return factors
-
-
-def _apply_morphing(
-    current_radius: float,
-    mouth_radius: float,
-    t: float,
-    phi: float,
-    params: Mapping[str, Any],
-    *,
-    morph_start: float | None = None,
-    implicit_half_width: float | None = None,
-    implicit_half_height: float | None = None,
-) -> float:
-    factor = _morph_factor(t, phi, params, morph_start=morph_start)
-    if factor <= 0.0:
-        return current_radius
-    # OS-SE morphing is a directional target-mouth rule:
-    # rm(z, phi) = r(z, phi) + f(z) * (rM(phi) - r(L, phi)).
-    # No-shrinkage gating happens at the dimension level when the grid builder
-    # resolves the target half-dimensions, not per azimuth: ATH keeps the mouth
-    # an exact target curve and enlarges the target dimensions instead.
-    target_radius = _morph_target_radius_at_angle(
-        mouth_radius,
-        phi,
-        params,
-        implicit_half_width=implicit_half_width,
-        implicit_half_height=implicit_half_height,
-    )
-    return current_radius + (target_radius - mouth_radius) * factor
 
 
 class _RoundedRectQuadrantLayout(NamedTuple):

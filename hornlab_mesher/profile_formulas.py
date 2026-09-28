@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from .freeform import build_freeform_geometry
 from .profile_common import (
     _DEFAULTS,
+    _lossless_key_value,
     _deg,
     _normalise_formula,
     _osse_radius,
@@ -776,39 +777,7 @@ _ICW_PARAM_KEYS = (
 )
 
 
-def _icw_key_normalise(value: Any) -> Any:
-    """Recursively coerce a param value into a *lossless*, hashable-as-JSON form.
-
-    The previous ``json.dumps(..., default=str)`` stringified numpy arrays via
-    ``str()``, which summarises large arrays ("[a b ... y z]") and rounds to ~8
-    significant figures -- so two genuinely different ``icw_coeffs`` arrays could
-    collapse to the SAME key and the memo would return a stale/wrong curve (a
-    Phase-2 CMA optimiser passing numpy ``icw_coeffs`` is the live risk path).
-
-    Arrays / lists / tuples are encoded with their exact bytes (shape + dtype +
-    ``tobytes().hex()``) so every distinct float is reflected in the key; nested
-    mappings (e.g. ``icw_seed``) recurse; plain scalars pass through unchanged so
-    ``r0``/``a0``/``L``/``R``/``theta1`` etc. still key as before.
-    """
-    if isinstance(value, np.ndarray):
-        arr = np.ascontiguousarray(value)
-        return ["__ndarray__", list(arr.shape), str(arr.dtype), arr.tobytes().hex()]
-    if isinstance(value, (list, tuple)):
-        # Numeric sequences (incl. ones holding numpy scalars) are hashed losslessly
-        # through the same byte path as arrays so e.g. a list ``icw_coeffs`` differing
-        # by 1e-12 keys distinctly. Mixed/non-numeric sequences recurse element-wise.
-        try:
-            arr = np.asarray(value, dtype=np.float64)
-        except (ValueError, TypeError):
-            return ["__seq__", [_icw_key_normalise(v) for v in value]]
-        if arr.dtype == np.float64 and arr.ndim >= 1:
-            return ["__ndarray__", list(arr.shape), str(arr.dtype), arr.tobytes().hex()]
-        return ["__seq__", [_icw_key_normalise(v) for v in value]]
-    if isinstance(value, Mapping):
-        return {str(k): _icw_key_normalise(value[k]) for k in sorted(value, key=str)}
-    if isinstance(value, np.generic):  # numpy scalar -> exact python scalar
-        return value.item()
-    return value
+_icw_key_normalise = _lossless_key_value
 
 
 def _icw_cache_key(params: Mapping[str, Any]) -> str:
@@ -1079,6 +1048,22 @@ def icw_meridian_points(curve: "ICWCurve", t_values: np.ndarray) -> np.ndarray:
     return np.column_stack([x, r])
 
 
+def lookup_profile_array(params: Mapping[str, Any]) -> NDArray[np.float64]:
+    """The validated ``lookupProfile`` of a LOOKUP formula, as an ``(n, 2)`` array."""
+
+    raw = params.get("lookupProfile", params.get("lookup_profile"))
+    if raw is None:
+        raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
+    lookup = np.asarray(raw, dtype=np.float64)
+    if lookup.ndim != 2 or lookup.shape[1] != 2 or lookup.shape[0] < 2:
+        raise ValueError("lookupProfile must be an array of at least two [z, r] pairs")
+    if not np.all(np.isfinite(lookup)):
+        raise ValueError("lookupProfile must contain only finite values")
+    if np.any(np.diff(lookup[:, 0]) <= 0.0):
+        raise ValueError("lookupProfile z values must be strictly increasing")
+    return lookup
+
+
 def profile_points(
     params: Mapping[str, Any], n_axial: int, phi: float = 0.0
 ) -> np.ndarray:
@@ -1102,18 +1087,7 @@ def profile_points(
         radius_h, _radius_v = geometry.evaluate_radii(z)
         return np.column_stack((z, radius_h))
     if formula == "LOOKUP":
-        raw = params.get("lookupProfile", params.get("lookup_profile"))
-        if raw is None:
-            raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
-        lookup = np.asarray(raw, dtype=np.float64)
-        if lookup.ndim != 2 or lookup.shape[1] != 2 or lookup.shape[0] < 2:
-            raise ValueError(
-                "lookupProfile must be an array of at least two [z, r] pairs"
-            )
-        if not np.all(np.isfinite(lookup)):
-            raise ValueError("lookupProfile must contain only finite values")
-        if np.any(np.diff(lookup[:, 0]) <= 0.0):
-            raise ValueError("lookupProfile z values must be strictly increasing")
+        lookup = lookup_profile_array(params)
         z = np.linspace(
             float(lookup[0, 0]),
             float(lookup[-1, 0]),

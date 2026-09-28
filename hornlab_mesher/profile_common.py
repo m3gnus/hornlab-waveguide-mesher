@@ -420,6 +420,37 @@ def _parse_number_list(
 
 
 
+def _lossless_key_value(value: Any) -> Any:
+    """Recursively coerce a param value into a *lossless*, hashable-as-JSON form.
+
+    Shared by the ICW curve and FREEFORM geometry memo keys. ``json.dumps(...,
+    default=str)`` stringified numpy arrays via ``str()``, which summarises large
+    arrays ("[a b ... y z]") and rounds to ~8 significant figures -- so two
+    genuinely different coefficient arrays could collapse to the SAME key and a
+    memo would return a stale curve.
+
+    Arrays and numeric sequences are encoded with their exact bytes (shape +
+    dtype + ``tobytes().hex()``); mixed sequences and nested mappings recurse;
+    numpy scalars become exact Python scalars; other scalars pass through.
+    """
+    if isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        return ["__ndarray__", list(array.shape), str(array.dtype), array.tobytes().hex()]
+    if isinstance(value, (list, tuple)):
+        try:
+            array = np.ascontiguousarray(np.asarray(value, dtype=np.float64))
+        except (OverflowError, TypeError, ValueError):
+            return ["__seq__", [_lossless_key_value(item) for item in value]]
+        if array.ndim >= 1:
+            return ["__ndarray__", list(array.shape), str(array.dtype), array.tobytes().hex()]
+        return ["__seq__", [_lossless_key_value(item) for item in value]]
+    if isinstance(value, Mapping):
+        return {str(key): _lossless_key_value(value[key]) for key in sorted(value, key=str)}
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def _normalise_formula(value: Any) -> str:
     raw = str(value or "OSSE").strip().upper().replace("_", "-")
     if raw == "ROSSE":
