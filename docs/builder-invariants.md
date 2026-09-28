@@ -73,8 +73,8 @@ wall thickening, rear cap, enclosure box, or geometry in front of the baffle
 plane. Freestanding mode builds an inner wall, outer wall, mouth rim, rear cap,
 and source cap. The mouth rim is the ruled end face between corresponding inner
 and outer mouth-ring points. `wall_thickness_mm` defines the offset shell but
-does not imply a lip radius or rounded closure; CircSym uses the same straight
-meridian span as the full-3D surface.
+does not imply a lip radius or rounded closure; the mouth uses a straight
+meridian span.
 Enclosure mode builds the inner horn, source cap, optional interfaces, and
 enclosure surfaces around the mouth.
 

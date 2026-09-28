@@ -335,8 +335,7 @@ Implementation rules:
 A freestanding wall is defined by the acoustic inner surface and its
 `wall_thickness_mm` offset outer surface. At the mouth, the material ends on a
 ruled face: each inner mouth-ring point connects by a straight span to the
-corresponding terminal point of the outer wall. Revolving that span is the
-CircSym mouth closure; lofting all spans is the full-3D mouth surface.
+corresponding terminal point of the outer wall. Lofting all spans forms the mouth surface.
 
 For an axisymmetric grid, both terminal rings remain circular between sampled
 azimuths. This angular invariant also applies when `surface_fit = "approximate"`:
@@ -346,8 +345,7 @@ nominally circular ring an azimuth-dependent radius.
 Wall thickness does not also imply a rounded lip. No freestanding lip-radius
 parameter exists in the public config, so a solver-specific semicircle would
 describe a different body. A future rounded closure therefore requires an
-explicit geometry option implemented by every preview, CAD, full-3D, and
-CircSym consumer.
+explicit geometry option implemented by every preview, CAD, and mesh consumer.
 
 ## Geometry Grid vs Mesh Density
 

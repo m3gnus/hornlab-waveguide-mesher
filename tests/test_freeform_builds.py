@@ -13,7 +13,6 @@ from hornlab_mesher.config_builder import (
     MAX_EFFECTIVE_AXIAL_RINGS,
     MAX_EFFECTIVE_CONTROL_POINTS,
     MAX_EFFECTIVE_PHI_PROFILES,
-    circsym_rejection_reasons,
 )
 from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.freeform import (
@@ -320,23 +319,3 @@ def test_intersection_fast_path_clears_an_ordinary_offset_shell():
         _polyline_cannot_self_intersect(outer[:, ring, :2], closed=True)
         for ring in range(outer.shape[1])
     )
-
-
-def test_freeform_circsym_eligibility_tracks_actual_azimuthal_span():
-    axisymmetric = _owner_config()
-    # A closed body of revolution: bare mode is rejected on topology alone, so
-    # it would mask the azimuthal-span check this test exists for.
-    axisymmetric["mode"] = "freestanding"
-    axisymmetric["mesh"]["wall_thickness_mm"] = 5.0
-    axisymmetric["profile"]["profileV"] = copy.deepcopy(
-        axisymmetric["profile"]["profileH"]
-    )
-    axisymmetric["profile"].pop("crossSections")
-    assert circsym_rejection_reasons(axisymmetric) == []
-
-    non_axisymmetric = copy.deepcopy(axisymmetric)
-    non_axisymmetric["profile"]["profileV"]["points"][-1][1] -= 10.0
-    reasons = circsym_rejection_reasons(non_axisymmetric)
-    assert reasons
-    assert "varies with azimuth" in reasons[0]
-    assert "radius span" in reasons[0]

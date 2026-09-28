@@ -102,22 +102,6 @@ def build_geometry_params(*args, **kwargs):
     return _build_geometry_params(*args, **kwargs)
 
 
-def build_meridian(*args, **kwargs):
-    """Build the millimetre-controlled CircSym meridian for a public config."""
-
-    from .config_builder import build_meridian as _build_meridian
-
-    return _build_meridian(*args, **kwargs)
-
-
-def circsym_rejection_reasons(*args, **kwargs):
-    """Return why a public config is ineligible for a CircSym solve."""
-
-    from .config_builder import circsym_rejection_reasons as _circsym_rejection_reasons
-
-    return _circsym_rejection_reasons(*args, **kwargs)
-
-
 def load_config(*args, **kwargs):
     from .cli import load_config as _load_config
 
@@ -178,8 +162,6 @@ __all__ = [
     "valid_f_max_hz",
     "build_from_config",
     "build_geometry_params",
-    "build_meridian",
-    "circsym_rejection_reasons",
     "build_mesh",
     "build_mesh_with_info",
     "build_osse_waveguide",

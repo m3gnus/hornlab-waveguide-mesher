@@ -502,7 +502,7 @@ def angular_interpolating_surface_poles(
     however, and treating their samples as poles makes a circular shell bow
     inward between azimuth samples.  Solving only the u-direction fit keeps
     the stable axial construction while making every sampled ring describe
-    the same cross-section as the meridian that is revolved by CircSym.
+    the same cross-section of the surface of revolution.
     """
 
     from scipy.interpolate import make_interp_spline

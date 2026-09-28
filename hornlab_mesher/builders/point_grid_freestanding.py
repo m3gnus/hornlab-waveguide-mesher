@@ -43,8 +43,8 @@ def _freestanding_mouth_closure_points(
     ``wall_thickness_mm`` defines an offset outer shell; it does not define a
     separate lip radius. The freestanding mouth therefore closes that shell
     with the straight span from each inner-mouth point to its corresponding
-    outer-mouth point. Stacking the endpoints here gives the CircSym trace and
-    the full-3D surface builders one pure geometry contract.
+    outer-mouth point. Stacking the endpoints gives the full-3D surface
+    builders one pure geometry contract.
     """
 
     inner = np.asarray(inner_mouth, dtype=np.float64)
@@ -423,7 +423,7 @@ def _build_acoustic_freestanding_point_grid(
     # -6.00 mm rear plane, which stops the rear cap's planar-extreme detection
     # from ever finding its loop. Angular interpolation is safe and necessary:
     # without it a nominally circular mouth ring bows inward between samples,
-    # so the 3D closure is not the revolution of the CircSym closure.
+    # so the 3D closure would no longer follow a surface of revolution.
     outer_wall = _add_occ_bspline_patch_wall_surfaces(
         outer_topology,
         closed=geometry.closed,
