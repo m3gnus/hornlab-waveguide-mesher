@@ -286,7 +286,7 @@ class StepFaceOrderError(RuntimeError):
 #: model units (mm by default). Well above OCC's reader tolerance and far
 #: below any real feature: two distinct vertices of one model are never this
 #: close without being the same vertex.
-FACE_MATCH_TOLERANCE_MM = 1.0e-2
+FACE_MATCH_TOLERANCE = 1.0e-2  # gmsh model units (mm unless OCCTargetUnit says otherwise)
 
 # Geometry.OCCTargetUnit -> millimetres; "" is OCC's default target, mm.
 _OCC_TARGET_UNIT_MM = {
@@ -405,7 +405,7 @@ def advanced_face_order_for_surfaces(
     surfaces: list[int] | None = None,
     *,
     model_from_step: object | None = None,
-    tolerance_mm: float = FACE_MATCH_TOLERANCE_MM,
+    tolerance: float = FACE_MATCH_TOLERANCE,
     addressed_faces: Iterable[int] = (),
 ) -> list[int]:
     """Return the STEP ADVANCED_FACE id of each imported gmsh surface.
@@ -431,13 +431,18 @@ def advanced_face_order_for_surfaces(
     2. Shell topology: a surface's candidates are narrowed to faces adjacent
        (sharing an EDGE_CURVE) to the faces its already-matched neighbours
        (sharing a curve) were matched to. This separates coincident faces
-       of two touching bodies.
+       of two touching bodies. So does the surface kind (plane, cylinder...)
+       when every candidate's kind is known. Both only intersect: a narrowing
+       that would leave no candidate refuses instead of being ignored.
     3. Faces still indistinguishable are ordered by record order *only* when
        they carry identical labels and body kind, so no label lookup can
        differ -- unless the caller names one of them in ``addressed_faces``
        (faces it will select by ADVANCED_FACE id), which makes each face its
        own label. Distinct bodies listed by one representation are ordered
-       the way gmsh walks them (solids first, then list order).
+       the way gmsh walks them (solids first, then list order). This is the
+       one inference the text cannot prove: it is the observed walk order of
+       gmsh's OCC (tested with the bodies apart, where geometry shows it),
+       and it applies only to coincident faces of different bodies.
 
     Anything else raises :class:`StepFaceOrderError`: a count mismatch, a
     surface matching no face, or indistinguishable faces with different
@@ -459,9 +464,9 @@ def advanced_face_order_for_surfaces(
         )
     if not surfaces:
         return []
-    tolerance = float(tolerance_mm)
+    tolerance = float(tolerance)
     if not np.isfinite(tolerance) or tolerance <= 0.0:
-        raise ValueError(f"tolerance_mm must be positive and finite, got {tolerance_mm!r}")
+        raise ValueError(f"tolerance must be positive and finite, got {tolerance!r}")
 
     matrix = np.eye(4) if model_from_step is None else np.asarray(model_from_step, dtype=np.float64)
     if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
@@ -549,15 +554,25 @@ def advanced_face_order_for_surfaces(
                 kind = surface_kinds[index]
                 if kind is not None and all(face_kinds[face] is not None for face in options):
                     narrowed = {face for face in options if face_kinds[face] == kind}
-                    if narrowed:
-                        options = narrowed
+                    if not narrowed:
+                        raise StepFaceOrderError(
+                            "cannot map STEP faces to gmsh surfaces: surface "
+                            f"{surfaces[index]} is a {kind} in the model but none of its "
+                            "candidate faces is"
+                        )
+                    options = narrowed
                 for neighbour in surface_neighbours[index]:
                     face = assigned.get(neighbour)
                     if face is None:
                         continue
                     narrowed = options & face_neighbours[face]
-                    if narrowed:
-                        options = narrowed
+                    if not narrowed:
+                        raise StepFaceOrderError(
+                            "cannot map STEP faces to gmsh surfaces: surface "
+                            f"{surfaces[index]} borders a surface matched to face "
+                            f"#{record_order[face]}, but none of its candidate faces does"
+                        )
+                    options = narrowed
             if len(options) == 1:
                 assigned[index] = options.pop()
                 pending.discard(index)

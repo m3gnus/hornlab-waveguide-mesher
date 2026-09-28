@@ -594,6 +594,14 @@ def _placement_matrix(records: dict[int, str], rec_id: int) -> Matrix4 | None:
     )
 
 
+def _representation_item_refs(record: str) -> list[int]:
+    """The record ids in a ``*REPRESENTATION('name',(items),context)`` record."""
+    items = re.match(r"[A-Z_]+\(\s*'(?:[^']|'')*'\s*,\s*\(([^()]*)\)", record)
+    if items is None or not _record_keyword(record).endswith("REPRESENTATION"):
+        return []
+    return step_refs(items.group(1))
+
+
 def _body_representations(
     records: dict[int, str], step_text: str
 ) -> dict[int, list[tuple[int, int]]]:
@@ -604,10 +612,7 @@ def _body_representations(
         keyword = _record_keyword(record)
         if not keyword.endswith("REPRESENTATION") or "RELATIONSHIP" in keyword:
             continue
-        items = re.match(r"[A-Z_]+\(\s*'(?:[^']|'')*'\s*,\s*\(([^()]*)\)", record)
-        if items is None:
-            continue
-        for position, ref in enumerate(step_refs(items.group(1))):
+        for position, ref in enumerate(_representation_item_refs(record)):
             if ref in body_ids:
                 out[ref].append((rec_id, position))
     return out
@@ -650,7 +655,9 @@ def advanced_face_placements_from_text(step_text: str) -> dict[int, Matrix4 | No
     takes coordinates in the face's own representation (file length units)
     to the root frame. ``None`` means the text does not determine one
     placement: the representation is instanced more than once, or a
-    placement could not be read.
+    placement could not be read. The own axis placement of a root
+    representation that carries geometry is part of the chain, as OCC
+    applies it on import.
     """
     records = step_records(step_text)
     upward: dict[int, list[tuple[int, Matrix4 | None]]] = defaultdict(list)
@@ -686,6 +693,45 @@ def advanced_face_placements_from_text(step_text: str) -> dict[int, Matrix4 | No
                     matrix = _matmul4(target, _rigid_inverse(source))
         upward[child].append((parent, matrix))
 
+    body_ids = {body.record_id for body in step_body_inventory(step_text)}
+    transform_ends = {
+        ref
+        for record in records.values()
+        if _record_keyword(record) == "ITEM_DEFINED_TRANSFORMATION"
+        for ref in step_refs(record)
+    }
+
+    def _root_placement(members: list[int]) -> Matrix4 | None:
+        # OCC applies a root representation's own axis placement on import,
+        # but only to a representation that carries geometry itself (an
+        # assembly root holding nothing but placements is left alone). Its
+        # choice among several items is not documented; observed with gmsh's
+        # OCC: placements that an ITEM_DEFINED_TRANSFORMATION uses as an end
+        # are skipped, identity ones do not count, and with two different
+        # candidates the result depends on item order. Only the unambiguous
+        # case is accepted: at most one distinct non-identity candidate.
+        applied: list[Matrix4] = []
+        for member in members:
+            refs = _representation_item_refs(records.get(member, ""))
+            if not any(ref in body_ids for ref in refs):
+                continue
+            for ref in refs:
+                if (
+                    _record_keyword(records.get(ref, "")) != "AXIS2_PLACEMENT_3D"
+                    or ref in transform_ends
+                ):
+                    continue
+                matrix = _placement_matrix(records, ref)
+                if matrix is None:
+                    return None
+                if not _matrices_close(matrix, _IDENTITY4) and not any(
+                    _matrices_close(matrix, seen) for seen in applied
+                ):
+                    applied.append(matrix)
+        if len(applied) > 1:
+            return None
+        return applied[0] if applied else _IDENTITY4
+
     def to_root(rep: int, depth: int = 0) -> Matrix4 | None:
         # Every representation identity-linked to ``rep`` shares its frame.
         component = {rep}
@@ -698,7 +744,7 @@ def advanced_face_placements_from_text(step_text: str) -> dict[int, Matrix4 | No
                     frontier.append(other)
         parents = [link for member in sorted(component) for link in upward.get(member, ())]
         if not parents:
-            return _IDENTITY4
+            return _root_placement(sorted(component))
         if depth > 32:
             return None
         results: list[Matrix4] = []

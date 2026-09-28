@@ -294,3 +294,231 @@ def test_the_text_parsers_read_units_placements_and_vertices():
     # The surface's own placement point is not a vertex of the face.
     assert advanced_face_vertices_from_text(text) == {10: ((1.0, 2.0, 3.0), (4.0, 5.0, 6.0))}
     assert step_length_unit_mm_from_text(text) == pytest.approx(25.4)
+
+
+def _write_box(path: Path, size=(10.0, 20.0, 30.0)) -> None:
+    with _gmsh_session() as gmsh:
+        gmsh.model.occ.addBox(0, 0, 0, *size)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(path))
+
+
+def _set_root_placement(path: Path, *, origin=None, ref_direction=None) -> None:
+    """Change the root representation's own AXIS2_PLACEMENT_3D (item 1)."""
+    text = path.read_text(encoding="ascii")
+    root = re.search(
+        r"ADVANCED_BREP_SHAPE_REPRESENTATION\('',\(#(\d+),", text
+    )
+    assert root is not None
+    placement = re.search(
+        rf"#{root.group(1)} = AXIS2_PLACEMENT_3D\('',#(\d+),#(\d+),#(\d+)\);", text
+    )
+    assert placement is not None
+    point, _axis, direction = placement.groups()
+    if origin is not None:
+        text = re.sub(
+            rf"(#{point} = CARTESIAN_POINT\(''),\([^)]*\)\)",
+            lambda m: f"{m.group(1)},({','.join(repr(float(v)) for v in origin)}))",
+            text,
+        )
+    if ref_direction is not None:
+        text = re.sub(
+            rf"(#{direction} = DIRECTION\(''),\([^)]*\)\)",
+            lambda m: f"{m.group(1)},({','.join(repr(float(v)) for v in ref_direction)}))",
+            text,
+        )
+    path.write_text(text, encoding="ascii")
+
+
+@pytest.mark.parametrize(
+    "root",
+    [
+        {"ref_direction": (-1.0, 0.0, 0.0)},  # 180 deg about z: the box is symmetric under it
+        {"ref_direction": (0.0, 1.0, 0.0)},  # 90 deg about z
+        {"origin": (100.0, 0.0, 0.0)},
+        {"origin": (5.0, -7.0, 3.0), "ref_direction": (0.0, -1.0, 0.0)},
+    ],
+    ids=["rot180", "rot90", "move", "rot-move"],
+)
+def test_root_representation_placement_is_applied(tmp_path, root):
+    """OCC moves the whole import by the root representation's placement."""
+    step_path = tmp_path / "box-root.step"
+    _write_box(step_path)
+    _set_root_placement(step_path, **root)
+    with _gmsh_session() as gmsh:
+        gmsh.model.occ.importShapes(str(step_path), highestDimOnly=False)
+        gmsh.model.occ.synchronize()
+        order = advanced_face_order_for_surfaces(step_path)
+        placements = advanced_face_placements_from_text(step_path.read_text(encoding="ascii"))
+        means = _vertex_mean_mm(step_path)
+        for face, tag in zip(order, gmsh_surface_tags(), strict=True):
+            placed = np.asarray(placements[face])
+            expected = placed[:3, :3] @ means[face] + placed[:3, 3]
+            centre = np.asarray(gmsh.model.occ.getCenterOfMass(2, tag))
+            assert np.allclose(centre, expected, atol=1e-6), (face, tag)
+        # gmsh writes faces in traversal order, so the right map is record order.
+        assert order == advanced_face_order(step_path)
+
+
+def test_geometry_free_assembly_root_placement_is_not_applied(tmp_path):
+    """OCC leaves a root that holds only placements alone; so must the parser."""
+    step_path = tmp_path / "placed-root.step"
+    _write_box_and_sheet(step_path)
+    text = step_path.read_text(encoding="ascii")
+    root = "#10 = SHAPE_REPRESENTATION('',(#11,#15,#19),#23);"
+    assert root in text
+    text = text.replace(root, "#10 = SHAPE_REPRESENTATION('',(#901,#15,#19),#23);")
+    text = text.replace(
+        "ENDSEC;\nEND-ISO",
+        "#901 = AXIS2_PLACEMENT_3D('',#902,#903,#904);\n"
+        "#902 = CARTESIAN_POINT('',(7.,-3.,11.));\n"
+        "#903 = DIRECTION('',(0.,0.,1.));\n"
+        "#904 = DIRECTION('',(0.,-1.,0.));\n"
+        "ENDSEC;\nEND-ISO",
+    )
+    assert "#901 =" in text
+    step_path.write_text(text, encoding="ascii")
+    placements = advanced_face_placements_from_text(text)
+    assert all(np.allclose(np.asarray(m), np.eye(4)) for m in placements.values())
+    with _gmsh_session() as gmsh:
+        gmsh.model.occ.importShapes(str(step_path), highestDimOnly=False)
+        gmsh.model.occ.synchronize()
+        assert advanced_face_order_for_surfaces(step_path) == advanced_face_order(step_path)
+
+
+def test_conflicting_root_placements_are_refused(tmp_path):
+    step_path = tmp_path / "two-placements.step"
+    _write_box(step_path)
+    text = step_path.read_text(encoding="ascii")
+    text = text.replace(
+        "ADVANCED_BREP_SHAPE_REPRESENTATION('',(#11,#15),",
+        "ADVANCED_BREP_SHAPE_REPRESENTATION('',(#901,#911,#15),",
+    )
+    text = text.replace(
+        "ENDSEC;\nEND-ISO",
+        "#901 = AXIS2_PLACEMENT_3D('',#902,#903,#904);\n"
+        "#902 = CARTESIAN_POINT('',(100.,0.,0.));\n#903 = DIRECTION('',(0.,0.,1.));\n"
+        "#904 = DIRECTION('',(1.,0.,0.));\n"
+        "#911 = AXIS2_PLACEMENT_3D('',#912,#913,#914);\n"
+        "#912 = CARTESIAN_POINT('',(0.,0.,0.));\n#913 = DIRECTION('',(0.,0.,1.));\n"
+        "#914 = DIRECTION('',(0.,1.,0.));\n"
+        "ENDSEC;\nEND-ISO",
+    )
+    step_path.write_text(text, encoding="ascii")
+    assert all(m is None for m in advanced_face_placements_from_text(text).values())
+    with _gmsh_session() as gmsh:
+        gmsh.model.occ.importShapes(str(step_path), highestDimOnly=False)
+        gmsh.model.occ.synchronize()
+        with pytest.raises(StepFaceOrderError, match="not determined"):
+            advanced_face_order_for_surfaces(step_path)
+
+
+def _write_two_sheet_bodies(path: Path, offsets: tuple[float, float], order: tuple[int, int]) -> None:
+    """Two named surface bodies (a two-face fan each) in ONE representation,
+    the bodies listed in ``order``. Written by hand: gmsh writes one part per
+    face, so it cannot produce this shape."""
+    records: list[str] = []
+
+    def add(text: str) -> int:
+        records.append(text)
+        return len(records)
+
+    def point(x: float, y: float, z: float) -> int:
+        return add(f"CARTESIAN_POINT('',({x:.6f},{y:.6f},{z:.6f}))")
+
+    def direction(x: float, y: float, z: float) -> int:
+        return add(f"DIRECTION('',({x:.6f},{y:.6f},{z:.6f}))")
+
+    def edge(a: int, b: int, origin: int, vector: tuple[float, float, float]) -> int:
+        vec = add(f"VECTOR('',#{direction(*vector)},1.0)")
+        line = add(f"LINE('',#{origin},#{vec})")
+        return add(f"EDGE_CURVE('',#{a},#{b},#{line},.T.)")
+
+    app = add("APPLICATION_CONTEXT('automotive design')")
+    add(f"APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{app})")
+    pctx = add(f"PRODUCT_CONTEXT('',#{app},'mechanical')")
+    prod = add(f"PRODUCT('s','s','',(#{pctx}))")
+    form = add(f"PRODUCT_DEFINITION_FORMATION('','',#{prod})")
+    dctx = add(f"PRODUCT_DEFINITION_CONTEXT('part definition',#{app},'design')")
+    definition = add(f"PRODUCT_DEFINITION('design','',#{form},#{dctx})")
+    product = add(f"PRODUCT_DEFINITION_SHAPE('','',#{definition})")
+    length = add("( NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.) LENGTH_UNIT() )")
+    angle = add("( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) )")
+    solid = add("( NAMED_UNIT(*) SI_UNIT($,.STERADIAN.) SOLID_ANGLE_UNIT() )")
+    tol = add(f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#{length},'d','')")
+    context = add(
+        f"( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{tol})) "
+        f"GLOBAL_UNIT_ASSIGNED_CONTEXT((#{length},#{angle},#{solid})) REPRESENTATION_CONTEXT('','') )"
+    )
+    bodies: list[int] = []
+    for name, z in zip("ab", offsets):
+        bottom, top = point(0, 0, z), point(0, 0, z + 1)
+        v_bottom, v_top = add(f"VERTEX_POINT('',#{bottom})"), add(f"VERTEX_POINT('',#{top})")
+        spine = edge(v_bottom, v_top, bottom, (0, 0, 1))
+        faces = []
+        for k in (1, 2):
+            angle = np.pi * k / 3
+            dx, dy = float(np.cos(angle)), float(np.sin(angle))
+            p_top, p_bottom = point(dx, dy, z + 1), point(dx, dy, z)
+            w_top, w_bottom = add(f"VERTEX_POINT('',#{p_top})"), add(f"VERTEX_POINT('',#{p_bottom})")
+            loop_edges = [
+                spine,
+                edge(v_top, w_top, top, (dx, dy, 0)),
+                edge(w_top, w_bottom, p_top, (0, 0, -1)),
+                edge(w_bottom, v_bottom, p_bottom, (-dx, -dy, 0)),
+            ]
+            oriented = [add(f"ORIENTED_EDGE('',*,*,#{e},.T.)") for e in loop_edges]
+            loop = add("EDGE_LOOP('',(" + ",".join(f"#{o}" for o in oriented) + "))")
+            bound = add(f"FACE_OUTER_BOUND('',#{loop},.T.)")
+            axis = add(
+                f"AXIS2_PLACEMENT_3D('',#{bottom},#{direction(dy, -dx, 0)},#{direction(dx, dy, 0)})"
+            )
+            plane = add(f"PLANE('',#{axis})")
+            faces.append(add(f"ADVANCED_FACE('{name}{k}',(#{bound}),#{plane},.T.)"))
+        shell = add(f"OPEN_SHELL('shell{name}',(" + ",".join(f"#{f}" for f in faces) + "))")
+        bodies.append(add(f"SHELL_BASED_SURFACE_MODEL('{name}',(#{shell}))"))
+    listed = ",".join(f"#{bodies[i]}" for i in order)
+    rep = add(f"MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',({listed}),#{context})")
+    add(f"SHAPE_DEFINITION_REPRESENTATION(#{product},#{rep})")
+    data = "\n".join(f"#{n + 1} = {text};" for n, text in enumerate(records))
+    path.write_text(
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('t'),'2;1');\n"
+        "FILE_NAME('t','2026-01-01T00:00:00',(''),(''),'','','');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n"
+        + data
+        + "\nENDSEC;\nEND-ISO-10303-21;\n",
+        encoding="ascii",
+    )
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_bodies_of_one_representation_are_walked_in_listed_order(tmp_path, order):
+    """The order rule for coincident faces of different bodies rests on this:
+    with the bodies apart, gmsh's surfaces follow the representation's item
+    order (checked by geometry). Then the same file with the bodies exactly
+    coincident maps by that order."""
+    apart = tmp_path / "apart.step"
+    _write_two_sheet_bodies(apart, (0.0, 10.0), order)
+    with _gmsh_session() as gmsh:
+        gmsh.model.occ.importShapes(str(apart), highestDimOnly=False)
+        gmsh.model.occ.synchronize()
+        heights = [
+            round(gmsh.model.occ.getCenterOfMass(2, tag)[2])
+            for tag in gmsh_surface_tags()
+        ]
+    first, second = (0, 10) if order == (0, 1) else (10, 0)
+    assert heights == [first, first, second, second]
+
+    together = tmp_path / "together.step"
+    _write_two_sheet_bodies(together, (0.0, 0.0), order)
+    text = together.read_text(encoding="ascii")
+    with _gmsh_session() as gmsh:
+        gmsh.model.occ.importShapes(str(together), highestDimOnly=False)
+        gmsh.model.occ.synchronize()
+        mapped = advanced_face_order_for_surfaces(together)
+    label = {
+        int(m.group(1)): m.group(2)
+        for m in re.finditer(r"#(\d+) = ADVANCED_FACE\('([ab])\d'", text)
+    }
+    listed = "ab" if order == (0, 1) else "ba"
+    assert [label[face] for face in mapped] == [listed[0]] * 2 + [listed[1]] * 2
