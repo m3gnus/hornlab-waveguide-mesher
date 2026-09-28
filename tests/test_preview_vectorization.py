@@ -12,14 +12,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import hornlab_mesher.preview.api as preview_api
-from hornlab_mesher.preview.api import (
+import hornlab_mesher.preview.contract as preview_contract
+from hornlab_mesher.preview.contract import (
     PreviewSurfaceV1,
-    _grid_indices,
     _orient_indices_to_normals,
     _orientation_metadata,
     _triangle_orientation_analysis,
 )
+from hornlab_mesher.preview.primitives import _combine_surfaces, _grid_indices
 
 
 def _grid_indices_oracle(n_t: int, n_phi: int, *, closed_phi: bool) -> np.ndarray:
@@ -151,14 +151,14 @@ def test_only_an_internal_unchanged_buffer_reuses_its_orientation_check(
     indices = np.asarray((0, 1, 2), dtype=np.uint32)
     normals = np.tile((0.0, 0.0, 1.0), (3, 1))
     calls = 0
-    original = preview_api._triangle_orientation_analysis
+    original = preview_contract._triangle_orientation_analysis
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(preview_api, "_triangle_orientation_analysis", counted)
+    monkeypatch.setattr(preview_contract, "_triangle_orientation_analysis", counted)
     oriented = _orient_indices_to_normals(
         "horn.outer", positions, indices, normals
     )
@@ -297,15 +297,15 @@ def test_a_combined_surface_still_runs_its_global_orientation_check(
         closed_phi=False,
     )
     calls = 0
-    original = preview_api._triangle_orientation_analysis
+    original = preview_contract._triangle_orientation_analysis
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(preview_api, "_triangle_orientation_analysis", counted)
-    combined = preview_api._combine_surfaces("horn.outer", [part, part])
+    monkeypatch.setattr(preview_contract, "_triangle_orientation_analysis", counted)
+    combined = _combine_surfaces("horn.outer", [part, part])
 
     assert calls == 1
     assert combined.metadata["windingChecked"] is True

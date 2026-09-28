@@ -125,7 +125,11 @@ changes. Fidelity per role is reported as requested vs achieved; the achieved
 chord is measured against the triangles actually emitted.
 
 The same names are importable from `hornlab_mesher.preview.api`, which is the
-path WG uses; both paths are supported.
+path WG uses; both paths are supported. `preview/api.py` is the orchestrator;
+the implementation lives beside it in `contract.py` (dataclasses, metadata
+validation, orientation proof), `primitives.py`, `source_cap.py`,
+`enclosure.py`, `horn.py` and `fidelity.py`, all internal. `preview.api`
+keeps importing `_lod_config` and `_guiding_curve_warnings` for WG.
 
 ### CAD and WGLink
 

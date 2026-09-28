@@ -138,7 +138,7 @@ def test_reduced_source_cap_is_centred_on_the_axis_like_the_full_model(quadrants
 # --- Constant-radius runs in the semantic stations ---------------------------
 
 def test_flat_radius_run_contributes_only_its_two_ends():
-    from hornlab_mesher.preview.api import _radial_extrema
+    from hornlab_mesher.preview.horn import _radial_extrema
 
     # throat extension (flat), flare, a rollback turn, then flat again
     radius = np.array([5.0, 5.0, 5.0, 5.0, 6.0, 8.0, 9.0, 8.5, 8.5, 8.5])
@@ -146,7 +146,7 @@ def test_flat_radius_run_contributes_only_its_two_ends():
 
 
 def test_float_noise_is_not_a_turn():
-    from hornlab_mesher.preview.api import _radial_extrema
+    from hornlab_mesher.preview.horn import _radial_extrema
 
     radius = 20.0 + np.array([0.0, 1e-15, -1e-15, 2e-15, 0.0, 1.0, 2.0])
     assert _radial_extrema(radius).tolist() == [4]
