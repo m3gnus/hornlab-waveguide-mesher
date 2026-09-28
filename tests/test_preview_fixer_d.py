@@ -31,7 +31,7 @@ def test_m1_zmap_points_uppercase_alias_is_preserved():
         "mesh": {"sampling_mode": "uniform", "ZMapPoints": points},
     }
 
-    adapted = _adaptive_lod_config(config, 32, 3, power=2.0)
+    adapted = _adaptive_lod_config(config, 32, 3, power=2.0, formula="OSSE")
 
     assert adapted["mesh"]["ZMapPoints"] == points
     assert "z_map_points" not in adapted["mesh"]

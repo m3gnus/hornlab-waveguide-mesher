@@ -9,7 +9,6 @@ import pytest
 
 from hornlab_mesher.preview.fidelity import (
     _angle_degrees,
-    _bilinear_coarse_points,
     _phi_derivative,
     resample_grid_vectors,
 )
@@ -71,15 +70,11 @@ def test_bilinear_grid_rewrites_match_the_nested_loops(
     source = np.random.default_rng(260808).normal(size=(5, 7, 3))
     expected = _bilinear_oracle(source, out_shape, closed_phi=closed_phi)
 
-    points = _bilinear_coarse_points(
-        source, out_shape, closed_phi=closed_phi
-    )
     vectors = resample_grid_vectors(
         source, out_shape, closed_phi=closed_phi
     )
     expected_vectors = expected / np.linalg.norm(expected, axis=-1, keepdims=True)
 
-    assert np.array_equal(points.view(np.uint64), expected.view(np.uint64))
     assert np.array_equal(
         vectors.view(np.uint64), expected_vectors.view(np.uint64)
     )

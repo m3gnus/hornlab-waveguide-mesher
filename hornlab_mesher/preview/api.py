@@ -307,16 +307,25 @@ def _lod_config(config: Mapping[str, Any], angular: int, axial: int) -> dict[str
 
 
 def _adaptive_lod_config(
-    config: Mapping[str, Any], angular: int, axial: int, *, power: float
+    config: Mapping[str, Any],
+    angular: int,
+    axial: int,
+    *,
+    power: float,
+    formula: str,
 ) -> dict[str, Any]:
-    """Seed the candidate lattice with a nested throat-biased axial map."""
+    """Seed the candidate lattice with a nested throat-biased axial map.
+
+    ``formula`` is the resolved formula from ``build_geometry_params``, never
+    re-read from the raw config: the resolver accepts it at the top level or
+    under ``profile`` (``formula`` or ``type``) and normalises its spelling.
+    """
 
     result = _lod_config(config, angular, axial)
     mesh = dict(result["mesh"])
     sampling = str(
         mesh.get("sampling_mode", mesh.get("samplingMode", "uniform"))
     ).strip().lower()
-    formula = str(config.get("formula", "OSSE")).strip().upper()
     if formula != "ICW" and sampling in {"", "uniform", "linear", "canonical", "default"} and not any(
         key in mesh
         for key in ("z_map_points", "zMapPoints", "zmapPoints", "ZMapPoints")
@@ -938,6 +947,14 @@ def _source_cap(
 ) -> tuple[PreviewSurfaceV1, dict[str, float] | None, dict[str, float | None]]:
     ring = np.asarray(inner[:, 0, :], dtype=np.float64)
     center = np.mean(ring, axis=0)
+    if not closed_phi:
+        # A reduced (quadrant/half) model's throat ring is an arc, so its mean
+        # lies off the axis. The solved build pins the cap on the axis for an
+        # open ring (``point_grid_sources._throat_radius`` and
+        # ``_add_source_surfaces``); so must the preview, or the pole, the cap
+        # height and the sphere radius all differ from the full model's.
+        center[0] = 0.0
+        center[1] = 0.0
     radial = ring[:, :2] - center[:2]
     radii = np.linalg.norm(radial, axis=1)
     throat_radius = float(np.mean(radii[radii > 1.0e-12]))
@@ -1035,7 +1052,13 @@ def _source_cap(
         ),
         metadata=_orientation_metadata(oriented),
     )
-    angular_step = 2.0 * math.pi / n_phi if closed_phi else math.pi / max(n_phi - 1, 1)
+    if closed_phi:
+        angular_step = 2.0 * math.pi / n_phi
+    else:
+        # The ring's real azimuth steps: a quadrant spans a quarter turn, not
+        # the half turn ``pi / (n_phi - 1)`` assumed.
+        azimuth = np.unwrap(np.arctan2(directions[:, 1], directions[:, 0]))
+        angular_step = float(np.max(np.abs(np.diff(azimuth)))) if n_phi > 1 else 0.0
     polar_step = rim_angle / radial_intervals
     max_angle = max(polar_step, math.sin(rim_angle) * angular_step)
     fidelity = {
@@ -2519,8 +2542,32 @@ def _nearest_indices(values: NDArray[np.float64], targets: list[float]) -> list[
     )
 
 
+def _radial_extrema(radius: NDArray[np.float64]) -> NDArray[np.int64]:
+    """Stations where the mean radius turns, or starts or stops being constant.
+
+    A constant-radius run (a straight throat extension, a cylindrical slot) has
+    zero slope throughout, and ``slope[i-1] * slope[i] <= 0`` flagged every
+    station inside it: a 30 mm extension forced 56 of 193 master rows into the
+    render grid (100 axial rows instead of 58) for no fidelity gain. A run is
+    collapsed to its two ends, which are the real shape transitions; strict
+    sign changes are kept. Slopes within float noise of zero count as zero.
+    """
+
+    values = np.asarray(radius, dtype=np.float64)
+    slope = np.diff(values)
+    if len(slope) < 2:
+        return np.empty(0, dtype=np.int64)
+    scale = float(np.max(np.abs(values))) if len(values) else 0.0
+    tolerance = 64.0 * np.finfo(np.float64).eps * max(scale, 1.0)
+    sign = np.where(np.abs(slope) <= tolerance, 0.0, np.sign(slope))
+    before, after = sign[:-1], sign[1:]
+    turns = before * after < 0.0
+    run_edge = (before == 0.0) != (after == 0.0)
+    return np.flatnonzero(turns | run_edge) + 1
+
+
 def _semantic_t_stations(
-    config: Mapping[str, Any], output: Mapping[str, Any], t_values: NDArray[np.float64]
+    output: Mapping[str, Any], t_values: NDArray[np.float64]
 ) -> tuple[list[int], list[str], list[str]]:
     targets = [0.0, 1.0]
     inserted = ["throat", "mouth"]
@@ -2532,9 +2579,11 @@ def _semantic_t_stations(
         targets.append(float(morph_start))
         inserted.append("morph start")
 
-    profile = config.get("profile")
-    if isinstance(profile, Mapping) and str(output["formula"]).upper() == "FREEFORM":
-        for station in profile.get("crossSections", ()):
+    # The resolved parameters, not the raw config: the resolver also accepts
+    # the profile under ``parameters`` and the formula in several spellings.
+    if str(output["formula"]).upper() == "FREEFORM":
+        profile = params
+        for station in profile.get("crossSections") or ():
             if isinstance(station, Mapping) and isinstance(station.get("t"), (int, float)):
                 targets.append(float(station["t"]))
         for key in ("profileH", "profileV"):
@@ -2556,8 +2605,7 @@ def _semantic_t_stations(
     master_grid = output["grid"]
     points = master_grid["inner_grid"]
     radius = np.mean(np.linalg.norm(points[:, :, :2], axis=2), axis=0)
-    slope = np.diff(radius)
-    extrema = np.flatnonzero(slope[:-1] * slope[1:] <= 0.0) + 1
+    extrema = _radial_extrema(radius)
     if len(extrema):
         targets.extend(float(t_values[index]) for index in extrema)
         inserted.append("canonical rollback/radial extrema")
@@ -2685,54 +2733,35 @@ def _intervals_for_arc(
     return min(_MAX_ARC_INTERVALS, max(int(floor), by_normal, by_chord))
 
 
-def _configuration_has_corners(config: Mapping[str, Any]) -> bool:
-    profile = config.get("profile")
-    profile = profile if isinstance(profile, Mapping) else {}
-    if str(config.get("formula", "OSSE")).strip().upper() == "FREEFORM":
+def _configuration_has_corners(params: Mapping[str, Any], formula: str) -> bool:
+    """Whether the resolved geometry carries true (morph-target 1) corners.
+
+    Reads the parameters ``build_geometry_params`` resolved, so every accepted
+    spelling of the formula, the cross sections and the morph target is seen
+    exactly as the builder sees it.
+    """
+
+    target = params.get("morphTarget", 0)
+    if formula == "FREEFORM":
         station_has_corners = any(
             isinstance(station, Mapping)
             and str(station.get("shape", "")).strip().lower() == "rounded_rectangle"
-            for station in profile.get("crossSections", ())
+            for station in (params.get("crossSections") or ())
         )
         if station_has_corners:
             return True
-        morph = config.get("morph", config.get("MORPH"))
-        morph = morph if isinstance(morph, Mapping) else {}
-        target = morph.get(
-            "morph_target",
-            morph.get(
-                "morphTarget",
-                config.get(
-                    "morph_target",
-                    config.get(
-                        "morphTarget",
-                        profile.get("morph_target", profile.get("morphTarget", 0)),
-                    ),
-                ),
-            ),
-        )
         try:
             static_target = float(target)
         except (TypeError, ValueError):
             return False
         return math.isfinite(static_target) and int(round(static_target)) == 1
-    morph = config.get("morph", config.get("MORPH"))
-    morph = morph if isinstance(morph, Mapping) else {}
-    target = morph.get(
-        "morph_target",
-        morph.get(
-            "morphTarget",
-            config.get(
-                "morph_target",
-                config.get(
-                    "morphTarget",
-                    profile.get("morph_target", profile.get("morphTarget", 0)),
-                ),
-            ),
-        ),
-    )
     # A finite-exponent superellipse (target 3) is smooth and has no true corners.
-    return isinstance(target, (int, float)) and int(round(float(target))) == 1
+    return (
+        isinstance(target, (int, float))
+        and not isinstance(target, bool)
+        and math.isfinite(float(target))
+        and int(round(float(target))) == 1
+    )
 
 
 def _replace_grid_with_corner_refinement(
@@ -2889,7 +2918,14 @@ def build_preview_geometry(
     preflight_limited = False
     start = time.perf_counter()
 
-    has_corners = _configuration_has_corners(config)
+    # Resolve the formula, mode and parameters once, through the same resolver
+    # the solved build uses. Re-reading ``config["formula"]`` here missed the
+    # documented ``profile.formula``/``type`` aliases and alternative
+    # spellings, which injected a z-map into ICW and skipped FREEFORM's corner
+    # sampling.
+    parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
+    formula_name = str(_parsed_formula)
+    has_corners = _configuration_has_corners(parsed_params, formula_name)
     corner_intervals = _intervals_for_arc(
         200.0,
         90.0,
@@ -2930,11 +2966,10 @@ def build_preview_geometry(
     )
     axial_master = min(512, max(int(preset["master_axial"]), scaled_axial))
     axial_master = min(512, max(axial_master, 4 * int(preset["axial"])))
-    formula_name = str(config.get("formula", "OSSE")).strip().upper()
-    # R-OSSE/ROSSE/FREEFORM double the candidate lattice.
+    # R-OSSE/FREEFORM double the candidate lattice.
     axial_ceiling = (
         min(512, axial_master * 2)
-        if formula_name in {"R-OSSE", "ROSSE", "FREEFORM"}
+        if formula_name in {"R-OSSE", "FREEFORM"}
         else axial_master
     )
     # The doubling earns its cost on some of those configurations and not
@@ -2957,7 +2992,7 @@ def build_preview_geometry(
     #     the chord budget, so it keeps the density it was given.
     attempt_thin_master = (
         axial_ceiling > axial_master
-        and formula_name in {"R-OSSE", "ROSSE"}
+        and formula_name == "R-OSSE"
         and not has_corners
         and 4 * int(preset["axial"]) > int(preset["master_axial"])
     )
@@ -2975,7 +3010,6 @@ def build_preview_geometry(
     # stays the same quantity it was before escalation existed.
     canonical_ms = 0.0
     axial_power = {"coarse": 1.75, "fine": 2.0, "inspection": 2.5}[lod]
-    parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
     warnings.extend(_guiding_curve_warnings(parsed_params, _parsed_formula))
     # The wall thickness as configured. ``deferred_wall`` below is only set on
     # the corner-refinement path, where the outer shell is rebuilt here instead
@@ -2990,7 +3024,7 @@ def build_preview_geometry(
 
         nonlocal canonical_ms, deferred_wall
         sampling_config = _adaptive_lod_config(
-            config, angular_master, axial, power=axial_power
+            config, angular_master, axial, power=axial_power, formula=formula_name
         )
         if deferred_wall > 0.0:
             mesh = dict(sampling_config["mesh"])
@@ -3035,7 +3069,7 @@ def build_preview_geometry(
             t_coordinates=master_t,
             phi_coordinates=master_phi,
         )
-        semantic = _semantic_t_stations(config, output, master_t)
+        semantic = _semantic_t_stations(output, master_t)
         initial_t = sorted(
             set(
                 _even_indices(

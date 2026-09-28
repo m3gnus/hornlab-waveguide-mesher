@@ -7,12 +7,34 @@ import copy
 import numpy as np
 import pytest
 
+from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.preview.api import (
     PreviewOptionsV1,
     PreviewSurfaceV1,
     _configuration_has_corners,
     build_preview_geometry,
 )
+
+
+_FREEFORM_PROFILES = {
+    "profileH": {
+        "points": [[0.0, 12.7], [60.0, 80.0], [120.0, 160.0]],
+        "throatAngleDeg": 15.5,
+        "mouthAngleDeg": 70.0,
+    },
+    "profileV": {
+        "points": [[0.0, 12.7], [60.0, 60.0], [120.0, 110.0]],
+        "throatAngleDeg": 15.5,
+        "mouthAngleDeg": 60.0,
+    },
+}
+
+
+def _has_corners(config):
+    """Corner detection on the parameters the solved build resolves."""
+
+    params, formula, _mode = build_geometry_params(config)
+    return _configuration_has_corners(params, formula)
 
 
 ROUNDED_RECT_MORPH = {
@@ -44,21 +66,35 @@ ROUNDED_RECT_MORPH = {
         {"formula": "OSSE", "profile": {}, "morph": {"morph_target": 1}},
         {"formula": "OSSE", "profile": {}, "MORPH": {"morphTarget": 1}},
         {"formula": "OSSE", "profile": {}, "morphTarget": 1},
-        {"formula": "OSSE", "profile": {"morph_target": 1}},
+        {"profile": {"formula": "OSSE"}, "morph": {"morphTarget": 1}},
+        {"formula": "osse", "morph": {"morphTarget": "1"}},
     ],
 )
 def test_corner_detection_accepts_canonical_and_legacy_morph_locations(config):
-    assert _configuration_has_corners(config) is True
+    assert _has_corners(config) is True
+
+
+def test_corner_detection_follows_the_resolver_not_the_raw_config():
+    """A key the resolver does not read must not switch the preview to corners.
+
+    ``profile.morph_target`` is not a morph location for ``build_geometry_params``
+    (the solved horn is not morphed), so the preview used to spend corner
+    sampling on a round horn it drew as round anyway.
+    """
+
+    config = {"formula": "OSSE", "profile": {"morph_target": 1}}
+    assert build_geometry_params(config)[0]["morphTarget"] == 0
+    assert _has_corners(config) is False
 
 
 def test_only_rounded_rectangle_morph_target_has_corners():
-    assert not _configuration_has_corners(
+    assert not _has_corners(
         {"formula": "OSSE", "profile": {}, "morph": {"morphTarget": 0}}
     )
-    assert not _configuration_has_corners(
+    assert not _has_corners(
         {"formula": "OSSE", "profile": {}, "morph": {"morphTarget": 2}}
     )
-    assert not _configuration_has_corners(
+    assert not _has_corners(
         {"formula": "OSSE", "profile": {}, "morph": {"morphTarget": 3}}
     )
 
@@ -68,30 +104,32 @@ def test_freeform_rectangle_morph_enables_corner_refinement(target, expected):
     config = {
         "formula": "FREEFORM",
         "profile": {
+            **_FREEFORM_PROFILES,
             "crossSections": [
                 {"t": 0.0, "shape": "ellipse"},
                 {"t": 1.0, "shape": "ellipse"},
             ]
         },
-        "morph": {"morphTarget": target},
+        "morph": {"morphTarget": target, "morphCorner": 30.0},
     }
 
-    assert _configuration_has_corners(config) is expected
+    assert _has_corners(config) is expected
 
 
 def test_freeform_rounded_rectangle_station_enables_corner_refinement():
     config = {
         "formula": "FREEFORM",
         "profile": {
+            **_FREEFORM_PROFILES,
             "crossSections": [
                 {"t": 0.0, "shape": "ellipse"},
-                {"t": 1.0, "shape": "rounded_rectangle"},
+                {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 20.0},
             ]
         },
-        "morph": {"morphTarget": 3},
+        "morph": {"morphTarget": 0},
     }
 
-    assert _configuration_has_corners(config) is True
+    assert _has_corners(config) is True
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine", "inspection"])

@@ -183,6 +183,204 @@ def _worst_axis_interval(
     return worst_score, worst_chord, worst_normal, worst_split, unmeasured
 
 
+def _point_segment_squared(
+    points: NDArray[np.float64],
+    start: NDArray[np.float64],
+    end: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Squared distance from each point to the segment ``start``-``end``."""
+
+    edge = end - start
+    length = np.einsum("...i,...i->...", edge, edge)
+    offset = points - start
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fraction = np.einsum("...i,...i->...", offset, edge) / length
+    fraction = np.where(length > 0.0, np.clip(fraction, 0.0, 1.0), 0.0)
+    delta = offset - fraction[..., None] * edge
+    return np.einsum("...i,...i->...", delta, delta)
+
+
+def _triangle_plane_squared(
+    points: NDArray[np.float64],
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    c: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+    """Squared plane distance, and whether each point projects inside ``abc``.
+
+    A degenerate (zero-area) triangle contains no projection.
+    """
+
+    ab = b - a
+    ac = c - a
+    normal = np.cross(ab, ac)
+    area2 = np.einsum("...i,...i->...", normal, normal)
+    offset = points - a
+    height = np.einsum("...i,...i->...", offset, normal)
+    usable = area2 > 0.0
+    ratio = np.divide(height, area2, out=np.zeros_like(height), where=usable)
+    projected = offset - ratio[..., None] * normal
+    inside = usable.copy()
+    # Edge-side tests on the projected point, each relative to its edge's start.
+    for edge, relative in (
+        (ab, projected),
+        (c - b, projected - ab),
+        (-ac, projected - ac),
+    ):
+        side = np.einsum("...i,...i->...", np.cross(edge, relative), normal)
+        inside &= side >= 0.0
+    plane = np.where(usable, height * ratio, np.inf)
+    return plane, inside
+
+
+def _point_triangle_squared(
+    points: NDArray[np.float64],
+    a: NDArray[np.float64],
+    b: NDArray[np.float64],
+    c: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Squared distance from each point to the solid triangle ``abc``.
+
+    The plane distance applies where the point projects inside the triangle,
+    and the nearest edge everywhere else. A degenerate (zero-area) triangle is
+    its edges.
+    """
+
+    plane, inside = _triangle_plane_squared(points, a, b, c)
+    edges = np.minimum(
+        _point_segment_squared(points, a, b),
+        np.minimum(
+            _point_segment_squared(points, b, c),
+            _point_segment_squared(points, c, a),
+        ),
+    )
+    return np.where(inside, np.minimum(plane, edges), edges)
+
+
+def _quad_triangle_squared(
+    points: NDArray[np.float64],
+    p00: NDArray[np.float64],
+    p01: NDArray[np.float64],
+    p10: NDArray[np.float64],
+    p11: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Squared distance to the two triangles a grid quad is emitted as.
+
+    ``p00``/``p01`` are the quad's lower-``t`` row (``phi`` increasing) and
+    ``p10``/``p11`` its upper one. The preview splits every quad on the
+    ``p00``-``p11`` diagonal (``preview.api._grid_indices``), so these are the
+    planar faces a renderer draws -- not the bilinear patch through the same
+    four corners, which a twisted quad departs from.
+
+    A point that projects into one of the two triangles takes that plane's
+    distance (the smaller one if it projects into both); only the rest pay for
+    the five edges. This can only read high, never low: a point inside one
+    triangle is charged that triangle even if the other is marginally nearer.
+    """
+
+    shape = np.broadcast_shapes(points.shape, p00.shape)
+    points, p00, p01, p10, p11 = (
+        np.broadcast_to(value, shape).reshape(-1, 3)
+        for value in (points, p00, p01, p10, p11)
+    )
+    plane_a, inside_a = _triangle_plane_squared(points, p00, p01, p11)
+    plane_b, inside_b = _triangle_plane_squared(points, p00, p11, p10)
+    squared = np.full(len(points), np.inf, dtype=np.float64)
+    squared[inside_a] = plane_a[inside_a]
+    squared[inside_b] = np.minimum(squared[inside_b], plane_b[inside_b])
+    outside = ~(inside_a | inside_b)
+    if np.any(outside):
+        q = points[outside]
+        a, b, c, d = p00[outside], p01[outside], p11[outside], p10[outside]
+        edges = _point_segment_squared(q, a, b)
+        for start, end in ((b, c), (c, d), (d, a), (a, c)):
+            edges = np.minimum(edges, _point_segment_squared(q, start, end))
+        squared[outside] = edges
+    return squared.reshape(shape[:-1])
+
+
+def _cell_lookup(
+    selected: list[int] | NDArray[np.int64], size: int, *, closed: bool
+) -> tuple[NDArray[np.int64], NDArray[np.bool_]]:
+    """Map every candidate index to the selected interval containing it.
+
+    Returns the interval number per candidate and a mask of candidates that
+    lie inside the selection (an open selection need not span every sample).
+    Candidates on a selected station belong to the interval that starts there
+    (the last one closes the final interval of an open selection).
+    """
+
+    stations = np.asarray(sorted(set(int(value) for value in selected)), dtype=np.int64)
+    candidates = np.arange(size, dtype=np.int64)
+    cell = np.searchsorted(stations, candidates, side="right") - 1
+    if closed:
+        cell = np.where(cell < 0, len(stations) - 1, cell)
+        return cell, np.ones(size, dtype=bool)
+    inside = (candidates >= stations[0]) & (candidates <= stations[-1])
+    cell = np.clip(cell, 0, len(stations) - 2)
+    return cell, inside
+
+
+def emitted_triangle_errors(
+    points: NDArray[np.float64],
+    t_indices: list[int] | NDArray[np.int64],
+    phi_indices: list[int] | NDArray[np.int64],
+    *,
+    closed_phi: bool,
+) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.int64], NDArray[np.bool_]]:
+    """Distance of every true-surface sample from the triangles emitted for it.
+
+    ``points`` is the ``(t, phi, xyz)`` candidate grid and the index lists are
+    the stations the render grid keeps. A sample strictly inside a quad is
+    measured against the quad's two triangles -- the samples neither
+    parameter-direction chord sees; a sample on a kept row or column is
+    measured against that grid line's segment, which is the triangles' shared
+    edge; a sample on both is a vertex. Returns the distances, the ``(t, phi)``
+    quad of every sample, and a mask of the samples the selection covers.
+    """
+
+    grid = np.asarray(points, dtype=np.float64)
+    t_stations = np.asarray(sorted(set(int(v) for v in t_indices)), dtype=np.int64)
+    phi_stations = np.asarray(sorted(set(int(v) for v in phi_indices)), dtype=np.int64)
+    n_t, n_phi = grid.shape[:2]
+    t_cell, t_inside = _cell_lookup(t_stations, n_t, closed=False)
+    phi_cell, phi_inside = _cell_lookup(phi_stations, n_phi, closed=closed_phi)
+    covered = t_inside[:, None] & phi_inside[None, :]
+    on_t = np.zeros(n_t, dtype=bool)
+    on_t[t_stations] = True
+    on_phi = np.zeros(n_phi, dtype=bool)
+    on_phi[phi_stations] = True
+    lower_t = t_stations[t_cell]
+    upper_t = t_stations[t_cell + 1]
+    lower_phi = phi_stations[phi_cell]
+    upper_phi = phi_stations[(phi_cell + 1) % len(phi_stations)]
+
+    squared = np.zeros((n_t, n_phi), dtype=np.float64)
+    interior = covered & ~on_t[:, None] & ~on_phi[None, :]
+    rows, cols = np.nonzero(interior)
+    if len(rows):
+        squared[rows, cols] = _quad_triangle_squared(
+            grid[rows, cols],
+            grid[lower_t[rows], lower_phi[cols]],
+            grid[lower_t[rows], upper_phi[cols]],
+            grid[upper_t[rows], lower_phi[cols]],
+            grid[upper_t[rows], upper_phi[cols]],
+        )
+    # On a kept column, between kept rows: the column's own segment.
+    rows, cols = np.nonzero(covered & ~on_t[:, None] & on_phi[None, :])
+    if len(rows):
+        squared[rows, cols] = _point_segment_squared(
+            grid[rows, cols], grid[lower_t[rows], cols], grid[upper_t[rows], cols]
+        )
+    # On a kept row, between kept columns: the row's own segment.
+    rows, cols = np.nonzero(covered & on_t[:, None] & ~on_phi[None, :])
+    if len(rows):
+        squared[rows, cols] = _point_segment_squared(
+            grid[rows, cols], grid[rows, lower_phi[cols]], grid[rows, upper_phi[cols]]
+        )
+    return np.sqrt(squared), t_cell, phi_cell, covered
+
+
 def adaptive_grid_indices(
     points: NDArray[np.float64],
     normals: NDArray[np.float64],
@@ -299,6 +497,85 @@ def adaptive_grid_indices(
             cap_limited = True
             break
 
+    # The directional chords bound the grid LINES; the renderer draws each quad
+    # as two planar triangles, and a twisted quad departs from those between its
+    # lines even when every line is exact (P(u,v) = (100u, 100v, 4uv) mm is
+    # straight along both parameters and ~1 mm off its triangles in the middle).
+    # Measure every candidate sample against the triangles actually emitted for
+    # it and split any quad that still misses the whole chord budget.
+    triangle_error = 0.0
+    while True:
+        distances, t_cell, phi_cell, covered = emitted_triangle_errors(
+            sample_points, t_indices, phi_indices, closed_phi=closed_phi
+        )
+        triangle_error = float(np.max(distances[covered])) if np.any(covered) else 0.0
+        failing = covered & (distances > max_chord_error_mm * (1.0 + 1.0e-9))
+        if not np.any(failing):
+            break
+        added = False
+        t_set = set(t_indices)
+        phi_set = set(phi_indices)
+        rows, cols = np.nonzero(failing)
+        order = np.argsort(-distances[rows, cols], kind="stable")
+        seen_cells: set[tuple[int, int]] = set()
+        t_sorted = sorted(t_set)
+        phi_sorted = sorted(phi_set)
+
+        def t_stations_of(interval: int) -> tuple[int, int]:
+            return t_sorted[interval], t_sorted[interval + 1]
+
+        def phi_stations_of(interval: int) -> tuple[int, int]:
+            return phi_sorted[interval], phi_sorted[(interval + 1) % len(phi_sorted)]
+
+        for flat in order:
+            row, col = int(rows[flat]), int(cols[flat])
+            cell = (int(t_cell[row]), int(phi_cell[col]))
+            if cell in seen_cells:
+                continue
+            seen_cells.add(cell)
+            # The worst sample of this quad names the split. Along a grid line
+            # it can only split that line's own direction; strictly inside the
+            # quad either direction halves the twist, so split across the
+            # quad's longer extent and keep its triangles from turning into
+            # slivers.
+            split_t = row not in t_set
+            split_phi = col not in phi_set
+            if split_t and split_phi:
+                lower_t = t_stations_of(cell[0])
+                lower_phi, upper_phi = phi_stations_of(cell[1])
+                corners = sample_points[np.ix_(lower_t, (lower_phi, upper_phi))]
+                extent_t = float(
+                    np.sum(np.linalg.norm(corners[1] - corners[0], axis=-1))
+                )
+                extent_phi = float(
+                    np.sum(np.linalg.norm(corners[:, 1] - corners[:, 0], axis=-1))
+                )
+                if extent_t >= extent_phi:
+                    split_phi = False
+                else:
+                    split_t = False
+            if split_t:
+                projected = (len(t_indices) + 1) * len(phi_indices)
+                if cap is not None and projected > cap:
+                    cap_limited = True
+                    continue
+                t_indices.append(row)
+                t_set.add(row)
+                added = True
+            elif split_phi:
+                projected = len(t_indices) * (len(phi_indices) + 1)
+                if cap is not None and projected > cap:
+                    cap_limited = True
+                    continue
+                phi_indices.append(col)
+                phi_set.add(col)
+                added = True
+        t_indices.sort()
+        phi_indices.sort()
+        if not added:
+            cap_limited = True
+            break
+
     t_error = _worst_axis_interval(
         sample_points,
         measure,
@@ -319,8 +596,12 @@ def adaptive_grid_indices(
     )
     unmeasured_intervals = int(t_error[4] + phi_error[4])
     measurement_complete = unmeasured_intervals == 0
+    # The emitted triangles' measured deviation from every candidate sample
+    # they cover, rather than the sum of the two directional line chords: that
+    # sum is not a bound for planar triangles (it misses the twist) and it
+    # charges tangential parameter drift that moves no surface.
     achieved_chord = (
-        max(np.finfo(np.float64).eps, t_error[1] + phi_error[1])
+        max(np.finfo(np.float64).eps, triangle_error)
         if measurement_complete
         else None
     )
@@ -718,44 +999,71 @@ def resample_grid_vectors(
     return _normalise(result)
 
 
-def _bilinear_coarse_points(
-    coarse: NDArray[np.float64],
+def _reference_cells(
+    coarse_shape: tuple[int, int],
     reference_shape: tuple[int, int],
     *,
     closed_phi: bool,
-) -> NDArray[np.float64]:
-    """Evaluate the coarse chord surface at the dense reference parameters."""
+    coarse_t: NDArray[np.float64] | None,
+    coarse_phi: NDArray[np.float64] | None,
+    reference_t: NDArray[np.float64] | None,
+    reference_phi: NDArray[np.float64] | None,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """The coarse quad containing each reference sample, in parameter space.
 
-    coarse_t, coarse_phi, _ = coarse.shape
-    ref_t, ref_phi = reference_shape
-    t_coords = np.linspace(0.0, coarse_t - 1.0, ref_t)
-    if closed_phi:
-        phi_coords = np.arange(ref_phi, dtype=np.float64) * coarse_phi / ref_phi
-    else:
-        phi_coords = np.linspace(0.0, coarse_phi - 1.0, ref_phi)
-    t0 = np.minimum(np.floor(t_coords).astype(np.int64), coarse_t - 1)
-    t1 = np.minimum(t0 + 1, coarse_t - 1)
-    wt = t_coords - t0
-    phi_floor = np.floor(phi_coords)
-    p0 = phi_floor.astype(np.int64)
-    if closed_phi:
-        p0 %= coarse_phi
-        p1 = (p0 + 1) % coarse_phi
-    else:
-        p0 = np.minimum(p0, coarse_phi - 1)
-        p1 = np.minimum(p0 + 1, coarse_phi - 1)
-    wp = phi_coords - phi_floor
-    phi_weight = wp[None, :, None]
-    a = (
-        coarse[t0[:, None], p0[None, :]] * (1.0 - phi_weight)
-        + coarse[t0[:, None], p1[None, :]] * phi_weight
+    Returns the quad's lower ``t`` row per reference row and its lower ``phi``
+    column per reference sample ``(ref_t, ref_phi)``. Without coordinates both
+    grids span the same parameter range in index space, exactly as
+    ``resample_grid_vectors`` maps them; with coordinates each reference row
+    is located between the two coarse rows around it, on their blended azimuths.
+    """
+
+    coarse_rows, coarse_columns = coarse_shape
+    ref_rows, ref_columns = reference_shape
+    last_row = max(coarse_rows - 2, 0)
+    last_column = max(coarse_columns - 2, 0)
+    if all(
+        value is None for value in (coarse_t, coarse_phi, reference_t, reference_phi)
+    ):
+        t_coords = np.linspace(0.0, coarse_rows - 1.0, ref_rows)
+        if closed_phi:
+            phi_coords = (
+                np.arange(ref_columns, dtype=np.float64) * coarse_columns / ref_columns
+            )
+        else:
+            phi_coords = np.linspace(0.0, coarse_columns - 1.0, ref_columns)
+        t_cell = np.minimum(np.floor(t_coords).astype(np.int64), last_row)
+        phi_cell = np.floor(phi_coords).astype(np.int64)
+        if closed_phi:
+            phi_cell %= coarse_columns
+        else:
+            phi_cell = np.minimum(phi_cell, last_column)
+        return t_cell, np.broadcast_to(phi_cell, (ref_rows, ref_columns)).copy()
+
+    source_t, source_phi = _coordinate_grid(
+        coarse_rows, coarse_columns, coarse_t, coarse_phi, closed_phi=closed_phi
     )
-    b = (
-        coarse[t1[:, None], p0[None, :]] * (1.0 - phi_weight)
-        + coarse[t1[:, None], p1[None, :]] * phi_weight
+    target_t, target_phi = _coordinate_grid(
+        ref_rows, ref_columns, reference_t, reference_phi, closed_phi=closed_phi
     )
-    t_weight = wt[:, None, None]
-    return a * (1.0 - t_weight) + b * t_weight
+    t_cell = np.clip(np.searchsorted(source_t, target_t, side="right") - 1, 0, last_row)
+    phi_cell = np.empty((ref_rows, ref_columns), dtype=np.int64)
+    for row in range(ref_rows):
+        lower, upper = int(t_cell[row]), int(t_cell[row]) + 1
+        span = float(source_t[upper] - source_t[lower])
+        weight = 0.0 if abs(span) <= 1.0e-15 else float(target_t[row] - source_t[lower]) / span
+        blended = (1.0 - weight) * np.unwrap(source_phi[lower]) + weight * np.unwrap(
+            source_phi[upper]
+        )
+        target = np.asarray(target_phi[row], dtype=np.float64)
+        if closed_phi:
+            target = blended[0] + np.mod(target - blended[0], math.tau)
+            column = np.searchsorted(blended, target, side="right") - 1
+            phi_cell[row] = np.mod(column, coarse_columns)
+        else:
+            column = np.searchsorted(blended, target, side="right") - 1
+            phi_cell[row] = np.clip(column, 0, last_column)
+    return t_cell, phi_cell
 
 
 def estimate_grid_fidelity(
@@ -773,24 +1081,30 @@ def estimate_grid_fidelity(
 
     coarse_points = np.asarray(coarse, dtype=np.float64)
     reference_points = np.asarray(reference, dtype=np.float64)
-    if any(
-        value is not None
-        for value in (coarse_t, coarse_phi, reference_t, reference_phi)
-    ):
-        chord_surface = resample_parametric_grid(
-            coarse_points,
-            reference_points.shape[:2],
-            source_t=coarse_t,
-            source_phi=coarse_phi,
-            target_t=reference_t,
-            target_phi=reference_phi,
-            closed_phi=closed_phi,
-        )
-    else:
-        chord_surface = _bilinear_coarse_points(
-            coarse_points, reference_points.shape[:2], closed_phi=closed_phi
-        )
-    chord_error = float(np.max(np.linalg.norm(reference_points - chord_surface, axis=2)))
+    t_cell, phi_cell = _reference_cells(
+        coarse_points.shape[:2],
+        reference_points.shape[:2],
+        closed_phi=closed_phi,
+        coarse_t=coarse_t,
+        coarse_phi=coarse_phi,
+        reference_t=reference_t,
+        reference_phi=reference_phi,
+    )
+    n_phi = coarse_points.shape[1]
+    t0 = t_cell[:, None]
+    t1 = t0 + 1
+    p0 = phi_cell
+    p1 = (phi_cell + 1) % n_phi if closed_phi else phi_cell + 1
+    # Measured against the planar triangles the grid is emitted as, not the
+    # bilinear patch through the same corners (see ``_quad_triangle_squared``).
+    squared = _quad_triangle_squared(
+        reference_points,
+        coarse_points[t0, p0],
+        coarse_points[t0, p1],
+        coarse_points[t1, p0],
+        coarse_points[t1, p1],
+    )
+    chord_error = float(np.sqrt(np.max(squared)))
 
     unit = _normalise(np.asarray(normals, dtype=np.float64))
     dot_t = np.sum(unit[:-1] * unit[1:], axis=2)
@@ -810,6 +1124,7 @@ def estimate_grid_fidelity(
 __all__ = [
     "analytic_grid_curvature",
     "analytic_grid_normals",
+    "emitted_triangle_errors",
     "estimate_grid_fidelity",
     "resample_parametric_grid",
     "resample_grid_vectors",
