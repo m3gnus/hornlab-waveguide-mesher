@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import logging
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
@@ -29,6 +29,8 @@ from .profile_formulas import (
     icw_meridian_points,
     osse_coverage_angle,
     osse_length_config,
+    rosse_axial_layout,
+    _rosse_tmax,
 )
 from .profile_morph import (
     _guiding_curve_type,
@@ -53,6 +55,18 @@ logger = logging.getLogger(__name__)
 
 ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY = "_acousticCornerArcSubdivision"
 FREEFORM_CONTINUOUS_COLLAPSE_KEY = "_freeformContinuousCollapse"
+# Private params keys the acoustic fit sets on its working copy so the solve
+# grid describes the surface the requested (preview) grid describes, although
+# it samples it differently: the requested grid's resolved morph start (blend
+# progress) and the normalised axial stations (morph start, subdomain
+# interfaces) that must exist as rings. Never set by user configs.
+ACOUSTIC_MORPH_START_KEY = "_acousticMorphStart"
+ACOUSTIC_AXIAL_STATIONS_KEY = "_acousticAxialStations"
+# Private params key: ``False`` gives ATH's own rule, in which Slot.Length is
+# part of the morphed horn. Set only by the ATH text importer. Everything else
+# keeps this mesher's contract that a throat extension and a slot are never
+# morphed (the extension is excluded by construction either way).
+MORPH_KEEPS_SLOT_KEY = "_morphKeepsSlot"
 
 
 def _normalise_ath_angular_segments(raw_count: int) -> int:
@@ -449,6 +463,21 @@ def _cross_section(params: Mapping[str, Any]) -> tuple[float, float]:
     return 2.0, 1.0
 
 
+GCURVE_CROSS_SECTION_CONFLICT = (
+    "a guiding curve cannot be combined with a non-circular cross_section "
+    "(exponent != 2 or aspect_ratio != 1): the cross-section scale is applied "
+    "after the coverage angle is solved against the guiding curve, so the wall "
+    "would miss the curve it was solved for; shape the outline with the "
+    "guiding curve's own aspect ratio instead"
+)
+
+
+def _cross_section_is_circular(exponent: float, aspect_ratio: float) -> bool:
+    return math.isclose(float(exponent), 2.0, rel_tol=0.0, abs_tol=1.0e-12) and math.isclose(
+        float(aspect_ratio), 1.0, rel_tol=0.0, abs_tol=1.0e-12
+    )
+
+
 def _superellipse_scale(phi: float, exponent: float, aspect_ratio: float) -> float:
     exponent = max(float(exponent), 1.0e-6)
     aspect_ratio = max(float(aspect_ratio), 1.0e-6)
@@ -717,6 +746,12 @@ def _lookup_curve(
     raw = params.get("lookupProfile", params.get("lookup_profile"))
     if raw is None:
         raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
+    for key in ("throatExtLength", "throatExtAngle", "slotLength"):
+        if eval_param(params.get(key), 0.0, 0.0) != 0.0:
+            raise ValueError(
+                f"LOOKUP formula does not support {key}: the lookupProfile defines "
+                "the whole meridian; build the extension into the lookupProfile"
+            )
     profile = np.asarray(raw, dtype=np.float64)
     if profile.ndim != 2 or profile.shape[1] != 2 or profile.shape[0] < 2:
         raise ValueError("lookupProfile must be an array of at least two [z, r] pairs")
@@ -742,11 +777,11 @@ def _raw_radial_grid(
     exponent: float,
     aspect_ratio: float,
     n_length: int,
-) -> tuple[np.ndarray, np.ndarray, float, float]:
+) -> tuple[np.ndarray, np.ndarray, "_ThroatPrefix"]:
     raw_radials = np.empty((len(angles), n_length + 1), dtype=np.float64)
     z_values = np.empty((len(angles), n_length + 1), dtype=np.float64)
-    max_fixed_len = 0.0
-    max_total_len = 0.0
+    prefix_fraction = 0.0
+    slot_end_fraction = 0.0
     lookup_curve = _lookup_curve(params, t_unit_values) if formula == "LOOKUP" else None
     lookup_meridian = (
         np.asarray(lookup_curve, dtype=np.float64) if lookup_curve is not None else None
@@ -782,8 +817,11 @@ def _raw_radial_grid(
             curve_radius = icw_meridian[:, 1]
         elif formula == "OSSE":
             _main_len, total, ext_len, slot_len = osse_length_config(params, phi_value)
-            max_fixed_len = max(max_fixed_len, float(ext_len) + float(slot_len))
-            max_total_len = max(max_total_len, float(total))
+            if total > 1.0e-12:
+                prefix_fraction = max(prefix_fraction, float(ext_len) / float(total))
+                slot_end_fraction = max(
+                    slot_end_fraction, (float(ext_len) + float(slot_len)) / float(total)
+                )
             h_bulge = eval_param(params.get("h"), phi_value, 0.0)
             # The guiding-curve inversion depends only on phi; hoist it out of
             # the per-z loop (a 24-step bisection per grid point otherwise).
@@ -796,12 +834,143 @@ def _raw_radial_grid(
             )
             curve_radius = curve_radius + h_bulge * osse_bulge_profile
         else:
+            layout = rosse_axial_layout(params, phi_value)
+            if layout.full_length > 1.0e-12 and (layout.ext_len > 0.0 or layout.slot_len > 0.0):
+                prefix_fraction = max(
+                    prefix_fraction, layout.ext_len / layout.full_length
+                )
+                slot_end_fraction = max(
+                    slot_end_fraction,
+                    (layout.ext_len + layout.slot_len) / layout.full_length,
+                )
             curve_z, curve_radius = calculate_rosse_curve(
                 t_values, phi_value, params
             )
         raw_radials[i] = curve_radius * scale
         z_values[i] = curve_z
-    return raw_radials, z_values, max_fixed_len, max_total_len
+    return raw_radials, z_values, _ThroatPrefix(prefix_fraction, slot_end_fraction)
+
+
+class _ThroatPrefix(NamedTuple):
+    """Normalised-``t`` extent of the straight throat prefix (largest over phi).
+
+    ``prefix_fraction`` ends the throat extension; ``slot_end_fraction`` ends
+    the slot that follows it. A future throat adapter segment belongs in the
+    prefix as well: whatever lies before the main flare is never morphed.
+    """
+
+    prefix_fraction: float
+    slot_end_fraction: float
+
+
+class _MorphSchedule(NamedTuple):
+    progress: np.ndarray
+    start: float
+    start_station: float | None
+
+
+def _morph_schedule(
+    params: Mapping[str, Any],
+    formula: str,
+    *,
+    t_unit_values: np.ndarray,
+    t_values: np.ndarray,
+    t_max: float,
+    throat_prefix: _ThroatPrefix,
+) -> _MorphSchedule:
+    """Blend progress per axial station and the progress where the blend starts.
+
+    The blend runs over the horn *after* the throat extension:
+    ``u = (t - e) / (1 - e)`` with ``e`` the extension's share of the
+    normalised axial parameter, so extension stations have ``u <= 0`` and are
+    never morphed, whatever axial map samples them (ATH ath.exe GridExport,
+    V2025-06: an extension stays round and ``Morph.FixedPart`` is measured
+    from its end). ``Morph.FixedPart`` snaps to the first station at or past
+    it. The slot is reserved by position too -- the blend starts no earlier
+    than the first station at or past the slot's end -- unless
+    ``MORPH_KEEPS_SLOT_KEY`` asks for ATH's rule, which morphs the slot.
+
+    Both rules used to count rings instead (``ceil(n * (ext + slot) / L)``),
+    which is a position only on a uniform map: the acoustic fit's throat-
+    clustered map then morphed the last rings of a straight extension.
+
+    Without an extension this reproduces the historical arithmetic exactly.
+    """
+
+    t_unit = np.asarray(t_unit_values, dtype=np.float64)
+    t_vals = np.asarray(t_values, dtype=np.float64)
+    e = float(throat_prefix.prefix_fraction)
+    truncated_rosse = formula == "R-OSSE" and 0.0 < t_max < 1.0
+    if e > 0.0:
+        unit_progress = (t_unit - e) / (1.0 - e)
+        progress = unit_progress
+        # Morph.FixedPart is a fraction of the untruncated path, as without
+        # an extension (a value at or above tmax disables the morph).
+        measure = unit_progress * t_max if formula == "R-OSSE" else unit_progress
+    else:
+        unit_progress = t_unit
+        # ATH blends against an assumed unit path and undershoots the target
+        # when R-OSSE tmax truncates that path. HornLab deliberately
+        # normalises both progress and its snapped start by the actual path
+        # so the mouth reaches a factor of one.
+        progress = t_unit if truncated_rosse else t_vals
+        measure = t_vals
+
+    last = len(t_unit) - 1
+    configured = eval_param(params.get("morphFixed"), 0.0, 0.0)
+    index = min(last, int(np.searchsorted(measure, configured, side="left")))
+    if e > 0.0:
+        # Never inside the extension, even for a negative FixedPart.
+        index = max(index, min(last, int(np.searchsorted(unit_progress, -1.0e-12, side="left"))))
+    slot_end = float(throat_prefix.slot_end_fraction)
+    keeps_slot = _is_true(params.get(MORPH_KEEPS_SLOT_KEY, True))
+    if keeps_slot and slot_end > e + 1.0e-15:
+        slot_progress = (slot_end - e) / (1.0 - e)
+        index = max(
+            index,
+            min(last, int(np.searchsorted(unit_progress, slot_progress - 1.0e-9, side="left"))),
+        )
+
+    if e > 0.0:
+        start = float(progress[index])
+    elif truncated_rosse:
+        start = float(t_vals[index]) / t_max
+    else:
+        start = float(t_vals[index])
+    start_station = float(t_unit[index])
+
+    override = params.get(ACOUSTIC_MORPH_START_KEY)
+    if override is not None:
+        start = float(override)
+        start_station = None
+    return _MorphSchedule(np.asarray(progress, dtype=np.float64), start, start_station)
+
+
+def _pin_axial_stations(
+    t_unit_values: np.ndarray, stations: Sequence[float] | None, *, eps: float = 1.0e-9
+) -> np.ndarray:
+    """Insert required normalised stations into an axial map.
+
+    A station within ``eps`` of an existing one is already present; callers
+    locate pinned stations by nearest value, not by equality.
+    """
+
+    if not stations:
+        return t_unit_values
+    values = np.asarray(t_unit_values, dtype=np.float64)
+    extra = []
+    for raw in stations:
+        station = float(raw)
+        if not (math.isfinite(station) and 0.0 < station < 1.0):
+            continue
+        if np.min(np.abs(values - station)) <= eps:
+            continue
+        if extra and min(abs(station - other) for other in extra) <= eps:
+            continue
+        extra.append(station)
+    if not extra:
+        return t_unit_values
+    return np.sort(np.concatenate((values, np.asarray(extra, dtype=np.float64))))
 
 
 def _freeform_quadrant_angles(
@@ -1022,6 +1191,7 @@ def _freeform_merged_axial_map(
     merged = np.asarray(merged_values, dtype=np.float64)
     merged[0] = 0.0
     merged[-1] = 1.0
+    merged = _pin_axial_stations(merged, params.get(ACOUSTIC_AXIAL_STATIONS_KEY))
     if np.any(np.diff(merged) <= 0.0):
         raise ValueError("FREEFORM merged axial stations must be strictly increasing")
     return merged, sampling_mode
@@ -1269,6 +1439,29 @@ def _freeform_raw_radial_grid(
     )
 
 
+def _reject_non_finite_grid(
+    inner: np.ndarray, angles: np.ndarray, t_values: np.ndarray, formula: str
+) -> None:
+    """Refuse a grid with NaN/inf vertices instead of handing it downstream.
+
+    A non-finite vertex has no meaning to OCC or gmsh; left in place it fails
+    much later with an unrelated message, or renders as a broken preview.
+    """
+
+    finite = np.isfinite(inner).all(axis=2)
+    if finite.all():
+        return
+    phi_index, t_index = (int(value) for value in np.argwhere(~finite)[0])
+    phi_values = np.asarray(angles, dtype=np.float64)
+    phi = float(phi_values[phi_index] if phi_values.ndim == 1 else phi_values[phi_index, t_index])
+    raise ValueError(
+        f"{formula} geometry is not finite at phi={math.degrees(phi) % 360.0:.1f} deg, "
+        f"axial station {t_index} of {len(t_values) - 1} (t={float(t_values[t_index]):.4g}); "
+        "check the profile parameters and expressions for values that leave "
+        "the formula's domain"
+    )
+
+
 def build_point_grid(
     params: Mapping[str, Any], *, defer_osse_offset_repair: bool = False
 ) -> dict[str, Any]:
@@ -1311,6 +1504,12 @@ def build_point_grid_arrays(
     if n_length < 1:
         raise ValueError("lengthSegments must be a positive integer")
     exponent, aspect_ratio = _cross_section(params)
+    if (
+        formula == "OSSE"
+        and _guiding_curve_active(params, 0.0)
+        and not _cross_section_is_circular(exponent, aspect_ratio)
+    ):
+        raise ValueError(GCURVE_CROSS_SECTION_CONFLICT)
     phi_grid: np.ndarray | None = None
     if formula == "FREEFORM":
         (
@@ -1325,19 +1524,27 @@ def build_point_grid_arrays(
         ) = _freeform_raw_radial_grid(params, n_length)
         t_unit_values = t_values
         n_length = len(t_values) - 1
-        max_fixed_len = 0.0
-        max_total_len = 0.0
+        t_max = 1.0
+        throat_prefix = _ThroatPrefix(0.0, 0.0)
     else:
         angles, full_circle = _angle_list(params)
-        t_max = float(eval_param(params.get("tmax"), 0.0, 1.0)) if formula == "R-OSSE" else 1.0
+        t_max = _rosse_tmax(params) if formula == "R-OSSE" else 1.0
         if formula == "ICW":
             # ICW samples uniformly in sigma (normalised arc length): it has no
             # ATH/R-OSSE reference axial table, and the kernel already concentrates
             # detail by arc length, so a uniform sigma grid is the natural mapping.
             # An explicit custom z-map cannot be honoured and must not be silently
-            # ignored (generic defaulted modes pass through as uniform).
-            requested_mode = str(params.get("samplingMode") or "").strip().lower()
-            if requested_mode == "zmap" or params.get("zMapPoints") is not None:
+            # ignored, whichever spelling asked for it. The ATH default map is
+            # accepted and sampled uniformly: the acoustic fit requests it for
+            # every non-FREEFORM formula.
+            z_map_points = params.get(
+                "zMapPoints", params.get("zmapPoints", params.get("ZMapPoints"))
+            )
+            requested_mode = _normalise_sampling_mode(
+                params.get("samplingMode", params.get("sampling_mode")),
+                z_map_points=z_map_points,
+            )
+            if requested_mode == "zmap" or z_map_points is not None:
                 raise ValueError(
                     "ICW does not support samplingMode='zmap'/zMapPoints; "
                     "it always samples uniformly in normalised arc length"
@@ -1346,8 +1553,12 @@ def build_point_grid_arrays(
             sampling_mode = "uniform"
         else:
             t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+        t_unit_values = _pin_axial_stations(
+            t_unit_values, params.get(ACOUSTIC_AXIAL_STATIONS_KEY)
+        )
+        n_length = len(t_unit_values) - 1
         t_values = t_unit_values * t_max
-        raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
+        raw_radials, z_values, throat_prefix = _raw_radial_grid(
             params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
         )
 
@@ -1391,7 +1602,7 @@ def build_point_grid_arrays(
             )
             if len(new_angles) != len(angles) or not np.allclose(new_angles, angles):
                 angles = new_angles
-                raw_radials, z_values, max_fixed_len, max_total_len = _raw_radial_grid(
+                raw_radials, z_values, throat_prefix = _raw_radial_grid(
                     params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
                 )
 
@@ -1399,18 +1610,14 @@ def build_point_grid_arrays(
         params, resolved_half_width, resolved_half_height
     )
 
-    configured_morph_start = eval_param(params.get("morphFixed"), 0.0, 0.0)
-    morph_start_idx = int(np.searchsorted(t_values, configured_morph_start, side="left"))
-    if morph_start_idx >= len(t_values):
-        snapped_morph_start = float(t_values[-1])
-    else:
-        snapped_morph_start = float(t_values[morph_start_idx])
-    if formula == "OSSE" and max_total_len > 1.0e-12 and max_fixed_len > 0.0:
-        # ATH keeps the throat-extension/slot region unmorphed by reserving
-        # ceil(n * (ext + slot) / L) axial slices and starting the morph at
-        # that grid slice.
-        reserved_idx = min(n_length, int(math.ceil(n_length * max_fixed_len / max_total_len - 1.0e-9)))
-        snapped_morph_start = max(snapped_morph_start, float(t_unit_values[reserved_idx]))
+    morph_schedule = _morph_schedule(
+        params,
+        formula,
+        t_unit_values=t_unit_values,
+        t_values=t_values,
+        t_max=t_max,
+        throat_prefix=throat_prefix,
+    )
 
     # _apply_morphing is a per-point no-op unless morphTarget resolves to a
     # morph shape (1/2/3). When the param is absent or a plain non-morph
@@ -1440,15 +1647,8 @@ def build_point_grid_arrays(
             # is the global normalized axial position (z / L for OSSE),
             # identical for every azimuth: ATH does not shift the blend by the
             # per-azimuth slot length.
-            morph_progress = t_values
-            morph_progress_start = snapped_morph_start
-            if formula == "R-OSSE" and 0.0 < t_max < 1.0:
-                # ATH blends against an assumed unit path and undershoots the
-                # target when R-OSSE tmax truncates that path. HornLab
-                # deliberately normalises both progress and its snapped start
-                # by the actual path so the mouth reaches a factor of one.
-                morph_progress = t_unit_values
-                morph_progress_start = snapped_morph_start / t_max
+            morph_progress = morph_schedule.progress
+            morph_progress_start = morph_schedule.start
             radials = raw_radials.copy()
             for i, phi in enumerate(angles):
                 phi_value = float(phi)
@@ -1476,6 +1676,8 @@ def build_point_grid_arrays(
         inner[:, :, 0] = radials * np.cos(angles)[:, None]
         inner[:, :, 1] = radials * np.sin(angles)[:, None]
         inner[:, :, 2] = z_values
+
+    _reject_non_finite_grid(inner, angles if phi_grid is None else phi_grid, t_values, formula)
 
     # ATH's global Scale multiplies every linear geometry dimension after the
     # profile (and morph-target ceil) is evaluated.
@@ -1560,6 +1762,14 @@ def build_point_grid_arrays(
         "angle_list": angles.tolist(),
         "slice_map": t_values.tolist(),
         "sampling_mode": sampling_mode,
+        # Where the morph blend starts, in blend progress and as the axial
+        # station (normalised ``t``) that carries it; ``None`` for FREEFORM,
+        # whose morph is evaluated analytically. The acoustic fit reuses these
+        # so the solve grid morphs exactly the surface the requested grid shows.
+        "morph_start": None if formula == "FREEFORM" else morph_schedule.start,
+        "morph_start_station": (
+            None if formula == "FREEFORM" else morph_schedule.start_station
+        ),
         # Azimuth span of the fixed-structure morph corner arc (first quadrant),
         # so the acoustic fit can tell corner intervals from wall intervals.
         "morph_corner_arc_span": (

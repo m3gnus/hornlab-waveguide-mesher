@@ -33,10 +33,9 @@ the same tradeoffs.
   profile radius/length, but does not add that recessed driven-surface detail.
   Decide whether this is required for acoustic fidelity or should be documented
   as a deliberate simplification.
-- D5 `Scale` x wall thickness: ATH does not scale wall thickness; the mesher
-  currently scales it with other linear geometry. Matching ATH would change
-  existing scaled outputs, including optimizer-era runs, so this remains a user
-  decision.
+- D5 `Scale` x wall thickness: decided and implemented. The mesher no longer
+  scales `Mesh.WallThickness` with `Scale`, matching ATH (wall 5 mm at scale 1
+  and 2; see the "ATH does not scale" note in `config_builder.resolve_geometry`).
 - D6 Boundary Lab runner protocol: consider replacing stdout/stderr sniffing with
   a structured one-line build-result JSON contract. Also decide whether duplicate
   `Mesh.Quadrants`, block-form `Mesh = {}`, and case-sensitivity divergences

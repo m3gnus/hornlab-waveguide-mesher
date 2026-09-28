@@ -120,7 +120,9 @@ _OSSE_CASES = {
     },
     "rotated": {"rot": 7.5},
     "saturating_superellipse": {"q": 4.0, "n": 2.0, "s": 1.0},
-    "no_superellipse_term": {"n": 0.0},
+    # s = 0 is the legitimate way to switch the termination term off; n <= 0
+    # and q <= 0 are refused (tests/test_geometry_review_fixes.py).
+    "no_superellipse_term": {"s": 0.0},
     "circular_arc": {"throatProfile": 3.0, "circArcRadius": 400.0},
     "circular_arc_tangent": {"throatProfile": 3.0, "circArcTermAngle": 12.0},
     "azimuthal_expressions": {

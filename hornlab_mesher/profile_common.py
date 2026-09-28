@@ -20,12 +20,32 @@ _DEFAULTS = {
     "b": 0.2,
 }
 
+def _bounded_pow(base: Any, exponent: Any) -> float:
+    """``pow`` for config expressions, evaluated in floating point.
+
+    Python's integer power is exact and unbounded, so a nine-character
+    expression such as ``10**10**7`` would spend seconds building a
+    ten-million-digit integer before anything could reject it -- one line in a
+    shared config could stall a preview or solve worker. Evaluating in floating
+    point turns every such request into an immediate overflow instead, and
+    changes nothing a geometry parameter can legitimately need (the result is
+    converted to ``float`` anyway).
+    """
+
+    try:
+        return float(base) ** float(exponent)
+    except OverflowError as exc:
+        raise ValueError(
+            f"exponentiation {base!r} ** {exponent!r} overflows"
+        ) from exc
+
+
 _EVAL_GLOBALS = {
     "__builtins__": {},
     "abs": abs,
     "min": min,
     "max": max,
-    "pow": pow,
+    "pow": _bounded_pow,
     "sqrt": math.sqrt,
     "sin": math.sin,
     "cos": math.cos,
@@ -54,7 +74,7 @@ _BINARY_OPS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Div: operator.truediv,
     ast.FloorDiv: operator.floordiv,
     ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
+    ast.Pow: _bounded_pow,
 }
 _UNARY_OPS: dict[type[ast.unaryop], Callable[[Any], Any]] = {
     ast.UAdd: operator.pos,
@@ -198,7 +218,10 @@ def _eval_text_param(text: str, p: float) -> float:
         _PARAM_EXPRESSION_VALIDATOR.visit(tree)
         return float(_eval_ast(tree, p))
     except Exception as exc:
-        raise ValueError(f"invalid parameter expression {text!r}") from exc
+        # Name the reason when it is ours to give (an overflowing power, an
+        # unknown name); arithmetic faults keep the plain message.
+        reason = f": {exc}" if isinstance(exc, ValueError) and str(exc) else ""
+        raise ValueError(f"invalid parameter expression {text!r}{reason}") from exc
 
 
 def eval_param(value: Any, p: float = 0.0, default: float = 0.0) -> float:
@@ -249,6 +272,16 @@ def _deg(value: Any, p: float = 0.0, default: float = 0.0) -> float:
     return math.radians(eval_param(value, p, default))
 
 
+def _osse_undefined_message(z: float, p: float, a_deg: float, a0_deg: float) -> str:
+    return (
+        f"the OS-SE profile is undefined at phi={math.degrees(p) % 360.0:.1f} deg, "
+        f"z={z:.4g} mm: with throat angle a0={a0_deg:g} deg and coverage angle "
+        f"a={a_deg:g} deg its throat term takes the square root of a negative "
+        "number (a negative a0 steeper than the coverage angle closes the "
+        "profile); reduce |a0| or widen a"
+    )
+
+
 def _osse_radius(z: float, p: float, params: Mapping[str, Any], *, r0: float, a_deg: float, a0_deg: float) -> float:
     L = eval_param(params.get("L"), p, 120.0)
     k = eval_param(params.get("k"), p, _DEFAULTS["k"])
@@ -258,7 +291,10 @@ def _osse_radius(z: float, p: float, params: Mapping[str, Any], *, r0: float, a_
     a = math.radians(a_deg)
     a0 = math.radians(a0_deg)
 
-    base = math.sqrt((k * r0) ** 2 + 2 * k * r0 * z * math.tan(a0) + (z**2) * (math.tan(a) ** 2))
+    radicand = (k * r0) ** 2 + 2 * k * r0 * z * math.tan(a0) + (z**2) * (math.tan(a) ** 2)
+    if radicand < 0.0:
+        raise ValueError(_osse_undefined_message(z, p, a_deg, a0_deg))
+    base = math.sqrt(radicand)
     base += r0 * (1 - k)
     if z <= 0 or n <= 0 or q <= 0 or L <= 0:
         return base
@@ -296,9 +332,18 @@ def _osse_radius_curve(
     a = math.radians(a_deg)
     a0 = math.radians(a0_deg)
 
-    base = np.sqrt(
+    radicand = (
         (k * r0) ** 2 + 2 * k * r0 * z * math.tan(a0) + (z**2) * (math.tan(a) ** 2)
     )
+    negative = radicand < 0.0
+    if negative.any():
+        # The scalar path raises here (math.sqrt); NumPy would return NaN with
+        # only a RuntimeWarning, and that NaN geometry travelled all the way
+        # to OCC/gmsh before failing with an unrelated message.
+        raise ValueError(
+            _osse_undefined_message(float(z[np.argmax(negative)]), p, a_deg, a0_deg)
+        )
+    base = np.sqrt(radicand)
     base += r0 * (1 - k)
     if n <= 0 or q <= 0 or L <= 0:
         return base

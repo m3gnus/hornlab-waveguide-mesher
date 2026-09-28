@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal, Mapping, NamedTuple
+from typing import Any, Callable, Literal, Mapping, NamedTuple
 
 import numpy as np
 
@@ -30,6 +30,7 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
     sin_p = math.sin(pr)
 
     if curve_type == 1:
+        # ATH documents GCurve.SE.n >= 2; smaller values are clamped to 2.
         exponent = max(2.0, eval_param(params.get("gcurveSeN"), p, 3.0))
         a = width / 2.0
         b = a * aspect
@@ -40,6 +41,11 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
         raise ValueError(f"unsupported GCurve type {curve_type}")
 
     sf = _parse_number_list(params.get("gcurveSf", params.get("gcurveSF")))
+    if 0 < len(sf) < 6:
+        # A short list used to fall back to the GCurve.SF.* defaults unseen.
+        raise ValueError(
+            f"GCurve.SF needs six values (a, b, m, n1, n2, n3), got {len(sf)}"
+        )
     if len(sf) >= 6:
         sf_a, sf_b, sf_m1, sf_n1, sf_n2, sf_n3 = sf[:6]
         sf_m2 = sf_m1
@@ -225,6 +231,7 @@ def _solve_coverage_from_guiding_curve(
     a0_deg: float,
     r0_main: float,
     probe_only: bool = False,
+    radius_offset: Callable[[float], float] | None = None,
 ) -> CoverageInversion | None:
     """Solve the coverage angle against the guiding curve at azimuth ``p``.
 
@@ -246,17 +253,28 @@ def _solve_coverage_from_guiding_curve(
     if target_z <= 0.0 or not math.isfinite(target_z):
         target_z = main_length
     target_z = min(main_length, target_z)
+    # Terms the sampler adds on top of the OS-SE radius (the ``h`` bulge) are
+    # known at the guiding-curve station, so solve for the OS-SE radius that
+    # lands the *final* wall on the curve. Without this an ``h`` bulge moved
+    # the wall off the guiding curve by up to ``h`` millimetres, unreported.
+    offset = 0.0 if radius_offset is None else float(radius_offset(target_z))
     solve = (
         _probe_osse_coverage_bracket if probe_only else _invert_osse_coverage_angle
     )
-    return solve(
-        target_radius,
+    solved = solve(
+        target_radius - offset,
         target_z,
         p,
         params,
         a0_deg=a0_deg,
         r0_main=r0_main,
         at_mouth=math.isclose(target_z, main_length, rel_tol=1e-12, abs_tol=1e-9),
+    )
+    if solved is None or offset == 0.0:
+        return solved
+    return solved._replace(
+        achieved_radius=solved.achieved_radius + offset,
+        target_radius=solved.target_radius + offset,
     )
 
 
@@ -267,9 +285,15 @@ def _coverage_angle_from_guiding_curve(
     main_length: float,
     a0_deg: float,
     r0_main: float,
+    radius_offset: Callable[[float], float] | None = None,
 ) -> float | None:
     solved = _solve_coverage_from_guiding_curve(
-        p, params, main_length=main_length, a0_deg=a0_deg, r0_main=r0_main
+        p,
+        params,
+        main_length=main_length,
+        a0_deg=a0_deg,
+        r0_main=r0_main,
+        radius_offset=radius_offset,
     )
     return None if solved is None else solved.angle_deg
 
@@ -282,6 +306,7 @@ def coverage_angle_saturation(
     a0_deg: float,
     r0_main: float,
     location: str | None = None,
+    radius_offset: Callable[[float], float] | None = None,
 ) -> str | None:
     """Human-readable reason the guiding curve could not be met at ``p``.
 
@@ -296,7 +321,12 @@ def coverage_angle_saturation(
     """
 
     solved = _solve_coverage_from_guiding_curve(
-        p, params, main_length=main_length, a0_deg=a0_deg, r0_main=r0_main
+        p,
+        params,
+        main_length=main_length,
+        a0_deg=a0_deg,
+        r0_main=r0_main,
+        radius_offset=radius_offset,
     )
     if solved is None or solved.saturated is None:
         return None
@@ -569,6 +599,23 @@ def _superellipse_radii(
     return np.where(vertical_axis, half_height, radii)
 
 
+def _morph_rate(params: Mapping[str, Any], phi: float) -> float:
+    """``Morph.Rate`` at ``phi``; a negative rate is refused.
+
+    ATH documents a minimum of 1, but rates in ``[0, 1)`` are a deliberate
+    Waveguide Generator feature (0 jumps straight to the target), so only the
+    meaningless negative range is rejected: there the blend exponent turns the
+    clamped progress into factors above one and the wall overshoots the target.
+    """
+
+    rate = eval_param(params.get("morphRate"), phi, 3.0)
+    if not rate >= 0.0:
+        raise ValueError(
+            f"Morph.Rate must be >= 0, got {rate:g} at phi={math.degrees(phi) % 360.0:.1f} deg"
+        )
+    return rate
+
+
 def _morph_factor(
     t: float,
     phi: float,
@@ -582,7 +629,7 @@ def _morph_factor(
         morph_start = eval_param(params.get("morphFixed"), phi, 0.0)
     if t <= morph_start:
         return 0.0
-    rate = eval_param(params.get("morphRate"), phi, 3.0)
+    rate = _morph_rate(params, phi)
     denom = max(1.0e-9, 1.0 - morph_start)
     return min(1.0, max(0.0, (t - morph_start) / denom)) ** rate
 
@@ -613,7 +660,7 @@ def _morph_factors(
         # evaluates morphRate. Imported ATH files can therefore retain a stale
         # or unsupported rate expression when morphFixed covers every sample.
         return factors
-    rate = eval_param(params.get("morphRate"), phi, 3.0)
+    rate = _morph_rate(params, phi)
     denom = max(1.0e-9, 1.0 - morph_start)
     factors[blending] = (
         np.minimum(1.0, np.maximum(0.0, (t[blending] - morph_start) / denom))

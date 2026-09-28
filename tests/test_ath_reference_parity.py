@@ -465,7 +465,7 @@ def _mouth_outline(case: str) -> tuple[np.ndarray, np.ndarray, float]:
 
 @pytest.mark.skipif(not HAS_ATH_REFERENCE_ROOT, reason="ATH_REFERENCE_ROOT reference archive not available")
 @pytest.mark.parametrize(
-    ("case", "target_half_dimensions"),
+    ("case", "target_full_dimensions"),
     [
         # Morph.Width / Morph.Height are not ATH keys: ATH drops them and
         # derives the target from the raw mouth extents instead. Both of these
@@ -482,7 +482,7 @@ def _mouth_outline(case: str) -> tuple[np.ndarray, np.ndarray, float]:
     ],
 )
 def test_morph_target_matches_the_mouth_ath_meshed(
-    case: str, target_half_dimensions: tuple[float, float]
+    case: str, target_full_dimensions: tuple[float, float]
 ):
     """The morphed mouth is the outline ATH's own mesh carries.
 
@@ -503,7 +503,7 @@ def test_morph_target_matches_the_mouth_ath_meshed(
         load_config(ATH_REFERENCE_ROOT / case / "config.txt")
     )
     # 0 is the builder's "no dimension given", which morphs to the raw extents.
-    assert (params["morphWidth"], params["morphHeight"]) == target_half_dimensions
+    assert (params["morphWidth"], params["morphHeight"]) == target_full_dimensions
 
     nodes = _ath_wall_nodes_in_horn_frame(case, vertical_offset)
     rim = nodes[nodes[:, 2] >= nodes[:, 2].max() - 1.0e-6]

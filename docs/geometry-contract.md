@@ -118,7 +118,10 @@ Implementation rules:
 - Throat extension and slot length are explicit axial sections before the main
   R-OSSE curve. As with OS-SE, `r0` anchors the main waveguide throat; the
   extension tapers backward to the driver-end radius. The main R-OSSE curve,
-  derived length, and mouth radius are unchanged by the extension.
+  derived length, and mouth radius are unchanged by the extension, also when
+  `tmax < 1`: the composite parameter shares the axis as
+  `ext + slot + tmax * L`, so the main curve always ends at `t = tmax`
+  (ath.exe: identical mouth with and without a 30 mm extension at tmax 0.8).
 
 Compatibility note for OS-SE and R-OSSE throat extensions: the taper-back
 implementation reproduces ATH's profile radius and total length exactly, but it
@@ -159,8 +162,8 @@ positions therefore remain exactly on the analytic curve.
 The implementation validates each polynomial segment analytically and on a
 dense radius sample. Axial motion must remain forward: `z'(u)` cannot be
 negative and may be zero only at a curve endpoint. Radius must stay positive.
-By default, radius may not leave the range of the adjacent anchor radii; the
-explicit `overshootPolicy = "allow"` relaxes only that range check. H and V
+Radius may not leave the range of the adjacent anchor radii (the former
+`overshootPolicy` key is refused). H and V
 share the same start/end z span and throat radius, so their local radii
 
 ```text
@@ -270,11 +273,24 @@ Canonical rule:
   Reading it as an alias placed a real archive config's curve at mid-length
   and missed ATH's own mesh by 89 mm.
 - Invert OS-SE coverage angle `a` so `r_osse(target_z, phi) == r_g(phi)`.
+  A non-zero `h` bulge is included: the inversion targets
+  `r_g - h * sin(pi * t_g)`, so the bulged wall meets the curve.
+- `Rot` is applied after the inversion, so a rotated profile misses the curve.
+  That is ATH's geometry too (ath.exe probe, `Rot = 10`), and is kept.
+- A non-circular `cross_section` (exponent != 2 or aspect ratio != 1) is
+  refused with an active guiding curve: its scale is applied after the
+  inversion, so the wall would miss the curve.
 
 Supported guiding curve targets:
 
-- `GCurve.Type = 1`: superellipse.
-- `GCurve.Type = 2`: superformula.
+- `GCurve.Type = 1`: superellipse. `GCurve.SE.n` below 2 is clamped to 2,
+  as ath.exe does.
+- `GCurve.Type = 2`: superformula. `GCurve.AspectRatio` scales the
+  superformula point `(r cos p, r sin p)` in x/y and assigns its length to the
+  original azimuth `p`. That is not the polar radius of the scaled curve, but it
+  is what ath.exe V2025-06 builds (mouth radii pinned in
+  `tests/test_geometry_review_fixes.py`), so it is kept. A `GCurve.SF` list must
+  have six values.
 
 Guiding curves are an OS-SE/OSSE feature in this implementation. R-OSSE with
 an active guiding curve must fail explicitly.
@@ -298,18 +314,37 @@ for z >= zf:
 
 Implementation rules:
 
-- `Morph.FixedPart` maps to `zf / L` and is snapped onto the axial grid. When
-  the profile has a throat extension or slot, the fixed region additionally
-  reserves `ceil(n * (ext + slot_max) / L)` axial slices (the longest fixed
-  prefix over all azimuths); the blend then starts at that grid slice.
+- The blend runs over the horn after the throat extension: with `e` the
+  extension's share of the normalised axial parameter, progress is
+  `u = (t - e) / (1 - e)`. Extension stations have `u <= 0` and are never
+  morphed, whatever the axial map (verified against ath.exe V2025-06, which also
+  measures `Morph.FixedPart` from the end of the extension).
+- `Morph.FixedPart` maps to `zf / L` in `u` and is snapped onto the first axial
+  station at or past it. A slot is reserved by position: the blend starts no
+  earlier than the first station at or past the slot's end. Earlier versions
+  reserved `ceil(n * (ext + slot) / L)` rings, which is a position only on a
+  uniform map; on the acoustic fit's throat-clustered map it morphed the last
+  rings of a straight extension. ATH text imports keep ATH's rule instead,
+  which morphs the slot, and default an absent `Morph.FixedPart` to ATH's
+  effective 0.2 (the m2-clone reference relies on both).
+- The acoustic fit samples on its own axial map but reuses the requested
+  grid's snapped start and pins a ring there, so the solve surface is the
+  surface the requested (preview) grid shows.
+- ath.exe snaps an explicit `Morph.FixedPart = 0` to its first slice after the
+  throat, not the throat itself; this mesher starts at the throat, as the
+  formula above says. The difference is at most about 0.6 mm mid-horn at rate 2
+  and is not reproduced.
 - The blend progress `(z - zf) / (L - zf)` uses the global normalized axial
   position and is identical for every azimuth — the per-azimuth slot length
   does not shift it (verified against the ATH m2-clone grid).
-- `Morph.Rate` maps to `gamma` and must be at least `1` for canonical use.
+- `Morph.Rate` maps to `gamma`. ATH documents a minimum of `1`; rates in
+  `[0, 1)` are accepted (Waveguide Generator uses them) and negative rates are
+  refused.
 - `Morph.TargetShape = 0` leaves the raw mouth outline unchanged.
 - `Morph.TargetShape = 1` targets a rounded rectangle.
 - `Morph.TargetShape = 2` targets a circle.
-- `Morph.TargetWidth` and `Morph.TargetHeight` are the target half-dimensions.
+- `Morph.TargetWidth` and `Morph.TargetHeight` are full target widths; the
+  target half-dimensions are half of them (ATH parity: 325 mm -> 162.5 mm).
   `Morph.Width` and `Morph.Height` are **not** ATH keys and set nothing. ATH
   ignores them; so does this importer, with a warning naming the canonical
   keys. Reading them as aliases morphed archive configs onto a mouth ATH never

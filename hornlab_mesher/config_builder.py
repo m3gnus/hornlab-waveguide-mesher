@@ -33,9 +33,15 @@ from .profile_common import (
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
 from .profile_sampling import (
+    ACOUSTIC_AXIAL_STATIONS_KEY,
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
+    ACOUSTIC_MORPH_START_KEY,
+    MORPH_KEEPS_SLOT_KEY,
+    build_point_grid_arrays,
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
+    GCURVE_CROSS_SECTION_CONFLICT,
     _classify_zmap_kind,
+    _cross_section_is_circular,
 )
 from .profiles import azimuthal_mean, build_point_grid, eval_param
 from .builders.point_grid_freestanding import (
@@ -305,6 +311,40 @@ def _validate_formula_specific_keys(
         )
         if _has_any(profile, config, names=names):
             raise ConfigError("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
+        # The lookup profile is the whole meridian: nothing prepends a throat
+        # extension, slot or driver adapter to it, and no coverage/flare
+        # coefficient shapes it. These were accepted and then silently ignored
+        # (a 25.4 -> 40 mm adapter still built the lookup's own 10 mm throat).
+        # ``a0`` stays accepted: it sets the automatic source-cap angle.
+        ignored = [
+            name
+            for name in ("a_deg", "a", "k", "q", "h")
+            if _has_any(profile, config, names=(name,))
+        ]
+        ignored.extend(
+            key
+            for key, aliases in (
+                ("throatExtLength", ("throat_ext_length_mm", "throatExtLength")),
+                ("throatExtAngle", ("throat_ext_angle_deg", "throatExtAngle")),
+                ("slotLength", ("slot_length_mm", "slotLength")),
+            )
+            if _param_is_nonzero(
+                _pick(profile, config, names=aliases, default=None), name=key
+            )
+        )
+        ignored.extend(
+            name
+            for name in _DRIVER_ADAPTER_KEYS
+            if _has_any(profile, config, names=(name,))
+        )
+        if ignored:
+            raise ConfigError(
+                "formula LOOKUP does not support "
+                + ", ".join(ignored)
+                + ": the lookupProfile defines the whole meridian, so these keys "
+                "would be ignored; build the extension or adapter into the "
+                "lookupProfile instead"
+            )
         return
 
     if formula == "ICW":
@@ -467,6 +507,15 @@ def _validate_formula_features(
         return
     if formula != "OSSE" and _gcurve_could_be_active(gcurve, config):
         raise ConfigError("guiding curves are only supported with formula OSSE")
+    if formula == "OSSE" and _gcurve_could_be_active(gcurve, config):
+        exponent = _float(
+            cross, profile, config, names=("exponent", "cross_section_exponent"), default=2.0
+        )
+        aspect_ratio = _float(
+            cross, profile, config, names=("aspect_ratio", "aspectRatio"), default=1.0
+        )
+        if not _cross_section_is_circular(exponent, aspect_ratio):
+            raise ConfigError(GCURVE_CROSS_SECTION_CONFLICT)
 
 
 def _enc_depth_mm(
@@ -603,6 +652,22 @@ def _enclosure_from_config(
             default=0.0,
         ),
     )
+
+
+_DRIVER_ADAPTER_KEYS = (
+    "driver_throat_diameter_mm",
+    "driver_throat_diameter",
+    "driverThroatDiameterMm",
+    "driverThroatDiameter",
+    "driver_throat_diameter_in",
+    "driverThroatDiameterIn",
+    "waveguide_throat_diameter_mm",
+    "waveguide_throat_diameter",
+    "waveguideThroatDiameterMm",
+    "waveguideThroatDiameter",
+    "waveguide_throat_diameter_in",
+    "waveguideThroatDiameterIn",
+)
 
 
 def _diameter_radius_mm(
@@ -959,6 +1024,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             },
         },
     }
+    keeps_slot = _pick(morph, config, names=(MORPH_KEEPS_SLOT_KEY,), default=None)
+    if keeps_slot is not None:
+        common[MORPH_KEEPS_SLOT_KEY] = bool(keeps_slot)
     length_mode = _pick(
         profile,
         config,
@@ -979,12 +1047,24 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 ),
                 "n": _scalar_or_expr(profile, config, names=("n",), default=4.0),
                 "s": _scalar_or_expr(profile, config, names=("s",), default=0.0),
+                # The half-sine bulge. It was parsed (profile ``h`` / ATH-text
+                # ``OS.h``) and applied by the sampler, but never copied here, so
+                # every config-driven build -- preview, solve and export alike --
+                # silently built it as 0.
+                "h": _scalar_or_expr(profile, config, names=("h",), default=0.0),
                 "rot": _scalar_or_expr(
                     profile, config, names=("rot_deg", "rot"), default=0.0
                 ),
             }
         )
     elif formula == "FREEFORM":
+        if _has_any(profile, config, names=("overshootPolicy",)):
+            # Dropped silently here while build_freeform_geometry refuses it,
+            # so ``overshootPolicy = "allow"`` was accepted and ignored.
+            raise ConfigError(
+                "FREEFORM overshootPolicy was removed; tangent speed is now solved "
+                "automatically"
+            )
         for key in (
             "profileH",
             "profileV",
@@ -1309,7 +1389,11 @@ def _num_or_default(value: Any, default: float) -> float:
 
 
 def _interfaces_from_params(
-    params: Mapping[str, Any], n_length: int
+    params: Mapping[str, Any],
+    n_length: int,
+    *,
+    requested_slice_map: Any = None,
+    fitted_slice_map: Any = None,
 ) -> tuple[HornInterface, ...]:
     slices = [
         int(round(value)) for value in _number_list(params.get("subdomainSlices"))
@@ -1335,20 +1419,43 @@ def _interfaces_from_params(
     # SubdomainSlices belong to the caller's requested control grid. The
     # acoustic fit is allowed to refine or trim that grid, so applying the raw
     # indices to the fitted grid silently moves every interface (for example,
-    # requested slice 10 of 20 became slice 10 of 144). Preserve the requested
-    # normalized axial position and relocate it onto the fitted grid instead.
-    requested_last_ring = max(
-        1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
+    # requested slice 10 of 20 became slice 10 of 144). With both slice maps
+    # at hand the requested ring's axial station is looked up in the fitted
+    # grid, which the fit pins it into. Scaling the index instead preserves the
+    # position only when both grids share an axial map, which the acoustic fit
+    # does not: requested z = 25/50/75 mm landed at 14.0/51.9/88.5 mm.
+    requested_map = (
+        None
+        if requested_slice_map is None
+        else np.asarray(requested_slice_map, dtype=np.float64)
     )
+    fitted_map = (
+        None if fitted_slice_map is None else np.asarray(fitted_slice_map, dtype=np.float64)
+    )
+    if requested_map is not None:
+        requested_last_ring = len(requested_map) - 1
+    else:
+        requested_last_ring = max(
+            1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
+        )
     for slice_index, offset in zip(slices, offsets):
         if offset <= 0.0:
             continue
         # Imported text configs address grid slices; keep valid indices and ignore
         # out-of-range declarations rather than guessing a different topology.
         if 0 <= int(slice_index) <= requested_last_ring:
-            fitted_slice_index = int(
-                round(int(slice_index) * fitted_last_ring / requested_last_ring)
-            )
+            if requested_map is not None and fitted_map is not None:
+                station = float(requested_map[int(slice_index)])
+                fitted_slice_index = int(np.argmin(np.abs(fitted_map - station)))
+                if abs(float(fitted_map[fitted_slice_index]) - station) > 1.0e-7:
+                    raise ConfigError(
+                        f"Mesh.SubdomainSlices ring {int(slice_index)} (normalised "
+                        f"station {station:.6g}) is missing from the fitted acoustic grid"
+                    )
+            else:
+                fitted_slice_index = int(
+                    round(int(slice_index) * fitted_last_ring / requested_last_ring)
+                )
             interfaces.append(
                 HornInterface(
                     slice_index=fitted_slice_index,
@@ -1487,6 +1594,9 @@ def _sampling_metadata(
         "geometrySampleCornerArcSubdivision": int(
             working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1
         ),
+        # The fit samples on its own axial map (ATH's throat-clustered default
+        # unless a custom z-map was given); say so rather than leave it implicit.
+        "geometrySampleAxialMap": str(grid.get("sampling_mode") or ""),
     }
 
 
@@ -1575,6 +1685,49 @@ def _sampling_failure_message(
     )
 
 
+def _requested_axial_layout(
+    params: Mapping[str, Any], formula: str
+) -> dict[str, Any] | None:
+    """What the requested grid resolves by axial station, or ``None``.
+
+    Only configs whose geometry depends on a station need the requested grid
+    built: a morph whose start snaps to a station or sits behind a throat
+    prefix, and subdomain interfaces, which name rings. Every other config
+    skips the extra build and is sampled exactly as before.
+    """
+
+    slices = _number_list(params.get("subdomainSlices"))
+    morph_param = params.get("morphTarget")
+    if morph_param is None:
+        morph_possible = False
+    elif isinstance(morph_param, (int, float)):
+        morph_possible = int(round(float(morph_param))) in {1, 2, 3}
+    else:
+        morph_possible = True
+    morph_possible = morph_possible and formula != "FREEFORM"
+    if not slices and not morph_possible:
+        return None
+    # The outer shell plays no part in stations; skip its offset work.
+    grid = build_point_grid_arrays({**params, "wallThickness": 0.0})
+    slice_map = [float(value) for value in grid["slice_map"]]
+    t_max = float(slice_map[-1]) if slice_map and slice_map[-1] > 0.0 else 1.0
+    stations: list[float] = []
+    morph_start = None
+    start_station = grid.get("morph_start_station")
+    if morph_possible and start_station is not None and float(start_station) > 0.0:
+        morph_start = float(grid["morph_start"])
+        stations.append(float(start_station))
+    for value in slices:
+        index = int(round(value))
+        if 0 < index < len(slice_map) - 1:
+            stations.append(slice_map[index] / t_max)
+    return {
+        "slice_map": slice_map,
+        "morph_start": morph_start,
+        "stations": stations,
+    }
+
+
 def _build_acoustic_sampling_grid(
     params: Mapping[str, Any],
     density: MeshDensity,
@@ -1604,6 +1757,18 @@ def _build_acoustic_sampling_grid(
         }
 
     formula = _normalise_formula(working.get("type"))
+    requested = _requested_axial_layout(params, formula)
+    if requested is not None:
+        # The fit resamples the surface on its own axial map, so everything the
+        # requested grid resolves *by station* is carried over explicitly: the
+        # morph start it snapped to (a different map would snap elsewhere) and
+        # the rings that must exist -- that start and every subdomain
+        # interface. Preview and solve then describe one surface.
+        stations = list(requested["stations"])
+        if requested["morph_start"] is not None:
+            working[ACOUSTIC_MORPH_START_KEY] = requested["morph_start"]
+        if stations:
+            working[ACOUSTIC_AXIAL_STATIONS_KEY] = stations
     if formula == "FREEFORM":
         working[FREEFORM_CONTINUOUS_COLLAPSE_KEY] = True
     if not working.get("zMapPoints") and formula != "FREEFORM":
@@ -1911,9 +2076,25 @@ def resolve_geometry(
         outer_points = _reshape_grid(
             grid["outer_points"], n_phi, n_length, "outer_points"
         )
+    for name, points in (("inner", inner_points), ("outer", outer_points)):
+        if points is not None and not np.all(np.isfinite(points)):
+            bad = int(np.count_nonzero(~np.isfinite(points).all(axis=2)))
+            raise ConfigError(
+                f"the resolved {formula} geometry has {bad} non-finite {name} "
+                "control points; the profile parameters leave the formula's domain"
+            )
 
     interface_offsets = _number_list(params.get("interfaceOffset"))
-    interfaces = _interfaces_from_params(params, n_length)
+    if topology_mode == "acoustic" and _number_list(params.get("subdomainSlices")):
+        requested_layout = _requested_axial_layout(params, formula)
+        interfaces = _interfaces_from_params(
+            params,
+            n_length,
+            requested_slice_map=requested_layout["slice_map"],
+            fitted_slice_map=grid.get("slice_map"),
+        )
+    else:
+        interfaces = _interfaces_from_params(params, n_length)
     # ATH builds free-standing subdomain models (mouth interface I1-2 plus an
     # SD2 exterior); this mesher only builds interfaces for enclosure models, so
     # an explicit request on other modes must fail loudly instead of silently

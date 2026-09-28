@@ -364,6 +364,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
                     ("Term.n", "n"),
                     ("s", "s"),
                     ("Term.s", "s"),
+                    # Not an ATH key: ATH V2025-06 ignores OS.h (checked
+                    # against ath.exe: an OS.h = 10 grid is identical to one
+                    # without it). Waveguide Generator writes it for its
+                    # half-sine bulge, so it is honoured here on the same
+                    # footing as Morph.Exponent and Mesh.SurfaceFit.
                     ("h", "h"),
                     ("OS.h", "h"),
                     ("Rot", "rot"),
@@ -457,6 +462,15 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if "morphTarget" in morph:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
         morph.setdefault("morphCorner", 35)
+        # ATH's effective Morph.FixedPart default is 0.2, not the 0 its user
+        # guide documents: ath.exe V2025-06 builds a byte-identical grid with
+        # the key absent and with ``Morph.FixedPart = 0.2``, and an explicit 0
+        # differs. The m2-clone reference omits the key and relies on it.
+        morph.setdefault("morphFixed", 0.2)
+        # ATH morphs Slot.Length like the rest of the horn (ath.exe probe:
+        # a 15 mm slot with FixedPart 0 blends from the first slice), unlike
+        # this mesher's own contract, which keeps a slot straight.
+        morph["_morphKeepsSlot"] = False
     if "morphAllowShrinkage" in morph:
         morph["morphAllowShrinkage"] = _ath_bool(morph["morphAllowShrinkage"])
 

@@ -138,6 +138,36 @@ def _circular_arc_radius_curve(
     return radius
 
 
+class _CoverageProblem(NamedTuple):
+    """Everything the four coverage entry points pass to the inversion."""
+
+    main_params: dict[str, Any]
+    main_length: float
+    a0_deg: float
+    r0_main: float
+    radius_offset: Any
+
+
+def _coverage_problem(params: Mapping[str, Any], p: float) -> _CoverageProblem:
+    L, total, ext_len, slot_len = osse_length_config(params, p)
+    h_bulge = eval_param(params.get("h"), p, 0.0)
+    radius_offset = None
+    if h_bulge != 0.0 and total > 0.0:
+        # The sampler adds h*sin(pi*t) over the whole composite length
+        # (extension and slot included), so the bulge at a main-section station
+        # z_main sits at t = (ext + slot + z_main) / total.
+        def radius_offset(z_main: float) -> float:
+            return h_bulge * math.sin(math.pi * (ext_len + slot_len + z_main) / total)
+
+    return _CoverageProblem(
+        main_params={**params, "L": L},
+        main_length=L,
+        a0_deg=eval_param(params.get("a0"), p, 15.5),
+        r0_main=eval_param(params.get("r0"), p, 12.7),
+        radius_offset=radius_offset,
+    )
+
+
 def osse_coverage_angle(params: Mapping[str, Any], p: float) -> float | None:
     """Resolve the guiding-curve coverage angle for azimuth ``p`` once.
 
@@ -147,16 +177,14 @@ def osse_coverage_angle(params: Mapping[str, Any], p: float) -> float | None:
     the bisection for every axial sample (~8x the plain grid cost otherwise).
     Returns ``None`` when no guiding curve is active.
     """
-    L, _, _ext_len, _slot_len = osse_length_config(params, p)
-    r0_base = eval_param(params.get("r0"), p, 12.7)
-    a0_deg = eval_param(params.get("a0"), p, 15.5)
-    main_params = {**params, "L": L}
+    problem = _coverage_problem(params, p)
     return _coverage_angle_from_guiding_curve(
         p,
-        main_params,
-        main_length=L,
-        a0_deg=a0_deg,
-        r0_main=r0_base,
+        problem.main_params,
+        main_length=problem.main_length,
+        a0_deg=problem.a0_deg,
+        r0_main=problem.r0_main,
+        radius_offset=problem.radius_offset,
     )
 
 
@@ -169,16 +197,14 @@ def osse_coverage_inversion(
     whether the guiding curve was actually met, and by how much it was missed.
     """
 
-    L, _, _ext_len, _slot_len = osse_length_config(params, p)
-    r0_base = eval_param(params.get("r0"), p, 12.7)
-    a0_deg = eval_param(params.get("a0"), p, 15.5)
-    main_params = {**params, "L": L}
+    problem = _coverage_problem(params, p)
     return _solve_coverage_from_guiding_curve(
         p,
-        main_params,
-        main_length=L,
-        a0_deg=a0_deg,
-        r0_main=r0_base,
+        problem.main_params,
+        main_length=problem.main_length,
+        a0_deg=problem.a0_deg,
+        r0_main=problem.r0_main,
+        radius_offset=problem.radius_offset,
     )
 
 
@@ -197,17 +223,15 @@ def osse_coverage_saturation_probe(
     inversion for the one it actually reports.
     """
 
-    L, _, _ext_len, _slot_len = osse_length_config(params, p)
-    r0_base = eval_param(params.get("r0"), p, 12.7)
-    a0_deg = eval_param(params.get("a0"), p, 15.5)
-    main_params = {**params, "L": L}
+    problem = _coverage_problem(params, p)
     return _solve_coverage_from_guiding_curve(
         p,
-        main_params,
-        main_length=L,
-        a0_deg=a0_deg,
-        r0_main=r0_base,
+        problem.main_params,
+        main_length=problem.main_length,
+        a0_deg=problem.a0_deg,
+        r0_main=problem.r0_main,
         probe_only=True,
+        radius_offset=problem.radius_offset,
     )
 
 
@@ -221,18 +245,33 @@ def osse_coverage_saturation(
     silently off-target while every other parameter appears to stop responding.
     """
 
-    L, _, _ext_len, _slot_len = osse_length_config(params, p)
-    r0_base = eval_param(params.get("r0"), p, 12.7)
-    a0_deg = eval_param(params.get("a0"), p, 15.5)
-    main_params = {**params, "L": L}
+    problem = _coverage_problem(params, p)
     return coverage_angle_saturation(
         p,
-        main_params,
-        main_length=L,
-        a0_deg=a0_deg,
-        r0_main=r0_base,
+        problem.main_params,
+        main_length=problem.main_length,
+        a0_deg=problem.a0_deg,
+        r0_main=problem.r0_main,
         location=location,
+        radius_offset=problem.radius_offset,
     )
+
+
+def _validate_osse_termination(params: Mapping[str, Any], p: float) -> None:
+    """Refuse termination parameters that silently switch the term off.
+
+    ``_osse_radius`` skips the superellipse termination when ``n`` or ``q`` is
+    not positive, so a sign slip in either built a different horn (82 mm
+    instead of 117 mm at the mouth in the review case) with no diagnostic.
+    """
+
+    for name, default in (("n", _DEFAULTS["n"]), ("q", _DEFAULTS["q"])):
+        value = eval_param(params.get(name), p, default)
+        if not value > 0.0:
+            raise ValueError(
+                f"OSSE termination parameter {name} must be > 0, got {value:g} at "
+                f"phi={math.degrees(p) % 360.0:.1f} deg"
+            )
 
 
 def calculate_osse(
@@ -243,6 +282,7 @@ def calculate_osse(
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
     L, _, ext_len, slot_len = osse_length_config(params, p)
+    _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
     # ATH anchors Throat.Diameter (r0) at the MAIN horn throat and tapers the throat
@@ -263,13 +303,7 @@ def calculate_osse(
         main_params = {**params, "L": L}
         active_a_deg = coverage_angle
         if active_a_deg is None:
-            active_a_deg = _coverage_angle_from_guiding_curve(
-                p,
-                main_params,
-                main_length=L,
-                a0_deg=a0_deg,
-                r0_main=r0_main,
-            )
+            active_a_deg = osse_coverage_angle(params, p)
         if active_a_deg is None:
             active_a_deg = a_deg
         throat_profile = int(
@@ -322,6 +356,7 @@ def calculate_osse_curve(
 
     z = np.asarray(z_values, dtype=np.float64)
     L, _total, ext_len, slot_len = osse_length_config(params, p)
+    _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
     r0_main = r0_base
@@ -340,13 +375,7 @@ def calculate_osse_curve(
         main_params = {**params, "L": L}
         active_a_deg = coverage_angle
         if active_a_deg is None:
-            active_a_deg = _coverage_angle_from_guiding_curve(
-                p,
-                main_params,
-                main_length=L,
-                a0_deg=a0_deg,
-                r0_main=r0_main,
-            )
+            active_a_deg = osse_coverage_angle(params, p)
         if active_a_deg is None:
             active_a_deg = a_deg
         throat_profile = int(
@@ -385,13 +414,29 @@ def calculate_osse_curve(
 def osse_length_config(
     params: Mapping[str, Any], p: float = 0.0
 ) -> tuple[float, float, float, float]:
-    raw_L = max(0.0, eval_param(params.get("L"), p, 120.0))
+    raw_L = eval_param(params.get("L"), p, 120.0)
+    if not raw_L > 0.0:
+        # A zero or negative length used to clamp to 0 and build a plain r0
+        # tube (plus whatever extension/slot there was) with no warning.
+        raise ValueError(
+            f"OSSE Length must be > 0, got {raw_L:g} at phi={math.degrees(p) % 360.0:.1f} deg"
+        )
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     length_mode = params.get(
         "_athLengthMode", params.get("athLengthMode", params.get("lengthMode"))
     )
     if length_mode == "total":
+        if slot_len >= raw_L:
+            # The slot is carved out of Length in this mode, so a slot at least
+            # as long as Length leaves no OS-SE section at all: the horn used
+            # to become a straight r0 tube without a word.
+            raise ValueError(
+                f"Slot.Length {slot_len:g} mm must be shorter than Length {raw_L:g} mm "
+                "in total length mode, where the slot is carved out of Length "
+                f"(phi={math.degrees(p) % 360.0:.1f} deg); shorten the slot or "
+                "lengthen the horn"
+            )
         # ATH adds Throat.Ext.Length on TOP of Length (the main horn and its mouth
         # radius are unchanged) but carves Slot.Length OUT of Length. So the main
         # section loses only the slot, and the total axial grows by the extension.
@@ -537,28 +582,75 @@ def _rosse_main_curve(
     return x, y
 
 
+def _rosse_tmax(params: Mapping[str, Any]) -> float:
+    """The R-OSSE truncation limit, read the way the grid builder reads it."""
+
+    t_max = float(eval_param(params.get("tmax"), 0.0, 1.0))
+    if not (math.isfinite(t_max) and t_max > 0.0):
+        raise ValueError(f"R-OSSE tmax must be > 0, got {t_max!r}")
+    return t_max
+
+
+class RosseAxialLayout(NamedTuple):
+    """How the composite R-OSSE parameter is shared along one meridian.
+
+    ``t`` runs over ``[0, tmax]``. The first ``ext + slot`` millimetres of
+    ``full_length`` are the straight prefix; the rest is the main curve, whose
+    own parameter ``main_t`` then runs over ``[0, tmax]`` -- so ``tmax``
+    truncates the main curve exactly as it does without a prefix, and the
+    prefix changes neither the main curve nor the mouth (ATH GridExport:
+    identical main-section radii and mouth with and without a 30 mm extension
+    at tmax = 0.8).
+    """
+
+    ext_len: float
+    slot_len: float
+    main_length: float
+    t_max: float
+    full_length: float
+
+
+def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialLayout:
+    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
+    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
+    main_length = _rosse_length(params, p)
+    t_max = _rosse_tmax(params)
+    return RosseAxialLayout(
+        ext_len=ext_len,
+        slot_len=slot_len,
+        main_length=main_length,
+        t_max=t_max,
+        # ``tmax * L`` rather than ``L``: sharing the parameter over the
+        # untruncated length and then cutting the *composite* at tmax cut the
+        # main curve short (main_t = 0.74 instead of 0.8 in the review case)
+        # and moved the mouth by 7 mm. With tmax = 1 this is unchanged.
+        full_length=ext_len + slot_len + (main_length if t_max == 1.0 else t_max * main_length),
+    )
+
+
 def calculate_rosse(
     t: float, p: float, params: Mapping[str, Any]
 ) -> tuple[float, float]:
     r0_base = eval_param(params.get("r0"), p, 12.7)
-    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
-    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
+    layout = rosse_axial_layout(params, p)
+    ext_len, slot_len, main_length = layout.ext_len, layout.slot_len, layout.main_length
     # ATH convention (same as OSSE since the c198956 re-anchoring): r0 is the
     # MAIN throat radius; the extension tapers back from r0 to the driver end
     # and the main curve/mouth are unchanged by it. The old code enlarged the
     # main throat instead (r0 + ext*tan), changing L and the mouth.
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
-    main_length = _rosse_length(params, p)
 
     if ext_len <= 0.0 and slot_len <= 0.0:
         return _calculate_rosse_main(t, p, params)
 
-    full_length = ext_len + slot_len + main_length
+    full_length = layout.full_length
     if full_length <= 1.0e-12:
         return 0.0, r0_base
 
     axial_pos = max(0.0, float(t)) * full_length
+    if layout.t_max != 1.0:
+        axial_pos = max(0.0, float(t)) / layout.t_max * full_length
     if axial_pos <= ext_len:
         return axial_pos, r0_throat + axial_pos * math.tan(ext_angle)
     if axial_pos <= ext_len + slot_len:
@@ -584,20 +676,21 @@ def calculate_rosse_curve(
 
     t = np.asarray(t_values, dtype=np.float64)
     r0_base = eval_param(params.get("r0"), p, 12.7)
-    ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
-    slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
+    layout = rosse_axial_layout(params, p)
+    ext_len, slot_len, main_length = layout.ext_len, layout.slot_len, layout.main_length
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
-    main_length = _rosse_length(params, p)
 
     if ext_len <= 0.0 and slot_len <= 0.0:
         return _rosse_main_curve(t, _rosse_main_coefficients(p, params))
 
-    full_length = ext_len + slot_len + main_length
+    full_length = layout.full_length
     if full_length <= 1.0e-12:
         return np.zeros_like(t), np.full_like(t, r0_base)
 
     axial_pos = np.maximum(0.0, t) * full_length
+    if layout.t_max != 1.0:
+        axial_pos = np.maximum(0.0, t) / layout.t_max * full_length
     in_ext = axial_pos <= ext_len
     in_slot = ~in_ext & (axial_pos <= ext_len + slot_len)
     in_main = ~(in_ext | in_slot)

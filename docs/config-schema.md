@@ -89,6 +89,17 @@ OSSE-only keys:
 | `n` | none | `4.0` |
 | `s` | none | `0.0` (`0.7` for text imports, the ATH default) |
 | `rot_deg` | `rot` | `0.0` |
+| `h` | imported `OS.h` | `0.0` |
+
+`h` adds a half-sine bulge `h * sin(pi * t)` in millimetres over the whole
+axial length, extension and slot included; it vanishes at the throat and the
+mouth. `OS.h` is not an ATH key (ath.exe ignores it); the text importer honours
+it because Waveguide Generator writes it. With an active guiding curve the
+coverage angle is solved so that the bulged wall meets the curve.
+
+OSSE refuses `n <= 0`, `q <= 0` and `L <= 0`, and, in total length mode,
+`Slot.Length >= Length`; each of these used to switch part of the profile off
+silently.
 
 R-OSSE-only keys:
 
@@ -100,9 +111,10 @@ R-OSSE-only keys:
 | `r` | none | formula default when omitted |
 | `b` | none | formula default when omitted |
 
-For R-OSSE with throat extension enabled, `tmax` samples the normalized total
-profile including the extension, slot, and main R-OSSE curve. Values below
-`1.0` therefore truncate before the final mouth point.
+`tmax` truncates the main R-OSSE curve at `t = tmax`, and must be positive.
+A throat extension or slot is prepended to the truncated curve without changing
+it: the main curve and its mouth are the same with and without the prefix, as in
+ATH.
 
 ICW keys:
 
@@ -158,40 +170,42 @@ crossSections = [
 
 | Key | Default | Validation and meaning |
 | --- | --- | --- |
-| `points` | required | List of 2-64 anchors. A row is `[z, r]`, `[z, r, angleDeg]`, or `[z, r, angleDeg, strength]`; `z` and `r` are millimetres. Values must be finite, radii must be positive, and z values must be strictly increasing. |
+| `points` | required | List of 2-64 anchors. A row is `[z, r]` or `[z, r, angleDeg]`; `z` and `r` are millimetres. Values must be finite, radii must be positive, and z values must be strictly increasing. A four-element row (the removed per-anchor `strength`) is refused. |
 | `throatAngleDeg` | top-level/profile `a0_deg` or `a0`, otherwise `15.5` | Endpoint tangent angle in degrees from the +z axis, in `[-90, 90]`. |
 | `mouthAngleDeg` | direction of the last anchor chord | Endpoint tangent angle in degrees from the +z axis, in `[-90, 90]`. |
-| `throatTangentScale` | `1.0` | Multiplier on the automatically derived endpoint tangent speed, in `(0, 3]`. |
-| `mouthTangentScale` | `1.0` | Multiplier on the automatically derived endpoint tangent speed, in `(0, 3]`. |
+
+Any other profile key is refused as unknown; that includes the removed
+`throatTangentScale` and `mouthTangentScale`. Tangent speeds are solved
+automatically.
 
 An anchor-row `angleDeg` overrides the corresponding automatically derived
 tangent. Interior anchor angles must be strictly inside `(-90, 90)`; endpoint
-angles may equal either limit. Supplying `strength` requires `angleDeg` in the
-same row, and `strength` must be in `(0, 3]`. An endpoint row with an explicit
-angle overrides its block-level angle and tangent scale; its strength defaults
-to `1.0` when omitted.
+angles may equal either limit. An endpoint row with an explicit angle overrides
+its block-level angle.
 
 The two planes must have the same first and last z values (within `1e-9` mm)
 and equal first radii (within `1e-6` mm). The first anchor is the throat; use
 `z = 0` mm for the throat coordinate. The last anchor is the planar mouth, and
 the H and V mouth radii may differ.
 
-FREEFORM profile-level policy keys are:
+Every spline segment is rejected when its radius leaves the range of its two
+anchor radii (beyond a small tolerance); positive-radius and forward-z guards
+also apply. The removed `overshootPolicy` key is refused, whether it is given in
+`[profile]` or at the top level. The one FREEFORM profile-level policy key is:
 
 | Key | Default | Accepted values | Meaning |
 | --- | --- | --- | --- |
-| `overshootPolicy` | `reject` | `reject`, `allow` | Rejects a spline segment whose radius leaves the range of its two anchor radii unless explicitly allowed. Positive-radius and forward-z guards still apply. |
 | `inflectionPolicy` | `warn` | `warn`, `reject` | Reports significant reverse-curvature spans, or rejects the first such span. The removed value `allow` is not accepted. |
 
 `crossSections` is a list of 2-32 axial shape stations. If omitted, it defaults
 to a circle at `t = 0` and an ellipse at `t = 1`. Station `t` is normalized
 axial position in `[0, 1]`; values must be strictly increasing, the first must
 be `0`, and the last must be `1`. The first shape must be `circle` or
-`ellipse`, and `circle` is accepted only for the first station.
+`ellipse`; `circle` is accepted at any station.
 
 | `shape` value | Per-shape keys | Validation and meaning |
 | --- | --- | --- |
-| `circle` | none | Throat-only spelling of the exponent-2 outline. Equal H/V throat radii make it circular. |
+| `circle` | none | Another spelling of the exponent-2 outline (`ellipse`); it is circular only where the local H/V radii are equal. |
 | `ellipse` | none | Exponent-2 outline using the local H/V radii as semi-axes. |
 | `superellipse` | `exponent` (default `2.0`) | Exponent must be in `[2, 16]`. |
 | `rounded_rectangle` | required `cornerRadiusMm` | Absolute corner radius in millimetres. `cornerRatio` was removed and is rejected. |
@@ -390,9 +404,14 @@ Use `[morph]` or `[MORPH]`.
 | `morph_fixed` | `morphFixed` | `0` |
 | `morph_allow_shrinkage` | `morphAllowShrinkage` | `0` |
 
-ATH text imports spell the two dimensions `Morph.TargetWidth` and
-`Morph.TargetHeight`. See `docs/geometry-contract.md` for target-shape
-semantics.
+`morph_width_mm` and `morph_height_mm` are full widths (the target
+half-dimensions are half of them). ATH text imports spell the two dimensions
+`Morph.TargetWidth` and `Morph.TargetHeight`. A negative `morph_rate` is
+refused; rates from 0 to 1 are accepted. A throat extension and a slot are never
+morphed. ATH text imports follow ath.exe instead for two morph details: an
+absent `Morph.FixedPart` means 0.2 (ATH's effective default), and the slot is
+morphed like the rest of the horn. See `docs/geometry-contract.md` for
+target-shape semantics.
 
 ## Guiding Curve Keys
 
@@ -462,7 +481,8 @@ Imported text mappings include:
   profile evaluation) and `Mesh.VerticalOffset` (+y translation after scale).
 - Profile: `Coverage.Angle`, `Throat.Angle`, `Throat.Diameter`,
   `Length`, `Term.n`, `Term.s`, `Term.q`, `Term.k`, `OS.k`,
-  `Throat.Ext.Length`, `Throat.Ext.Angle`, `Slot.Length`, `Rot`, and R-OSSE
+  `Throat.Ext.Length`, `Throat.Ext.Angle`, `Slot.Length`, `Rot`, `OS.h`
+  (a Waveguide Generator extension; ATH ignores it), and R-OSSE
   `R`, `m`, `b`, `r`, `tmax`. `Length` is mandatory for OSSE imports.
 - Mesh: `Mesh.AngularSegments`, `Mesh.CornerSegments`,
   `Mesh.LengthSegments`, `Mesh.WallThickness`, `Mesh.VerticalOffset`,
