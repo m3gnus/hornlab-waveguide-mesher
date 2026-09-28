@@ -97,8 +97,6 @@ def _add_mouth_aperture_surfaces(
     n_len: int,
     closed: bool,
     preserve_grid: bool,
-    boundary_phi_groups: list[list[int]] | None = None,
-    reverse: bool = False,
 ) -> list[tuple[int, int]]:
     """Fill the mouth aperture on the wall's own rim curves.
 
@@ -118,11 +116,7 @@ def _add_mouth_aperture_surfaces(
     else:
         rim_curves = [
             builder.bspline_tags([builder.point("inner", i, mouth_j) for i in indices])
-            for indices in (
-                boundary_phi_groups
-                if boundary_phi_groups is not None
-                else _spline_span_phi_groups(n_phi, closed=closed)
-            )
+            for indices in _spline_span_phi_groups(n_phi, closed=closed)
         ]
     if not rim_curves:
         return []
@@ -137,10 +131,9 @@ def _add_mouth_aperture_surfaces(
     center_to_start = builder.line_tags(center_tag, builder.point("inner", 0, mouth_j))
     aperture: list[tuple[int, int]] = []
     if rim_curves:
-        boundary = [*rim_curves, end_to_center, center_to_start]
-        if reverse:
-            boundary = [-curve for curve in reversed(boundary)]
-        aperture.append(builder.surface(boundary))
+        aperture.append(
+            builder.surface([*rim_curves, end_to_center, center_to_start])
+        )
     return aperture
 
 
@@ -187,7 +180,6 @@ def _build_coupled_baffle_point_grid(
             wall = build_surface_from_points(
                 inner_points,
                 closed=True,
-                preserve_grid=False,
                 surface_fit=geometry.surface_fit,
             )
         else:
@@ -214,8 +206,6 @@ def _build_coupled_baffle_point_grid(
             n_len=n_len,
             closed=geometry.closed,
             preserve_grid=geometry.preserve_grid,
-            boundary_phi_groups=cap_boundary_groups if acoustic_topology else None,
-            reverse=acoustic_topology,
         )
     throat_radius = _throat_radius(inner_points, closed=geometry.closed)
     cap_height = (
@@ -239,16 +229,6 @@ def _build_coupled_baffle_point_grid(
             builder,
             inner_points,
             geometry,
-            wall_dimtags=wall,
-        )
-    elif source_shape == SOURCE_SHAPE_ROUNDED_CAP and cap_height > 1.0e-12:
-        throat = _add_occ_source_cap_surfaces(
-            builder,
-            inner_points,
-            geometry,
-            boundary_phi_groups=cap_boundary_groups,
-            throat_use_min=True,
-            source_axis_sign=1.0,
             wall_dimtags=wall,
         )
     elif source_shape in {SOURCE_SHAPE_FLAT_DISC, SOURCE_SHAPE_ROUNDED_CAP}:
@@ -384,7 +364,6 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             wall = build_surface_from_points(
                 inner_points,
                 closed=geometry.closed,
-                preserve_grid=False,
                 surface_fit=geometry.surface_fit,
             )
             require_gmsh().model.occ.synchronize()

@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 from numpy.typing import NDArray
 
+from .edges import build_edge_table
 from .tags import PhysicalGroup
 
 
@@ -264,28 +265,17 @@ def validate_orientation(
     if len(tags) != len(triangles):
         raise MeshOrientationError("triangle and physical-tag counts differ")
 
-    edge_dirs: dict[tuple[int, int], list[int]] = defaultdict(list)
-    for tri in np.asarray(triangles, dtype=np.int64):
-        for start, end in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-            a = int(start)
-            b = int(end)
-            if a == b:
-                continue
-            if a < b:
-                edge_dirs[(a, b)].append(1)
-            else:
-                edge_dirs[(b, a)].append(-1)
-
-    boundary_edges = 0
-    nonmanifold_edges = 0
-    inconsistent_edges = 0
-    for dirs in edge_dirs.values():
-        if len(dirs) == 1:
-            boundary_edges += 1
-        elif len(dirs) != 2:
-            nonmanifold_edges += 1
-        elif dirs[0] == dirs[1]:
-            inconsistent_edges += 1
+    table = build_edge_table(np.asarray(triangles, dtype=np.int64), drop_degenerate=True)
+    counts = table.count
+    direction_sum = np.bincount(
+        table.edge, weights=table.direction.astype(np.float64), minlength=table.n_edges
+    )
+    boundary_edges = int(np.count_nonzero(counts == 1))
+    nonmanifold_edges = int(np.count_nonzero(counts > 2))
+    # Two uses traversing the shared edge the same way sum to +-2.
+    inconsistent_edges = int(
+        np.count_nonzero((counts == 2) & (np.abs(direction_sum) == 2.0))
+    )
 
     p0 = points[triangles[:, 0]]
     p1 = points[triangles[:, 1]]
@@ -305,7 +295,7 @@ def validate_orientation(
 
     report = MeshOrientationReport(
         n_triangles=int(len(triangles)),
-        n_edges=int(len(edge_dirs)),
+        n_edges=int(table.n_edges),
         boundary_edges=int(boundary_edges),
         nonmanifold_edges=int(nonmanifold_edges),
         inconsistent_edges=int(inconsistent_edges),
@@ -372,29 +362,25 @@ def repair_orientation(
     if len(repaired) == 0:
         return repaired, stats
 
-    edge_to_triangles: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
-    for tri_idx, tri in enumerate(repaired):
-        for start, end in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-            a = int(start)
-            b = int(end)
-            if a == b:
-                continue
-            if a < b:
-                edge_to_triangles[(a, b)].append((tri_idx, 1))
-            else:
-                edge_to_triangles[(b, a)].append((tri_idx, -1))
-
+    table = build_edge_table(repaired, drop_degenerate=True)
     neighbours: list[list[tuple[int, bool]]] = [[] for _ in range(len(repaired))]
-    for uses in edge_to_triangles.values():
-        if len(uses) != 2:
-            continue
-        (ta, da), (tb, db) = uses
+    pair_edges = np.flatnonzero(table.count == 2)
+    if len(pair_edges):
+        # Both uses of each interior edge, edges in order of first appearance.
+        by_edge = np.argsort(table.edge, kind="stable")
+        offsets = np.concatenate(([0], np.cumsum(table.count)))[:-1]
+        first = by_edge[offsets[pair_edges]]
+        second = by_edge[offsets[pair_edges] + 1]
         # Adjacent triangles are edge-consistent when they traverse their
         # shared edge in opposite directions. If their current directions
         # match, exactly one side of the pair must be flipped.
-        must_differ = da == db
-        neighbours[ta].append((tb, must_differ))
-        neighbours[tb].append((ta, must_differ))
+        for ta, tb, must_differ in zip(
+            table.tri[first].tolist(),
+            table.tri[second].tolist(),
+            (table.direction[first] == table.direction[second]).tolist(),
+        ):
+            neighbours[ta].append((tb, must_differ))
+            neighbours[tb].append((ta, must_differ))
 
     flip = np.zeros(len(repaired), dtype=bool)
     seen = np.zeros(len(repaired), dtype=bool)

@@ -9,7 +9,7 @@ import numpy as np
 from .cost import TRIANGLES_PER_AREA_OVER_H2
 from .geometry import BuiltGeometry, MeshDensity
 from .profile_common import _parse_number_list
-from .tags import PhysicalGroup, SOURCE_TAGS
+from .tags import PhysicalGroup
 
 logger = logging.getLogger(__name__)
 
@@ -572,23 +572,6 @@ def _record_and_check_triangle_estimate(
         )
 
 
-def _legacy_mesh_surface_groups(geometry: BuiltGeometry) -> dict[str, list[int]]:
-    wall_surfaces = geometry.surface_groups.get(int(PhysicalGroup.RIGID_WALL), [])
-    source_surfaces: list[int] = []
-    for tag in SOURCE_TAGS:
-        source_surfaces.extend(geometry.surface_groups.get(int(tag), []))
-
-    if geometry.source_axis == "z":
-        return {
-            "inner": list(wall_surfaces),
-            "throat_disc": source_surfaces,
-        }
-    return {
-        "rear": list(wall_surfaces),
-        "throat_disc": source_surfaces,
-    }
-
-
 def _wall_clearance_chord_mm(
     radius_mm: Any, wall_mm: float, *, fraction: float | None = None
 ) -> Any:
@@ -823,7 +806,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
 
     import gmsh
 
-    mesh_groups = geometry.mesh_surface_groups or _legacy_mesh_surface_groups(geometry)
+    mesh_groups = geometry.mesh_surface_groups
     curve_groups = {
         name: _collect_boundary_curves(surfaces)
         for name, surfaces in mesh_groups.items()
@@ -1412,19 +1395,6 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                     restrict, "CurvesList", [int(c) for c in graded_curves]
                 )
             fields.append(restrict)
-    else:
-        fallback_formula = f"{mouth_res:.12g}"
-        for group_key in (
-            "enclosure_sides",
-            "enclosure_edges_front",
-            "enclosure_edges_back",
-            "enclosure_edges",
-        ):
-            add_field(
-                fallback_formula,
-                mesh_groups.get(group_key, []),
-                curve_groups.get(group_key, []),
-            )
 
     if fields:
         minimum = gmsh.model.mesh.field.add("Min")

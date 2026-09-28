@@ -71,71 +71,15 @@ def build_bspline_surface_from_rings(
     return [(2, int(surf))]
 
 
-def build_faceted_surface_from_points(
-    points: NDArray[np.float64],
-    *,
-    closed: bool = True,
-) -> list[tuple[int, int]]:
-    """Build a ruled surface that interpolates every sampled grid point."""
-
-    gmsh = require_gmsh()
-    if points.ndim != 3 or points.shape[2] != 3:
-        raise ValueError("point grid must be shaped (n_phi, n_length, 3)")
-    n_phi, n_len, _ = points.shape
-    if n_phi < 2 or n_len < 2:
-        raise ValueError("point grid needs at least 2 phi samples and 2 axial rings")
-
-    point_tags: dict[tuple[int, int], int] = {}
-    for i in range(n_phi):
-        for j in range(n_len):
-            x, y, z = points[i, j]
-            point_tags[(i, j)] = int(
-                gmsh.model.occ.addPoint(float(x), float(y), float(z))
-            )
-
-    line_cache: dict[tuple[tuple[int, int], tuple[int, int]], int] = {}
-
-    def line(a: tuple[int, int], b: tuple[int, int]) -> int:
-        if (a, b) in line_cache:
-            return line_cache[(a, b)]
-        if (b, a) in line_cache:
-            return -line_cache[(b, a)]
-        tag = int(gmsh.model.occ.addLine(point_tags[a], point_tags[b]))
-        line_cache[(a, b)] = tag
-        return tag
-
-    surfaces: list[tuple[int, int]] = []
-    phi_count = n_phi if closed else n_phi - 1
-    for i in range(phi_count):
-        i_next = (i + 1) % n_phi
-        for j in range(n_len - 1):
-            curves = [
-                line((i, j), (i_next, j)),
-                line((i_next, j), (i_next, j + 1)),
-                line((i_next, j + 1), (i, j + 1)),
-                line((i, j + 1), (i, j)),
-            ]
-            loop = gmsh.model.occ.addCurveLoop(curves)
-            try:
-                surf = gmsh.model.occ.addPlaneSurface([loop])
-            except Exception:
-                surf = gmsh.model.occ.addSurfaceFilling(loop)
-            surfaces.append((2, int(surf)))
-    return surfaces
-
-
 def build_surface_from_points(
     points: NDArray[np.float64],
     *,
     closed: bool = True,
-    preserve_grid: bool = False,
     surface_fit: str = SURFACE_FIT_APPROXIMATE,
 ) -> list[tuple[int, int]]:
     """Build the WG-compatible OCC horn surface from a point grid."""
 
     require_gmsh()
-    if preserve_grid:
-        return build_faceted_surface_from_points(points, closed=closed)
     if points.ndim != 3 or points.shape[2] != 3:
         raise ValueError("point grid must be shaped (n_phi, n_length, 3)")
     n_phi, n_len, _ = points.shape

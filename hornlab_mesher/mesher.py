@@ -22,6 +22,7 @@ from .density import (
     configure_density,
     effective_triangle_limit,
 )
+from .edges import build_edge_table
 from .geometry import (
     MESH_ALGORITHM_MESHADAPT,
     BuiltGeometry,
@@ -572,20 +573,6 @@ def _postprocess_mesh(
     )
 
 
-def _edge_uses(
-    triangles: np.ndarray,
-    phys: np.ndarray,
-) -> dict[tuple[int, int], list[int]]:
-    uses: dict[tuple[int, int], list[int]] = {}
-    for tri, raw_tag in zip(triangles, phys):
-        tag = int(raw_tag)
-        for start, end in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-            a, b = sorted((int(start), int(end)))
-            if a != b:
-                uses.setdefault((a, b), []).append(tag)
-    return uses
-
-
 def _tag_axis_projections(
     points: np.ndarray,
     triangles: np.ndarray,
@@ -679,12 +666,17 @@ def _validate_infinite_baffle_contract(
             f"(z span {span:.6g} mm)"
         )
 
-    edge_uses = _edge_uses(triangles, phys)
-    shared_rim = [
-        edge
-        for edge, tags in edge_uses.items()
-        if len(tags) == 2 and set(tags) == {wall_tag, aperture_tag}
-    ]
+    table = build_edge_table(triangles, drop_degenerate=True)
+    pair_edges = np.flatnonzero(table.count == 2)
+    by_edge = np.argsort(table.edge, kind="stable")
+    offsets = np.concatenate(([0], np.cumsum(table.count)))[:-1]
+    tag_first = phys[table.tri[by_edge[offsets[pair_edges]]]]
+    tag_second = phys[table.tri[by_edge[offsets[pair_edges] + 1]]]
+    is_rim = ((tag_first == wall_tag) & (tag_second == aperture_tag)) | (
+        (tag_first == aperture_tag) & (tag_second == wall_tag)
+    )
+    rim_ids = pair_edges[is_rim]
+    shared_rim = list(zip(table.lo[rim_ids].tolist(), table.hi[rim_ids].tolist()))
     if not shared_rim:
         raise MesherError(
             "infinite-baffle wall and mouth aperture do not share a welded rim"
@@ -693,7 +685,10 @@ def _validate_infinite_baffle_contract(
         if np.any(np.abs(points[list(edge), 2]) > plane_tol):
             raise MesherError("infinite-baffle wall/aperture rim is not on z=0")
 
-    boundary_edges = [edge for edge, tags in edge_uses.items() if len(tags) == 1]
+    boundary_ids = np.flatnonzero(table.count == 1)
+    boundary_edges = list(
+        zip(table.lo[boundary_ids].tolist(), table.hi[boundary_ids].tolist())
+    )
     axes = tuple(str(axis) for axis in symmetry_snap_axes)
     if not axes:
         if boundary_edges:
@@ -858,26 +853,20 @@ def _validate_closed_shell_contract(
     # a reported hole.
     tolerance = max(float(symmetry_snap_tol_mm), 1.0e-9)
 
-    counts: dict[tuple[int, int], int] = {}
-    owner: dict[tuple[int, int], int] = {}
-    for index, triangle in enumerate(triangles):
-        a, b, c = (int(triangle[0]), int(triangle[1]), int(triangle[2]))
-        for start, end in ((a, b), (b, c), (c, a)):
-            edge = (min(start, end), max(start, end))
-            counts[edge] = counts.get(edge, 0) + 1
-            owner.setdefault(edge, index)
-
-    holes = [
-        edge
-        for edge, count in counts.items()
-        if count == 1
-        and int(phys[owner[edge]]) not in _CONTRACT_EXEMPT_TAGS
-        and not any(
-            abs(points[edge[0], axis]) <= tolerance
-            and abs(points[edge[1], axis]) <= tolerance
-            for axis in axes
-        )
-    ]
+    table = build_edge_table(triangles)
+    free = table.count == 1
+    if axes:
+        on_plane = np.zeros(table.n_edges, dtype=bool)
+        for axis in axes:
+            on_plane |= (np.abs(points[table.lo, axis]) <= tolerance) & (
+                np.abs(points[table.hi, axis]) <= tolerance
+            )
+        free &= ~on_plane
+    owner_tri = table.tri[table.first_use]
+    free &= ~np.isin(phys[owner_tri], sorted(_CONTRACT_EXEMPT_TAGS))
+    hole_ids = np.flatnonzero(free)
+    holes = list(zip(table.lo[hole_ids].tolist(), table.hi[hole_ids].tolist()))
+    owner = dict(zip(holes, owner_tri[hole_ids].tolist()))
     if not holes:
         return
 
