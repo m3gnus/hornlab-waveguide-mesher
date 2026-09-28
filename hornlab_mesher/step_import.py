@@ -3,6 +3,12 @@
 The caller owns every STEP label, group name, and role string. This
 module only reasons about STEP entities, Gmsh surfaces, physical tags, and the
 canonical surface-mesh contract.
+
+Units: a live gmsh model is in millimetres (OCC's default target unit), and
+the ``*_MM`` constants below are millimetres. Functions that take mesh
+coordinates in "step units" say so and take ``unit_scale_to_m`` (metres per
+coordinate unit, 1e-3 for millimetres); every millimetre quantity they apply
+is converted through it, never compared with raw coordinates.
 """
 
 from __future__ import annotations
@@ -19,7 +25,11 @@ import meshio
 import numpy as np
 
 from .normals import open_shell_bore_alignment
-from .step_prepare import OccSurfaceRole, snap_symmetry_plane_vertices
+from .step_prepare import (
+    OccSurfaceRole,
+    millimetres_to_step_units,
+    snap_symmetry_plane_vertices,
+)
 # Re-exported, not merely used: callers have always imported the STEP text
 # parsers from this module, and several names below have no other use here.
 from .step_text import (  # noqa: F401
@@ -617,6 +627,101 @@ def _coerce_surface_geometry(geom: SurfaceGeometry) -> tuple[np.ndarray, float]:
     return center_arr, area_float
 
 
+_AnchorPair = tuple[float, float, float, int, int]
+
+
+def _anchor_pair(
+    reference: list[tuple[np.ndarray, float]],
+    healed: list[tuple[np.ndarray, float]],
+    ref_index: int,
+    healed_index: int,
+) -> _AnchorPair:
+    ref_center, ref_area = reference[ref_index]
+    healed_center, healed_area = healed[healed_index]
+    area_rel = abs(healed_area - ref_area) / max(ref_area, 1.0e-12)
+    centroid_distance = float(np.linalg.norm(healed_center - ref_center))
+    length_scale = max(float(np.sqrt(max(ref_area, healed_area))), 1.0)
+    cost = (10.0 * area_rel) + (centroid_distance / length_scale)
+    return (cost, area_rel, centroid_distance, ref_index, healed_index)
+
+
+def _greedy_over(pairs: Iterable[_AnchorPair], n_reference: int) -> list[_AnchorPair]:
+    """Take pairs cheapest first, each reference and healed surface once."""
+    chosen: list[_AnchorPair] = []
+    used_reference: set[int] = set()
+    used_healed: set[int] = set()
+    for pair in sorted(pairs):
+        if pair[3] in used_reference or pair[4] in used_healed:
+            continue
+        chosen.append(pair)
+        used_reference.add(pair[3])
+        used_healed.add(pair[4])
+        if len(used_reference) == n_reference:
+            break
+    return chosen
+
+
+def _greedy_anchor_matches(
+    reference: list[tuple[np.ndarray, float]],
+    healed: list[tuple[np.ndarray, float]],
+) -> list[_AnchorPair]:
+    """The cheapest-first matching over ALL pairs, without building all pairs.
+
+    Exactly the result of sorting every (reference, healed) pair by cost and
+    taking greedily -- which is what this used to do, at 27 s and 441 MB for
+    1500 faces. A pair's cost is at least ``distance / L`` with ``L`` the
+    largest length scale in the model, so a pair more than ``c_r * L`` apart
+    costs more than the match ``c_r`` its reference already got, and the
+    greedy never reaches it with that reference free. The candidate set is
+    grown (k nearest, then every pair inside that radius) until it provably
+    contains every pair the full greedy could take; the greedy over the
+    candidates is then the greedy over everything.
+    """
+    from scipy.spatial import cKDTree
+
+    n = len(reference)
+    if n == 0:
+        return []
+    healed_centers = np.asarray([center for center, _area in healed])
+    reference_centers = np.asarray([center for center, _area in reference])
+    largest_length = max(
+        1.0,
+        float(np.sqrt(max(area for _center, area in reference))),
+        float(np.sqrt(max(area for _center, area in healed))),
+    )
+    tree = cKDTree(healed_centers)
+    candidates: set[tuple[int, int]] = set()
+    k = min(8, len(healed))
+    while True:
+        _distances, nearest = tree.query(reference_centers, k=k)
+        nearest = np.asarray(nearest).reshape(n, -1)
+        candidates.update(
+            (ref_index, int(healed_index))
+            for ref_index, row in enumerate(nearest)
+            for healed_index in row
+        )
+        while True:
+            pairs = [_anchor_pair(reference, healed, r, h) for r, h in candidates]
+            chosen = _greedy_over(pairs, n)
+            if len(chosen) < n:
+                break  # incomplete: widen k
+            cost_by_reference = {pair[3]: pair[0] for pair in chosen}
+            missing: set[tuple[int, int]] = set()
+            for ref_index in range(n):
+                # Inclusive radius (plus rounding slack): anything outside it
+                # costs strictly more than this reference's match.
+                radius = cost_by_reference[ref_index] * largest_length * (1.0 + 1.0e-9) + 1.0e-12
+                for healed_index in tree.query_ball_point(reference_centers[ref_index], radius):
+                    if (ref_index, healed_index) not in candidates:
+                        missing.add((ref_index, int(healed_index)))
+            if not missing:
+                return chosen
+            candidates.update(missing)
+        if k >= len(healed):
+            return chosen
+        k = min(len(healed), k * 4)
+
+
 def _anchor_surface_order(
     healed_tags: list[int],
     healed_geoms: list[SurfaceGeometry],
@@ -641,28 +746,16 @@ def _anchor_surface_order(
     healed = [_coerce_surface_geometry(geom) for geom in healed_geoms]
     reference = [_coerce_surface_geometry(geom) for geom in reference_geoms]
 
-    candidate_pairs: list[tuple[float, float, float, int, int]] = []
-    for ref_index, (ref_center, ref_area) in enumerate(reference):
-        for healed_index, (healed_center, healed_area) in enumerate(healed):
-            area_rel = abs(healed_area - ref_area) / max(ref_area, 1.0e-12)
-            centroid_distance = float(np.linalg.norm(healed_center - ref_center))
-            length_scale = max(float(np.sqrt(max(ref_area, healed_area))), 1.0)
-            cost = (10.0 * area_rel) + (centroid_distance / length_scale)
-            candidate_pairs.append((cost, area_rel, centroid_distance, ref_index, healed_index))
-
+    matches = _greedy_anchor_matches(reference, healed)
     ordered: list[int | None] = [None] * len(reference)
     residuals: dict[int, tuple[float, float, int]] = {}
     used_reference: set[int] = set()
     used_healed: set[int] = set()
-    for _cost, area_rel, centroid_distance, ref_index, healed_index in sorted(candidate_pairs):
-        if ref_index in used_reference or healed_index in used_healed:
-            continue
+    for _cost, area_rel, centroid_distance, ref_index, healed_index in matches:
         ordered[ref_index] = int(healed_tags[healed_index])
         residuals[ref_index] = (area_rel, centroid_distance, healed_index)
         used_reference.add(ref_index)
         used_healed.add(healed_index)
-        if len(used_reference) == len(reference):
-            break
 
     if any(tag is None for tag in ordered) or len(used_healed) != len(healed_tags):
         raise RuntimeError(
@@ -1046,8 +1139,9 @@ def _symmetry_source_projection_detail(
 
     The value half is identical to :func:`_symmetry_source_normal_projection`,
     which delegates here. That function keeps its exact signature and return
-    type because it is re-exported and called directly by the consuming Fusion
-    add-in; widening it in place would have broken that consumer silently.
+    type because the frozen legacy Fusion pipeline (which vendors its own copy
+    of this package) calls it directly; the current add-in imports nothing
+    from this module.
     """
     if len(triangles) == 0 or len(tags) != len(triangles):
         return None, _SYMMETRY_PROJECTION_EMPTY
@@ -1104,9 +1198,9 @@ def _symmetry_source_normal_projection(
     planes, or its cap has no resolvable projection on the remaining axis.
     :func:`_symmetry_source_projection_detail` says which of those it was.
 
-    Kept as a thin wrapper rather than widened in place: the Fusion add-in
-    re-exports this name and calls it directly, so its signature and return
-    type are a cross-repository contract.
+    Kept as a thin wrapper rather than widened in place: the frozen legacy
+    Fusion pipeline calls this name directly (from its vendored copy), so its
+    signature and return type were a cross-repository contract.
     """
     projection, _reason = _symmetry_source_projection_detail(
         points,
@@ -1648,8 +1742,13 @@ def postprocess_mesh(
     tolerance: float,
     symmetry_snap_tolerance: float | None = None,
     reduced_orientation: str = REDUCED_ORIENTATION_SOURCE_ANCHOR,
+    unit_scale_to_m: float = 1.0e-3,
 ) -> tuple[meshio.Mesh, dict[str, object], dict[str, object]]:
     """Repair and validate a tagged surface mesh without interpreting roles.
+
+    ``tolerance`` and ``symmetry_snap_tolerance`` are in the mesh's own units;
+    the fixed near-duplicate weld (``WELD_TOLERANCE_MM``) is converted with
+    ``unit_scale_to_m`` (default: the mesh is in millimetres).
 
     ``reduced_orientation`` selects how a symmetry-reduced component is
     oriented; see ``REDUCED_ORIENTATIONS`` and :func:`_repair_triangle_winding`.
@@ -1662,7 +1761,11 @@ def postprocess_mesh(
     before_edge_stats = _edge_direction_stats(triangles)
     before_signed_volume = _signed_volume(points, triangles)
     distinct_before = int(len(np.unique(triangles))) if len(triangles) else 0
-    triangles = _weld_near_duplicate_vertices(points, triangles)
+    triangles = _weld_near_duplicate_vertices(
+        points,
+        triangles,
+        tol_mm=millimetres_to_step_units(WELD_TOLERANCE_MM, unit_scale_to_m),
+    )
     welded_vertices = max(0, distinct_before - (int(len(np.unique(triangles))) if len(triangles) else 0))
     triangles, tags, degenerate_removed = _remove_degenerate_triangles(
         points, triangles, tags, min_quality=DEGENERATE_MIN_QUALITY
@@ -1810,7 +1913,7 @@ def _source_wall_stats(
     points: np.ndarray,
     triangles: np.ndarray,
     tags: np.ndarray,
-    spec: SourceSpec,
+    spec: StepFaceGroup,
     *,
     transition_mm: float,
     unit_scale_to_m: float,
@@ -1840,7 +1943,8 @@ def _source_wall_stats(
             axis=2,
         ).min(axis=1)
         min_distance = np.minimum(min_distance, distances)
-    near_triangles = rigid_triangles[min_distance <= transition_mm]
+    transition = millimetres_to_step_units(transition_mm, unit_scale_to_m)
+    near_triangles = rigid_triangles[min_distance <= transition]
     if len(near_triangles) == 0:
         return None
     stats = _edge_frequency_stats(

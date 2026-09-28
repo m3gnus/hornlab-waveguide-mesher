@@ -492,3 +492,17 @@ def test_header_normalisation_is_idempotent():
 
     once = normalise_step_header(text)
     assert normalise_step_header(once) == once
+
+
+def test_export_inside_a_caller_session_gives_its_options_back(tmp_path):
+    import gmsh
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Verbosity", 4)
+        gmsh.option.setNumber("Geometry.Tolerance", 1e-6)
+        write_step(_freestanding(), tmp_path / "horn.step")
+        assert gmsh.option.getNumber("General.Verbosity") == 4
+        assert gmsh.option.getNumber("Geometry.Tolerance") == 1e-6
+    finally:
+        gmsh.finalize()

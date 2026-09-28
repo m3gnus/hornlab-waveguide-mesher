@@ -577,3 +577,154 @@ def test_postprocess_mesh_leaves_the_callers_mesh_alone():
         symmetry_snap_tolerance=1e-3,
     )
     assert np.array_equal(half.points, before)
+
+
+def _anchor_by_sorting_every_pair(healed_tags, healed_geoms, reference_geoms):
+    """The original quadratic implementation, kept as the equivalence oracle."""
+    healed = [(np.asarray(c, dtype=float), float(a)) for c, a in healed_geoms]
+    reference = [(np.asarray(c, dtype=float), float(a)) for c, a in reference_geoms]
+    pairs = []
+    for ri, (rc, ra) in enumerate(reference):
+        for hi, (hc, ha) in enumerate(healed):
+            area_rel = abs(ha - ra) / max(ra, 1.0e-12)
+            dist = float(np.linalg.norm(hc - rc))
+            scale = max(float(np.sqrt(max(ra, ha))), 1.0)
+            pairs.append((10.0 * area_rel + dist / scale, area_rel, dist, ri, hi))
+    ordered = [None] * len(reference)
+    used_r, used_h = set(), set()
+    for _c, _a, _d, ri, hi in sorted(pairs):
+        if ri in used_r or hi in used_h:
+            continue
+        ordered[ri] = int(healed_tags[hi])
+        used_r.add(ri)
+        used_h.add(hi)
+    return ordered
+
+
+def _anchor_case(rng, n, *, jitter_mm, area_jitter, clustered):
+    if clustered:
+        centres = rng.normal(scale=5.0, size=(n, 3))
+    else:
+        centres = rng.uniform(-500.0, 500.0, size=(n, 3))
+    areas = rng.uniform(1.0, 5000.0, size=n)
+    reference = [(tuple(c), float(a)) for c, a in zip(centres, areas)]
+    permutation = rng.permutation(n)
+    healed = [
+        (
+            tuple(centres[i] + rng.normal(scale=jitter_mm, size=3)),
+            float(areas[i] * (1.0 + rng.normal(scale=area_jitter))),
+        )
+        for i in permutation
+    ]
+    tags = [int(100 + t) for t in range(n)]
+    return tags, healed, reference
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_surface_re_anchoring_equals_sorting_every_pair(seed):
+    """Same matching as the quadratic original, including the implausible
+    ones it goes on to refuse -- so success and refusal agree too."""
+    from hornlab_mesher.step_import import _coerce_surface_geometry, _greedy_anchor_matches
+
+    rng = np.random.default_rng(seed)
+    for clustered in (False, True):
+        for jitter_mm, area_jitter in ((1.0e-4, 1.0e-5), (0.5, 0.005), (8.0, 0.05)):
+            tags, healed, reference = _anchor_case(
+                rng, 60, jitter_mm=jitter_mm, area_jitter=area_jitter, clustered=clustered
+            )
+            expected = _anchor_by_sorting_every_pair(tags, healed, reference)
+            matches = _greedy_anchor_matches(
+                [_coerce_surface_geometry(g) for g in reference],
+                [_coerce_surface_geometry(g) for g in healed],
+            )
+            got = [None] * len(reference)
+            for _cost, _area, _dist, ref_index, healed_index in matches:
+                got[ref_index] = tags[healed_index]
+            assert got == expected
+
+
+def test_surface_re_anchoring_is_near_linear():
+    import time
+    from hornlab_mesher.step_import import _anchor_surface_order
+
+    rng = np.random.default_rng(7)
+    tags, healed, reference = _anchor_case(rng, 1500, jitter_mm=1.0e-3, area_jitter=1.0e-5, clustered=False)
+    started = time.perf_counter()
+    order = _anchor_surface_order(tags, healed, reference)
+    elapsed = time.perf_counter() - started
+    assert len(order) == 1500
+    assert elapsed < 3.0, f"1500-face re-anchoring took {elapsed:.1f} s"
+
+
+def test_frequency_validation_reads_millimetres_through_the_unit_scale():
+    """``transition_mm`` used to be compared with raw coordinates, so a mesh in
+    metres took a 200 m wall band around every source."""
+    from hornlab_mesher.step_import import mesh_frequency_validation
+
+    profile = [(10.0 + 3.0 * k, 5.0 * k) for k in range(12)]
+    mesh = _revolved_mesh(profile, cap_first=True)
+    triangles = mesh.cells_dict["triangle"]
+    tags = np.ones(len(triangles), dtype=np.int32)
+    tags[-24:] = 2  # the throat cap is the source
+    source = StepFaceGroup("driver", StepLabelSelector("driver"), OccSurfaceRole("s"), tag=2)
+
+    in_mm = mesh_frequency_validation(
+        mesh.points, triangles, tags, [source],
+        unit_scale_to_m=1.0e-3, requested_max_frequency_hz=2000.0, transition_mm=15.0,
+    )
+    in_m = mesh_frequency_validation(
+        mesh.points * 1.0e-3, triangles, tags, [source],
+        unit_scale_to_m=1.0, requested_max_frequency_hz=2000.0, transition_mm=15.0,
+    )
+    near_mm = in_mm["per_source"]["driver"]["wall_triangle_count"]
+    assert 0 < near_mm < int(np.count_nonzero(tags == 1))
+    assert in_m["per_source"]["driver"]["wall_triangle_count"] == near_mm
+    assert in_m["per_source"]["driver"]["wall_max_edge_m"] == pytest.approx(
+        in_mm["per_source"]["driver"]["wall_max_edge_m"]
+    )
+
+
+def test_postprocess_mesh_welds_in_millimetres_whatever_the_mesh_unit():
+    import meshio
+
+    points = np.array(
+        [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [10.0, 0.0, 0.0 + 1.0e-3]],
+        dtype=float,
+    )
+    triangles = np.array([[0, 1, 2], [3, 2, 1]], dtype=np.int64)
+    tags = np.ones(2, dtype=np.int32)
+
+    def welded(scale, unit):
+        mesh = meshio.Mesh(
+            points=points * scale,
+            cells=[("triangle", triangles)],
+            cell_data={"gmsh:physical": [tags]},
+        )
+        _mesh, repair, _topology = postprocess_mesh(
+            mesh, [], symmetry_planes=(), tolerance=1.0e-6 * scale / 1.0e-3,
+            unit_scale_to_m=unit,
+        )
+        return repair["welded_vertices"]
+
+    # 1 um apart: inside the 5 um weld in millimetres and in metres alike.
+    assert welded(1.0, 1.0e-3) == 1
+    assert welded(1.0e-3, 1.0) == 1
+
+
+def test_step_face_mapping_refuses_more_surfaces_than_faces(tmp_path):
+    """Extra gmsh surfaces (a repeated assembly instance) used to pass the
+    ``<`` guard and fall silently to rigid."""
+    step_path = tmp_path / "model.step"
+    step_path.write_text("#10=ADVANCED_FACE('',(),$,.T.);\n", encoding="ascii")
+    group = StepFaceGroup(
+        name="label", selector=StepLabelSelector("label"), role=OccSurfaceRole("r")
+    )
+    with pytest.raises(RuntimeError, match="1 ADVANCED_FACE records but gmsh imported 2"):
+        map_step_face_groups(
+            step_path,
+            [group],
+            gmsh_surfaces=[101, 102],
+            named_faces={},
+            styled_faces={"label": [10]},
+            face_order=[10],
+        )

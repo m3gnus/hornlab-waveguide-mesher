@@ -252,3 +252,10 @@ def test_the_text_parsers_agree_with_the_path_parsers(tmp_path):
     assert advanced_face_order_from_text(_TWO_BODY_STEP) == step_text.advanced_face_order(step_path)
     assert parse_named_shell_faces_from_text(_TWO_BODY_STEP) == {"Exterior sheet": [12]}
     assert parse_solid_brep_faces_from_text(_TWO_BODY_STEP) == {10, 11}
+
+
+def test_face_order_ignores_a_record_spelled_out_inside_a_comment():
+    """A commented-out face used to count, so a caller comparing the face
+    count with the imported surfaces failed with a misleading mismatch."""
+    text = _TWO_BODY_STEP + "/* #9999=ADVANCED_FACE('ghost',(),$,.T.); */\n"
+    assert advanced_face_order_from_text(text) == [10, 11, 12]

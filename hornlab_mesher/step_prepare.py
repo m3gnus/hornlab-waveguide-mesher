@@ -136,7 +136,9 @@ def millimetres_to_step_units(value_mm: float, unit_scale_to_m: float) -> float:
     """Convert a physical millimetre tolerance to imported STEP units."""
     if unit_scale_to_m <= 0.0:
         raise ValueError("unit_scale_to_m must be positive")
-    return float(value_mm) * 1.0e-3 / float(unit_scale_to_m)
+    # Scale factor first: for millimetre coordinates it is exactly 1.0, so a
+    # millimetre value comes back bit-for-bit unchanged.
+    return float(value_mm) * (1.0e-3 / float(unit_scale_to_m))
 
 
 def snap_symmetry_plane_vertices(
@@ -607,6 +609,18 @@ def auto_cut_occ_geometry(
                 raise ValueError(f"surface {surface} occurs in more than one group")
             roles[surface] = group.role.name
     surfaces = list(roles)
+    # The cut below intersects EVERY surface in the model, so a surface no
+    # group names would be halved without ever having been mirror-tested, and
+    # would then be missing from every returned group.
+    unselected = sorted(
+        {int(tag) for _dim, tag in gmsh.model.getEntities(2)}.difference(roles)
+    )
+    if unselected:
+        raise ValueError(
+            "auto-cut needs every model surface in a group (the cut halves them all); "
+            f"surfaces in no group: {unselected[:12]}"
+            + (" and more" if len(unselected) > 12 else "")
+        )
     samples = {
         surface: sample_occ_surface_points(surface, grid=grid) for surface in surfaces
     }

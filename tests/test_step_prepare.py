@@ -746,3 +746,14 @@ def test_importing_the_package_never_imports_gmsh_or_scipy():
     assert result.returncode == 0, (
         f"importing hornlab_mesher pulled in: {result.stderr.strip()}"
     )
+
+
+def test_auto_cut_refuses_surfaces_it_would_cut_without_testing():
+    """The cut intersects every surface; one left out of the groups used to be
+    halved unexamined and then vanish from the returned groups."""
+    with _gmsh_session():
+        tested = _box_surfaces(-1.0, -0.5, 0.0, 2.0, 2.0, 2.0)
+        _box_surfaces(-1.0, -0.5, 5.0, 2.0, 2.0, 2.0)
+        groups = [OccSurfaceGroup("wall", OccSurfaceSelector(tested), OccSurfaceRole("rigid"))]
+        with pytest.raises(ValueError, match="surfaces in no group"):
+            auto_cut_occ_geometry(groups, grid=5)

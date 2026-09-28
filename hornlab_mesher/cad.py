@@ -414,6 +414,7 @@ def write_step(
         initialized_here = False
         wrote = False
         staged_path: Path | None = None
+        saved_options: dict[str, float] = {}
         try:
             if not gmsh.isInitialized():
                 # On Windows the open can truncate the native PATH, so it runs
@@ -425,6 +426,17 @@ def write_step(
                 with preserve_native_windows_path():
                     gmsh.initialize(interruptible=False)
                     initialized_here = True
+            # A caller-owned session gets its options back (finally below);
+            # silencing its log for good after one STEP export was a side effect.
+            saved_options = {
+                name: gmsh.option.getNumber(name)
+                for name in (
+                    "General.Terminal",
+                    "General.Verbosity",
+                    "Geometry.Tolerance",
+                    "Geometry.ToleranceBoolean",
+                )
+            }
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("General.Verbosity", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
@@ -534,6 +546,9 @@ def write_step(
                 staged_path.unlink(missing_ok=True)
             if owns_out_path and not wrote:
                 out_path.unlink(missing_ok=True)
+            if not initialized_here and gmsh.isInitialized():
+                for name, value in saved_options.items():
+                    gmsh.option.setNumber(name, value)
             if initialized_here and gmsh.isInitialized():
                 with preserve_native_windows_path():
                     gmsh.finalize()
