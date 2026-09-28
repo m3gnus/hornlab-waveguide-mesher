@@ -311,15 +311,14 @@ def _interior_edges(faces: NDArray[np.int64]) -> tuple[NDArray, NDArray, NDArray
     order = np.lexsort((keys[:, 1], keys[:, 0]))
     keys, owner, corners = keys[order], owner[order], corners[order]
     same = np.all(keys[1:] == keys[:-1], axis=1)
-    # A run of exactly two is a manifold interior edge. Runs of one or three or
-    # more are excluded by requiring the pair not to extend either side.
-    pair = np.zeros(len(keys), dtype=bool)
-    pair[:-1] = same
-    left_of = np.zeros(len(keys), dtype=bool)
-    left_of[1:] = same
-    exact = pair.copy()
-    exact[1:] &= ~same  # the second of a triple cannot open a new pair
-    exact[:-1] &= ~np.concatenate(([False], same[:-1]))
+    # A run of exactly two is a manifold interior edge. ``same[i]`` says row i
+    # and row i + 1 share an edge, so a pair opening at i is exact only when
+    # row i is not itself the continuation of a run (``same[i - 1]``) and row
+    # i + 1 does not continue into a third (``same[i + 1]``).
+    exact = same.copy()
+    exact[1:] &= ~same[:-1]
+    exact[:-1] &= ~same[1:]
+    exact = np.concatenate((exact, [False]))
     index = np.flatnonzero(exact)
     return keys[index], owner[index], owner[index + 1]
 
@@ -477,6 +476,9 @@ def mesh_quality_report(
     )
     return {
         "measured": shape.measured,
+        # ``worst`` locations are in the mesh's own units; the gate messages
+        # need to know which to print millimetres.
+        "vertex_units": vertex_units,
         "element_shape": asdict(shape),
         "chord_deviation": asdict(chord),
     }
@@ -521,6 +523,7 @@ def evaluate_quality_gate(
 
     warnings: list[str] = []
     failures: list[str] = []
+    to_mm = _UNIT_TO_MM.get(str(report.get("vertex_units") or "m"), 1000.0)
 
     shape = report.get("element_shape") or {}
     p1_angle = shape.get("p1_angle_deg")
@@ -538,8 +541,8 @@ def evaluate_quality_gate(
             if worst:
                 first = worst[0]
                 message += (
-                    f" Worst at z={1000.0 * float(first['z']):.1f} mm, "
-                    f"r={1000.0 * float(first['radius']):.1f} mm."
+                    f" Worst at z={to_mm * float(first['z']):.1f} mm, "
+                    f"r={to_mm * float(first['radius']):.1f} mm."
                 )
             warnings.append(message)
         if p1_angle < fail_p1_angle_deg:
@@ -562,8 +565,8 @@ def evaluate_quality_gate(
             if worst:
                 first = worst[0]
                 message += (
-                    f" Worst at z={1000.0 * float(first['z']):.1f} mm, "
-                    f"r={1000.0 * float(first['radius']):.1f} mm, over a "
+                    f" Worst at z={to_mm * float(first['z']):.1f} mm, "
+                    f"r={to_mm * float(first['radius']):.1f} mm, over a "
                     f"{float(first['turn_deg']):.0f} degree turn."
                 )
             warnings.append(message)

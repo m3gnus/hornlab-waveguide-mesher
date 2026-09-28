@@ -259,6 +259,64 @@ def test_the_interpolating_fit_still_welds_a_reduced_domain(
     assert result.n_triangles > 0
 
 
+@pytest.mark.parametrize(
+    "source_shape,source_curv",
+    [(0, 0), (1, 1), (1, -1)],
+    ids=["flat-disc", "rounded-cap", "concave-cap"],
+)
+@pytest.mark.parametrize("quadrants", [1, 12, 14])
+@pytest.mark.parametrize(
+    "formula,profile",
+    [
+        (
+            "OSSE",
+            {"L_mm": 120.0, "r0_mm": 12.0, "a_deg": 45.0, "a0_deg": 4.0},
+        ),
+        (
+            "R-OSSE",
+            {
+                "R_mm": 120.0, "r0_mm": 12.0, "a_deg": 45.0, "a0_deg": 4.0,
+                "tmax": 1.0, "m": 0.85, "r": 0.4, "b": 0.2, "k": 2.0, "q": 3.4,
+            },
+        ),
+    ],
+    ids=["OSSE", "R-OSSE"],
+)
+def test_approximate_fit_welds_a_freestanding_axisymmetric_throat(
+    tmp_path, formula, profile, quadrants, source_shape, source_curv
+):
+    """H4: freestanding + reduced domain + ``approximate`` used to tear the seam.
+
+    An axisymmetric grid's freestanding inner wall always builds with the
+    interpolating u-fit (to keep the meridian circular), regardless of
+    ``surface_fit``. The open-sector throat cap has to match that actual
+    decision rather than re-derive its own from ``surface_fit`` alone, or the
+    wall and cap rims mesh different node rings and the closed-shell contract
+    refuses the build with a free-edge error at the throat. Covers every
+    reduced domain (q1/q12/q14) and source shape (flat/rounded/concave) for
+    both axisymmetric formulas.
+    """
+
+    from hornlab_mesher import build_from_config
+
+    config = {
+        "formula": formula,
+        "mode": "freestanding",
+        "profile": profile,
+        "mesh": {
+            "angular_segments": 32, "length_segments": 12,
+            "throat_res_mm": 6.0, "mouth_res_mm": 20.0, "rear_res_mm": 30.0,
+            "wall_thickness_mm": 5.0, "quadrants": quadrants,
+            "surface_fit": SURFACE_FIT_APPROXIMATE, "max_triangles": 40000,
+        },
+        "source": {"source_shape": source_shape, "source_curv": source_curv},
+    }
+    result = build_from_config(
+        config, tmp_path / f"{formula}-{quadrants}-{source_shape}-{source_curv}.msh"
+    )
+    assert result.n_triangles > 0
+
+
 def test_the_throat_boundary_curve_reproduces_the_patch_edge():
     """The rim the cap authors has to trace the wall patch's own v = 0 isocurve."""
 

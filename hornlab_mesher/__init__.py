@@ -70,7 +70,13 @@ from .quality import (
     mesh_quality_report,
 )
 from .datums import derive_datums
-from .mesher import MesherError, build_mesh, build_mesh_with_info, load_mesh
+from .mesher import (
+    MesherError,
+    TriangleBudgetExceeded,
+    build_mesh,
+    build_mesh_with_info,
+    load_mesh,
+)
 from .tags import PhysicalGroup
 from .step_prepare import (
     DEFAULT_AUTO_CUT_GRID,
@@ -144,6 +150,7 @@ __all__ = [
     "DEFAULT_AUTO_CUT_TOLERANCE_REL",
     "DEFAULT_SYMMETRY_SNAP_BAND_MM",
     "MesherError",
+    "TriangleBudgetExceeded",
     "SolveCostEstimate",
     "MeshCostEstimate",
     "Region",

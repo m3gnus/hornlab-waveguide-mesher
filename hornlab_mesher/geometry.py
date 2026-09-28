@@ -296,7 +296,7 @@ class MeshDensity:
 
     throat_res_mm: float = 4.0
     mouth_res_mm: float = 26.0
-    rear_res_mm: float = 25.0
+    rear_res_mm: float = 15.0
     aperture_res_scale: float = 1.5
     enc_front_res_mm: float | str | None = None
     enc_back_res_mm: float | str | None = None

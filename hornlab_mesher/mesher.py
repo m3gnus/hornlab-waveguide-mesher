@@ -15,7 +15,10 @@ from .builders import (
 )
 from .builders._occ import add_physical_groups
 from .density import (
+    CLEARANCE_CAP_BUDGET_ADVICE,
+    TriangleBudgetExceeded as _PremeshTriangleBudgetExceeded,
     _parse_quadrant_resolutions,
+    clearance_caps_active,
     configure_density,
     effective_triangle_limit,
 )
@@ -45,6 +48,51 @@ _GMSH_LOCK = threading.RLock()
 
 class MesherError(Exception):
     pass
+
+
+# Options the pipeline sets itself, or that would silently override the
+# millimetre density contract if inherited from a caller-owned session. The
+# build restores every one of them afterwards.
+_PINNED_MESH_OPTIONS: dict[str, float] = {
+    # Results depend on these: a caller's size factor rescales every mm target,
+    # and a second-order or recombined mesh is not a triangle mesh at all.
+    "Mesh.MeshSizeFactor": 1.0,
+    "Mesh.ElementOrder": 1.0,
+    "Mesh.Smoothing": 1.0,
+    "Mesh.SaveAll": 0.0,
+    "Mesh.RecombineAll": 0.0,
+    "Mesh.SubdivisionAlgorithm": 0.0,
+    "Mesh.MinimumCirclePoints": 7.0,
+}
+_RESTORED_MESH_OPTIONS = (
+    "General.Terminal",
+    "Geometry.Tolerance",
+    "Geometry.ToleranceBoolean",
+    "Mesh.Algorithm",
+    "Mesh.MshFileVersion",
+    "Mesh.MeshSizeMin",
+    "Mesh.MeshSizeMax",
+    "Mesh.MeshSizeExtendFromBoundary",
+    "Mesh.MeshSizeFromPoints",
+    "Mesh.MeshSizeFromCurvature",
+    *_PINNED_MESH_OPTIONS,
+)
+
+
+class TriangleBudgetExceeded(MesherError):
+    """A build was refused for exceeding its triangle budget, not for a fit or
+    topology failure.
+
+    Kept as a distinct type so a caller -- notably the ``auto`` surface-fit
+    fallback in ``config_builder.build_from_config`` -- can tell "this
+    geometry needs a smaller mesh or a larger budget" apart from "the
+    interpolating fit could not mesh this geometry, retry with the
+    approximating one". Retrying a budget refusal with a different fit wastes
+    a full mesh generation and usually still fails, since both fits mesh a
+    similar triangle count. The message text is unchanged from a plain
+    ``MesherError`` for this refusal (WG matches substrings of it), so this
+    subclass only changes what ``isinstance`` sees, never what str() returns.
+    """
 
 
 def _acoustic_geometry(
@@ -196,6 +244,7 @@ def build_mesh_with_info(
 
     with _GMSH_LOCK:
         initialized_here = False
+        saved_options: dict[str, float] = {}
         build_succeeded = False
         raw_path: Path | None = None
         staged_path: Path | None = None
@@ -213,6 +262,15 @@ def build_mesh_with_info(
                 with preserve_native_windows_path():
                     gmsh.initialize(interruptible=False)
                     initialized_here = True
+            if not initialized_here:
+                # A caller-owned session: hand it back as it was found.
+                for name in _RESTORED_MESH_OPTIONS:
+                    try:
+                        saved_options[name] = gmsh.option.getNumber(name)
+                    except Exception:
+                        pass
+            for name, value in _PINNED_MESH_OPTIONS.items():
+                gmsh.option.setNumber(name, value)
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
@@ -309,10 +367,16 @@ def build_mesh_with_info(
                 and not mesh_density.allow_large_mesh
                 and info.n_triangles > limit
             ):
-                raise MesherError(
+                if clearance_caps_active(built.metadata):
+                    advice = CLEARANCE_CAP_BUDGET_ADVICE
+                else:
+                    advice = (
+                        "increase the relevant mm resolution, raise "
+                        "max_triangles, or set allow_large_mesh=true explicitly"
+                    )
+                raise TriangleBudgetExceeded(
                     f"generated mesh contains {info.n_triangles:,} triangles, exceeding "
-                    f"the effective limit {limit:,}; increase the relevant mm resolution, "
-                    "raise max_triangles, or set allow_large_mesh=true explicitly"
+                    f"the effective limit {limit:,}; {advice}"
                 )
             if built.metadata:
                 info.metadata.update(built.metadata)
@@ -334,6 +398,8 @@ def build_mesh_with_info(
             build_succeeded = True
             return out_path, info
         except Exception as exc:
+            if isinstance(exc, (TriangleBudgetExceeded, _PremeshTriangleBudgetExceeded)):
+                raise TriangleBudgetExceeded(f"mesh build failed: {exc}") from exc
             raise MesherError(f"mesh build failed: {exc}") from exc
         finally:
             if raw_path is not None:
@@ -345,6 +411,9 @@ def build_mesh_with_info(
             if initialized_here and gmsh.isInitialized():
                 with preserve_native_windows_path():
                     gmsh.finalize()
+            elif saved_options and gmsh.isInitialized():
+                for name, value in saved_options.items():
+                    gmsh.option.setNumber(name, value)
 
 
 def load_mesh(path: str | Path) -> MeshInfo:

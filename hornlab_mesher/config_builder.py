@@ -26,7 +26,7 @@ from .geometry import (
     PointGridHornGeometry,
     validate_mesh_density,
 )
-from .mesher import MesherError, build_mesh_with_info
+from .mesher import MesherError, TriangleBudgetExceeded, build_mesh_with_info
 from .profile_common import (
     _normalise_quadrants as _normalise_quadrants_common,
     _parse_number_list,
@@ -2191,6 +2191,12 @@ def build_from_config(
             output_path,
             scale_to_metres=resolved.scale_to_metres,
         )
+    except TriangleBudgetExceeded:
+        # A budget refusal is not a fit failure: the other fit meshes about the
+        # same triangle count, so retrying only repeats a full mesh generation
+        # and can ship the inward-biased surface just because it landed under
+        # the limit.
+        raise
     except MesherError:
         # Automatic fitting can retry a geometry that the interpolating
         # surface could not mesh. Keep this general recovery path even though
@@ -2216,6 +2222,7 @@ def build_from_config(
         )
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     freeform_report = resolved.freeform_report
+    fit_used = getattr(geometry, "surface_fit", None)
     return BuildResult(
         mesh_path=mesh_path,
         formula=resolved.formula,
@@ -2233,6 +2240,7 @@ def build_from_config(
             **info.metadata,
             **resolved.sampling_metadata,
             **({"freeformReport": freeform_report} if freeform_report is not None else {}),
+            **({"surfaceFit": fit_used} if fit_used is not None else {}),
         },
     )
 

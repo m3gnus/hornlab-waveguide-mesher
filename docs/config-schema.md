@@ -281,7 +281,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `quadrants` | none | `1234` | `1`, `12`, `14`, and `1234` are supported by the sampler. |
 | `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |
 | `mouth_res_mm` | `mouth_res`, `mouthResolution` | `26.0` (`8.0` for text imports) | Mesh density, not grid shape. |
-| `rear_res_mm` | `rear_res`, `rearResolution` | `15.0` | Mesh density, not grid shape. Direct `MeshDensity` construction defaults to `25.0`. |
+| `rear_res_mm` | `rear_res`, `rearResolution` | `15.0` | Mesh density, not grid shape. |
 | `aperture_res_scale` | `apertureResolutionScale`, `aperture_cap_coarsening`, `apertureCapCoarsening` | `1.5` | Infinite-baffle aperture-cap interior size multiplier relative to `mouth_res_mm`; the welded rim keeps mouth density. |
 | `subdomain_slices` | `subdomainSlices` | empty | Comma/list of requested point-grid ring indices for interfaces. If the acoustic fit changes the axial grid density, indices are relocated to preserve their normalized axial positions. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
 | `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |

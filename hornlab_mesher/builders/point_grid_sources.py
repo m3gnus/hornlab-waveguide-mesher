@@ -288,6 +288,7 @@ def _add_occ_source_cap_surfaces(
     throat_use_min: bool = True,
     source_axis_sign: float = 1.0,
     wall_dimtags: list[tuple[int, int]] | None = None,
+    throat_interpolate_u: bool | None = None,
 ) -> list[tuple[int, int]]:
     shape = _validate_source_shape(geometry)
     n_phi = inner_points.shape[0]
@@ -392,7 +393,13 @@ def _add_occ_source_cap_surfaces(
     boundary: list[int] = []
     for indices in spans:
         boundary.append(
-            _throat_rim_curve(builder, inner_points, list(indices), geometry)
+            _throat_rim_curve(
+                builder,
+                inner_points,
+                list(indices),
+                geometry,
+                interpolate_u=throat_interpolate_u,
+            )
         )
     if boundary:
         cap.append(builder.surface([*boundary, radial_lines[n_phi - 1], -radial_lines[0]]))
@@ -404,6 +411,8 @@ def _throat_rim_curve(
     inner_points: np.ndarray,
     indices: list[int],
     geometry: PointGridHornGeometry,
+    *,
+    interpolate_u: bool | None = None,
 ) -> int:
     """The wall patch's own throat edge, re-authored to the same geometry.
 
@@ -416,10 +425,24 @@ def _throat_rim_curve(
     ``"interpolate"``, where the wall's edge carries the interpolating poles;
     the mismatch left a free-edge ring at the source on every reduced-domain
     build. Author whichever curve the wall actually has.
+
+    ``interpolate_u`` is the wall builder's *actual* u-fit decision for this
+    grid, which the caller must pass through when it differs from a plain
+    ``geometry.surface_fit`` lookup (for example, a freestanding wall forces
+    the interpolating fit on an axisymmetric cross-section even under
+    ``surface_fit = "approximate"``, to keep the meridian circular). When the
+    caller has no such override, ``None`` falls back to the previous
+    ``geometry.surface_fit`` lookup so every other build path stays
+    byte-identical.
     """
 
     ring_tags = [builder.point("inner", i, 0) for i in indices]
-    if geometry.surface_fit != SURFACE_FIT_INTERPOLATE:
+    wall_interpolates = (
+        interpolate_u
+        if interpolate_u is not None
+        else geometry.surface_fit == SURFACE_FIT_INTERPOLATE
+    )
+    if not wall_interpolates:
         return builder.bspline_tags(ring_tags)
 
     poles, (knots, multiplicities), degree = throat_boundary_curve(

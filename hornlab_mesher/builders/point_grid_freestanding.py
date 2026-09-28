@@ -495,6 +495,13 @@ def _build_acoustic_freestanding_point_grid(
         geometry,
         boundary_phi_groups=phi_groups,
         wall_dimtags=inner_wall,
+        # The inner wall above forces the interpolating u-fit whenever the
+        # grid is axisymmetric, regardless of ``geometry.surface_fit`` (see
+        # its comment). The cap's throat rim must match that actual decision,
+        # not re-derive it from ``surface_fit`` alone, or the two rims mesh
+        # different node rings and the throat seam tears (freestanding +
+        # reduced domain + ``surface_fit = "approximate"``).
+        throat_interpolate_u=axisymmetric,
     )
     gmsh.model.occ.synchronize()
 

@@ -399,6 +399,46 @@ def effective_triangle_limit(
     return max(1, int(round(full_limit / _enclosure_domain_multiplier(geometry))))
 
 
+class TriangleBudgetExceeded(ValueError):
+    """Pre-mesh estimate refusal.
+
+    ``mesher.build_mesh_with_info`` re-raises it as
+    ``mesher.TriangleBudgetExceeded`` (a ``MesherError``), which is what callers
+    see. It lives here because ``mesher`` imports this module.
+    """
+
+
+def _sampled_effective_size_mm(
+    surface_tag: int,
+    size_at: Any,
+    *,
+    samples: int = 16,
+) -> float | None:
+    """Effective size of a size field over one OCC surface.
+
+    ``size_at`` maps (x, y, z) sample arrays to the field's size there. The
+    surface is sampled on a regular parameter grid and the sizes are combined
+    the way ``_effective_size_mm`` does (triangle density goes as 1 / h^2).
+    Returns ``None`` when the surface cannot be sampled, so the caller keeps its
+    analytic size.
+    """
+
+    import gmsh
+
+    try:
+        lo, hi = gmsh.model.getParametrizationBounds(2, int(surface_tag))
+        us = np.linspace(float(lo[0]), float(hi[0]), samples)
+        vs = np.linspace(float(lo[1]), float(hi[1]), samples)
+        params = [float(value) for u in us for v in vs for value in (u, v)]
+        xyz = np.asarray(
+            gmsh.model.getValue(2, int(surface_tag), params), dtype=float
+        ).reshape(-1, 3)
+        sizes = np.asarray(size_at(xyz[:, 0], xyz[:, 1], xyz[:, 2]), dtype=float)
+    except Exception:
+        return None
+    return _effective_size_mm([float(v) for v in sizes.reshape(-1)])
+
+
 def _generic_triangle_regions(
     mesh_groups: dict[str, list[int]],
     *,
@@ -407,17 +447,39 @@ def _generic_triangle_regions(
     rear_res: float,
     interface_res: float,
     aperture_res: float,
+    group_size_fields: dict[str, Any] | None = None,
 ) -> list[tuple[float, float, str]]:
-    """Area/size regions for non-enclosure pre-mesh cost prediction."""
+    """Area/size regions for non-enclosure pre-mesh cost prediction.
+
+    ``group_size_fields`` maps a role name to the size field the build really
+    applies there (a callable of x, y, z arrays), for roles whose clearance cap
+    refines them below the requested mm size. Those surfaces are estimated from
+    the sampled field, per surface; every other role keeps its analytic size.
+    """
 
     regions: list[tuple[float, float, str]] = []
     consumed: set[int] = set()
+    fields = group_size_fields or {}
 
-    def add(surface_tags: list[int], size: float | None, label: str) -> None:
+    def add(
+        surface_tags: list[int],
+        size: float | None,
+        label: str,
+        group: str | None = None,
+    ) -> None:
         if size is None or not math.isfinite(float(size)) or float(size) <= 0.0:
             return
         tags = [int(tag) for tag in surface_tags if int(tag) not in consumed]
         consumed.update(tags)
+        if group is not None and group in fields:
+            for tag in tags:
+                area = _surface_area_mm2([tag])
+                sampled = _sampled_effective_size_mm(tag, fields[group])
+                if area > 0.0:
+                    regions.append(
+                        (area, float(sampled if sampled is not None else size), label)
+                    )
+            return
         area = _surface_area_mm2(tags)
         if area > 0.0:
             regions.append((area, float(size), label))
@@ -428,14 +490,32 @@ def _generic_triangle_regions(
     add(mesh_groups.get("mouth_aperture", []), aperture_res, "mouth aperture")
     add(mesh_groups.get("interface", []), interface_res, "interface")
     add(mesh_groups.get("rear", []), rear_res, "rear")
-    add(mesh_groups.get("outer", []), rear_res, "outer wall")
-    add(mesh_groups.get("mouth", []), mouth_res, "mouth")
+    add(mesh_groups.get("outer", []), rear_res, "outer wall", "outer")
+    add(mesh_groups.get("mouth", []), mouth_res, "mouth", "mouth")
     add(
         mesh_groups.get("inner", []),
         _axial_ramp_effective_size_mm(throat_res, mouth_res),
         "waveguide wall",
+        "inner",
     )
     return regions
+
+
+def clearance_caps_active(metadata: dict[str, Any]) -> bool:
+    """Whether a freestanding clearance cap refined the mesh below the user's mm sizes."""
+
+    return any(
+        bool((metadata.get(key) or {}).get("capActive"))
+        for key in ("mouthRimClearance", "outerWallClearance")
+    )
+
+
+CLEARANCE_CAP_BUDGET_ADVICE = (
+    "the wall-clearance guard refines the freestanding shell below the requested "
+    "mm resolutions to keep facets inside the wall (intended), so raising mesh "
+    "resolution will not lower the count; raise max_triangles, increase "
+    "wall_thickness_mm, or set allow_large_mesh=true explicitly"
+)
 
 
 def _record_and_check_triangle_estimate(
@@ -476,13 +556,19 @@ def _record_and_check_triangle_estimate(
         and not density.allow_large_mesh
         and estimate > _PREMESH_TRIANGLE_LIMIT_SLACK * effective_limit
     ):
-        raise ValueError(
+        if clearance_caps_active(geometry.metadata):
+            advice = CLEARANCE_CAP_BUDGET_ADVICE
+        else:
+            advice = (
+                "Increase that mm resolution, raise max_triangles, or set "
+                "allow_large_mesh=true explicitly"
+            )
+        raise TriangleBudgetExceeded(
             "estimated mesh size "
             f"{estimate:,} triangles exceeds the effective limit "
             f"{effective_limit:,} by more than the {_PREMESH_TRIANGLE_LIMIT_SLACK:g}x "
             "pre-mesh safety margin; the largest estimated contribution is "
-            f"{dominant[2]} at {dominant[1]:g} mm. Increase that mm resolution, "
-            "raise max_triangles, or set allow_large_mesh=true explicitly"
+            f"{dominant[2]} at {dominant[1]:g} mm. {advice}"
         )
 
 
@@ -814,19 +900,6 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         )
 
         _record_and_check_triangle_estimate(geometry, density, triangle_regions)
-    else:
-        _record_and_check_triangle_estimate(
-            geometry,
-            density,
-            _generic_triangle_regions(
-                mesh_groups,
-                throat_res=throat_res,
-                mouth_res=mouth_res,
-                rear_res=rear_res,
-                interface_res=interface_res,
-                aperture_res=aperture_res,
-            ),
-        )
 
     _axis, coord = _axis_coordinate_expression(geometry.source_axis)
     a0, a1 = geometry.axial_bounds_mm
@@ -876,6 +949,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     # shell rather than the other way round.
     inner_formula = axial_formula
     mouth_clearance_target_mm: float | None = None
+    mouth_ramp: tuple[float, float, float] | None = None
     mouth_clearance = geometry.metadata.get("mouthRimClearance")
     if mouth_clearance:
         mouth_wall_mm = float(mouth_clearance.get("wallThicknessMm", 0.0) or 0.0)
@@ -972,6 +1046,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                     ),
                 )
                 mouth_clearance_target_mm = float(base)
+                mouth_ramp = (float(base), float(slope), float(intercept))
                 geometry.metadata["mouthRimClearance"] = {
                     **{
                         key: value
@@ -1014,6 +1089,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     outer_formula = f"{rear_res:.12g}" if free_standing_wall_mode else axial_formula
     rear_boundary_formula: str | None = None
     clearance_target_mm: float | None = None
+    outer_ramp: tuple[float, float, float] | None = None
     clearance = geometry.metadata.get("outerWallClearance")
     if free_standing_wall_mode and clearance:
         wall_mm = float(clearance.get("wallThicknessMm", 0.0) or 0.0)
@@ -1057,6 +1133,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             # collapse toward zero and shatter the disc.
             rear_boundary_formula = f"{tightest:.12g}"
             clearance_target_mm = float(tightest)
+            if tightest < rear_res:
+                outer_ramp = (float(base), float(slope), float(intercept))
             geometry.metadata["outerWallClearance"] = {
                 **{
                     key: value
@@ -1069,6 +1147,56 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                 "cappedSizeAtMinRadiusMm": float(tightest),
                 "capActive": bool(tightest < rear_res),
             }
+    if not geometry.enclosure_bounds:
+        # The estimate runs once the clearance caps are known: they refine the
+        # freestanding shell below the requested mm sizes, and an estimate that
+        # ignored them read up to 4.7x low.
+        axis_index = {"x": 0, "y": 1, "z": 2}[_axis]
+        coord_sign = -1.0 if coord.startswith("(-") else 1.0
+
+        def _split(x: Any, y: Any, z: Any) -> tuple[np.ndarray, np.ndarray]:
+            cols = [np.asarray(x, float), np.asarray(y, float), np.asarray(z, float)]
+            along = coord_sign * cols[axis_index]
+            other = [c for i, c in enumerate(cols) if i != axis_index]
+            return along, np.hypot(other[0], other[1])
+
+        size_fields: dict[str, Any] = {}
+        if mouth_ramp is not None:
+            m_base, m_slope, m_intercept = mouth_ramp
+
+            def inner_field(x: Any, y: Any, z: Any) -> np.ndarray:
+                along, radius = _split(x, y, z)
+                axial = np.clip(axial_intercept + axial_slope * along, res_lo, res_hi)
+                cap = np.minimum(
+                    res_hi, np.maximum(m_intercept - m_slope * radius, m_base)
+                )
+                return np.minimum(axial, cap)
+
+            size_fields["inner"] = inner_field
+            size_fields["mouth"] = inner_field
+        if outer_ramp is not None:
+            o_base, o_slope, o_intercept = outer_ramp
+
+            def outer_field(x: Any, y: Any, z: Any) -> np.ndarray:
+                along, _radius = _split(x, y, z)
+                return np.minimum(
+                    rear_res, np.maximum(o_intercept + o_slope * along, o_base)
+                )
+
+            size_fields["outer"] = outer_field
+        _record_and_check_triangle_estimate(
+            geometry,
+            density,
+            _generic_triangle_regions(
+                mesh_groups,
+                throat_res=throat_res,
+                mouth_res=mouth_res,
+                rear_res=rear_res,
+                interface_res=interface_res,
+                aperture_res=aperture_res,
+                group_size_fields=size_fields,
+            ),
+        )
     add_field(
         outer_formula,
         mesh_groups.get("outer", []),
@@ -1098,6 +1226,27 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         bx1 = float(bounds["bx1"])
         by0 = float(bounds["by0"])
         by1 = float(bounds["by1"])
+        # The per-quadrant fields describe the whole physical box. A reduced
+        # build keeps one part of it and its bounds stop at the cut plane, so
+        # the bilinear parameters would span only the kept part and sample the
+        # neighbouring quadrants' values at the plane; mirror the bounds back
+        # out so a reduced build meshes its region as the full model does.
+        # Full builds carry no snap axes and are untouched.
+        # Uniform quadrant values are independent of the bounds, so those
+        # keep the exact expression they always had.
+        uniform = all(
+            len(set(values)) <= 1
+            for values in (front_q, back_q, front_panel_q, back_panel_q)
+        )
+        cut_axes = (
+            set()
+            if uniform
+            else {str(axis).lower() for axis in (geometry.symmetry_snap_axes or ())}
+        )
+        if "x" in cut_axes:
+            bx0 = 2.0 * bx0 - bx1
+        if "y" in cut_axes:
+            by0 = 2.0 * by0 - by1
         z_front = float(bounds["z_front"])
         z_back = float(bounds["z_back"])
 
@@ -1282,7 +1431,12 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
+    sizes = [throat_res, mouth_res, rear_res, interface_res]
+    # The aperture size is only a size this build asks for when it has an
+    # aperture surface; otherwise it would raise Mesh.MeshSizeMax to 1.5x the
+    # coarsest user target for nothing.
+    if mesh_groups.get("mouth_aperture"):
+        sizes.append(aperture_res)
     # The clearance cap is a size this build genuinely asks for, so it belongs
     # in the floor calculation. Left out, Mesh.MeshSizeMin -- derived from the
     # user's resolutions alone -- can clamp the field back above the cap and
