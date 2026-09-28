@@ -1,0 +1,9 @@
+# The versions Waveguide Generator ships, copied from its lock file
+# (waveguide-generator: server/requirements-lock.txt, CPython 3.13).
+# CI installs the mesher under these constraints so a change is tested against
+# exactly what WG runs, not only against whatever PyPI resolves today.
+# Update this file when WG moves one of these pins.
+gmsh==4.15.2
+meshio==5.3.5
+numpy==2.4.6
+scipy==1.17.1
