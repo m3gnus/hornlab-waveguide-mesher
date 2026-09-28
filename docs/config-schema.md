@@ -97,7 +97,7 @@ mouth. `OS.h` is not an ATH key (ath.exe ignores it); the text importer honours
 it because Waveguide Generator writes it. With an active guiding curve the
 coverage angle is solved so that the bulged wall meets the curve.
 
-OSSE refuses `n <= 0`, `q <= 0` and `L <= 0`, and, in total length mode,
+OSSE refuses `L <= 0`, `n <= 0` or `q <= 0` while the termination term is on (`s != 0`), and, in total length mode,
 `Slot.Length >= Length`; each of these used to switch part of the profile off
 silently.
 

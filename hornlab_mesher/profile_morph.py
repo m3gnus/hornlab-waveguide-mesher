@@ -41,8 +41,11 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
         raise ValueError(f"unsupported GCurve type {curve_type}")
 
     sf = _parse_number_list(params.get("gcurveSf", params.get("gcurveSF")))
-    if 0 < len(sf) < 6:
-        # A short list used to fall back to the GCurve.SF.* defaults unseen.
+    if 1 < len(sf) < 6:
+        # A 2-5 value list is a truncated superformula and used to fall back to
+        # the GCurve.SF.* fields unseen. A single value means "not given":
+        # Waveguide Generator writes ``GCurve.SF = 0`` and sends it back as the
+        # string "0" after a save/reopen, with the SF.a..n3 fields in force.
         raise ValueError(
             f"GCurve.SF needs six values (a, b, m, n1, n2, n3), got {len(sf)}"
         )

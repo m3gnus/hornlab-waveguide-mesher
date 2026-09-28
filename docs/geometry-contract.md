@@ -290,7 +290,8 @@ Supported guiding curve targets:
   original azimuth `p`. That is not the polar radius of the scaled curve, but it
   is what ath.exe V2025-06 builds (mouth radii pinned in
   `tests/test_geometry_review_fixes.py`), so it is kept. A `GCurve.SF` list must
-  have six values.
+  have six values; a single value (WG writes `GCurve.SF = 0`) means "not given" and the
+  `GCurve.SF.*` fields apply.
 
 Guiding curves are an OS-SE/OSSE feature in this implementation. R-OSSE with
 an active guiding curve must fail explicitly.
@@ -332,8 +333,9 @@ Implementation rules:
   surface the requested (preview) grid shows.
 - ath.exe snaps an explicit `Morph.FixedPart = 0` to its first slice after the
   throat, not the throat itself; this mesher starts at the throat, as the
-  formula above says. The difference is at most about 0.6 mm mid-horn at rate 2
-  and is not reproduced.
+  formula above says. Measured differences: about 0.4-0.6 mm mid-horn at
+  rate 2 without a slot, up to about 1.6 mm at the end of a 12 mm slot. Not
+  reproduced.
 - The blend progress `(z - zf) / (L - zf)` uses the global normalized axial
   position and is identical for every azimuth — the per-azimuth slot length
   does not shift it (verified against the ATH m2-clone grid).

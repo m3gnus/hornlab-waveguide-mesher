@@ -265,6 +265,8 @@ def _validate_osse_termination(params: Mapping[str, Any], p: float) -> None:
     instead of 117 mm at the mouth in the review case) with no diagnostic.
     """
 
+    if eval_param(params.get("s"), p, 0.0) == 0.0:
+        return  # no termination term to switch off
     for name, default in (("n", _DEFAULTS["n"]), ("q", _DEFAULTS["q"])):
         value = eval_param(params.get(name), p, default)
         if not value > 0.0:

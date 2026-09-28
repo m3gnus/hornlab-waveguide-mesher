@@ -119,9 +119,9 @@ def test_resolve_geometry_refuses_non_finite_control_points(monkeypatch):
 @pytest.mark.parametrize(
     ("override", "match"),
     [
-        ({"q": 0.0}, "q must be > 0"),
-        ({"q": -0.5}, "q must be > 0"),
-        ({"n": 0.0}, "n must be > 0"),
+        ({"q": 0.0, "s": 0.7}, "q must be > 0"),
+        ({"q": -0.5, "s": 0.7}, "q must be > 0"),
+        ({"n": 0.0, "s": 0.7}, "n must be > 0"),
         ({"L": 0.0}, "Length must be > 0"),
         ({"L": -20.0}, "Length must be > 0"),
         ({"slotLength": 120.0, "_athLengthMode": "total"}, "Slot.Length"),
@@ -668,10 +668,51 @@ def test_superellipse_exponent_below_two_is_clamped_like_ath():
     assert np.array_equal(one_half, two)
 
 
-def test_short_superformula_list_is_refused():
-    params = _gcurve_params(gcurveType=2, gcurveSf="1,1,4")
+@pytest.mark.parametrize("short", ["1,1", "1,1,4", "1,1,4,2,2"])
+def test_short_superformula_list_is_refused(short):
+    params = _gcurve_params(gcurveType=2, gcurveSf=short)
     with pytest.raises(ValueError, match="six values"):
         build_point_grid(params)
+
+
+@pytest.mark.parametrize("sf", [0, "0", "", None])
+def test_single_value_superformula_means_not_given(sf):
+    # Waveguide Generator's round trip: its .cfg export writes GCurve.SF = 0
+    # and a reopened design sends gcurveSf as the string "0", with the
+    # superformula held in the SF.a..n3 fields.
+    fields = {
+        "gcurveSfA": 1.0,
+        "gcurveSfB": 1.0,
+        "gcurveSfM1": 4.0,
+        "gcurveSfM2": 4.0,
+        "gcurveSfN1": 4.0,
+        "gcurveSfN2": 4.0,
+        "gcurveSfN3": 4.0,
+    }
+    config = {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {"L": 100.0, "a": 45.0, "a0": 10.0, "r0": 12.7},
+        "gcurve": {
+            "gcurveType": 2,
+            "gcurveWidth": 300.0,
+            "gcurveAspectRatio": 0.6,
+            "gcurveDist": 1.0,
+            "gcurveSf": sf,
+            **fields,
+        },
+        "mesh": {"lengthSegments": 20, "angularSegments": 48},
+    }
+    explicit = {**config, "gcurve": {**config["gcurve"], "gcurveSf": "1,1,4,4,4,4"}}
+    got = _grid(build_geometry_params(config)[0])[1]
+    expected = _grid(build_geometry_params(explicit)[0])[1]
+    assert np.array_equal(got, expected)
+
+
+def test_termination_parameters_are_free_when_the_term_is_off():
+    base = {"type": "OSSE", "L": 80.0, "a": 45.0, "a0": 10.0, "angularSegments": 16, "lengthSegments": 8}
+    with_s0 = _grid({**base, "s": 0.0, "n": 0.0, "q": 0.0})[1]
+    assert np.array_equal(with_s0, _grid({**base, "s": 0.0})[1])
 
 
 def test_freeform_overshoot_policy_is_refused_at_config_level():
