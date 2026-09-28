@@ -420,7 +420,7 @@ def _parse_number_list(
 
 
 
-def _lossless_key_value(value: Any) -> Any:
+def _lossless_key_value(value: Any, *, overflow_is_error: bool = False) -> Any:
     """Recursively coerce a param value into a *lossless*, hashable-as-JSON form.
 
     Shared by the ICW curve and FREEFORM geometry memo keys. ``json.dumps(...,
@@ -432,6 +432,10 @@ def _lossless_key_value(value: Any) -> Any:
     Arrays and numeric sequences are encoded with their exact bytes (shape +
     dtype + ``tobytes().hex()``); mixed sequences and nested mappings recurse;
     numpy scalars become exact Python scalars; other scalars pass through.
+
+    An integer too large for a float raises ``OverflowError`` from the array
+    conversion. FREEFORM tolerates it (falls back to an element-wise key); the ICW
+    memo key always propagated it, which ``overflow_is_error=True`` preserves.
     """
     if isinstance(value, np.ndarray):
         array = np.ascontiguousarray(value)
@@ -439,13 +443,18 @@ def _lossless_key_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         try:
             array = np.ascontiguousarray(np.asarray(value, dtype=np.float64))
-        except (OverflowError, TypeError, ValueError):
-            return ["__seq__", [_lossless_key_value(item) for item in value]]
+        except (OverflowError, TypeError, ValueError) as exc:
+            if overflow_is_error and isinstance(exc, OverflowError):
+                raise
+            return ["__seq__", [_lossless_key_value(item, overflow_is_error=overflow_is_error) for item in value]]
         if array.ndim >= 1:
             return ["__ndarray__", list(array.shape), str(array.dtype), array.tobytes().hex()]
-        return ["__seq__", [_lossless_key_value(item) for item in value]]
+        return ["__seq__", [_lossless_key_value(item, overflow_is_error=overflow_is_error) for item in value]]
     if isinstance(value, Mapping):
-        return {str(key): _lossless_key_value(value[key]) for key in sorted(value, key=str)}
+        return {
+            str(key): _lossless_key_value(value[key], overflow_is_error=overflow_is_error)
+            for key in sorted(value, key=str)
+        }
     if isinstance(value, np.generic):
         return value.item()
     return value

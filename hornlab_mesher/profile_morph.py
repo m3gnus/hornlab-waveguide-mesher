@@ -381,18 +381,30 @@ def _morph_active(params: Mapping[str, Any], p: float) -> bool:
 
 
 def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corner_radius: float) -> float:
-    """One azimuth of :func:`_rounded_rect_radii`.
+    abs_cos = abs(math.cos(phi))
+    abs_sin = abs(math.sin(phi))
+    if abs_cos < 1.0e-9:
+        return half_height
+    if abs_sin < 1.0e-9:
+        return half_width
 
-    The array form selects the same four cases in the same priority order and
-    evaluates the same expressions, so this is bit-identical to the former
-    independent scalar implementation (checked over 200,000 random inputs plus
-    the axis cases); that implementation survives as the test oracle in
-    ``tests/test_profile_vectorization.py``.
-    """
+    r = min(max(corner_radius, 0.0), half_width, half_height)
+    if r <= 1.0e-9:
+        return min(half_width / abs_cos, half_height / abs_sin)
 
-    return float(
-        _rounded_rect_radii(np.asarray([float(phi)]), half_width, half_height, corner_radius)[0]
-    )
+    y_at_x = (half_width * abs_sin) / abs_cos
+    if y_at_x <= half_height - r + 1.0e-9:
+        return half_width / abs_cos
+    x_at_y = (half_height * abs_cos) / abs_sin
+    if x_at_y <= half_width - r + 1.0e-9:
+        return half_height / abs_sin
+
+    cx = half_width - r
+    cy = half_height - r
+    b = -2.0 * (abs_cos * cx + abs_sin * cy)
+    c = cx * cx + cy * cy - r * r
+    disc = max(0.0, b * b - 4.0 * c)
+    return (-b + math.sqrt(disc)) / 2.0
 
 
 def _rounded_rect_radii(

@@ -726,3 +726,19 @@ def test_freeform_overshoot_policy_is_refused_at_config_level():
     }
     with pytest.raises(ConfigError, match="overshootPolicy was removed"):
         build_geometry_params(config)
+
+
+def test_lookup_grid_refuses_ext_before_validating_the_profile():
+    """Raw-params callers see the extension refusal first, as before the refactor."""
+
+    with pytest.raises(ValueError, match="LOOKUP formula does not support throatExtLength"):
+        build_point_grid(
+            {
+                "type": "LOOKUP",
+                "lookupProfile": [[0.0, 10.0]],
+                "throatExtLength": 20.0,
+                "angularSegments": 16,
+                "lengthSegments": 8,
+                "quadrants": "1234",
+            }
+        )

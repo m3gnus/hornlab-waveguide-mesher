@@ -40,37 +40,8 @@ from hornlab_mesher.profile_morph import (
     _morph_factor,
     _morph_factors,
     _rounded_rect_radii,
+    _rounded_rect_radius,
 )
-
-# The independent single-azimuth implementation the package used before
-# ``_rounded_rect_radius`` became a one-element call of the array form; kept
-# here as the oracle so this test still checks two derivations.
-def _rounded_rect_radius(phi: float, half_width: float, half_height: float, corner_radius: float) -> float:
-    abs_cos = abs(math.cos(phi))
-    abs_sin = abs(math.sin(phi))
-    if abs_cos < 1.0e-9:
-        return half_height
-    if abs_sin < 1.0e-9:
-        return half_width
-
-    r = min(max(corner_radius, 0.0), half_width, half_height)
-    if r <= 1.0e-9:
-        return min(half_width / abs_cos, half_height / abs_sin)
-
-    y_at_x = (half_width * abs_sin) / abs_cos
-    if y_at_x <= half_height - r + 1.0e-9:
-        return half_width / abs_cos
-    x_at_y = (half_height * abs_cos) / abs_sin
-    if x_at_y <= half_width - r + 1.0e-9:
-        return half_height / abs_sin
-
-    cx = half_width - r
-    cy = half_height - r
-    b = -2.0 * (abs_cos * cx + abs_sin * cy)
-    c = cx * cx + cy * cy - r * r
-    disc = max(0.0, b * b - 4.0 * c)
-    return (-b + math.sqrt(disc)) / 2.0
-
 
 _TOLERANCE_EPS = 64.0
 _EPS = float(np.finfo(np.float64).eps)
@@ -89,7 +60,7 @@ def _assert_agrees(actual: np.ndarray, expected: list[float], label: str) -> Non
     worst = float(deviation.max(initial=0.0)) / (_EPS * scale)
     assert worst <= _TOLERANCE_EPS, (
         f"{label}: array path is {worst:.1f} eps of the {scale:.3f} mm profile "
-        f"scale from the scalar oracle (bound {_TOLERANCE_EPS:.0f} eps)"
+        f"scale from the scalar implementation (bound {_TOLERANCE_EPS:.0f} eps)"
     )
 
 
@@ -392,7 +363,7 @@ def test_rounded_rect_radii_match_the_scalar_oracle(case: str) -> None:
     assert actual.shape == expected.shape
     assert np.array_equal(actual, expected), (
         f"{case}: {int(np.count_nonzero(actual != expected))} of {angles.size} "
-        f"azimuths differ from the scalar oracle, worst "
+        f"azimuths differ from the scalar implementation, worst "
         f"{float(np.abs(actual - expected).max()):.3e} mm"
     )
 
@@ -416,3 +387,14 @@ def test_rounded_rect_radii_do_not_warn_on_a_degenerate_axis() -> None:
     with np.errstate(all="raise"):
         actual = _rounded_rect_radii(angles, 130.0, 80.0, 12.0)
     assert np.array_equal(actual, np.array([130.0, 80.0, 130.0, 80.0]))
+
+
+def test_icw_cache_key_propagates_an_int_too_large_for_a_float() -> None:
+    """The ICW memo key never accepted this; FREEFORM's tolerant key still does."""
+
+    from hornlab_mesher.freeform import _freeform_key_normalise
+    from hornlab_mesher.profile_formulas import _icw_key_normalise
+
+    with pytest.raises(OverflowError):
+        _icw_key_normalise([10**400, 1])
+    assert _freeform_key_normalise([10**400, 1])[0] == "__seq__"

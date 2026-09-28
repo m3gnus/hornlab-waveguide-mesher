@@ -777,7 +777,8 @@ _ICW_PARAM_KEYS = (
 )
 
 
-_icw_key_normalise = _lossless_key_value
+def _icw_key_normalise(value: Any) -> Any:
+    return _lossless_key_value(value, overflow_is_error=True)
 
 
 def _icw_cache_key(params: Mapping[str, Any]) -> str:

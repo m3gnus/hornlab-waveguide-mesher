@@ -737,13 +737,15 @@ def _lookup_curve(
     axial sample positions; with a dense source profile the interpolation
     error is negligible. ``z(t)`` is linear over the profile's z-range.
     """
-    profile = lookup_profile_array(params)
+    if params.get("lookupProfile", params.get("lookup_profile")) is None:
+        raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
     for key in ("throatExtLength", "throatExtAngle", "slotLength"):
         if eval_param(params.get(key), 0.0, 0.0) != 0.0:
             raise ValueError(
                 f"LOOKUP formula does not support {key}: the lookupProfile defines "
                 "the whole meridian; build the extension into the lookupProfile"
             )
+    profile = lookup_profile_array(params)
     z_src = profile[:, 0]
     r_src = profile[:, 1]
     z0 = float(z_src[0])
