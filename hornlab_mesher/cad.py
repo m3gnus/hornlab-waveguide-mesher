@@ -502,13 +502,9 @@ def write_step(
 
             # Stage beside the target and swap only once the file validates, so
             # a rejected export never leaves a corrupt STEP at the caller's path.
-            with tempfile.NamedTemporaryFile(
-                dir=out_path.parent,
-                prefix=f".{out_path.name}.",
-                suffix=".step",
-                delete=False,
-            ) as tmp:
-                staged_path = Path(tmp.name)
+            staged_path = _publish_staging_file(
+                out_path.parent, f".{out_path.name}.", ".step"
+            )
             gmsh.write(str(staged_path))
             text = normalise_step_header(
                 staged_path.read_text(encoding="utf-8", errors="replace")
@@ -889,6 +885,53 @@ def _source_interface_table(
     return result
 
 
+# A collision needs two writers to draw the same 96 random bits in the same
+# directory; the retries turn one into a retry rather than a failed export.
+_STAGING_NAME_ATTEMPTS = 8
+
+
+def _publish_staging_directory(parent: Path, prefix: str) -> Path:
+    """Create an empty directory beside a destination, as the destination will be.
+
+    Not ``tempfile.mkdtemp``: on Windows CPython implements its ``0o700`` as a
+    non-inheriting DACL (SYSTEM, Administrators, OWNER RIGHTS), every file
+    created inside takes that DACL, and a rename carries it along -- so a
+    published bundle ends up readable only by whoever owned the writing
+    process, and stops being readable to the app or to Fusion after an owner
+    change. On POSIX the same call leaves the published bundle ``0o700``.
+    A plain ``mkdir`` inherits the parent's ACL, and the umask's mode, which
+    is what the published directory should carry: the staging directory *is*
+    the published directory once it is renamed into place.
+    """
+
+    for _ in range(_STAGING_NAME_ATTEMPTS):
+        candidate = parent / f"{prefix}{secrets.token_hex(6)}"
+        try:
+            candidate.mkdir()  # no mode argument, deliberately
+        except FileExistsError:
+            continue
+        return candidate
+    raise MesherError(f"could not create a staging directory in {parent}")
+
+
+def _publish_staging_file(parent: Path, prefix: str, suffix: str) -> Path:
+    """Create an empty file beside a destination with the umask's ordinary mode.
+
+    ``tempfile`` creates files ``0o600``, and ``Path.replace`` keeps a file's
+    mode, so a STEP staged that way was published private on POSIX.
+    """
+
+    for _ in range(_STAGING_NAME_ATTEMPTS):
+        candidate = parent / f"{prefix}{secrets.token_hex(6)}{suffix}"
+        try:
+            descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        os.close(descriptor)
+        return candidate
+    raise MesherError(f"could not create a staging file in {parent}")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -961,7 +1004,7 @@ def _sync_staged_bundle(staging: Path) -> None:
     _fsync_directory(staging)
 
 
-_BUNDLE_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_BUNDLE_THREAD_LOCKS: dict[str, list[Any]] = {}  # key -> [lock, users]
 _BUNDLE_THREAD_LOCKS_GUARD = threading.Lock()
 _TRANSACTION_SCHEMA = 3
 _PRIVATE_STATE_SCHEMA = 1
@@ -1346,14 +1389,40 @@ def _windows_private_lock_root(base: Path) -> Path:
     return root
 
 
+def _private_lock_root_path() -> Path:
+    """Where the private lock root lives, without creating or checking it."""
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
+        return base / "HornLab" / "WaveguideMesher" / "lock-state-v1"
+    return Path(tempfile.gettempdir()) / f"hornlab-waveguide-mesher-{os.getuid()}"
+
+
 def _private_lock_root() -> Path:
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
         return _windows_private_lock_root(base)
     else:
-        root = Path(tempfile.gettempdir()) / f"hornlab-waveguide-mesher-{os.getuid()}"
+        root = _private_lock_root_path()
     _ensure_private_directory(root)
     return root
+
+
+def _has_coordination_state(target: Path) -> bool:
+    """Whether any publisher ever coordinated a replacement of ``target``.
+
+    Read-only: it creates neither the private root nor any file, which is the
+    point -- a first publication must not leave state behind.
+    """
+    if _transaction_path(target).exists() or _unowned_backup_candidates(target):
+        # A pending transaction, or what may be a crashed one's backup: the
+        # coordinated path recovers it or refuses.
+        return True
+    key = _target_lock_key(target)
+    root = _private_lock_root_path()
+    return any(
+        (root / name).exists() or (root / name).is_symlink()
+        for name in (f"{key}.lock", f"{key}.state.json")
+    )
 
 
 def _target_lock_key(target: Path) -> str:
@@ -2161,34 +2230,48 @@ def _bundle_publish_lock(target: Path):
     lock_path = _publish_lock_path(target)
     lock_key = str(lock_path.absolute())
     with _BUNDLE_THREAD_LOCKS_GUARD:
-        thread_lock = _BUNDLE_THREAD_LOCKS.setdefault(lock_key, threading.Lock())
-    with thread_lock:
-        descriptor = _open_or_create_private_file(lock_path)
+        entry = _BUNDLE_THREAD_LOCKS.setdefault(lock_key, [threading.Lock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield from _hold_publish_lock(target, lock_path)
+    finally:
+        # Reference-counted, so a long-running process publishing to many
+        # targets keeps no lock object per target it ever touched.
+        with _BUNDLE_THREAD_LOCKS_GUARD:
+            entry[1] -= 1
+            if entry[1] == 0 and _BUNDLE_THREAD_LOCKS.get(lock_key) is entry:
+                del _BUNDLE_THREAD_LOCKS[lock_key]
+
+
+def _hold_publish_lock(target: Path, lock_path: Path):
+    """The cross-process half of :func:`_bundle_publish_lock` (a generator)."""
+    descriptor = _open_or_create_private_file(lock_path)
+    try:
+        _lock_file(descriptor)
         try:
-            _lock_file(descriptor)
-            try:
-                metadata = _validate_private_file_identity(lock_path, descriptor)
+            metadata = _validate_private_file_identity(lock_path, descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            marker = os.read(descriptor, 2)
+            if metadata.st_size == 0:
+                os.ftruncate(descriptor, 0)
                 os.lseek(descriptor, 0, os.SEEK_SET)
-                marker = os.read(descriptor, 2)
-                if metadata.st_size == 0:
-                    os.ftruncate(descriptor, 0)
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    _write_all(descriptor, b"\0")
-                    os.fsync(descriptor)
-                    _validate_private_file_identity(lock_path, descriptor)
-                elif metadata.st_size != 1 or marker != b"\0":
-                    raise MesherError(
-                        f"wglink publication lock has invalid contents: {lock_path}"
-                    )
-                state = _load_or_create_private_state(target)
-                try:
-                    yield state
-                finally:
-                    _validate_private_file_identity(lock_path, descriptor)
+                _write_all(descriptor, b"\0")
+                os.fsync(descriptor)
+                _validate_private_file_identity(lock_path, descriptor)
+            elif metadata.st_size != 1 or marker != b"\0":
+                raise MesherError(
+                    f"wglink publication lock has invalid contents: {lock_path}"
+                )
+            state = _load_or_create_private_state(target)
+            try:
+                yield state
             finally:
-                _unlock_file(descriptor)
+                _validate_private_file_identity(lock_path, descriptor)
         finally:
-            os.close(descriptor)
+            _unlock_file(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _remove_directory_contents(path: Path) -> None:
@@ -2723,6 +2806,23 @@ def _publish_bundle_without_exchange(staging: Path, target: Path) -> None:
     recovery contract.
     """
 
+    if not (target.exists() or target.is_symlink()) and not _has_coordination_state(target):
+        # A first publication into a path no publisher has ever coordinated
+        # (always the case for a caller staging into a fresh directory) is one
+        # rename that refuses an existing destination. That is already safe
+        # against a racing publisher, so it takes no lock and leaves no lock or
+        # state file behind -- those used to accumulate, one pair per export,
+        # in the private lock root.
+        try:
+            _move_path_write_through(staging, target, replace=False)
+        except OSError:
+            if not (target.exists() or target.is_symlink()):
+                raise
+            # Lost a race to another publisher: replace it, coordinated.
+        else:
+            _fsync_directory(target.parent)
+            return
+
     with _bundle_publish_lock(target) as state:
         _recover_directory_replacement(target, state)
         if target.exists():
@@ -2921,7 +3021,7 @@ def write_wglink(
     identity_sections.setdefault("generator", _default_generator())
     source_interfaces = _source_interface_table(interface_sources)
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    staging = _publish_staging_directory(target.parent, f".{target.name}.")
     try:
         step_path, cad_info = write_step(
             geometry, staging / "waveguide.step", open_throat=open_throat
@@ -3024,6 +3124,13 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise MesherError(f"could not read wglink manifest: {exc}") from exc
+    if not isinstance(manifest, Mapping):
+        raise MesherError("wglink manifest must be a JSON object")
+    required_features = manifest.get("required_features", [])
+    if not isinstance(required_features, list) or not all(
+        isinstance(feature, str) for feature in required_features
+    ):
+        raise MesherError("wglink.required_features must be an array of strings")
     version = str(manifest.get("wglink_version", ""))
     if version.split(".", 1)[0] != "1":
         raise MesherError(f"unsupported wglink major version {version!r}")
@@ -3032,16 +3139,14 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
         "link-local-frame-v1",
         SOURCE_INTERFACE_FEATURE,
     }
-    unknown = sorted(set(manifest.get("required_features", ())).difference(supported))
+    unknown = sorted(set(required_features).difference(supported))
     if unknown:
         raise MesherError(
             "unsupported required wglink feature(s): " + ", ".join(unknown)
         )
     interface = manifest.get("interface")
     raw_sources = interface.get("sources") if isinstance(interface, Mapping) else None
-    has_source_feature = SOURCE_INTERFACE_FEATURE in manifest.get(
-        "required_features", ()
-    )
+    has_source_feature = SOURCE_INTERFACE_FEATURE in required_features
     if raw_sources is None:
         raw_sources = []
     if not isinstance(raw_sources, list):
@@ -3056,6 +3161,15 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
     files = manifest.get("files")
     if not isinstance(files, Mapping):
         raise MesherError("wglink manifest has no files table")
+    # Checksums over an empty table prove nothing: a bundle is its body and
+    # its point grid, and both must be declared (and so checksummed).
+    body = manifest.get("body")
+    body_file = body.get("file") if isinstance(body, Mapping) else None
+    if not isinstance(body_file, str) or not body_file:
+        raise MesherError("wglink manifest names no body file")
+    for required in (body_file, "point-grid.json"):
+        if required not in files:
+            raise MesherError(f"wglink manifest does not declare required file {required}")
     root = bundle.resolve()
     declared_names = set(files)
     actual_names = {

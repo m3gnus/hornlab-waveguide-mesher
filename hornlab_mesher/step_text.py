@@ -12,6 +12,7 @@ import these parsers from there keep working unchanged.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -82,9 +83,15 @@ def blank_step_strings(step_text: str) -> str:
 
 
 def step_records(step_text: str) -> dict[int, str]:
-    """Return entity id -> record body, whitespace collapsed to single spaces."""
+    """Return entity id -> record body, whitespace collapsed to single spaces.
+
+    Comments are removed first, so a record spelled out inside ``/* */`` is
+    never read as an entity. Every parser below builds on this, which is what
+    keeps them agreeing with :func:`step_body_inventory` about what a file
+    contains.
+    """
     records: dict[int, str] = {}
-    for match in _STEP_RECORD_RE.finditer(step_text):
+    for match in _STEP_RECORD_RE.finditer(strip_step_comments(step_text)):
         records[int(match.group(1))] = " ".join(match.group(2).split())
     return records
 
@@ -282,7 +289,16 @@ def parse_styled_face_groups(step_path: Path) -> dict[str, list[int]]:
 
 
 def advanced_face_order_from_text(step_text: str) -> list[int]:
-    """Return STEP ADVANCED_FACE ids in file order."""
+    """Return STEP ADVANCED_FACE ids in file (record) order.
+
+    Record order carries no meaning in Part 21, and it is NOT the order in
+    which gmsh numbers the imported surfaces: OCC binds faces by walking its
+    own shapes, and the STEP reader's shape fixing may reorder a shell's
+    faces. Zipping this list with ``gmsh.model.getEntities(2)`` is therefore
+    correct only by accident. To map faces onto imported surfaces use
+    ``hornlab_mesher.step_import.advanced_face_order_for_surfaces``, which
+    matches them by geometry and refuses when it cannot.
+    """
     return [
         rec_id
         for rec_id, record in step_records(step_text).items()
@@ -291,8 +307,442 @@ def advanced_face_order_from_text(step_text: str) -> list[int]:
 
 
 def advanced_face_order(step_path: Path) -> list[int]:
-    """Return STEP ADVANCED_FACE ids in file order."""
+    """Return STEP ADVANCED_FACE ids in file (record) order.
+
+    See :func:`advanced_face_order_from_text` for why this is not a surface
+    order.
+    """
     return advanced_face_order_from_text(read_step_text(step_path))
+
+
+# Metres per SI prefix; STEP spells the prefix as an enumeration (.MILLI.).
+_SI_PREFIX_METRES = {
+    "EXA": 1.0e18, "PETA": 1.0e15, "TERA": 1.0e12, "GIGA": 1.0e9, "MEGA": 1.0e6,
+    "KILO": 1.0e3, "HECTO": 1.0e2, "DECA": 1.0e1, "DECI": 1.0e-1, "CENTI": 1.0e-2,
+    "MILLI": 1.0e-3, "MICRO": 1.0e-6, "NANO": 1.0e-9, "PICO": 1.0e-12,
+}
+_SI_LENGTH_RE = re.compile(r"SI_UNIT\(\s*(?:\.([A-Z]+)\.|\$)\s*,\s*\.METRE\.\s*\)")
+_NUMBER_RE = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][-+]?\d+)?"
+_LENGTH_MEASURE_RE = re.compile(r"LENGTH_MEASURE\(\s*(" + _NUMBER_RE + r")\s*\)")
+_POINT_COORDS_RE = re.compile(r"CARTESIAN_POINT\(\s*'(?:[^']|'')*'\s*,\s*\(([^()]*)\)\s*\)$")
+_FACE_BOUNDS_RE = re.compile(r"ADVANCED_FACE\(\s*'(?:[^']|'')*'\s*,\s*\(([^()]*)\)")
+
+
+def _step_float(token: str) -> float:
+    return float(token.strip().replace("D", "E").replace("d", "e"))
+
+
+def _length_unit_mm(records: dict[int, str], rec_id: int, depth: int = 0) -> float | None:
+    record = records.get(rec_id, "")
+    if depth > 8 or "LENGTH_UNIT" not in record:
+        return None
+    si = _SI_LENGTH_RE.search(record)
+    if si is not None:
+        prefix = si.group(1)
+        if prefix is None:
+            return 1000.0
+        metres = _SI_PREFIX_METRES.get(prefix)
+        return None if metres is None else metres * 1000.0
+    if "CONVERSION_BASED_UNIT" in record:
+        for ref in step_refs(record):
+            measure = records.get(ref, "")
+            if not measure.startswith("LENGTH_MEASURE_WITH_UNIT"):
+                continue
+            value = _LENGTH_MEASURE_RE.search(measure)
+            unit_refs = step_refs(measure)
+            if value is None or not unit_refs:
+                return None
+            base = _length_unit_mm(records, unit_refs[-1], depth + 1)
+            return None if base is None else _step_float(value.group(1)) * base
+    return None
+
+
+def step_length_unit_mm_from_text(step_text: str) -> float | None:
+    """Return the file's length unit in millimetres, or ``None`` if unknown.
+
+    ``None`` also means "more than one length unit": a file whose geometry
+    contexts disagree about their unit has no single answer, and a caller
+    converting coordinates must not pick one.
+    """
+    records = step_records(step_text)
+    # The unit a geometry context assigns, not every unit the file defines:
+    # Fusion also declares an unused metre unit beside its millimetre one.
+    assigned: set[int] = set()
+    for record in records.values():
+        _, found, rest = record.partition("GLOBAL_UNIT_ASSIGNED_CONTEXT")
+        if found:
+            assigned.update(step_refs(rest.partition(")")[0]))
+    candidates = [
+        rec_id
+        for rec_id, record in records.items()
+        if "LENGTH_UNIT" in record and (not assigned or rec_id in assigned)
+    ]
+    units = {_length_unit_mm(records, rec_id) for rec_id in candidates}
+    if len(units) != 1 or None in units:
+        return None
+    return units.pop()
+
+
+@dataclass(frozen=True)
+class StepFaceTopology:
+    """What the Part 21 text says about one ADVANCED_FACE's boundary.
+
+    ``vertices`` are coordinates in the file's length unit, in the frame of
+    the representation holding the face (see :func:`advanced_face_placements_from_text`).
+    ``edges`` are the EDGE_CURVE ids its loops use; two faces sharing one are
+    neighbours in the shell.
+    """
+
+    vertices: tuple[tuple[float, float, float], ...]
+    edges: frozenset[int]
+
+
+def _record_keyword(record: str) -> str:
+    return record.partition("(")[0].strip()
+
+
+def advanced_face_topology_from_text(step_text: str) -> dict[int, StepFaceTopology]:
+    """Return ADVANCED_FACE id -> its boundary vertices and edges, in record order.
+
+    Only the topology is followed (face bounds, loops, oriented edges, edge
+    curves, vertices), never a surface or curve definition, whose control
+    points are not on the face. A face with no vertex at all -- a closed
+    periodic face bounded only by vertex-free loops -- has empty vertices.
+    """
+    records = step_records(step_text)
+    point_cache: dict[int, tuple[float, float, float] | None] = {}
+
+    def point(vertex_id: int) -> tuple[float, float, float] | None:
+        if vertex_id in point_cache:
+            return point_cache[vertex_id]
+        result = None
+        refs = step_refs(records.get(vertex_id, ""))
+        match = _POINT_COORDS_RE.match(records.get(refs[-1], "")) if refs else None
+        if match is not None:
+            coords = [part for part in match.group(1).split(",") if part.strip()]
+            if len(coords) == 3:
+                result = tuple(_step_float(value) for value in coords)
+        point_cache[vertex_id] = result
+        return result
+
+    out: dict[int, StepFaceTopology] = {}
+    for face_id, record in records.items():
+        if not record.startswith("ADVANCED_FACE"):
+            continue
+        bounds = _FACE_BOUNDS_RE.match(record)
+        stack = step_refs(bounds.group(1)) if bounds is not None else []
+        seen: set[int] = set()
+        vertices: dict[int, tuple[float, float, float]] = {}
+        edges: set[int] = set()
+        while stack:
+            rec_id = stack.pop()
+            if rec_id in seen:
+                continue
+            seen.add(rec_id)
+            body = records.get(rec_id, "")
+            keyword = _record_keyword(body)
+            if keyword in ("FACE_BOUND", "FACE_OUTER_BOUND", "EDGE_LOOP", "ORIENTED_EDGE", "VERTEX_LOOP"):
+                stack.extend(step_refs(body))
+            elif keyword == "EDGE_CURVE":
+                edges.add(rec_id)
+                # start vertex, end vertex; the third reference is the curve.
+                stack.extend(step_refs(body)[:2])
+            elif keyword == "VERTEX_POINT":
+                coords = point(rec_id)
+                if coords is not None:
+                    vertices[rec_id] = coords
+        out[face_id] = StepFaceTopology(
+            vertices=tuple(vertices[key] for key in sorted(vertices)),
+            edges=frozenset(edges),
+        )
+    return out
+
+
+def advanced_face_vertices_from_text(
+    step_text: str,
+) -> dict[int, tuple[tuple[float, float, float], ...]]:
+    """Return ADVANCED_FACE id -> the coordinates of its boundary vertices.
+
+    Coordinates are in the file's own length unit, in the frame of the
+    representation that holds the face. See
+    :func:`advanced_face_topology_from_text`.
+    """
+    return {
+        face: topology.vertices
+        for face, topology in advanced_face_topology_from_text(step_text).items()
+    }
+
+
+# STEP surface entity -> a kind comparable with gmsh's surface type names.
+_STEP_SURFACE_KINDS = {
+    "PLANE": "plane",
+    "CYLINDRICAL_SURFACE": "cylinder",
+    "CONICAL_SURFACE": "cone",
+    "SPHERICAL_SURFACE": "sphere",
+    "TOROIDAL_SURFACE": "torus",
+    "B_SPLINE_SURFACE_WITH_KNOTS": "bspline",
+    "B_SPLINE_SURFACE": "bspline",
+    "RATIONAL_B_SPLINE_SURFACE": "bspline",
+    "BEZIER_SURFACE": "bezier",
+    "SURFACE_OF_REVOLUTION": "revolution",
+    "SURFACE_OF_LINEAR_EXTRUSION": "extrusion",
+}
+
+
+def advanced_face_surface_kinds_from_text(step_text: str) -> dict[int, str | None]:
+    """Return ADVANCED_FACE id -> the kind of its underlying surface, or ``None``.
+
+    Kinds are ``plane``, ``cylinder``, ``cone``, ``sphere``, ``torus``,
+    ``bspline``, ``bezier``, ``revolution`` and ``extrusion``; anything else
+    (offset, trimmed, degenerate forms) is ``None``, meaning "unknown", never
+    "different".
+    """
+    records = step_records(step_text)
+    out: dict[int, str | None] = {}
+    for face_id, record in records.items():
+        if not record.startswith("ADVANCED_FACE"):
+            continue
+        refs = step_refs(record)
+        surface = records.get(refs[-1], "") if refs else ""
+        keywords = record_entity_types(surface) if surface.startswith("(") else (_record_keyword(surface),)
+        kinds = {_STEP_SURFACE_KINDS[k] for k in keywords if k in _STEP_SURFACE_KINDS}
+        out[face_id] = kinds.pop() if len(kinds) == 1 else None
+    return out
+
+
+Matrix4 = tuple[tuple[float, float, float, float], ...]
+_IDENTITY4: Matrix4 = (
+    (1.0, 0.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0, 0.0),
+    (0.0, 0.0, 1.0, 0.0),
+    (0.0, 0.0, 0.0, 1.0),
+)
+
+
+def _matmul4(a: Matrix4, b: Matrix4) -> Matrix4:
+    return tuple(
+        tuple(sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4)) for i in range(4)
+    )
+
+
+def _rigid_inverse(m: Matrix4) -> Matrix4:
+    rot = [[m[j][i] for j in range(3)] for i in range(3)]  # transpose
+    t = [-sum(rot[i][k] * m[k][3] for k in range(3)) for i in range(3)]
+    return (
+        (rot[0][0], rot[0][1], rot[0][2], t[0]),
+        (rot[1][0], rot[1][1], rot[1][2], t[1]),
+        (rot[2][0], rot[2][1], rot[2][2], t[2]),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+
+
+def _matrices_close(a: Matrix4, b: Matrix4, tol: float = 1.0e-9) -> bool:
+    scale = max(1.0, *(abs(a[i][3]) for i in range(3)), *(abs(b[i][3]) for i in range(3)))
+    return all(
+        abs(a[i][j] - b[i][j]) <= tol * (scale if j == 3 else 1.0)
+        for i in range(4)
+        for j in range(4)
+    )
+
+
+def _vector(records: dict[int, str], rec_id: int | None, default: tuple[float, float, float]) -> tuple[float, float, float] | None:
+    if rec_id is None:
+        return default
+    match = re.search(r"\(([^()]*)\)\s*\)$", records.get(rec_id, ""))
+    if match is None:
+        return None
+    values = [part for part in match.group(1).split(",") if part.strip()]
+    if len(values) != 3:
+        return None
+    return tuple(_step_float(value) for value in values)
+
+
+def _placement_matrix(records: dict[int, str], rec_id: int) -> Matrix4 | None:
+    """AXIS2_PLACEMENT_3D -> the matrix taking local coordinates to its parent's."""
+    record = records.get(rec_id, "")
+    if _record_keyword(record) != "AXIS2_PLACEMENT_3D":
+        return None
+    args = blank_step_strings(record).partition("(")[2].rpartition(")")[0].split(",")
+    if len(args) != 4:
+        return None
+
+    def ref(token: str) -> int | None:
+        token = token.strip()
+        return int(token[1:]) if token.startswith("#") else None
+
+    origin = _vector(records, ref(args[1]), (0.0, 0.0, 0.0))
+    axis = _vector(records, ref(args[2]), (0.0, 0.0, 1.0))
+    ref_dir = _vector(records, ref(args[3]), (1.0, 0.0, 0.0))
+    if origin is None or axis is None or ref_dir is None:
+        return None
+    norm = sum(v * v for v in axis) ** 0.5
+    if norm == 0.0:
+        return None
+    z = [v / norm for v in axis]
+    dot = sum(a * b for a, b in zip(ref_dir, z))
+    x = [a - dot * b for a, b in zip(ref_dir, z)]
+    norm = sum(v * v for v in x) ** 0.5
+    if norm == 0.0:
+        return None
+    x = [v / norm for v in x]
+    y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]]
+    return (
+        (x[0], y[0], z[0], origin[0]),
+        (x[1], y[1], z[1], origin[1]),
+        (x[2], y[2], z[2], origin[2]),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+
+
+def _body_representations(
+    records: dict[int, str], step_text: str
+) -> dict[int, list[tuple[int, int]]]:
+    """Body record id -> every (representation id, item position) listing it."""
+    body_ids = {body.record_id for body in step_body_inventory(step_text)}
+    out: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for rec_id, record in records.items():
+        keyword = _record_keyword(record)
+        if not keyword.endswith("REPRESENTATION") or "RELATIONSHIP" in keyword:
+            continue
+        items = re.match(r"[A-Z_]+\(\s*'(?:[^']|'')*'\s*,\s*\(([^()]*)\)", record)
+        if items is None:
+            continue
+        for position, ref in enumerate(step_refs(items.group(1))):
+            if ref in body_ids:
+                out[ref].append((rec_id, position))
+    return out
+
+
+def advanced_face_body_positions_from_text(
+    step_text: str,
+) -> dict[int, tuple[int, int, int, int] | None]:
+    """Return ADVANCED_FACE id -> where OCC meets its body, or ``None``.
+
+    The tuple is ``(representation id, kind rank, item position, body id)``:
+    gmsh binds every solid's faces before any free face (kind rank 0 for a
+    solid body, 1 for a surface body), and within one representation it
+    walks bodies in the order the representation lists them. Only faces of
+    one body listed by exactly one representation get a position; the key
+    orders faces of *different* bodies within one representation, and says
+    nothing about faces within one body (the STEP reader may reorder those).
+    """
+    records = step_records(step_text)
+    places = _body_representations(records, step_text)
+    out: dict[int, tuple[int, int, int, int] | None] = {}
+    for body in step_body_inventory(step_text):
+        listed = places.get(body.record_id, [])
+        key = None
+        if len(listed) == 1:
+            rep, position = listed[0]
+            key = (rep, 0 if body.kind == "solid" else 1, position, body.record_id)
+        for face in body.face_ids:
+            out[face] = None if face in out else key
+    return out
+
+
+def advanced_face_placements_from_text(step_text: str) -> dict[int, Matrix4 | None]:
+    """Return ADVANCED_FACE id -> the matrix placing its representation in the model.
+
+    An assembly places each part's representation into its parent with a
+    ``REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION`` whose
+    ``ITEM_DEFINED_TRANSFORMATION`` carries two axis placements; OCC applies
+    exactly that chain when it builds the imported compound. The matrix
+    takes coordinates in the face's own representation (file length units)
+    to the root frame. ``None`` means the text does not determine one
+    placement: the representation is instanced more than once, or a
+    placement could not be read.
+    """
+    records = step_records(step_text)
+    upward: dict[int, list[tuple[int, Matrix4 | None]]] = defaultdict(list)
+    identity_links: dict[int, set[int]] = defaultdict(set)
+    for record in records.values():
+        if "REPRESENTATION_RELATIONSHIP" not in record:
+            continue
+        keywords = record_entity_types(record) if record.startswith("(") else (_record_keyword(record),)
+        if not any(k.endswith("REPRESENTATION_RELATIONSHIP") for k in keywords):
+            continue
+        relation = re.search(r"(?<![A-Z_])REPRESENTATION_RELATIONSHIP\(([^()]*)\)", blank_step_strings(record))
+        if relation is None:
+            relation = re.search(r"SHAPE_REPRESENTATION_RELATIONSHIP\(([^()]*)\)", blank_step_strings(record))
+        if relation is None:
+            continue
+        reps = step_refs(relation.group(1))
+        if len(reps) < 2:
+            continue
+        child, parent = reps[-2], reps[-1]
+        transform = re.search(r"REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION\(\s*#(\d+)\s*\)", record)
+        if transform is None:
+            identity_links[child].add(parent)
+            identity_links[parent].add(child)
+            continue
+        item = records.get(int(transform.group(1)), "")
+        matrix: Matrix4 | None = None
+        if _record_keyword(item) == "ITEM_DEFINED_TRANSFORMATION":
+            placements = step_refs(item)
+            if len(placements) >= 2:
+                source = _placement_matrix(records, placements[-2])
+                target = _placement_matrix(records, placements[-1])
+                if source is not None and target is not None:
+                    matrix = _matmul4(target, _rigid_inverse(source))
+        upward[child].append((parent, matrix))
+
+    def to_root(rep: int, depth: int = 0) -> Matrix4 | None:
+        # Every representation identity-linked to ``rep`` shares its frame.
+        component = {rep}
+        frontier = [rep]
+        while frontier:
+            current = frontier.pop()
+            for other in identity_links.get(current, ()):
+                if other not in component:
+                    component.add(other)
+                    frontier.append(other)
+        parents = [link for member in sorted(component) for link in upward.get(member, ())]
+        if not parents:
+            return _IDENTITY4
+        if depth > 32:
+            return None
+        results: list[Matrix4] = []
+        for parent, matrix in parents:
+            if matrix is None:
+                return None
+            above = to_root(parent, depth + 1)
+            if above is None:
+                return None
+            results.append(_matmul4(above, matrix))
+        first = results[0]
+        return first if all(_matrices_close(first, other) for other in results[1:]) else None
+
+    body_rep = {
+        body: {rep for rep, _index in places}
+        for body, places in _body_representations(records, step_text).items()
+    }
+
+    cache: dict[int, Matrix4 | None] = {}
+    out: dict[int, Matrix4 | None] = {}
+    for body in step_body_inventory(step_text):
+        reps = body_rep.get(body.record_id, set())
+        matrix: Matrix4 | None
+        if len(reps) != 1:
+            matrix = _IDENTITY4 if not reps else None
+        else:
+            rep = next(iter(reps))
+            if rep not in cache:
+                cache[rep] = to_root(rep)
+            matrix = cache[rep]
+        for face in body.face_ids:
+            if face in out and out[face] != matrix:
+                out[face] = None
+            else:
+                out[face] = matrix
+    for face_id, record in records.items():
+        if record.startswith("ADVANCED_FACE") and face_id not in out:
+            out[face_id] = _IDENTITY4
+    return out
+
+
+def advanced_face_vertices(step_path: Path) -> dict[int, tuple[tuple[float, float, float], ...]]:
+    """Return ADVANCED_FACE id -> boundary vertex coordinates (file units)."""
+    return advanced_face_vertices_from_text(read_step_text(step_path))
 
 
 @dataclass(frozen=True)

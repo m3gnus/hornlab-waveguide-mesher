@@ -16,6 +16,7 @@ from hornlab_mesher.step_import import (
     detect_symmetry_planes,
     map_step_face_groups,
     occ_make_solids_is_safe,
+    postprocess_mesh,
     run_occ_healing_fallbacks,
 )
 from hornlab_mesher.step_prepare import OccSurfaceRole
@@ -423,3 +424,156 @@ def test_iso_10303_escapes_decode(encoded, expected):
 def test_a_malformed_escape_is_left_intact_rather_than_raising():
     malformed = "\\X2\\ZZZZ\\X0\\"
     assert _decode_step_string(malformed) == malformed
+
+
+def test_a_bare_gmsh_exception_only_rejects_that_rung():
+    """gmsh's Python API raises a bare ``Exception`` for OCC failures.
+
+    Catching only RuntimeError/ValueError let one escape from the sew rung:
+    the full rung never ran and the OCC message replaced the original mesh
+    failure.
+    """
+    original = RuntimeError("unhealed failed")
+    modes: list[tuple[str, ...]] = []
+
+    def attempt(*, occ_healing_options, surface_order_reference):
+        modes.append(tuple(occ_healing_options))
+        if len(modes) == 1:
+            raise Exception("OpenCASCADE exception Standard_ConstructionError")
+        return {"mesh_generation_error": None, "mesh": "ok"}
+
+    state, mode, rejected = run_occ_healing_fallbacks(
+        attempt,
+        original_mesh_error=original,
+        original_traceback=original.__traceback__,
+        surface_order_reference=[],
+    )
+
+    assert modes == [options for _name, options in OCC_HEALING_FALLBACKS]
+    assert state["mesh"] == "ok"
+    assert mode == "full"
+    assert rejected[0]["reason"].endswith(
+        "(Exception): OpenCASCADE exception Standard_ConstructionError"
+    )
+
+
+def test_when_every_rung_raises_the_original_error_surfaces_with_the_reasons():
+    original = RuntimeError("unhealed failed")
+
+    def attempt(**_kwargs):
+        raise Exception("Could not fix wire in surface 17")
+
+    with pytest.raises(RuntimeError, match="unhealed failed") as caught:
+        run_occ_healing_fallbacks(
+            attempt,
+            original_mesh_error=original,
+            original_traceback=original.__traceback__,
+            surface_order_reference=[],
+        )
+    assert caught.value is original
+    notes = "\n".join(getattr(caught.value, "__notes__", []))
+    assert notes.count("Could not fix wire in surface 17") == len(OCC_HEALING_FALLBACKS)
+
+
+def test_an_interrupt_is_not_a_rejected_rung():
+    original = RuntimeError("unhealed failed")
+
+    def attempt(**_kwargs):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_occ_healing_fallbacks(
+            attempt,
+            original_mesh_error=original,
+            original_traceback=original.__traceback__,
+            surface_order_reference=[],
+        )
+
+
+def _revolved_mesh(profile, *, n_theta=24, cap_first=True, cap_last=False):
+    """A surface of revolution about z from (r, z) pairs, optionally capped."""
+    import meshio
+
+    theta = 2.0 * np.pi * np.arange(n_theta) / n_theta
+    points = [[r * np.cos(t), r * np.sin(t), z] for r, z in profile for t in theta]
+    triangles = []
+    for i in range(len(profile) - 1):
+        for j in range(n_theta):
+            a, b = i * n_theta + j, i * n_theta + (j + 1) % n_theta
+            c, d = (i + 1) * n_theta + (j + 1) % n_theta, (i + 1) * n_theta + j
+            triangles += [[a, b, c], [a, c, d]]
+    for ring, cap in ((0, cap_first), (len(profile) - 1, cap_last)):
+        if not cap:
+            continue
+        centre = len(points)
+        points.append([0.0, 0.0, profile[ring][1]])
+        for j in range(n_theta):
+            triangles.append([centre, ring * n_theta + (j + 1) % n_theta, ring * n_theta + j])
+    points = np.asarray(points, dtype=np.float64)
+    points[np.abs(points) < 1.0e-12] = 0.0
+    triangles = np.asarray(triangles, dtype=np.int64)
+    return meshio.Mesh(
+        points=points,
+        cells=[("triangle", triangles)],
+        cell_data={"gmsh:physical": [np.ones(len(triangles), dtype=np.int32)]},
+    )
+
+
+def test_auto_symmetry_does_not_mirror_a_full_horn_whose_mouth_lies_on_z0():
+    """A capped cone opening onto z=0 is a whole horn, not half of a pair.
+
+    Its mouth rim is a free-edge loop on z=0 with the whole mesh on one side,
+    which is all the detector asks for; "auto" used to reflect it and report
+    ``expected_symmetry_planes == ['z0']``.
+    """
+    profile = [(10.0 + 30.0 * (k / 8), -50.0 + 50.0 * (k / 8)) for k in range(9)]
+    mesh = _revolved_mesh(profile, cap_first=True)
+
+    detected, detection = detect_symmetry_planes(mesh.points, mesh.cells_dict["triangle"], tolerance=1e-6)
+    assert detected == ("z0",)  # the raw detector is unchanged; WG reads it
+    assert detection["rim_normal_component"]["z0"] > 0.5
+
+    _mesh, _repair, topology = postprocess_mesh(mesh, [], symmetry_planes="auto", tolerance=1e-6)
+    assert topology["symmetry_plane_detection"]["detected_planes"] == []
+    assert topology["symmetry_plane_detection"]["rejected_non_mirror_planes"] == ["z0"]
+    assert topology["axis_normalization"]["symmetry_planes"] == []
+
+
+def _half_cylinder():
+    import meshio
+
+    profile = [(20.0, 1.0 + 10.0 * k) for k in range(6)]
+    full = _revolved_mesh(profile, cap_first=True, cap_last=True)
+    triangles = full.cells_dict["triangle"]
+    kept = triangles[np.all(full.points[triangles, 0] >= 0.0, axis=1)]
+    used, inverse = np.unique(kept, return_inverse=True)
+    return meshio.Mesh(
+        points=full.points[used].copy(),
+        cells=[("triangle", inverse.reshape(-1, 3))],
+        cell_data={"gmsh:physical": [np.ones(len(kept), dtype=np.int32)]},
+    )
+
+
+def test_auto_symmetry_still_reads_a_real_half_model():
+    half = _half_cylinder()
+    _mesh, _repair, topology = postprocess_mesh(half, [], symmetry_planes="auto", tolerance=1e-6)
+    detection = topology["symmetry_plane_detection"]
+    assert detection["detected_planes"] == ["x0"]
+    assert detection["rejected_non_mirror_planes"] == []
+
+
+def test_postprocess_mesh_leaves_the_callers_mesh_alone():
+    half = _half_cylinder()
+    # A vertex a hair off the cut plane: the symmetry snap moves it to 0.
+    on_plane = np.flatnonzero(np.abs(half.points[:, 0]) == 0.0)
+    half.points[on_plane[0], 0] = 5.0e-5
+    before = half.points.copy()
+
+    postprocess_mesh(
+        half,
+        [],
+        symmetry_planes=("x0",),
+        tolerance=1e-3,
+        symmetry_snap_tolerance=1e-3,
+    )
+    assert np.array_equal(half.points, before)

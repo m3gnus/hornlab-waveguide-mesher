@@ -31,15 +31,25 @@ from .step_text import (  # noqa: F401
     VOIDED_SOLID_BODY_ENTITIES,
     StepBody,
     advanced_face_order,
+    advanced_face_body_positions_from_text,
+    advanced_face_order_from_text,
+    advanced_face_placements_from_text,
+    advanced_face_surface_kinds_from_text,
+    advanced_face_topology_from_text,
+    advanced_face_vertices,
+    advanced_face_vertices_from_text,
     blank_step_strings,
     count_step_bodies,
     decode_step_string,
     first_step_string,
     occ_make_solids_is_safe,
     parse_named_shell_faces,
+    parse_named_shell_faces_from_text,
     parse_solid_brep_faces,
     parse_styled_face_groups,
+    parse_styled_face_groups_from_text,
     read_step_text,
+    step_length_unit_mm_from_text,
     record_entity_types,
     step_body_inventory,
     step_records,
@@ -68,6 +78,12 @@ WELD_TOLERANCE_MM = 5.0e-3  # 5 micrometres; closes near-duplicate OCC patch nod
 DEGENERATE_MIN_QUALITY = 1.0e-4  # drops needle slivers that make dense solves singular
 ANCHOR_MAX_AREA_REL_DIFF = 0.02
 ANCHOR_MAX_CENTROID_DISTANCE_MM = 5.0
+
+#: ``postprocess_mesh(symmetry_planes="auto")`` accepts a detected plane only
+#: when the triangles along its open rim are this close to perpendicular to it
+#: (median |normal . plane normal|; 0.25 is about 14.5 degrees). A cut mesh of
+#: a smooth symmetric surface sits near 0 at any sane resolution.
+AUTO_MIRROR_MAX_RIM_NORMAL_COMPONENT = 0.25
 
 SurfaceGeometry = tuple[tuple[float, float, float], float]
 # Each rung names the Gmsh geometry options a caller must set to 1 for that
@@ -160,21 +176,27 @@ def map_step_face_groups(
     Labels are compared exactly first and case-insensitively second. What a
     label MEANS is entirely caller-owned; this function only matches the string
     it is handed.
+
+    ``face_order`` is the ADVANCED_FACE id of each entry of ``gmsh_surfaces``.
+    When omitted it is matched by geometry in the live gmsh model
+    (:func:`advanced_face_order_for_surfaces`), which refuses rather than
+    guess; it used to be the file's record order, which is not the order gmsh
+    numbers surfaces in.
     """
     if named_faces is None:
         named_faces = _parse_named_shell_faces(step_path)
     if styled_faces is None:
         styled_faces = _parse_styled_face_groups(step_path)
-    if face_order is None:
-        face_order = _advanced_face_order(step_path)
-    face_to_index = {face_id: index for index, face_id in enumerate(face_order)}
-
     if gmsh_surfaces is None:
         gmsh_surfaces = _gmsh_surface_tags()
-    if len(gmsh_surfaces) < len(face_order):
+    if face_order is None:
+        face_order = advanced_face_order_for_surfaces(step_path, list(gmsh_surfaces))
+    face_to_index = {face_id: index for index, face_id in enumerate(face_order)}
+
+    if len(gmsh_surfaces) != len(face_order):
         raise RuntimeError(
             f"STEP has {len(face_order)} ADVANCED_FACE records but gmsh imported "
-            f"only {len(gmsh_surfaces)} surfaces"
+            f"{len(gmsh_surfaces)} surfaces"
         )
 
     candidates = (
@@ -244,6 +266,344 @@ def _gmsh_surface_geometries(surface_tags: list[int]) -> list[SurfaceGeometry]:
         )
         for tag in surface_tags
     ]
+
+
+class StepFaceOrderError(RuntimeError):
+    """STEP faces could not be mapped one-to-one onto imported gmsh surfaces."""
+
+
+#: Vertex coincidence tolerance for matching STEP faces to gmsh surfaces, in
+#: model units (mm by default). Well above OCC's reader tolerance and far
+#: below any real feature: two distinct vertices of one model are never this
+#: close without being the same vertex.
+FACE_MATCH_TOLERANCE_MM = 1.0e-2
+
+# Geometry.OCCTargetUnit -> millimetres; "" is OCC's default target, mm.
+_OCC_TARGET_UNIT_MM = {
+    "": 1.0, "MM": 1.0, "CM": 10.0, "M": 1000.0, "KM": 1.0e6,
+    "UM": 1.0e-3, "MIC": 1.0e-3, "IN": 25.4, "INCH": 25.4, "FT": 304.8,
+    "MI": 1609344.0, "MIL": 0.0254,
+}
+
+
+# gmsh surface type name -> step_text surface kind; unknown names never narrow.
+_GMSH_SURFACE_KINDS = {
+    "Plane": "plane",
+    "Cylinder": "cylinder",
+    "Cone": "cone",
+    "Sphere": "sphere",
+    "Torus": "torus",
+    "BSpline surface": "bspline",
+    "Bezier surface": "bezier",
+    "Surface of Revolution": "revolution",
+    "Surface of Extrusion": "extrusion",
+}
+
+
+def _gmsh_model_mm_per_step_unit(step_text_value: str) -> float:
+    """Scale from STEP file coordinates to the live gmsh model's coordinates."""
+    file_mm = step_length_unit_mm_from_text(step_text_value)
+    if file_mm is None:
+        raise StepFaceOrderError(
+            "cannot map STEP faces to gmsh surfaces: the STEP file does not "
+            "declare one recognisable length unit"
+        )
+    target = str(gmsh.option.getString("Geometry.OCCTargetUnit")).strip().upper()
+    target_mm = _OCC_TARGET_UNIT_MM.get(target)
+    if target_mm is None:
+        raise StepFaceOrderError(
+            f"cannot map STEP faces to gmsh surfaces: unknown Geometry.OCCTargetUnit {target!r}"
+        )
+    scaling = float(gmsh.option.getNumber("Geometry.OCCScaling"))
+    return file_mm / target_mm * scaling
+
+
+def _gmsh_surface_boundaries(
+    surface_tags: list[int],
+) -> tuple[list[np.ndarray], list[frozenset[int]]]:
+    """Return each surface's boundary vertex coordinates and boundary curve tags."""
+    cache: dict[int, np.ndarray] = {}
+    points_out: list[np.ndarray] = []
+    curves_out: list[frozenset[int]] = []
+    for tag in surface_tags:
+        boundary = gmsh.model.getBoundary(
+            [(2, int(tag))], combined=False, oriented=False, recursive=True
+        )
+        points: list[np.ndarray] = []
+        for dim, point_tag in boundary:
+            if dim != 0:
+                continue
+            point_tag = abs(int(point_tag))
+            if point_tag not in cache:
+                cache[point_tag] = np.asarray(gmsh.model.getValue(0, point_tag, []), dtype=np.float64)
+            points.append(cache[point_tag])
+        points_out.append(np.asarray(points, dtype=np.float64).reshape(-1, 3))
+        curves = gmsh.model.getBoundary(
+            [(2, int(tag))], combined=False, oriented=False, recursive=False
+        )
+        curves_out.append(frozenset(abs(int(curve)) for dim, curve in curves if dim == 1))
+    return points_out, curves_out
+
+
+def _neighbours_from_shared(keys: list[frozenset[int]]) -> list[set[int]]:
+    """Index i -> indices sharing at least one key with i."""
+    owners: dict[int, list[int]] = defaultdict(list)
+    for index, members in enumerate(keys):
+        for key in members:
+            owners[key].append(index)
+    out: list[set[int]] = [set() for _ in keys]
+    for members in owners.values():
+        for index in members:
+            out[index].update(members)
+    for index, neighbours in enumerate(out):
+        neighbours.discard(index)
+    return out
+
+
+def _face_identity_classes(step_text_value: str) -> dict[int, tuple[object, ...]]:
+    """Return face id -> everything a label lookup can learn about that face.
+
+    That is its named-shell labels, its style labels and whether its body is
+    a solid (``parse_solid_brep_faces``). Two faces with equal classes are
+    interchangeable for every lookup this package offers, so geometry that
+    cannot tell them apart cannot mislabel anything either. An unnamed body
+    carries no label, so which of two unnamed bodies a face belongs to is not
+    part of its class.
+    """
+    named = parse_named_shell_faces_from_text(step_text_value)
+    styled = parse_styled_face_groups_from_text(step_text_value)
+    labels: dict[int, tuple[set[str], set[str], set[str]]] = defaultdict(
+        lambda: (set(), set(), set())
+    )
+    for name, faces in named.items():
+        for face in faces:
+            labels[face][0].add(name)
+    for name, faces in styled.items():
+        for face in faces:
+            labels[face][1].add(name)
+    for body in step_body_inventory(step_text_value):
+        for face in body.face_ids:
+            labels[face][2].add(body.kind)
+    return {
+        face: (frozenset(a), frozenset(b), frozenset(c))
+        for face, (a, b, c) in labels.items()
+    }
+
+
+def advanced_face_order_for_surfaces(
+    step_path: Path,
+    surfaces: list[int] | None = None,
+    *,
+    model_from_step: object | None = None,
+    tolerance_mm: float = FACE_MATCH_TOLERANCE_MM,
+    addressed_faces: Iterable[int] = (),
+) -> list[int]:
+    """Return the STEP ADVANCED_FACE id of each imported gmsh surface.
+
+    The result is aligned with ``surfaces`` (default: every surface of the
+    live model, in tag order), so ``dict(zip(result, surfaces))`` is the
+    face -> surface map that ``zip(advanced_face_order(path), surfaces)``
+    assumed. That older zip holds only when the file's record order happens
+    to be the order OCC binds faces in. It often is (Fusion and OCC writers
+    emit records in traversal order), but gmsh binds every solid's faces
+    before any free face, and the STEP reader's shape fixing may reorder a
+    shell: a Fusion export with a surface body written before a solid body,
+    or a shell listing its faces in another order, silently mislabels.
+
+    Faces are matched by geometry, in the live model:
+
+    1. A surface's boundary vertices against the vertices each ADVANCED_FACE's
+       loops reference, placed by the file's assembly transforms, converted
+       to model units and moved by ``model_from_step`` (4x4; pass the
+       transform already applied to the imported shapes, if any). A face whose
+       vertices all lie on the surface is accepted when no face matches
+       exactly -- OCC adds a seam and poles to a sphere written with one.
+    2. Shell topology: a surface's candidates are narrowed to faces adjacent
+       (sharing an EDGE_CURVE) to the faces its already-matched neighbours
+       (sharing a curve) were matched to. This separates coincident faces
+       of two touching bodies.
+    3. Faces still indistinguishable are ordered by record order *only* when
+       they carry identical labels and body kind, so no label lookup can
+       differ -- unless the caller names one of them in ``addressed_faces``
+       (faces it will select by ADVANCED_FACE id), which makes each face its
+       own label. Distinct bodies listed by one representation are ordered
+       the way gmsh walks them (solids first, then list order).
+
+    Anything else raises :class:`StepFaceOrderError`: a count mismatch, a
+    surface matching no face, or indistinguishable faces with different
+    labels or bodies.
+    """
+    from scipy.spatial import cKDTree
+
+    text = read_step_text(Path(step_path))
+    record_order = advanced_face_order_from_text(text)
+    topology = advanced_face_topology_from_text(text)
+    placements = advanced_face_placements_from_text(text)
+    if surfaces is None:
+        surfaces = _gmsh_surface_tags()
+    surfaces = [int(tag) for tag in surfaces]
+    if len(surfaces) != len(record_order):
+        raise StepFaceOrderError(
+            "cannot map STEP faces to gmsh surfaces: "
+            f"{len(record_order)} ADVANCED_FACE records, {len(surfaces)} gmsh surfaces"
+        )
+    if not surfaces:
+        return []
+    tolerance = float(tolerance_mm)
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError(f"tolerance_mm must be positive and finite, got {tolerance_mm!r}")
+
+    matrix = np.eye(4) if model_from_step is None else np.asarray(model_from_step, dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise ValueError("model_from_step must be a finite 4x4 matrix")
+    unplaced = [face for face in record_order if placements.get(face) is None]
+    if unplaced:
+        raise StepFaceOrderError(
+            "cannot map STEP faces to gmsh surfaces: the assembly placement of "
+            f"face(s) {['#%d' % face for face in unplaced[:8]]} is not determined by "
+            "the file (a part instanced more than once, or an unreadable placement)"
+        )
+    scale = _gmsh_model_mm_per_step_unit(text)
+
+    face_points: list[np.ndarray] = []
+    for face in record_order:
+        raw = np.asarray(topology[face].vertices, dtype=np.float64).reshape(-1, 3)
+        placed = np.asarray(placements[face], dtype=np.float64)
+        raw = raw @ placed[:3, :3].T + placed[:3, 3]
+        scaled = raw * scale
+        face_points.append(scaled @ matrix[:3, :3].T + matrix[:3, 3])
+    surface_points, surface_curves = _gmsh_surface_boundaries(surfaces)
+    step_kinds = advanced_face_surface_kinds_from_text(text)
+    face_kinds = [step_kinds.get(face) for face in record_order]
+    surface_kinds = [_GMSH_SURFACE_KINDS.get(str(gmsh.model.getType(2, tag))) for tag in surfaces]
+    face_neighbours = _neighbours_from_shared([topology[face].edges for face in record_order])
+    surface_neighbours = _neighbours_from_shared(surface_curves)
+
+    owners = np.concatenate(
+        [np.full(len(points), index, dtype=np.int64) for index, points in enumerate(face_points)]
+    )
+    all_points = np.concatenate(face_points) if len(owners) else np.zeros((0, 3))
+    tree = cKDTree(all_points) if len(all_points) else None
+    vertexless_faces = {index for index, points in enumerate(face_points) if len(points) == 0}
+
+    def within(a: np.ndarray, b: np.ndarray) -> bool:
+        # every point of a lies within tolerance of some point of b
+        distances = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2)
+        return bool(np.all(distances.min(axis=1) <= tolerance))
+
+    candidates: list[set[int]] = []
+    for points in surface_points:
+        if len(points) == 0:
+            candidates.append(set(vertexless_faces))
+            continue
+        touching: set[int] = set()
+        if tree is not None:
+            for hits in tree.query_ball_point(points, tolerance):
+                touching.update(int(owners[hit]) for hit in hits)
+        exact = {
+            face
+            for face in touching
+            if within(face_points[face], points) and within(points, face_points[face])
+        }
+        if exact:
+            candidates.append(exact)
+            continue
+        candidates.append(
+            {face for face in touching if within(face_points[face], points)} | vertexless_faces
+        )
+
+    unmatched = [surfaces[index] for index, faces in enumerate(candidates) if not faces]
+    if unmatched:
+        raise StepFaceOrderError(
+            "cannot map STEP faces to gmsh surfaces: no ADVANCED_FACE has the "
+            f"boundary vertices of surface(s) {unmatched[:8]}"
+            + (" and more" if len(unmatched) > 8 else "")
+            + "; the imported model does not match the file geometry "
+            "(was it moved, scaled or healed after import?)"
+        )
+
+    assigned: dict[int, int] = {}
+    pending = set(range(len(surfaces)))
+    changed = True
+    while changed and pending:
+        changed = False
+        taken = set(assigned.values())
+        for index in sorted(pending):
+            options = candidates[index] - taken
+            if not options:
+                raise StepFaceOrderError(
+                    "cannot map STEP faces to gmsh surfaces: surface "
+                    f"{surfaces[index]} matches only faces already claimed by other surfaces"
+                )
+            if len(options) > 1:
+                kind = surface_kinds[index]
+                if kind is not None and all(face_kinds[face] is not None for face in options):
+                    narrowed = {face for face in options if face_kinds[face] == kind}
+                    if narrowed:
+                        options = narrowed
+                for neighbour in surface_neighbours[index]:
+                    face = assigned.get(neighbour)
+                    if face is None:
+                        continue
+                    narrowed = options & face_neighbours[face]
+                    if narrowed:
+                        options = narrowed
+            if len(options) == 1:
+                assigned[index] = options.pop()
+                pending.discard(index)
+                taken = set(assigned.values())
+                changed = True
+            elif options != candidates[index]:
+                candidates[index] = options
+                changed = True
+
+    if pending:
+        classes = _face_identity_classes(text)
+        addressed = {int(face) for face in addressed_faces}
+        body_positions = advanced_face_body_positions_from_text(text)
+        taken = set(assigned.values())
+        groups: dict[frozenset[int], list[int]] = defaultdict(list)
+        for index in sorted(pending):
+            groups[frozenset(candidates[index] - taken)].append(index)
+        for faces, members in groups.items():
+            if len(faces) != len(members):
+                raise StepFaceOrderError(
+                    "cannot map STEP faces to gmsh surfaces: surfaces "
+                    f"{[surfaces[i] for i in members]} share {len(faces)} candidate faces "
+                    "that neither their vertices nor their neighbours tell apart"
+                )
+            ordered = sorted(faces)
+            face_ids = [record_order[face] for face in ordered]
+            if len({classes.get(face_id) for face_id in face_ids}) != 1 or (
+                addressed & set(face_ids)
+            ):
+                # Not interchangeable. What is left is the order OCC walks
+                # bodies in, which the text fixes only for distinct bodies
+                # listed by one representation.
+                keys = [body_positions.get(face_id) for face_id in face_ids]
+                if (
+                    any(key is None for key in keys)
+                    or len({key[0] for key in keys}) != 1
+                    or len({key[3] for key in keys}) != len(keys)
+                ):
+                    # (A caller-addressed face in a group of faces of one body
+                    # lands here too: nothing orders faces within a body.)
+                    raise StepFaceOrderError(
+                        "cannot map STEP faces to gmsh surfaces unambiguously: faces "
+                        f"{['#%d' % face_id for face_id in face_ids]} have the same boundary "
+                        "vertices and neighbours but different labels or bodies, and nothing "
+                        "in the file says which imported surface is which"
+                    )
+                ordered = [face for _key, face in sorted(zip(keys, ordered))]
+            # Interchangeable faces keep record order, as before.
+            for index, face in zip(sorted(members, key=lambda i: surfaces[i]), ordered):
+                assigned[index] = face
+
+    if sorted(assigned.values()) != list(range(len(record_order))):
+        raise StepFaceOrderError(
+            "cannot map STEP faces to gmsh surfaces: the match is not one-to-one"
+        )
+    return [record_order[assigned[index]] for index in range(len(surfaces))]
 
 
 def _coerce_surface_geometry(geom: SurfaceGeometry) -> tuple[np.ndarray, float]:
@@ -332,10 +692,15 @@ def _anchor_surface_order(
     return [int(tag) for tag in ordered]
 
 
-def _named_shell_gmsh_surfaces(step_path: Path, gmsh_surfaces: list[int]) -> dict[str, list[int]]:
+def _named_shell_gmsh_surfaces(
+    step_path: Path,
+    gmsh_surfaces: list[int],
+    face_order: list[int] | None = None,
+) -> dict[str, list[int]]:
     """Map each STEP named shell/body to its imported gmsh surface tags."""
     named_faces = _parse_named_shell_faces(step_path)
-    face_order = _advanced_face_order(step_path)
+    if face_order is None:
+        face_order = advanced_face_order_for_surfaces(step_path, list(gmsh_surfaces))
     face_to_index = {face_id: index for index, face_id in enumerate(face_order)}
     out: dict[str, list[int]] = {}
     for name, faces in named_faces.items():
@@ -349,15 +714,18 @@ def _map_refine_groups_to_gmsh_surfaces(
     step_path: Path,
     refine_specs: list[StepFaceGroup],
     gmsh_surfaces: list[int],
+    face_order: list[int] | None = None,
 ) -> tuple[dict[str, list[int]], dict[str, str]]:
     """Resolve refine group names to gmsh surfaces (case-insensitive lookup).
 
     Missing refine names are skipped (they are optional overrides, unlike
-    sources). Returns ``(name -> surfaces, name -> origin)``.
+    sources). Returns ``(name -> surfaces, name -> origin)``. ``face_order``
+    is as in :func:`map_step_face_groups`.
     """
     named_faces = _parse_named_shell_faces(step_path)
     styled_faces = _parse_styled_face_groups(step_path)
-    face_order = _advanced_face_order(step_path)
+    if face_order is None:
+        face_order = advanced_face_order_for_surfaces(step_path, list(gmsh_surfaces))
     face_to_index = {face_id: index for index, face_id in enumerate(face_order)}
 
     def _lookup(name: str) -> tuple[str, list[int]] | None:
@@ -1144,28 +1512,54 @@ def detect_symmetry_planes(
     edges along an internal origin plane cannot turn a full-span model into a
     native symmetry-reduced solve.
     """
-    edge_count: dict[tuple[int, int], int] = {}
-    for tri in triangles:
-        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
-            edge = tuple(sorted((int(a), int(b))))
-            edge_count[edge] = edge_count.get(edge, 0) + 1
-    free_edges = [edge for edge, count in edge_count.items() if count == 1]
+    points = np.asarray(points, dtype=np.float64)
+    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    edges = np.sort(triangles[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+    if len(edges):
+        _unique, first, counts = np.unique(
+            edges, axis=0, return_index=True, return_counts=True
+        )
+        free_rows = first[counts == 1]
+    else:
+        free_rows = np.zeros(0, dtype=np.int64)
+    free_edges = edges[free_rows]
+    free_edge_triangles = free_rows // 3
 
-    plane_counts = {"x0": 0, "y0": 0, "z0": 0}
-    shared_plane_edges = 0
-    for edge in free_edges:
-        on_planes = [
-            plane
-            for axis, plane in enumerate(("x0", "y0", "z0"))
-            if all(
-                abs(float(points[vertex, axis])) <= tolerance
-                for vertex in edge
-            )
-        ]
-        if len(on_planes) == 1:
-            plane_counts[on_planes[0]] += 1
-        elif len(on_planes) > 1:
-            shared_plane_edges += 1
+    on_plane = np.stack(
+        [np.all(np.abs(points[free_edges, axis]) <= tolerance, axis=1) for axis in range(3)],
+        axis=1,
+    ) if len(free_edges) else np.zeros((0, 3), dtype=bool)
+    planes_per_edge = on_plane.sum(axis=1)
+    plane_counts = {
+        plane: int(np.count_nonzero(on_plane[:, axis] & (planes_per_edge == 1)))
+        for axis, plane in enumerate(("x0", "y0", "z0"))
+    }
+    shared_plane_edges = int(np.count_nonzero(planes_per_edge > 1))
+
+    # How squarely the surface meets each plane along its rim: the median
+    # |normal . plane normal| of the triangles owning the plane's free edges.
+    # A mirror-symmetric smooth surface crosses its mirror plane at a right
+    # angle (0); a horn mouth that merely ends on the plane meets it at its
+    # flare angle. Reported only -- :func:`postprocess_mesh`'s "auto" mode is
+    # what acts on it.
+    rim_normal_component: dict[str, float | None] = {}
+    for axis, plane in enumerate(("x0", "y0", "z0")):
+        rows = free_edge_triangles[on_plane[:, axis] & (planes_per_edge == 1)] if len(free_edges) else []
+        if len(rows) == 0:
+            rim_normal_component[plane] = None
+            continue
+        owners = triangles[rows]
+        normals = np.cross(
+            points[owners[:, 1]] - points[owners[:, 0]],
+            points[owners[:, 2]] - points[owners[:, 0]],
+        )
+        lengths = np.linalg.norm(normals, axis=1)
+        valid = lengths > 0.0
+        rim_normal_component[plane] = (
+            float(np.median(np.abs(normals[valid, axis]) / lengths[valid]))
+            if np.any(valid)
+            else None
+        )
 
     plane_vertex_side_counts: dict[str, dict[str, int]] = {}
     one_sided: dict[str, bool] = {}
@@ -1195,6 +1589,7 @@ def detect_symmetry_planes(
         "plane_vertex_side_counts": plane_vertex_side_counts,
         "rejected_spanning_planes": rejected_spanning_planes,
         "shared_plane_free_edges": int(shared_plane_edges),
+        "rim_normal_component": rim_normal_component,
         "min_edges_per_plane": int(min_edges_per_plane),
         "tolerance": float(tolerance),
         "detected_planes": list(detected),
@@ -1261,6 +1656,9 @@ def postprocess_mesh(
     The mode used is echoed in the repair report.
     """
     points, triangles, tags = _mesh_triangle_data(mesh)
+    # A copy: welding reads and the symmetry snap writes these coordinates,
+    # and the caller's mesh must come back as it was handed in.
+    points = np.array(points, dtype=np.float64, copy=True)
     before_edge_stats = _edge_direction_stats(triangles)
     before_signed_volume = _signed_volume(points, triangles)
     distinct_before = int(len(np.unique(triangles))) if len(triangles) else 0
@@ -1277,11 +1675,27 @@ def postprocess_mesh(
         else tolerance
     )
     if symmetry_planes == "auto":
-        symmetry_planes, symmetry_detection = detect_symmetry_planes(
+        detected, symmetry_detection = detect_symmetry_planes(
             points,
             triangles,
             tolerance=symmetry_tolerance,
         )
+        # An open rim on a coordinate plane is a cut only if the surface
+        # meets the plane squarely there. A full open horn whose mouth rim
+        # happens to lie on z=0 passes every other test, and mirroring it
+        # would solve a horn pair.
+        components = symmetry_detection["rim_normal_component"]
+        symmetry_planes = tuple(
+            plane
+            for plane in detected
+            if components.get(plane) is not None
+            and components[plane] <= AUTO_MIRROR_MAX_RIM_NORMAL_COMPONENT
+        )
+        symmetry_detection["rejected_non_mirror_planes"] = [
+            plane for plane in detected if plane not in symmetry_planes
+        ]
+        symmetry_detection["max_rim_normal_component"] = AUTO_MIRROR_MAX_RIM_NORMAL_COMPONENT
+        symmetry_detection["detected_planes"] = list(symmetry_planes)
     repaired_triangles, repair_stats = _repair_triangle_winding(
         points,
         triangles,
@@ -1637,15 +2051,17 @@ def run_occ_healing_fallbacks(
                 occ_healing_options=occ_healing_options,
                 surface_order_reference=surface_order_reference,
             )
-        except (RuntimeError, ValueError) as exc:
-            # A rung is rejected, not fatal: try the next one. ValueError is
-            # here because a caller's own scope-gate exception is commonly a
-            # ValueError subclass -- one such gate firing inside run_attempt
-            # used to escape the ladder entirely and REPLACE the original
-            # unhealed mesh error, so the ladder both stopped early and
-            # misreported why. Nothing is swallowed: every rejection reason is
-            # returned in rejected_attempts and attached to the original error
-            # as a note if no rung succeeds.
+        except Exception as exc:  # noqa: BLE001 - every rung failure is a rejection
+            # A rung is rejected, not fatal: try the next one. Any Exception,
+            # not a list of types: the gmsh Python API raises a bare
+            # ``Exception`` for OCC failures (importShapes, intersect, getMass
+            # inside a sew rung), and a caller's scope gate is commonly a
+            # ValueError subclass. Either escaping used to stop the ladder
+            # early AND replace the original unhealed mesh error, so the user
+            # saw the wrong failure. Nothing is swallowed: every rejection
+            # reason is returned in rejected_attempts and attached to the
+            # original error as a note if no rung succeeds. BaseException
+            # (KeyboardInterrupt, SystemExit) still propagates.
             reason = (
                 f"OCC {healing_mode} repair rejected before meshing "
                 f"({type(exc).__name__}): {exc}"
@@ -1721,19 +2137,22 @@ def anchor_surface_order(
 def named_shell_gmsh_surfaces(
     step_path: Path,
     gmsh_surfaces: list[int],
+    face_order: list[int] | None = None,
 ) -> dict[str, list[int]]:
     """Map each named STEP shell or body to imported Gmsh surfaces."""
-    return _named_shell_gmsh_surfaces(step_path, gmsh_surfaces)
+    return _named_shell_gmsh_surfaces(step_path, gmsh_surfaces, face_order)
 
 
 def map_optional_step_face_groups(
     step_path: Path,
     groups: list[StepFaceGroup],
     gmsh_surfaces: list[int],
+    face_order: list[int] | None = None,
 ) -> tuple[dict[str, list[int]], dict[str, str]]:
     """Map optional caller groups, omitting selectors with no matching label."""
     return _map_refine_groups_to_gmsh_surfaces(
         step_path,
         groups,
         gmsh_surfaces,
+        face_order,
     )

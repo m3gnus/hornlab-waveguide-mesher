@@ -1846,3 +1846,116 @@ def test_writer_rejects_config_like_enclosure_bounds(monkeypatch, tmp_path):
 
     with pytest.raises(MesherError, match="do not match.*enc_depth"):
         write_wglink(geometry, tmp_path / "horn.wglink", built_geometry=built)
+
+
+def _isolated_lock_root(monkeypatch, tmp_path: Path) -> Path:
+    root = tmp_path / "private-lock-root"
+    monkeypatch.setattr(cad_module, "_private_lock_root_path", lambda: root)
+
+    def create() -> Path:
+        cad_module._ensure_private_directory(root)
+        return root
+
+    monkeypatch.setattr(cad_module, "_private_lock_root", create)
+    return root
+
+
+def test_first_publication_leaves_no_lock_state_behind(monkeypatch, tmp_path):
+    """Every Windows "Send to CAD" publishes into a fresh path.
+
+    Each one used to leave a ``<sha>.lock`` / ``<sha>.state.json`` pair in the
+    private lock root forever, and one in-process lock object per target.
+    """
+    root = _isolated_lock_root(monkeypatch, tmp_path)
+    for index in range(3):
+        target = tmp_path / f"export-{index}" / "bundle.wglink"
+        staging = target.parent / ".bundle.wglink.staged"
+        staging.mkdir(parents=True)
+        (staging / "generation.txt").write_text("new", encoding="utf-8")
+
+        cad_module._publish_bundle_without_exchange(staging, target)
+
+        assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+        assert not staging.exists()
+        assert not cad_module._transaction_path(target).exists()
+    assert not root.exists() or not any(root.iterdir())
+    assert cad_module._BUNDLE_THREAD_LOCKS == {}
+
+
+def test_a_replacement_keeps_no_in_process_lock_per_target(monkeypatch, tmp_path):
+    _isolated_lock_root(monkeypatch, tmp_path)
+    target = tmp_path / "horn.wglink"
+    target.mkdir()
+    (target / "generation.txt").write_text("old", encoding="utf-8")
+    staging = tmp_path / ".horn.wglink.staged"
+    staging.mkdir()
+    (staging / "generation.txt").write_text("new", encoding="utf-8")
+
+    cad_module._publish_bundle_without_exchange(staging, target)
+
+    assert (target / "generation.txt").read_text(encoding="utf-8") == "new"
+    assert cad_module._BUNDLE_THREAD_LOCKS == {}
+
+
+def test_bundle_is_not_staged_in_a_private_temporary_directory(monkeypatch, tmp_path):
+    """``mkdtemp`` gives Windows a non-inheriting owner-only DACL that the
+    published files keep; the staging directory becomes the bundle."""
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("private tempfile staging used for a published bundle")
+
+    monkeypatch.setattr(cad_module.tempfile, "mkdtemp", refuse)
+    monkeypatch.setattr(cad_module.tempfile, "NamedTemporaryFile", refuse)
+    result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+    assert read_wglink(result.path)["body"]["file"] == "waveguide.step"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_published_bundle_has_ordinary_umask_modes(tmp_path):
+    previous = os.umask(0o022)
+    try:
+        result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(os.stat(result.path).st_mode) == 0o755
+    for member in result.path.iterdir():
+        assert stat.S_IMODE(os.stat(member).st_mode) == 0o644, member.name
+
+
+def _write_manifest(bundle: Path, manifest: object) -> Path:
+    bundle.mkdir()
+    (bundle / "wglink.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return bundle
+
+
+def test_reader_rejects_a_bundle_with_no_step_or_point_grid(tmp_path):
+    bundle = _write_manifest(
+        tmp_path / "empty.wglink",
+        {"wglink_version": "1.0", "required_features": [], "files": {}},
+    )
+    with pytest.raises(MesherError, match="names no body file"):
+        read_wglink(bundle)
+
+
+def test_reader_rejects_a_bundle_missing_its_point_grid(monkeypatch, tmp_path):
+    _fake_step(monkeypatch)
+    result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    del manifest["files"]["point-grid.json"]
+    result.point_grid_path.unlink()
+    result.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(MesherError, match="required file point-grid.json"):
+        read_wglink(result.path)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ([], "must be a JSON object"),
+        ({"wglink_version": "1.0", "required_features": "checksummed-files-v1"}, "array of strings"),
+    ],
+)
+def test_reader_type_checks_the_top_level(tmp_path, manifest, message):
+    bundle = _write_manifest(tmp_path / "bad.wglink", manifest)
+    with pytest.raises(MesherError, match=message):
+        read_wglink(bundle, verify_checksums=False)
