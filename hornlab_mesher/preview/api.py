@@ -24,9 +24,11 @@ from __future__ import annotations
 import copy
 import math
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
+from numpy.typing import NDArray
 
 from ..config_builder import build_geometry_params
 from ..profile_sampling import _outer_offset_shell
@@ -198,6 +200,142 @@ def _fidelity_record(
     }
 
 
+@dataclass(frozen=True)
+class _MasterLevel:
+    """One canonical master sampling and the render grid chosen from it.
+
+    ``inner``/``normals`` are ``(t, phi, xyz)``; ``t``/``phi`` are their real
+    parameter coordinates. ``deferred_wall`` is the wall thickness the caller
+    must rebuild itself (the corner-refinement and folded-offset paths), carried
+    into any denser level sampled after this one.
+    """
+
+    output: dict[str, Any]
+    grid: dict[str, Any]
+    closed_phi: bool
+    inner: NDArray[np.float64]
+    t: NDArray[np.float64]
+    phi: NDArray[np.float64]
+    normals: NDArray[np.float64]
+    semantic_inserted: list[str]
+    semantic_unavailable: list[str]
+    corner_rows: list[int]
+    t_indices: NDArray[np.int64]
+    phi_indices: NDArray[np.int64]
+    achieved: dict[str, Any]
+    sampling_ms: float
+    deferred_wall: float
+
+
+def _sample_master_level(
+    config: Mapping[str, Any],
+    *,
+    formula: str,
+    angular: int,
+    axial: int,
+    axial_power: float,
+    axial_seed: int,
+    silhouette_target: int,
+    chord_target: float,
+    normal_target: float,
+    vertex_cap: int | None,
+    has_corners: bool,
+    corner_intervals: int,
+    wall_mm: float,
+    deferred_wall: float,
+) -> _MasterLevel:
+    """Sample the canonical master at ``axial`` rows and choose the render grid."""
+
+    sampling_config = _adaptive_lod_config(
+        config, angular, axial, power=axial_power, formula=formula
+    )
+    if deferred_wall > 0.0:
+        mesh = dict(sampling_config["mesh"])
+        mesh["wall_thickness_mm"] = 0.0
+        for alias in ("wallThickness", "wall_thickness", "WallThickness"):
+            mesh.pop(alias, None)
+        sampling_config["mesh"] = mesh
+    # The preview never spells the grid's flat vertex lists: it reads the
+    # arrays they would be built from.
+    sampling_start = time.perf_counter()
+    output = build_viewport_geometry_from_config(
+        sampling_config, point_lists=False, defer_osse_offset_repair=True
+    )
+    sampling_ms = (time.perf_counter() - sampling_start) * 1000.0
+    if formula == "OSSE" and output["grid"].get("outer_offset_fold"):
+        # The canonical master is used to select the acoustic render grid;
+        # computing a dense envelope there would be discarded immediately.
+        # Healthy normal offsets keep their existing master-grid path.
+        deferred_wall = wall_mm
+        output["grid"]["outer_grid"] = None
+    if has_corners:
+        _replace_grid_with_corner_refinement(output, corner_intervals)
+    if deferred_wall > 0.0:
+        output["params"]["wallThickness"] = deferred_wall
+
+    grid_data = output["grid"]
+    n_phi = int(grid_data["grid_n_phi"])
+    closed_phi = bool(grid_data.get("full_circle", True))
+    inner_master = _surface_grid(grid_data["inner_grid"])
+    master_t = np.asarray(grid_data.get("slice_map"), dtype=np.float64)
+    master_phi = (
+        np.asarray(grid_data["phi_grid"], dtype=np.float64).T
+        if grid_data.get("phi_grid") is not None
+        else np.broadcast_to(
+            np.asarray(grid_data["angle_list"], dtype=np.float64),
+            inner_master.shape[:2],
+        )
+    )
+    inner_normals = analytic_grid_normals(
+        inner_master,
+        closed_phi=closed_phi,
+        t_coordinates=master_t,
+        phi_coordinates=master_phi,
+    )
+    semantic_t, semantic_inserted, semantic_unavailable = _semantic_t_stations(
+        output, master_t
+    )
+    initial_t = sorted(
+        set(_even_indices(len(master_t), axial_seed + 1, closed=False)).union(
+            semantic_t
+        )
+    )
+    initial_phi = _even_indices(n_phi, silhouette_target, closed=closed_phi)
+    corner_rows: list[int] = []
+    if has_corners:
+        corner_rows = _corner_phi_indices(inner_normals)
+        initial_phi = sorted(set(initial_phi).union(corner_rows))
+    t_indices, phi_indices, achieved = adaptive_grid_indices(
+        inner_master,
+        inner_normals,
+        initial_t,
+        initial_phi,
+        max_chord_error_mm=chord_target,
+        max_normal_step_deg=normal_target,
+        max_vertices=vertex_cap,
+        closed_phi=closed_phi,
+        t_coordinates=master_t,
+        phi_coordinates=master_phi,
+    )
+    return _MasterLevel(
+        output=output,
+        grid=grid_data,
+        closed_phi=closed_phi,
+        inner=inner_master,
+        t=master_t,
+        phi=master_phi,
+        normals=inner_normals,
+        semantic_inserted=semantic_inserted,
+        semantic_unavailable=semantic_unavailable,
+        corner_rows=corner_rows,
+        t_indices=t_indices,
+        phi_indices=phi_indices,
+        achieved=achieved,
+        sampling_ms=sampling_ms,
+        deferred_wall=deferred_wall,
+    )
+
+
 def build_preview_geometry(
     config: Mapping[str, Any], options: PreviewOptionsV1 = PreviewOptionsV1()
 ) -> PreviewGeometryV1:
@@ -346,118 +484,50 @@ def build_preview_geometry(
     if has_corners and str(_parsed_mode) == "freestanding":
         deferred_wall = float(eval_param(parsed_params.get("wallThickness"), 0.0, 0.0))
 
-    def _sample_and_select(axial: int):
-        """Sample the canonical master at ``axial`` and choose the render grid."""
-
-        nonlocal canonical_ms, deferred_wall
-        sampling_config = _adaptive_lod_config(
-            config, angular_master, axial, power=axial_power, formula=formula_name
-        )
-        if deferred_wall > 0.0:
-            mesh = dict(sampling_config["mesh"])
-            mesh["wall_thickness_mm"] = 0.0
-            for alias in ("wallThickness", "wall_thickness", "WallThickness"):
-                mesh.pop(alias, None)
-            sampling_config["mesh"] = mesh
-        # The preview never spells the grid's flat vertex lists: it reads the
-        # arrays they would be built from.
-        sampling_start = time.perf_counter()
-        output = build_viewport_geometry_from_config(
-            sampling_config, point_lists=False, defer_osse_offset_repair=True
-        )
-        canonical_ms += (time.perf_counter() - sampling_start) * 1000.0
-        if str(_parsed_formula) == "OSSE" and output["grid"].get("outer_offset_fold"):
-            # The canonical master is used to select the acoustic render grid;
-            # computing a dense envelope there would be discarded immediately.
-            # Healthy normal offsets keep their existing master-grid path.
-            deferred_wall = wall_mm
-            output["grid"]["outer_grid"] = None
-        if has_corners:
-            _replace_grid_with_corner_refinement(output, corner_intervals)
-        if deferred_wall > 0.0:
-            output["params"]["wallThickness"] = deferred_wall
-
-        grid_data = output["grid"]
-        n_phi = int(grid_data["grid_n_phi"])
-        closed_phi = bool(grid_data.get("full_circle", True))
-        inner_master = _surface_grid(grid_data["inner_grid"])
-        master_t = np.asarray(grid_data.get("slice_map"), dtype=np.float64)
-        master_phi = (
-            np.asarray(grid_data["phi_grid"], dtype=np.float64).T
-            if grid_data.get("phi_grid") is not None
-            else np.broadcast_to(
-                np.asarray(grid_data["angle_list"], dtype=np.float64),
-                inner_master.shape[:2],
-            )
-        )
-        inner_normals = analytic_grid_normals(
-            inner_master,
-            closed_phi=closed_phi,
-            t_coordinates=master_t,
-            phi_coordinates=master_phi,
-        )
-        semantic = _semantic_t_stations(output, master_t)
-        initial_t = sorted(
-            set(
-                _even_indices(
-                    len(master_t), int(preset["axial"]) + 1, closed=False
-                )
-            ).union(semantic[0])
-        )
-        initial_phi = _even_indices(n_phi, silhouette_target, closed=closed_phi)
-        corner_rows: list[int] = []
-        if has_corners:
-            corner_rows = _corner_phi_indices(inner_normals)
-            initial_phi = sorted(set(initial_phi).union(corner_rows))
-        selection = adaptive_grid_indices(
-            inner_master,
-            inner_normals,
-            initial_t,
-            initial_phi,
-            max_chord_error_mm=chord_target,
-            max_normal_step_deg=normal_target,
-            max_vertices=vertex_cap,
-            closed_phi=closed_phi,
-            t_coordinates=master_t,
-            phi_coordinates=master_phi,
-        )
-        return (
-            output,
-            grid_data,
-            n_phi,
-            closed_phi,
-            inner_master,
-            master_t,
-            master_phi,
-            inner_normals,
-            semantic,
-            corner_rows,
-            selection,
+    def sample(axial: int, deferred_wall: float) -> _MasterLevel:
+        return _sample_master_level(
+            config,
+            formula=formula_name,
+            angular=angular_master,
+            axial=axial,
+            axial_power=axial_power,
+            axial_seed=int(preset["axial"]),
+            silhouette_target=silhouette_target,
+            chord_target=chord_target,
+            normal_target=normal_target,
+            vertex_cap=vertex_cap,
+            has_corners=has_corners,
+            corner_intervals=corner_intervals,
+            wall_mm=wall_mm,
+            deferred_wall=deferred_wall,
         )
 
-    level = _sample_and_select(axial_master)
+    level = sample(axial_master, deferred_wall)
+    canonical_ms += level.sampling_ms
     # Refinement asked for detail the master could not supply, so the doubled
     # master this family used to build unconditionally is worth its cost here.
     # One step only: the ceiling is the density that shipped before, so an
     # escalated build is the old build and a settled one is strictly cheaper.
     escalated = False
-    if axial_ceiling > axial_master and level[-1][2].get("candidate_starved"):
+    if axial_ceiling > axial_master and level.achieved.get("candidate_starved"):
         axial_master = axial_ceiling
-        level = _sample_and_select(axial_master)
+        level = sample(axial_master, level.deferred_wall)
+        canonical_ms += level.sampling_ms
         escalated = True
-    (
-        output,
-        grid_data,
-        n_phi,
-        closed_phi,
-        inner_master,
-        master_t,
-        master_phi,
-        inner_normals,
-        (semantic_t, semantic_inserted, semantic_unavailable),
-        corner_rows,
-        (t_indices, phi_indices, horn_achieved),
-    ) = level
+    deferred_wall = level.deferred_wall
+    output = level.output
+    grid_data = level.grid
+    closed_phi = level.closed_phi
+    inner_master = level.inner
+    master_t = level.t
+    master_phi = level.phi
+    inner_normals = level.normals
+    semantic_inserted = level.semantic_inserted
+    semantic_unavailable = level.semantic_unavailable
+    corner_rows = level.corner_rows
+    t_indices = level.t_indices
+    phi_indices = level.phi_indices
+    horn_achieved = level.achieved
     inner_canonical = grid_data["inner_grid"]
 
     # Curvature depends only on the master that survived escalation, so it is
