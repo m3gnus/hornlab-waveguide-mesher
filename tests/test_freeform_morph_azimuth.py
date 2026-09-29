@@ -187,7 +187,7 @@ def test_reintroduced_twist_is_named_in_both_failure_messages(
     with pytest.raises(ValueError, match="normal flip") as flip:
         _triangles(tmp_path, _config("freestanding", PILOT_MORPH))
     assert "azimuth rows shift by" in str(flip.value)
-    assert "cannot fix that" in str(flip.value)
+    assert "will not fix it" in str(flip.value)
 
     with pytest.raises(ConfigError, match="cannot fit the acoustic geometry") as fit:
         _triangles(tmp_path, _config("infinite-baffle", PILOT_MORPH))

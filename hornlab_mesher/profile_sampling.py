@@ -1072,10 +1072,10 @@ def freeform_azimuth_twist_note(
         where += f" (t={float(t_values[interval]):.3f} to {float(t_values[interval + 1]):.3f})"
     return (
         f"the FREEFORM azimuth rows shift by {steps[interval]:.0f} degrees between "
-        f"{where}, which twists the control net there. A finer mm resolution or a "
-        "thinner wall cannot fix that; soften the abrupt change that starts there "
-        "(a Morph.Rate near zero, or cross-sections that change shape between "
-        "two nearby stations)"
+        f"{where}, which may twist the control net there. If the shift persists at a "
+        "finer mm resolution, a finer mesh or a thinner wall will not fix it; soften the "
+        "abrupt change that starts there (a Morph.Rate near zero, or cross-sections "
+        "that change shape between two nearby stations)"
     )
 
 
