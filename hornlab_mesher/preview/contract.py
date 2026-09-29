@@ -288,6 +288,7 @@ class _OrientedIndices:
     abstaining_triangles: int
     disagreeing_triangles: int
     singular_triangles: int = 0
+    folded_triangles: int = 0
     proof: _OrientationCheckProof | None = field(
         default=None, compare=False, repr=False
     )
@@ -298,6 +299,14 @@ def _triangle_orientation_analysis(
     indices: NDArray[np.uint32],
     normals: NDArray[np.float64],
 ) -> _OrientationAnalysis:
+    return _classify_triangle_orientation(positions, indices, normals)[0]
+
+
+def _classify_triangle_orientation(
+    positions: NDArray[np.float64],
+    indices: NDArray[np.uint32],
+    normals: NDArray[np.float64],
+) -> tuple[_OrientationAnalysis, NDArray[np.bool_]]:
     """Classify winding using face/normal cosine and relative triangle area.
 
     A triangle abstains when its doubled area is at most one eighth of the
@@ -310,7 +319,7 @@ def _triangle_orientation_analysis(
 
     triangles = np.asarray(indices, dtype=np.uint32).reshape(-1, 3)
     if not len(triangles):
-        return _OrientationAnalysis(0, 0, 0, 0)
+        return _OrientationAnalysis(0, 0, 0, 0), np.zeros(0, dtype=bool)
     points = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     vectors = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
     a = points[triangles[:, 0]]
@@ -367,13 +376,14 @@ def _triangle_orientation_analysis(
     )
     positive &= ~singular
     negative &= ~singular
-    return _OrientationAnalysis(
+    analysis = _OrientationAnalysis(
         positive_triangles=int(np.count_nonzero(positive)),
         negative_triangles=int(np.count_nonzero(negative)),
         degenerate_triangles=int(np.count_nonzero(degenerate)),
         abstaining_triangles=int(np.count_nonzero(abstaining | singular)),
         singular_triangles=int(np.count_nonzero(singular)),
     )
+    return analysis, negative
 
 
 def _orient_indices_to_normals(
@@ -381,21 +391,40 @@ def _orient_indices_to_normals(
     positions: NDArray[np.float64],
     indices: NDArray[np.uint32],
     normals: NDArray[np.float64],
+    *,
+    wind_folds_individually: bool = False,
 ) -> _OrientedIndices:
-    """Return one consistently wound index buffer for the shipped normals."""
+    """Return one consistently wound index buffer for the shipped normals.
+
+    ``wind_folds_individually`` is for a surface whose own grid folds over
+    itself (a constant-distance offset of a tight concavity). Its triangles in
+    the fold are geometrically reversed against the smooth normals, so no single
+    winding agrees with them all. Rather than refuse the surface, each
+    disagreeing triangle is wound to agree with its normals and the count is
+    reported in the ``foldedTriangles`` metadata.
+    """
 
     triangles = np.asarray(indices, dtype=np.uint32).reshape(-1, 3)
     if not len(triangles):
         return _OrientedIndices(triangles.reshape(-1), 0, 0, 0)
     analysis = _triangle_orientation_analysis(positions, triangles, normals)
+    folded = 0
     if analysis.positive_triangles and analysis.negative_triangles:
         disagreeing = min(
             analysis.positive_triangles, analysis.negative_triangles
         )
-        raise ValueError(
-            f"{role}: inconsistent local orientation ({disagreeing}/{len(triangles)} "
-            "non-degenerate triangles disagree with their normals)"
+        if not wind_folds_individually:
+            raise ValueError(
+                f"{role}: inconsistent local orientation ({disagreeing}/{len(triangles)} "
+                "non-degenerate triangles disagree with their normals)"
+            )
+        folded = analysis.negative_triangles
+        _, negative_mask = _classify_triangle_orientation(
+            positions, triangles, normals
         )
+        triangles = triangles.copy()
+        triangles[negative_mask] = triangles[negative_mask][:, (0, 2, 1)]
+        analysis = _triangle_orientation_analysis(positions, triangles, normals)
     if not analysis.positive_triangles and not analysis.negative_triangles:
         raise ValueError(f"{role}: no non-degenerate triangles establish winding")
     already_oriented = bool(analysis.positive_triangles)
@@ -414,6 +443,7 @@ def _orient_indices_to_normals(
         abstaining_triangles=analysis.abstaining_triangles,
         disagreeing_triangles=0,
         singular_triangles=analysis.singular_triangles,
+        folded_triangles=folded,
         proof=(
             _OrientationCheckProof(
                 positions=positions,
@@ -437,6 +467,8 @@ def _orientation_metadata(result: _OrientedIndices) -> dict[str, Any]:
         "disagreeingTriangles": result.disagreeing_triangles,
         "orientationSingularTriangles": result.singular_triangles,
     }
+    if result.folded_triangles:
+        metadata["foldedTriangles"] = result.folded_triangles
     if result.proof is not None:
         # This internal object key deliberately falls outside the public
         # string-key metadata type. PreviewSurfaceV1 removes it before metadata

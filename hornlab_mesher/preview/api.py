@@ -80,6 +80,12 @@ from .source_cap import _source_cap
 
 _MAX_ANGULAR_SAMPLES = 4096
 _MAX_CANONICAL_VERTICES = 1_000_000
+# A caller-supplied normal step below this, with no vertex bound of its own, gets
+# ``_TIGHT_NORMAL_DEFAULT_VERTEX_CAP``. The LOD presets (8, 3 and 2 degrees)
+# never reach it, and neither does a caller that names ``max_vertices``.
+_TIGHT_NORMAL_STEP_DEG = 1.0
+_TIGHT_NORMAL_DEFAULT_VERTEX_CAP = 200_000
+
 _LOD_PRESETS = {
     "coarse": {
         "chord": 0.15,
@@ -381,6 +387,22 @@ def build_preview_geometry(
 
     warnings: list[str] = []
     preflight_limited = False
+    if (
+        vertex_cap is None
+        and options.max_normal_step_deg is not None
+        and math.isfinite(normal_target)
+        and normal_target < _TIGHT_NORMAL_STEP_DEG
+    ):
+        # A sub-degree normal step on a horn asks for hundreds of thousands of
+        # vertices (0.35 degrees: about 950k, over 100 s) and, unbounded, can
+        # hold a worker for minutes. The bound is reported like any explicit
+        # one, in ``requested_fidelity`` and per-surface ``vertex_cap_limited``.
+        vertex_cap = _TIGHT_NORMAL_DEFAULT_VERTEX_CAP
+        warnings.append(
+            f"max_normal_step_deg={normal_target:g} is tighter than "
+            f"{_TIGHT_NORMAL_STEP_DEG:g} degrees and no max_vertices was given: "
+            f"bounded at {vertex_cap} vertices per surface; pass max_vertices to change it"
+        )
     start = time.perf_counter()
 
     # Resolve the formula, mode and parameters once, through the same resolver
@@ -529,6 +551,21 @@ def build_preview_geometry(
     phi_indices = level.phi_indices
     horn_achieved = level.achieved
     inner_canonical = grid_data["inner_grid"]
+
+    if (
+        output.get("enclosure") is not None
+        and options.include_enclosure
+        and not closed_phi
+    ):
+        # The enclosure surfaces are built as closed rings around the mouth. A
+        # reduced (quadrant or half) domain has an open mouth arc, and joining
+        # its two ends across the removed quadrants wound the baffle both ways
+        # and refused the whole preview. The horn is still drawn.
+        warnings.append(
+            "enclosure not drawn: the preview draws the enclosure only for the "
+            "full model (quadrants 1234); the reduced-domain horn is shown alone"
+        )
+        output["enclosure"] = None
 
     # Curvature depends only on the master that survived escalation, so it is
     # evaluated once here rather than inside a level that may be discarded.
@@ -914,6 +951,20 @@ def build_preview_geometry(
                 normal_target=normal_target,
                 silhouette_target=silhouette_target,
             ),
+        )
+
+    folded_outer = sum(
+        int(surface.metadata.get("foldedTriangles", 0))
+        for surface in surfaces
+        if surface.role == "horn.outer"
+    )
+    if folded_outer:
+        warnings.append(
+            f"outer wall folds over itself in {folded_outer} triangles: the wall "
+            "thickness exceeds the local radius of curvature (typically at a "
+            "rolled-back mouth, a throat extension or slot, or a morph corner). "
+            "The preview shows the folded wall; the acoustic (inner) surface is "
+            "unaffected. Reduce the wall thickness or open the local curvature."
         )
 
     selected_phi_coordinates = master_phi[np.ix_(t_indices, phi_indices)]

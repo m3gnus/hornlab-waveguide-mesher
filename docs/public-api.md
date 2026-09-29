@@ -124,6 +124,15 @@ and optional curvature for one role (`horn.inner`, `horn.outer`, `mouth_rim`,
 changes. Fidelity per role is reported as requested vs achieved; the achieved
 chord is measured against the triangles actually emitted.
 
+The preview degrades rather than refuses in three cases, each reported in
+`metadata["warnings"]`: an outer wall that folds over itself (wall thicker than
+the local radius of curvature) is drawn as built, its reversed triangles wound
+to their normals and counted in the surface's `foldedTriangles` metadata (the
+acoustic surface is unaffected); an enclosure on a reduced-quadrant model is
+not drawn (only the full 1234 model has one); and a caller-supplied
+`max_normal_step_deg` below 1 degree with no `max_vertices` is bounded at
+200,000 vertices per surface.
+
 The same names are importable from `hornlab_mesher.preview.api`, which is the
 path WG uses; both paths are supported. `preview/api.py` is the orchestrator;
 the implementation lives beside it in `contract.py` (dataclasses, metadata

@@ -474,6 +474,7 @@ def _grid_surface_from_selection(
     normal_sign: float = 1.0,
     curvature_mean: NDArray[np.float64] | None = None,
     curvature_principal: NDArray[np.float64] | None = None,
+    wind_folds_individually: bool = False,
 ) -> PreviewSurfaceV1:
     selected_points = points[np.ix_(t_indices, phi_indices)]
     selected_normals = normal_sign * normals[np.ix_(t_indices, phi_indices)]
@@ -494,6 +495,7 @@ def _grid_surface_from_selection(
         positions,
         _grid_indices(*selected_points.shape[:2], closed_phi=closed_phi),
         flat_normals,
+        wind_folds_individually=wind_folds_individually,
     )
     return PreviewSurfaceV1(
         role=role,

@@ -126,6 +126,9 @@ def _outer_shell_surfaces(
                 closed_phi=closed_phi,
                 curvature_mean=mean,
                 curvature_principal=principal,
+                # The last resort: a shell that folds over itself cannot be
+                # wound to one side, and refusing it would refuse the design.
+                wind_folds_individually=True,
             )
         ]
 
