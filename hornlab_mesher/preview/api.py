@@ -557,13 +557,20 @@ def build_preview_geometry(
         and options.include_enclosure
         and not closed_phi
     ):
+        reduced_plan_type = int(output["enclosure"].get("plan_type", 1))
+        if reduced_plan_type in (2, 3):
+            warnings.append(
+                f"enclosure plan_type={reduced_plan_type} is not buildable in "
+                "the reduced domain: only plan_type=1 is supported"
+            )
         # The enclosure surfaces are built as closed rings around the mouth. A
         # reduced (quadrant or half) domain has an open mouth arc, and joining
         # its two ends across the removed quadrants wound the baffle both ways
         # and refused the whole preview. The horn is still drawn.
         warnings.append(
             "enclosure not drawn: the preview draws the enclosure only for the "
-            "full model (quadrants 1234); the reduced-domain horn is shown alone"
+            "full model (quadrants 1234); the reduced-domain horn is shown alone "
+            "(the solve mesh still includes the enclosure)"
         )
         output["enclosure"] = None
 
@@ -612,6 +619,7 @@ def build_preview_geometry(
             outer_master = _surface_grid(outer_canonical)
             for outer_surface in _outer_shell_surfaces(
                 outer_master,
+                _surface_grid(selected_inner),
                 t_indices,
                 phi_indices,
                 closed_phi=closed_phi,
@@ -661,6 +669,7 @@ def build_preview_geometry(
             # are its own stations.
             for outer_surface in _outer_shell_surfaces(
                 selected_outer_master,
+                _surface_grid(selected_inner),
                 np.arange(selected_outer_master.shape[0], dtype=np.int64),
                 np.arange(selected_outer_master.shape[1], dtype=np.int64),
                 closed_phi=closed_phi,
@@ -960,11 +969,10 @@ def build_preview_geometry(
     )
     if folded_outer:
         warnings.append(
-            f"outer wall folds over itself in {folded_outer} triangles: the wall "
-            "thickness exceeds the local radius of curvature (typically at a "
-            "rolled-back mouth, a throat extension or slot, or a morph corner). "
-            "The preview shows the folded wall; the acoustic (inner) surface is "
-            "unaffected. Reduce the wall thickness or open the local curvature."
+            f"outer wall folds over itself in {folded_outer} triangles at a "
+            "local bend (including the throat-extension or slot junction). "
+            "The preview shows the folded "
+            "wall; check the local geometry before solving."
         )
 
     selected_phi_coordinates = master_phi[np.ix_(t_indices, phi_indices)]

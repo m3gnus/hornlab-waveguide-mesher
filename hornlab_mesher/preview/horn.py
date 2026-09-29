@@ -19,9 +19,10 @@ from ..profile_sampling import (
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
     build_point_grid_arrays,
 )
-from .contract import PreviewSurfaceV1
+from .contract import PreviewSurfaceV1, _triangle_orientation_analysis
 from .fidelity import analytic_grid_curvature, analytic_grid_normals
-from .primitives import _grid_surface_from_selection
+from .intersections import folded_wall_crosses_inner
+from .primitives import _grid_indices, _grid_surface_from_selection
 
 
 # Dihedral angle across the emitted throat band above which it and the offset
@@ -65,6 +66,7 @@ def _band_dihedral_deg(
 
 def _outer_shell_surfaces(
     master: NDArray[np.float64],
+    inner_selected: NDArray[np.float64],
     t_indices: NDArray[np.int64],
     phi_indices: NDArray[np.int64],
     *,
@@ -116,21 +118,47 @@ def _outer_shell_surfaces(
 
     def unsplit() -> list[PreviewSurfaceV1]:
         mean, principal = curvature_for(slice(None))
-        return [
-            _grid_surface_from_selection(
-                "horn.outer",
-                master,
-                normals_for(slice(None)),
-                t_indices,
-                phi_indices,
-                closed_phi=closed_phi,
-                curvature_mean=mean,
-                curvature_principal=principal,
-                # The last resort: a shell that folds over itself cannot be
-                # wound to one side, and refusing it would refuse the design.
-                wind_folds_individually=True,
+        outer = _grid_surface_from_selection(
+            "horn.outer",
+            master,
+            normals_for(slice(None)),
+            t_indices,
+            phi_indices,
+            closed_phi=closed_phi,
+            curvature_mean=mean,
+            curvature_principal=principal,
+            # The last resort: accept a fold only when it clears the inner skin.
+            wind_folds_individually=True,
+        )
+        if outer.metadata.get("foldedTriangles"):
+            raw = _grid_indices(len(t_indices), len(phi_indices), closed_phi=closed_phi)
+            raw = raw.reshape(-1, 3)
+            raw_analysis = _triangle_orientation_analysis(
+                outer.positions, raw, outer.normals
             )
-        ]
+            if raw_analysis.negative_triangles > raw_analysis.positive_triangles:
+                raw = raw[:, (0, 2, 1)]
+            # The only individually changed faces are the folded ones.
+            folded = np.any(raw != outer.indices.reshape(-1, 3), axis=1)
+            inner_indices = _grid_indices(
+                *inner_selected.shape[:2], closed_phi=closed_phi
+            )
+            if folded_wall_crosses_inner(
+                outer.positions,
+                outer.indices,
+                folded,
+                inner_selected.reshape(-1, 3),
+                inner_indices,
+            ):
+                disagreeing = min(
+                    raw_analysis.positive_triangles, raw_analysis.negative_triangles
+                )
+                raise ValueError(
+                    "horn.outer: inconsistent local orientation "
+                    f"({disagreeing}/{len(raw)} non-degenerate triangles "
+                    "disagree with their normals)"
+                )
+        return [outer]
 
     crease = 0.0
     if len(master) >= 4 and len(t_indices) >= 3:

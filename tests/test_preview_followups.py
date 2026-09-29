@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.preview import PreviewOptionsV1, build_preview_geometry
+from hornlab_mesher.preview.intersections import folded_wall_crosses_inner
 
 _FRAME = {
     "mode": "freestanding",
@@ -66,10 +67,8 @@ def _outer(geometry):
     [
         (ROSSE_EXTENSION, "fine"),
         (ROSSE_SLOT, "fine"),
-        (FREEFORM_MORPH, "coarse"),
-        (FREEFORM_MORPH, "fine"),
     ],
-    ids=["rosse-extension-fine", "rosse-slot-fine", "freeform-morph-coarse", "freeform-morph-fine"],
+    ids=["rosse-extension-fine", "rosse-slot-fine"],
 )
 def test_a_folded_outer_wall_is_shown_with_a_warning(config, lod):
     options = PreviewOptionsV1(lod=lod, include_curvature=False)
@@ -96,6 +95,28 @@ def test_a_folded_outer_wall_is_shown_with_a_warning(config, lod):
         if s.role == "horn.inner"
     )
     assert np.array_equal(inner.positions, reference.positions)
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine"])
+def test_freeform_morph_crossing_refuses_preview(lod):
+    with pytest.raises(ValueError, match=r"horn.outer: inconsistent local orientation"):
+        build_preview_geometry(
+            copy.deepcopy(FREEFORM_MORPH),
+            PreviewOptionsV1(lod=lod, include_curvature=False),
+        )
+
+
+def test_fold_crossing_detector_distinguishes_intersection():
+    outer = np.array([[0., 0., 0.], [2., 0., 0.], [0., 2., 0.]])
+    crossing = np.array([[0.5, 0.5, -1.], [0.5, 0.5, 1.], [1.5, 0.5, 0.]])
+    # Bounding boxes still overlap; the narrow-phase test must reject it.
+    separated = crossing + np.array([1.3, 1.3, 0.])
+    coplanar = np.array([[0.25, 0.25, 0.], [0.75, 0.25, 0.], [0.25, 0.75, 0.]])
+    triangle = np.array([0, 1, 2], dtype=np.uint32)
+    folded = np.array([True])
+    assert folded_wall_crosses_inner(outer, triangle, folded, crossing, triangle)
+    assert folded_wall_crosses_inner(outer, triangle, folded, coplanar, triangle)
+    assert not folded_wall_crosses_inner(outer, triangle, folded, separated, triangle)
 
 
 def test_a_healthy_outer_wall_carries_no_fold_report():
@@ -134,6 +155,14 @@ def test_a_reduced_quadrant_enclosure_previews_the_horn_alone(quadrants):
     assert "horn.inner" in roles
     assert not any(role.startswith("enclosure.") for role in roles)
     assert any("enclosure not drawn" in w for w in geometry.metadata["warnings"])
+
+
+@pytest.mark.parametrize("plan_type", [2, 3])
+def test_reduced_enclosure_keeps_unbuildable_plan_warning(plan_type):
+    config = _enclosure_config(1)
+    config["enclosure"]["plan_type"] = plan_type
+    geometry = build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+    assert any(f"plan_type={plan_type}" in w for w in geometry.metadata["warnings"])
 
 
 def test_the_full_enclosure_is_still_drawn():

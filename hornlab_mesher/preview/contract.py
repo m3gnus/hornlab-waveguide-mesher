@@ -418,10 +418,15 @@ def _orient_indices_to_normals(
                 f"{role}: inconsistent local orientation ({disagreeing}/{len(triangles)} "
                 "non-degenerate triangles disagree with their normals)"
             )
-        folded = analysis.negative_triangles
+        # Establish the prevailing winding first. A fold is the set of faces
+        # reversed against the local normal field, regardless of which sign
+        # happened to be the minority in the original index buffer.
+        if analysis.negative_triangles > analysis.positive_triangles:
+            triangles = triangles[:, (0, 2, 1)]
         _, negative_mask = _classify_triangle_orientation(
             positions, triangles, normals
         )
+        folded = int(np.count_nonzero(negative_mask))
         triangles = triangles.copy()
         triangles[negative_mask] = triangles[negative_mask][:, (0, 2, 1)]
         analysis = _triangle_orientation_analysis(positions, triangles, normals)
