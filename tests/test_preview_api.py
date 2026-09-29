@@ -142,7 +142,7 @@ def test_fine_preview_contract_for_all_required_families(config, expected_roles)
     assert expected_roles <= set(by_role)
     assert set(by_role) <= expected_roles | {"wall.throat_band"}
     assert preview.metadata["api_version"] == "hornlab.preview/1"
-    assert preview.metadata["metadata_version"] == "hornlab.preview/1.3"
+    assert preview.metadata["metadata_version"] == "hornlab.preview/1.4"
     assert preview.metadata["units"] == "mm"
     assert preview.metadata["actual_segment_counts"]["horn_phi"] >= 96
     assert preview.metadata["actual_segment_counts"]["horn_axial"] >= 48

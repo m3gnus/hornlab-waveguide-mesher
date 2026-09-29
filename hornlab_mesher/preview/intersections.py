@@ -1,4 +1,4 @@
-"""Local intersection check for a folded preview wall and the acoustic skin."""
+"""Intersection check for a folded preview wall and the acoustic skin."""
 
 from __future__ import annotations
 
@@ -39,26 +39,38 @@ def folded_wall_crosses_inner(
     folded: NDArray[np.bool_],
     inner_positions: NDArray[np.float64], inner_indices: NDArray[np.uint32],
 ) -> bool:
-    """Check the folded facets and their vertex neighbours against the inner skin.
+    """Check every outer facet that can reach the inner skin.
 
-    AABB overlap narrows each 64-triangle batch before vectorized axis tests.
-    The one-ring expansion includes crossings at the boundary of a fold.
+    A fold can cross the skin away from its reversed facets and their one-ring.
+    Whole-surface and batch AABBs prune those regions before paired, vectorized
+    axis tests. Bounded batches keep the pair matrix and narrow phase small.
     """
     outer_triangles = np.asarray(outer_indices).reshape(-1, 3)
     inner_triangles = np.asarray(inner_indices).reshape(-1, 3)
     if not np.any(folded) or not len(inner_triangles):
         return False
-    near = np.any(np.isin(outer_triangles, outer_triangles[folded].ravel()), axis=1)
-    outer = np.asarray(outer_positions)[outer_triangles[near]]
+    outer = np.asarray(outer_positions)[outer_triangles]
     inner = np.asarray(inner_positions)[inner_triangles]
     inner_lo, inner_hi = inner.min(axis=1), inner.max(axis=1)
+    outer_lo, outer_hi = outer.min(axis=1), outer.max(axis=1)
+    tolerance = 1.0e-10
+    reachable = (np.all(outer_lo <= inner_hi.max(axis=0) + tolerance, axis=1)
+                 & np.all(inner_lo.min(axis=0) <= outer_hi + tolerance, axis=1))
+    outer = outer[reachable]
     for offset in range(0, len(outer), 64):
         batch = outer[offset:offset + 64]
         lo, hi = batch.min(axis=1), batch.max(axis=1)
-        oi, ii = np.nonzero(np.all(lo[:, None] <= inner_hi[None], axis=2)
-                            & np.all(inner_lo[None] <= hi[:, None], axis=2))
-        if not len(oi):
+        nearby = (np.all(inner_lo <= hi.max(axis=0) + tolerance, axis=1)
+                  & np.all(lo.min(axis=0) <= inner_hi + tolerance, axis=1))
+        if not np.any(nearby):
             continue
-        if np.any(_triangles_intersect(batch[oi], inner[ii])):
-            return True
+        candidates = inner[nearby]
+        oi, ii = np.nonzero(
+            np.all(lo[:, None] <= inner_hi[nearby][None] + tolerance, axis=2)
+            & np.all(inner_lo[nearby][None] <= hi[:, None] + tolerance, axis=2)
+        )
+        for start in range(0, len(oi), 4096):
+            pairs = slice(start, start + 4096)
+            if np.any(_triangles_intersect(batch[oi[pairs]], candidates[ii[pairs]])):
+                return True
     return False

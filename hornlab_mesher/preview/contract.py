@@ -17,7 +17,7 @@ from numpy.typing import NDArray
 
 
 _API_VERSION = "hornlab.preview/1"
-_METADATA_VERSION = "hornlab.preview/1.3"
+_METADATA_VERSION = "hornlab.preview/1.4"
 _ORIENTATION_AREA_MEDIAN_FRACTION = 0.125
 _ORIENTATION_COSINE_TOLERANCE = 1.0e-10
 # A sharp morph corner has no defined offset direction, so the outer shell can
@@ -289,6 +289,7 @@ class _OrientedIndices:
     disagreeing_triangles: int
     singular_triangles: int = 0
     folded_triangles: int = 0
+    folded_triangle_indices: tuple[int, ...] = ()
     proof: _OrientationCheckProof | None = field(
         default=None, compare=False, repr=False
     )
@@ -401,7 +402,9 @@ def _orient_indices_to_normals(
     the fold are geometrically reversed against the smooth normals, so no single
     winding agrees with them all. Rather than refuse the surface, each
     disagreeing triangle is wound to agree with its normals and the count is
-    reported in the ``foldedTriangles`` metadata.
+    reported in ``foldedTriangles`` and ``foldedTriangleIndices`` metadata.
+    The latter contains zero-based triangle ordinals in the emitted index buffer,
+    preserving the fold's identity after its winding has been repaired.
     """
 
     triangles = np.asarray(indices, dtype=np.uint32).reshape(-1, 3)
@@ -409,6 +412,7 @@ def _orient_indices_to_normals(
         return _OrientedIndices(triangles.reshape(-1), 0, 0, 0)
     analysis = _triangle_orientation_analysis(positions, triangles, normals)
     folded = 0
+    folded_indices: tuple[int, ...] = ()
     if analysis.positive_triangles and analysis.negative_triangles:
         disagreeing = min(
             analysis.positive_triangles, analysis.negative_triangles
@@ -427,6 +431,7 @@ def _orient_indices_to_normals(
             positions, triangles, normals
         )
         folded = int(np.count_nonzero(negative_mask))
+        folded_indices = tuple(int(i) for i in np.flatnonzero(negative_mask))
         triangles = triangles.copy()
         triangles[negative_mask] = triangles[negative_mask][:, (0, 2, 1)]
         analysis = _triangle_orientation_analysis(positions, triangles, normals)
@@ -449,6 +454,7 @@ def _orient_indices_to_normals(
         disagreeing_triangles=0,
         singular_triangles=analysis.singular_triangles,
         folded_triangles=folded,
+        folded_triangle_indices=folded_indices,
         proof=(
             _OrientationCheckProof(
                 positions=positions,
@@ -474,6 +480,7 @@ def _orientation_metadata(result: _OrientedIndices) -> dict[str, Any]:
     }
     if result.folded_triangles:
         metadata["foldedTriangles"] = result.folded_triangles
+        metadata["foldedTriangleIndices"] = list(result.folded_triangle_indices)
     if result.proof is not None:
         # This internal object key deliberately falls outside the public
         # string-key metadata type. PreviewSurfaceV1 removes it before metadata

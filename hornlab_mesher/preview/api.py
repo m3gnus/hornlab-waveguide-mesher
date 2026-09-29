@@ -85,6 +85,9 @@ _MAX_CANONICAL_VERTICES = 1_000_000
 # never reach it, and neither does a caller that names ``max_vertices``.
 _TIGHT_NORMAL_STEP_DEG = 1.0
 _TIGHT_NORMAL_DEFAULT_VERTEX_CAP = 200_000
+# Cooperative deadline from build start, checked only during refinement.
+# An in-progress sampling/assembly operation can outlast it.
+_TIGHT_NORMAL_REFINEMENT_SECONDS = 5.0
 
 _LOD_PRESETS = {
     "coarse": {
@@ -187,7 +190,7 @@ def _fidelity_record(
         or cap_limited
         or not measurement_complete
     )
-    return {
+    record = {
         # Stage-1 aliases remain for consumers already reading them.
         "max_chord_error_mm": chord,
         "max_normal_step_deg": normal,
@@ -204,6 +207,9 @@ def _fidelity_record(
         "unmeasured_intervals": unmeasured,
         "silhouette_segments_achieved": None,
     }
+    if (achieved or {}).get("refinement_time_limited"):
+        record["refinement_time_limited"] = True
+    return record
 
 
 @dataclass(frozen=True)
@@ -249,6 +255,7 @@ def _sample_master_level(
     corner_intervals: int,
     wall_mm: float,
     deferred_wall: float,
+    refinement_deadline: float | None = None,
 ) -> _MasterLevel:
     """Sample the canonical master at ``axial`` rows and choose the render grid."""
 
@@ -322,6 +329,7 @@ def _sample_master_level(
         closed_phi=closed_phi,
         t_coordinates=master_t,
         phi_coordinates=master_phi,
+        refinement_deadline=refinement_deadline,
     )
     return _MasterLevel(
         output=output,
@@ -404,6 +412,13 @@ def build_preview_geometry(
             f"bounded at {vertex_cap} vertices per surface; pass max_vertices to change it"
         )
     start = time.perf_counter()
+    tight_normal_request = (
+        options.max_normal_step_deg is not None
+        and normal_target < _TIGHT_NORMAL_STEP_DEG
+    )
+    refinement_deadline = (
+        start + _TIGHT_NORMAL_REFINEMENT_SECONDS if tight_normal_request else None
+    )
 
     # Resolve the formula, mode and parameters once, through the same resolver
     # the solved build uses. Re-reading ``config["formula"]`` here missed the
@@ -522,6 +537,7 @@ def build_preview_geometry(
             corner_intervals=corner_intervals,
             wall_mm=wall_mm,
             deferred_wall=deferred_wall,
+            refinement_deadline=refinement_deadline,
         )
 
     level = sample(axial_master, deferred_wall)
@@ -531,7 +547,11 @@ def build_preview_geometry(
     # One step only: the ceiling is the density that shipped before, so an
     # escalated build is the old build and a settled one is strictly cheaper.
     escalated = False
-    if axial_ceiling > axial_master and level.achieved.get("candidate_starved"):
+    if (
+        axial_ceiling > axial_master
+        and level.achieved.get("candidate_starved")
+        and not level.achieved.get("refinement_time_limited")
+    ):
         axial_master = axial_ceiling
         level = sample(axial_master, level.deferred_wall)
         canonical_ms += level.sampling_ms
@@ -550,6 +570,7 @@ def build_preview_geometry(
     t_indices = level.t_indices
     phi_indices = level.phi_indices
     horn_achieved = level.achieved
+    refinement_time_limited = bool(horn_achieved.get("refinement_time_limited"))
     inner_canonical = grid_data["inner_grid"]
 
     if (
@@ -722,6 +743,11 @@ def build_preview_geometry(
                 and cap_fidelity["max_normal_step_deg"] <= normal_target
             )
             if passes:
+                break
+            if refinement_deadline is not None and time.perf_counter() >= refinement_deadline:
+                refinement_time_limited = True
+                cap_limited = True
+                cap_fidelity["refinement_time_limited"] = True
                 break
             proposed = cap_intervals + 1
             if vertex_cap is not None and 1 + proposed * len(phi_indices) > vertex_cap:
@@ -967,10 +993,25 @@ def build_preview_geometry(
         for surface in surfaces
         if surface.role == "horn.outer"
     )
-    if folded_outer:
+    if refinement_time_limited:
         warnings.append(
-            f"outer wall folds over itself in {folded_outer} triangles at a "
-            "local bend (including the throat-extension or slot junction). "
+            f"sub-degree normal refinement stopped at the "
+            f"{_TIGHT_NORMAL_REFINEMENT_SECONDS:g} s time budget; the current grid "
+            "is shown and may miss the requested fidelity. Check measurement_complete "
+            "for each role; unmeasured chord errors are null."
+        )
+    if folded_outer:
+        folded_points = np.concatenate([
+            surface.positions[surface.indices.reshape(-1, 3)[
+                surface.metadata["foldedTriangleIndices"]
+            ]].reshape(-1, 3)
+            for surface in surfaces
+            if surface.role == "horn.outer" and surface.metadata.get("foldedTriangles")
+        ])
+        fold_z_min, fold_z_max = folded_points[:, 2].min(), folded_points[:, 2].max()
+        warnings.append(
+            f"outer wall folds over itself in {folded_outer} triangles on the "
+            f"{formula_name} wall at z={fold_z_min:.3g} to {fold_z_max:.3g} mm. "
             "The preview shows the folded "
             "wall; check the local geometry before solving."
         )
@@ -1118,6 +1159,11 @@ def build_preview_geometry(
         },
         **source_details,
     }
+    if tight_normal_request:
+        metadata["refinement_budget"] = {
+            "seconds": _TIGHT_NORMAL_REFINEMENT_SECONDS,
+            "exhausted": refinement_time_limited,
+        }
     _validate_finite_metadata(metadata)
     return PreviewGeometryV1(surfaces=surfaces, metadata=metadata)
 

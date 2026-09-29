@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 from numpy.typing import NDArray
@@ -395,6 +396,7 @@ def adaptive_grid_indices(
     closed_phi: bool,
     t_coordinates: NDArray[np.float64] | None = None,
     phi_coordinates: NDArray[np.float64] | None = None,
+    refinement_deadline: float | None = None,
 ) -> tuple[NDArray[np.int64], NDArray[np.int64], dict[str, float | int | bool | None]]:
     """Largest-error-first refinement of a canonical candidate grid.
 
@@ -404,6 +406,9 @@ def adaptive_grid_indices(
     two parameter directions compete for the next vertex allocation by their
     normalized worst error.  Using one shared phi-index set is the union-grid
     alternative allowed by P1.2 and retains FREEFORM row correspondence.
+    An optional monotonic deadline stops at refinement/measurement checkpoints;
+    the current valid grid is returned with incomplete fidelity, never a false
+    chord bound. Sampling and surface assembly do not check the deadline.
     """
 
     sample_points = np.asarray(points, dtype=np.float64)
@@ -436,6 +441,31 @@ def adaptive_grid_indices(
             take = np.linspace(0, len(t_indices) - 1, max_t, dtype=np.int64)
             t_indices = [t_indices[int(index)] for index in take]
 
+    def expired() -> bool:
+        return refinement_deadline is not None and time.perf_counter() >= refinement_deadline
+
+    def time_limited_result():
+        # No further reference scans: endpoint normal steps are cheap and exact
+        # for the retained grid, but its triangle chord error is unmeasured.
+        selected = sample_normals[np.ix_(t_indices, phi_indices)]
+        normal = _angle_degrees(selected[:-1], selected[1:])
+        normal = max(normal, _angle_degrees(selected[:, :-1], selected[:, 1:]))
+        if closed_phi:
+            normal = max(normal, _angle_degrees(selected[:, -1], selected[:, 0]))
+        return (
+            np.asarray(t_indices, dtype=np.int64),
+            np.asarray(phi_indices, dtype=np.int64),
+            {
+                "max_chord_error_mm": None,
+                "max_normal_step_deg": normal,
+                "vertex_cap_limited": cap_limited,
+                "refinement_time_limited": True,
+                "measurement_complete": False,
+                "unmeasured_intervals": len(t_indices) - 1 + len(phi_indices) - (not closed_phi),
+                "candidate_starved": candidate_starved,
+            },
+        )
+
     # Directional chord bounds add under bilinear interpolation, hence each
     # direction receives half the requested surface-error allowance.
     directional_chord = max_chord_error_mm * 0.5
@@ -446,6 +476,8 @@ def adaptive_grid_indices(
         phi_coordinates=azimuth_parameter,
     )
     while True:
+        if expired():
+            return time_limited_result()
         candidates: list[tuple[float, int, int | None]] = []
         saw_unmeasured = False
         for axis, indices, closed in (
@@ -453,6 +485,8 @@ def adaptive_grid_indices(
             (1, phi_indices, closed_phi),
         ):
             for first, last in _intervals(indices, sample_points.shape[axis], closed):
+                if expired():
+                    return time_limited_result()
                 chord, normal, split, measured = measure(
                     axis, first, last, closed=closed
                 )
@@ -507,6 +541,8 @@ def adaptive_grid_indices(
     # it and split any quad that still misses the whole chord budget.
     triangle_error = 0.0
     while True:
+        if expired():
+            return time_limited_result()
         distances, t_cell, phi_cell, covered = emitted_triangle_errors(
             sample_points, t_indices, phi_indices, closed_phi=closed_phi
         )
@@ -530,6 +566,10 @@ def adaptive_grid_indices(
             return phi_sorted[interval], phi_sorted[(interval + 1) % len(phi_sorted)]
 
         for flat in order:
+            if expired():
+                t_indices.sort()
+                phi_indices.sort()
+                return time_limited_result()
             row, col = int(rows[flat]), int(cols[flat])
             cell = (int(t_cell[row]), int(phi_cell[col]))
             if cell in seen_cells:
@@ -578,6 +618,8 @@ def adaptive_grid_indices(
             cap_limited = True
             break
 
+    if expired():
+        return time_limited_result()
     t_error = _worst_axis_interval(
         sample_points,
         measure,
@@ -587,6 +629,8 @@ def adaptive_grid_indices(
         chord_target=directional_chord,
         normal_target=max_normal_step_deg,
     )
+    if expired():
+        return time_limited_result()
     phi_error = _worst_axis_interval(
         sample_points,
         measure,
@@ -597,6 +641,8 @@ def adaptive_grid_indices(
         normal_target=max_normal_step_deg,
     )
     unmeasured_intervals = int(t_error[4] + phi_error[4])
+    if expired():
+        return time_limited_result()
     measurement_complete = unmeasured_intervals == 0
     # The emitted triangles' measured deviation from every candidate sample
     # they cover, rather than the sum of the two directional line chords: that

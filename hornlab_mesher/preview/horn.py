@@ -136,10 +136,8 @@ def _outer_shell_surfaces(
             raw_analysis = _triangle_orientation_analysis(
                 outer.positions, raw, outer.normals
             )
-            if raw_analysis.negative_triangles > raw_analysis.positive_triangles:
-                raw = raw[:, (0, 2, 1)]
-            # The only individually changed faces are the folded ones.
-            folded = np.any(raw != outer.indices.reshape(-1, 3), axis=1)
+            folded = np.zeros(len(raw), dtype=bool)
+            folded[outer.metadata["foldedTriangleIndices"]] = True
             inner_indices = _grid_indices(
                 *inner_selected.shape[:2], closed_phi=closed_phi
             )

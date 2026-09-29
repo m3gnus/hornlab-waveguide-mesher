@@ -128,13 +128,32 @@ changes. Fidelity per role is reported as requested vs achieved; the achieved
 chord is measured against the triangles actually emitted.
 
 The preview degrades rather than refuses in three cases, each reported in
-`metadata["warnings"]`: an outer wall that folds near a throat-extension or
-slot junction is drawn only when it does not intersect the inner surface. Its
+`metadata["warnings"]`: a folded outer wall is drawn only when no part of the
+outer surface intersects the inner surface. The warning names the design type
+and the folded facets' axial z range in the mesher coordinate frame (mm). Its
 reversed triangles are wound to their normals and counted in the surface's
-`foldedTriangles` metadata; an enclosure on a reduced-quadrant model is
+`foldedTriangles` metadata. `foldedTriangleIndices` is a sorted list of zero-based
+triangle ordinals in that surface's emitted `indices.reshape(-1, 3)` buffer;
+it is present only when folds were rewound, and its length equals
+`foldedTriangles`. These IDs also appear in geometry
+`metadata["surface_metadata"][role]`. Rewinding makes the folds look healthy in
+a back-face Normals view: consumers should highlight these IDs explicitly.
+An enclosure on a reduced-quadrant model is
 not drawn (only the full 1234 model has one); and a caller-supplied
 `max_normal_step_deg` below 1 degree with no `max_vertices` is bounded at
-200,000 vertices per surface.
+200,000 vertices per surface. All explicit sub-degree normal requests, including
+those with a vertex cap, also have a 5 s monotonic deadline from build start,
+shared across master levels and source-cap refinement. At measurement/refinement
+checkpoints after expiry, the current valid grid is returned with a warning,
+`refinement_budget.exhausted=true`, and
+`refinement_time_limited=true` in affected fidelity records. When horn measurement
+was interrupted, chord error is null and `measurement_complete=false`. Source-cap
+measurements remain available when only its refinement stopped. The requested
+accuracy is not claimed.
+`refinement_budget.seconds` reports the budget even when it was sufficient.
+This is a cooperative refinement guard, not a hard request timeout: canonical
+sampling, surface assembly and a measurement already in progress may add time.
+LOD requests without an explicit normal override do not use this guard.
 
 The same names are importable from `hornlab_mesher.preview.api`, which is the
 path WG uses; both paths are supported. `preview/api.py` is the orchestrator;
