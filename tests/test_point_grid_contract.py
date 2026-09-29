@@ -3027,6 +3027,12 @@ class _FakeOcc:
     def addLine(self, *_args) -> int:
         return self._tag()
 
+    def getBoundingBox(self, dim, tag):
+        # A point with zero tolerance, for the builder's pre-fill merge check.
+        assert dim == 0
+        xyz = self.point_coordinates[int(tag)]
+        return (*xyz, *xyz)
+
     def addBSpline(self, point_tags) -> int:
         self.bsplines.append([int(tag) for tag in point_tags])
         return self._tag()

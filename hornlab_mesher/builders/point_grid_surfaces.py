@@ -21,6 +21,44 @@ def _safe_surface_from_curves(curves: list[int]) -> tuple[int, int]:
     return (2, surf)
 
 
+class FillToleranceMergeError(ValueError):
+    """Two distinct vertices of a curve loop have come within OCC tolerance."""
+
+
+def _refuse_tolerance_merged_vertices(vertex_tags: list[int]) -> None:
+    """Refuse a curve loop whose distinct vertices OCC would merge into one.
+
+    ``addSurfaceFilling`` widens the tolerance of the curves and vertices on
+    its boundary to however far the fitted face strays from them, and those
+    are shared with the neighbouring faces. Once a vertex tolerance grows past
+    the distance to another vertex of a later loop, ``addCurveLoop`` merges the
+    two: an edge between them collapses to zero length, and gmsh 4.15.2 then
+    segfaults in ``addSurfaceFilling`` (a crash no ``try`` can catch, which
+    takes the calling process down). A vertex's OCC bounding box is its point
+    grown by its tolerance, so this can be checked before the loop is built.
+    """
+
+    tags = list(dict.fromkeys(int(t) for t in vertex_tags))
+    if len(tags) < 2:
+        return
+    occ = require_gmsh().model.occ
+    boxes = np.array([occ.getBoundingBox(0, t) for t in tags], dtype=np.float64)
+    lo, hi = boxes[:, :3], boxes[:, 3:]
+    centers = 0.5 * (lo + hi)
+    tolerances = 0.5 * np.max(hi - lo, axis=1)
+    distance = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=2)
+    reach = tolerances[:, None] + tolerances[None, :]
+    np.fill_diagonal(distance, np.inf)
+    a, b = np.unravel_index(int(np.argmin(distance - reach)), distance.shape)
+    if distance[a, b] <= reach[a, b]:
+        raise FillToleranceMergeError(
+            "surface construction refused: earlier filled faces strayed up to "
+            f"{float(max(tolerances[a], tolerances[b])):.3g} mm from their boundary "
+            f"curves, so two points {float(distance[a, b]):.3g} mm apart would be "
+            "merged into one; building this face would crash gmsh."
+        )
+
+
 class _SharedSurfaceBuilder:
     """Small OCC helper that keeps adjacent faceted surfaces on shared curves."""
 
@@ -31,6 +69,8 @@ class _SharedSurfaceBuilder:
         self.line_cache: dict[tuple[int, int], int] = {}
         self.spline_cache: dict[tuple[int, ...], int] = {}
         self.knot_spline_cache: dict[tuple[Any, ...], int] = {}
+        # Curve tag -> its end point tags, for the pre-fill tolerance check.
+        self.curve_ends: dict[int, tuple[int, int]] = {}
 
     def add_point(self, xyz: np.ndarray | tuple[float, float, float]) -> int:
         x, y, z = xyz
@@ -57,6 +97,7 @@ class _SharedSurfaceBuilder:
         if cached is not None:
             return cached
         tag = int(self.gmsh.model.occ.addLine(int(a), int(b)))
+        self.curve_ends[tag] = key
         self.line_cache[key] = tag
         self.line_cache[(key[1], key[0])] = -tag
         return tag
@@ -70,6 +111,7 @@ class _SharedSurfaceBuilder:
         if cached is not None:
             return cached
         tag = int(self.gmsh.model.occ.addBSpline(list(key)))
+        self.curve_ends[tag] = (key[0], key[-1])
         self.spline_cache[key] = tag
         reverse = tuple(reversed(key))
         if reverse != key:
@@ -108,6 +150,7 @@ class _SharedSurfaceBuilder:
                 multiplicities=[int(m) for m in multiplicities],
             )
         )
+        self.curve_ends[tag] = (int(point_tags[0]), int(point_tags[-1]))
         self.knot_spline_cache[key] = tag
         return tag
 
@@ -115,9 +158,16 @@ class _SharedSurfaceBuilder:
         return self.bspline_tags([self.point(*point) for point in points])
 
     def circle_arc(self, start: int, center: int, end: int) -> int:
-        return int(self.gmsh.model.occ.addCircleArc(int(start), int(center), int(end), center=True))
+        tag = int(self.gmsh.model.occ.addCircleArc(int(start), int(center), int(end), center=True))
+        self.curve_ends[tag] = (int(start), int(end))
+        return tag
 
     def surface(self, curves: list[int]) -> tuple[int, int]:
+        _refuse_tolerance_merged_vertices([
+            vertex
+            for curve in curves
+            for vertex in self.curve_ends.get(abs(int(curve)), ())
+        ])
         return _safe_surface_from_curves(curves)
 
     def quad(
@@ -428,7 +478,14 @@ def _add_spline_span_wall_surfaces(
                 if reverse
                 else [next_phi, -right, -prev_phi, left]
             )
-            surfaces.append(builder.surface(curves))
+            try:
+                surfaces.append(builder.surface(curves))
+            except FillToleranceMergeError as exc:
+                raise FillToleranceMergeError(
+                    f"{exc} This happened in the legacy topology's filled "
+                    "spline-span wall; the acoustic topology builds the wall "
+                    "from fitted B-spline patches instead."
+                ) from exc
             prev_phi = next_phi
     return surfaces
 
