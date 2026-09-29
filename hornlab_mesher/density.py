@@ -9,7 +9,6 @@ import numpy as np
 from .cost import TRIANGLES_PER_AREA_OVER_H2
 from .geometry import BuiltGeometry, MeshDensity
 from .profile_common import _parse_number_list
-from .tags import PhysicalGroup
 
 logger = logging.getLogger(__name__)
 

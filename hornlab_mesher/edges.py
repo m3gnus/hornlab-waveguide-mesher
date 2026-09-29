@@ -20,9 +20,11 @@ from numpy.typing import NDArray
 class EdgeTable:
     """Per-use and per-edge views of a triangle list.
 
-    A "use" is one traversal of an edge by one triangle; use ``3 * t + k`` is
-    edge ``k`` of triangle ``t``, going from corner ``k`` to corner ``k + 1``.
-    Unique edges are numbered in order of first use.
+    A "use" is one traversal of an edge by one triangle, going from corner
+    ``k`` to corner ``k + 1`` of triangle ``t``. Uses are listed triangle by
+    triangle and corner by corner; with ``drop_degenerate`` the collapsed
+    uses are removed, so a use's position is not ``3 * t + k``. Unique edges
+    are numbered in order of first use. Vertex ids must be non-negative.
     """
 
     tri: NDArray[np.int64]  # triangle index of each use
@@ -36,15 +38,6 @@ class EdgeTable:
     @property
     def n_edges(self) -> int:
         return int(len(self.count))
-
-    def uses_of(self, edge_ids: NDArray[np.int64]) -> NDArray[np.int64]:
-        """Use indices of the given unique edges, grouped by edge, in use order."""
-
-        order = np.argsort(self.edge, kind="stable")
-        sorted_edges = self.edge[order]
-        wanted = np.zeros(self.n_edges, dtype=bool)
-        wanted[np.asarray(edge_ids, dtype=np.int64)] = True
-        return order[wanted[sorted_edges]]
 
 
 def build_edge_table(

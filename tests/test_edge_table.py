@@ -60,31 +60,65 @@ def test_edges_match_the_dict_reference_in_order(seed):
         assert int(table.tri[table.first_use[edge_id]]) == reference[edge][0][0]
 
 
+def _flipped_grid(seed: int, n: int = 7):
+    """Open triangulated grid, some faces reversed, one fully collapsed triangle.
+
+    Manifold (every edge has one or two uses) so the validator reaches its
+    counts instead of refusing; flips give inconsistent edges and the open
+    rim gives boundary edges.
+    """
+
+    rng = np.random.default_rng(seed)
+    idx = np.arange((n + 1) * (n + 1)).reshape(n + 1, n + 1)
+    faces = []
+    for i in range(n):
+        for j in range(n):
+            a, b, c, d = idx[i, j], idx[i + 1, j], idx[i + 1, j + 1], idx[i, j + 1]
+            faces += [[a, b, c], [a, c, d]]
+    faces = np.array(faces, dtype=np.int64)
+    flip = rng.random(len(faces)) < 0.3
+    faces[flip] = faces[flip][:, ::-1]
+    faces = np.vstack([faces, [[3, 3, 3]]])  # degenerate: contributes no edges
+    points = rng.normal(size=((n + 1) * (n + 1), 3))
+    return points, faces
+
+
 @pytest.mark.parametrize("seed", range(6))
 def test_orientation_counts_match_the_dict_reference(seed):
     from hornlab_mesher.normals import validate_orientation
 
-    triangles = _soup(seed)
-    points = np.random.default_rng(seed + 100).normal(size=(30, 3))
+    points, triangles = _flipped_grid(seed)
     tags = np.full(len(triangles), 1, dtype=np.int32)
     reference = _reference_edge_dirs(triangles)
     boundary = sum(1 for d in reference.values() if len(d) == 1)
     nonmanifold = sum(1 for d in reference.values() if len(d) not in (1, 2))
     inconsistent = sum(1 for d in reference.values() if len(d) == 2 and d[0] == d[1])
-    try:
-        report = validate_orientation(points, triangles, tags, require_source_normal=False)
-    except Exception:
-        # Random soups usually have nonmanifold edges, which the validator
-        # refuses; the counts are what matter, so ask it not to raise.
-        from hornlab_mesher import normals
+    assert nonmanifold == 0 and boundary > 0 and inconsistent > 0
+    report = validate_orientation(
+        points,
+        triangles,
+        tags,
+        require_source_normal=False,
+        require_positive_volume=False,
+    )
+    assert report.boundary_edges == boundary
+    assert report.nonmanifold_edges == nonmanifold
+    assert report.inconsistent_edges == inconsistent
+    assert report.n_edges == len(reference)
 
-        report = None
-        assert nonmanifold > 0 or inconsistent > 0
-    if report is not None:
-        assert report.boundary_edges == boundary
-        assert report.nonmanifold_edges == nonmanifold
-        assert report.inconsistent_edges == inconsistent
-        assert report.n_edges == len(reference)
+
+@pytest.mark.parametrize("seed", range(6))
+def test_nonmanifold_count_matches_the_dict_reference(seed):
+    from hornlab_mesher.normals import MeshOrientationError, validate_orientation
+
+    triangles = _soup(seed)
+    points = np.random.default_rng(seed + 100).normal(size=(30, 3))
+    tags = np.full(len(triangles), 1, dtype=np.int32)
+    reference = _reference_edge_dirs(triangles)
+    nonmanifold = sum(1 for d in reference.values() if len(d) not in (1, 2))
+    assert nonmanifold > 0
+    with pytest.raises(MeshOrientationError, match=rf"has {nonmanifold} nonmanifold"):
+        validate_orientation(points, triangles, tags, require_source_normal=False)
 
 
 def test_repair_matches_a_consistent_mesh_and_flips_a_reversed_one():
