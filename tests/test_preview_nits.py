@@ -93,7 +93,22 @@ def test_surface_fold_ids_and_warning_describe_the_shipped_fold(config):
     assert f"R-OSSE wall at z={z.min():.3g} to {z.max():.3g} mm" in warning
 
 
-def test_freeform_fold_warning_has_its_own_design_and_location():
+def _old_twisted_freeform_layout(monkeypatch):
+    """Put back the pre-fix FREEFORM rectangle-morph azimuth layout.
+
+    The continuous layout no longer folds these fixtures' outer walls, so the fold
+    paths are exercised on the old, twisted layout instead.
+    """
+
+    import hornlab_mesher.profile_sampling as sampling
+
+    monkeypatch.setattr(
+        sampling, "_blend_toward_uniform_layout", lambda angles, factor: (angles, True)
+    )
+
+
+def test_freeform_fold_warning_has_its_own_design_and_location(monkeypatch):
+    _old_twisted_freeform_layout(monkeypatch)
     config = copy.deepcopy(FREEFORM_MORPH)
     config["morph"].update(morphCorner="25", morphFixed="0.2")
     geometry = build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
@@ -206,7 +221,8 @@ def test_source_cap_refinement_shares_the_deadline(monkeypatch):
     assert sum("time budget" in w for w in geometry.metadata["warnings"]) == 1
 
 
-def test_freeform_fixed_morph_crossing_away_from_the_throat_refuses():
+def test_freeform_fixed_morph_crossing_away_from_the_throat_refuses(monkeypatch):
+    _old_twisted_freeform_layout(monkeypatch)
     config = copy.deepcopy(FREEFORM_MORPH)
     config["morph"].update(morphCorner="25", morphFixed="0.2")
     with pytest.raises(ValueError, match="horn.outer: inconsistent local orientation"):
