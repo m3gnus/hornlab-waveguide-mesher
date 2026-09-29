@@ -98,7 +98,34 @@ def test_a_folded_outer_wall_is_shown_with_a_warning(config, lod):
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine"])
-def test_freeform_morph_crossing_refuses_preview(lod):
+def test_freeform_rectangle_morph_previews_without_a_crossing_wall(lod):
+    """The rectangle morph used to twist the grid so the outer wall crossed the
+    inner surface and the preview refused it; the azimuth layout is now
+    continuous, so it previews with a consistently wound wall."""
+
+    geometry = build_preview_geometry(
+        copy.deepcopy(FREEFORM_MORPH),
+        PreviewOptionsV1(lod=lod, include_curvature=False),
+    )
+
+    outer = _outer(geometry)
+    inner = next(s for s in geometry.surfaces if s.role == "horn.inner")
+    everything = np.ones(len(outer.indices) // 3, dtype=bool)
+    assert outer.metadata.get("foldedTriangles", 0) == 0
+    assert not folded_wall_crosses_inner(
+        outer.positions, outer.indices, everything, inner.positions, inner.indices
+    )
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine"])
+def test_a_wall_crossing_the_inner_surface_still_refuses_preview(lod, monkeypatch):
+    """The refusal path stays covered: put the old twisted layout back."""
+
+    import hornlab_mesher.profile_sampling as sampling
+
+    monkeypatch.setattr(
+        sampling, "_blend_toward_uniform_layout", lambda angles, factor: (angles, True)
+    )
     with pytest.raises(ValueError, match=r"horn.outer: inconsistent local orientation"):
         build_preview_geometry(
             copy.deepcopy(FREEFORM_MORPH),

@@ -1014,6 +1014,71 @@ def _freeform_rounded_rect_static_basis(
     return uniform_angles, arc_trig
 
 
+# Morph factor at which a smooth-schedule ring has fully taken the rectangle
+# corner layout. Below it the layout blends from uniform (see
+# _blend_toward_uniform_layout).
+_FREEFORM_MORPH_LAYOUT_SATURATION = 1.0
+
+
+def _blend_toward_uniform_layout(
+    quadrant_angles: np.ndarray, morph_factor: float
+) -> tuple[np.ndarray, bool]:
+    """Blend a rectangle-corner ring layout back toward the uniform one.
+
+    The layout of a ring that is still nearly circular must not be the
+    rectangle layout: that packs the corner arc's rows onto the diagonal, so
+    the first morphing ring's meridians jump in azimuth (up to ~15 degrees)
+    relative to the uniform throat ring, twisting the control net where the
+    morph starts. Blending by a smooth function of the morph factor makes each
+    row's azimuth continuous in ``t`` and reaches the exact corner layout, with
+    its tangencies, once the morph is developed. Returns the angles and whether
+    they are the exact corner layout (so corner-arc spans still describe them).
+    """
+
+    progress = min(
+        1.0, max(0.0, float(morph_factor) / _FREEFORM_MORPH_LAYOUT_SATURATION)
+    )
+    if progress >= 1.0:
+        return quadrant_angles, True
+    weight = progress * progress * (3.0 - 2.0 * progress)
+    uniform = np.linspace(0.0, math.pi / 2.0, len(quadrant_angles))
+    return uniform + weight * (quadrant_angles - uniform), False
+
+
+# An azimuth shift this large between adjacent axial rings twists the control
+# net: the offset shell folds and the axial chord cannot converge at any mm.
+_FREEFORM_AZIMUTH_TWIST_DEG = 5.0
+
+
+def freeform_azimuth_twist_note(
+    phi_grid: Any, t_values: Any | None = None
+) -> str:
+    """Name an azimuth-layout jump between adjacent rings, or return ``""``.
+
+    ``phi_grid`` is the FREEFORM ``(azimuth, ring)`` grid. A failing offset
+    check or axial-chord fit that coincides with such a jump has a sampling
+    cause, so its message must not send the user to the resolution or the wall.
+    """
+
+    phi = np.asarray(phi_grid, dtype=np.float64)
+    if phi.ndim != 2 or phi.shape[1] < 2:
+        return ""
+    steps = np.degrees(np.abs(np.diff(phi, axis=1))).max(axis=0)
+    interval = int(np.argmax(steps))
+    if not steps[interval] >= _FREEFORM_AZIMUTH_TWIST_DEG:
+        return ""
+    where = f"axial rings {interval} and {interval + 1}"
+    if t_values is not None and len(t_values) > interval + 1:
+        where += f" (t={float(t_values[interval]):.3f} to {float(t_values[interval + 1]):.3f})"
+    return (
+        f"the FREEFORM azimuth rows shift by {steps[interval]:.0f} degrees between "
+        f"{where}, which twists the control net there. A finer mm resolution or a "
+        "thinner wall cannot fix that; soften the abrupt change that starts there "
+        "(a Morph.Rate near zero, or cross-sections that change shape between "
+        "two nearby stations)"
+    )
+
+
 def _freeform_rounded_rect_quadrant_angles(
     *,
     half_width: float,
@@ -1315,6 +1380,9 @@ def _freeform_raw_radial_grid(
             side2_segments = int(len(reference_base) - 1 - theta2_index)
         ring_angles = []
         corner_arc_spans: list[list[float]] = []
+        # A wholly smooth schedule morphing to a rectangle has no structural
+        # corner before the morph: its rings start on the uniform layout.
+        smooth_rectangle_morph = rectangle_morph and not has_rounded_rectangle
         full_circle = quadrants in {"", "1234"}
         wall_thickness = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
         collapse_transition_intervals = (
@@ -1349,6 +1417,14 @@ def _freeform_raw_radial_grid(
                     arc_subdivision=arc_subdivision,
                     collapse_transition_intervals=collapse_transition_intervals,
                 )
+            arc_is_exact = True
+            if smooth_rectangle_morph and corner_radius > 1.0e-9:
+                q1, arc_is_exact = _blend_toward_uniform_layout(
+                    q1,
+                    _morph_factor(
+                        float(t_value), 0.0, params, morph_start=morph_start
+                    ),
+                )
             reduced, full_circle = _freeform_quadrant_angles(q1, quadrants)
             if np.any(np.diff(reduced) <= 0.0):
                 raise ValueError(
@@ -1361,7 +1437,7 @@ def _freeform_raw_radial_grid(
                 effective_b,
                 corner_radius,
             )
-            if span is None:
+            if span is None or not arc_is_exact:
                 corner_arc_spans.append([])
             else:
                 corner_arc_spans.append([float(span[0]), float(span[1])])
@@ -1714,7 +1790,17 @@ def build_point_grid_arrays(
         # exists there: discard the internal loops by resampling its envelope.
         # Other formulas retain the existing warning contract.
         if formula == "FREEFORM":
-            validate_outer_offset_grid(inner, outer, full_circle=full_circle)
+            try:
+                validate_outer_offset_grid(inner, outer, full_circle=full_circle)
+            except ValueError as exc:
+                note = (
+                    freeform_azimuth_twist_note(phi_grid, t_values)
+                    if phi_grid is not None
+                    else ""
+                )
+                if note:
+                    raise ValueError(f"{exc}; {note}") from exc
+                raise
         else:
             try:
                 validate_outer_offset_grid(

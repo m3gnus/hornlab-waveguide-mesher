@@ -43,6 +43,7 @@ from .profile_sampling import (
     GCURVE_CROSS_SECTION_CONFLICT,
     _classify_zmap_kind,
     _cross_section_is_circular,
+    freeform_azimuth_twist_note,
 )
 from .profiles import azimuthal_mean, build_point_grid, eval_param
 from .builders.point_grid_freestanding import (
@@ -1659,6 +1660,7 @@ def _sampling_failure_message(
     n_length: int,
     arc_subdivision: int,
     stop_reason: str,
+    twist_note: str = "",
 ) -> str:
     """Name the feature that actually blocked the fit, not just the cap."""
 
@@ -1673,6 +1675,10 @@ def _sampling_failure_message(
          "raise the throat/mouth resolution"),
     )
     worst_ratio, worst_name, remedy = max(candidates, key=lambda item: item[0])
+    if twist_note:
+        # The chord across a twisted ring pair does not shrink with the axial
+        # spacing, so "raise the resolution" would be a false remedy.
+        remedy = twist_note
     return (
         "cannot fit the acoustic geometry to the requested mm resolution "
         f"(throat {density.throat_res_mm:g} mm, mouth {density.mouth_res_mm:g} mm): "
@@ -2013,6 +2019,11 @@ def _build_acoustic_sampling_grid(
             n_length=n_length,
             arc_subdivision=int(working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1),
             stop_reason=stop_reason,
+            twist_note=(
+                freeform_azimuth_twist_note(grid.get("phi_grid"), grid.get("slice_map"))
+                if formula == "FREEFORM" and grid.get("phi_grid") is not None
+                else ""
+            ),
         )
     )
 
