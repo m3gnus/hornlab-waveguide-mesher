@@ -311,6 +311,8 @@ def _cell_lookup(
     """
 
     stations = np.asarray(sorted(set(int(value) for value in selected)), dtype=np.int64)
+    if not closed and len(stations) < 2:
+        raise ValueError("an open selection needs at least two stations")
     candidates = np.arange(size, dtype=np.int64)
     cell = np.searchsorted(stations, candidates, side="right") - 1
     if closed:
@@ -1055,6 +1057,10 @@ def _reference_cells(
         blended = (1.0 - weight) * np.unwrap(source_phi[lower]) + weight * np.unwrap(
             source_phi[upper]
         )
+        if np.any(np.diff(blended) < 0.0):
+            # searchsorted needs an increasing array; a surface that runs
+            # against its azimuth would be assigned the wrong quads silently.
+            raise ValueError("azimuth coordinates must not decrease along a row")
         target = np.asarray(target_phi[row], dtype=np.float64)
         if closed_phi:
             target = blended[0] + np.mod(target - blended[0], math.tau)

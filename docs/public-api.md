@@ -80,7 +80,10 @@ hornlab-waveguide config.toml -o waveguide.msh
   the JSON; progress lines and native (OpenCASCADE) output go to stderr.
 - `--allow-large-mesh`: explicitly permit output above `mesh.max_triangles`.
 - `--step PATH`: write the CAD model as STEP; skips the mesh unless `-o` is
-  also given. `--step-keep-throat` keeps the driver membrane in the body.
+  also given. A STEP-only run's `--print-summary`/`--summary` JSON describes
+  the STEP file (`step_path`, `body`, `n_faces`, `volume_mm3`,
+  `bounding_box_mm`, `throat_opened`, `units`). `--step-keep-throat` keeps the
+  driver membrane in the body.
 
 Exit status: `0` success; `2` invalid config, refused build, or an unreadable
 or unwritable file (one `hornlab-waveguide: error:` line on stderr); `1` any
@@ -147,7 +150,9 @@ keeps importing `_lod_config` and `_guiding_curve_warnings` for WG.
   STEP export of the same resolved geometry a build meshes.
 - `write_wglink`, `read_wglink`, `WgLinkIdentity`, `WgLinkSourceInterface`
   (root exports): the WGLink bundle WG writes for the Fusion add-in and reads
-  back. The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
+  back. `write_wglink` refuses an output path that already exists (a
+  `MesherError`, the earlier bundle left intact): write each bundle to a new
+  path and replace it yourself. The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
   `_SOURCE_PATCH_POLICIES` in `wglink_bundle.py`; change both together.
 
 ### Pre-mesh sizing (`hornlab_mesher.mesh_sizing`)

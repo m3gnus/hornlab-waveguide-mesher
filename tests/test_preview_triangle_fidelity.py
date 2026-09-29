@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from hornlab_mesher.preview.primitives import _grid_indices
 from hornlab_mesher.preview.fidelity import (
     adaptive_grid_indices,
     analytic_grid_normals,
@@ -135,3 +136,86 @@ def test_emitted_triangle_errors_match_brute_force_on_a_curved_grid():
     # Each sample is measured against its own quad, so it can only read high,
     # and the lattice spacing reads the brute force a hair high as well.
     assert float(distances.max()) == pytest.approx(exact, rel=5.0e-3)
+
+
+def _closest_point_on_triangle(p, a, b, c):
+    """Closest point of triangle ``abc`` to ``p`` (Ericson, real-time collision)."""
+
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = ab @ ap, ac @ ap
+    if d1 <= 0 and d2 <= 0:
+        return a
+    bp = p - b
+    d3, d4 = ab @ bp, ac @ bp
+    if d3 >= 0 and d4 <= d3:
+        return b
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0 and d1 >= 0 and d3 <= 0:
+        return a + ab * (d1 / (d1 - d3))
+    cp = p - c
+    d5, d6 = ab @ cp, ac @ cp
+    if d6 >= 0 and d5 <= d6:
+        return c
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0 and d2 >= 0 and d6 <= 0:
+        return a + ac * (d2 / (d2 - d6))
+    va = d3 * d6 - d5 * d4
+    if va <= 0 and d4 - d3 >= 0 and d5 - d6 >= 0:
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
+    scale = 1.0 / (va + vb + vc)
+    return a + ab * (vb * scale) + ac * (vc * scale)
+
+
+def test_measured_triangles_are_the_ones_grid_indices_emits():
+    """The measurement and the emitted index buffer must split a quad alike.
+
+    The other diagonal reads 0.5 to 3.7 mm different on this asymmetric patch,
+    so a swap on either side shows here (the symmetric twisted patch above
+    reads the same either way).
+    """
+
+    u = np.linspace(0.0, 1.0, 21)
+    uu, vv = np.meshgrid(u, u, indexing="ij")
+    points = np.stack((100.0 * uu, 100.0 * vv, 10.0 * uu * uu * vv), axis=2)
+    corners = points[np.ix_([0, 20], [0, 20])].reshape(-1, 3)
+    emitted = _grid_indices(2, 2, closed_phi=False).reshape(-1, 3)
+    assert emitted.shape == (2, 3)
+
+    measured, *_ = emitted_triangle_errors(points, [0, 20], [0, 20], closed_phi=False)
+
+    exact = np.array(
+        [
+            [
+                min(
+                    np.linalg.norm(
+                        points[i, j]
+                        - _closest_point_on_triangle(
+                            points[i, j], *(corners[k] for k in triangle)
+                        )
+                    )
+                    for triangle in emitted
+                )
+                for j in range(21)
+            ]
+            for i in range(21)
+        ]
+    )
+    assert np.abs(measured - exact).max() < 1.0e-9
+    assert measured.max() > 3.0
+
+
+def test_reference_cells_refuse_a_decreasing_azimuth_instead_of_misassigning():
+    from hornlab_mesher.preview.fidelity import _cell_lookup, _reference_cells
+
+    phi = np.broadcast_to(np.linspace(1.0, 0.0, 4), (3, 4))
+    kwargs = dict(
+        closed_phi=False,
+        coarse_t=np.linspace(0.0, 1.0, 3),
+        coarse_phi=phi,
+        reference_t=np.linspace(0.0, 1.0, 3),
+        reference_phi=phi,
+    )
+    with pytest.raises(ValueError, match="must not decrease"):
+        _reference_cells((3, 4), (3, 4), **kwargs)
+    with pytest.raises(ValueError, match="at least two stations"):
+        _cell_lookup([2], 5, closed=False)

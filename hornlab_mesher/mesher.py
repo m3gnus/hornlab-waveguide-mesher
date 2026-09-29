@@ -64,6 +64,9 @@ _PINNED_MESH_OPTIONS: dict[str, float] = {
     "Mesh.RecombineAll": 0.0,
     "Mesh.SubdivisionAlgorithm": 0.0,
     "Mesh.MinimumCirclePoints": 7.0,
+    # The mesh is written as ASCII msh 2.2; a caller's binary setting would
+    # change the bytes of the file without changing its meaning.
+    "Mesh.Binary": 0.0,
 }
 _RESTORED_MESH_OPTIONS = (
     "General.Terminal",

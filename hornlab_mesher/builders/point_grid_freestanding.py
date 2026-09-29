@@ -501,9 +501,9 @@ def _build_acoustic_freestanding_point_grid(
         wall_dimtags=inner_wall,
         # The inner wall above interpolates whenever the grid is axisymmetric
         # (regardless of ``surface_fit``) or ``surface_fit`` is interpolate:
-        # that is its effective u-fit, and the rim must be the same curve. The cap's throat rim must match that actual decision,
-        # not re-derive it from ``surface_fit`` alone, or the two rims mesh
-        # different node rings and the throat seam tears (freestanding +
+        # that is its effective u-fit, and the cap's throat rim must be the
+        # same curve. Deriving it from ``surface_fit`` alone would mesh two
+        # different node rings and tear the throat seam (freestanding +
         # reduced domain + ``surface_fit = "approximate"``).
         throat_interpolate_u=(
             axisymmetric or geometry.surface_fit == SURFACE_FIT_INTERPOLATE

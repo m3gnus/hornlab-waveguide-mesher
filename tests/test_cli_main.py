@@ -21,7 +21,10 @@ def test_main_builds_every_shipped_example(example, tmp_path, capfd):
     out, err = capfd.readouterr()
     assert output.is_file() and output.stat().st_size > 0
     assert out.strip().startswith(f"Wrote {output} (")
-    assert err == ""
+    # Native libraries may write their own notices to stderr (notably on
+    # Windows); a build that worked prints no traceback and no error line.
+    assert "Traceback" not in err
+    assert "error:" not in err
 
 
 def test_print_summary_stdout_is_exactly_the_json_summary(tmp_path, capfd):
@@ -70,6 +73,26 @@ def test_step_only_run_skips_the_mesh(tmp_path, capfd):
     out, _err = capfd.readouterr()
     assert f"Wrote {step}" in out
     assert step.is_file()
+    assert not list(tmp_path.glob("*.msh"))
+
+
+def test_step_only_print_summary_prints_the_step_json(tmp_path, capfd):
+    step = tmp_path / "horn.step"
+    summary_file = tmp_path / "summary.json"
+
+    code = cli.main(
+        [str(EXAMPLES[0]), "--step", str(step), "--print-summary",
+         "--summary", str(summary_file)]
+    )
+
+    out, err = capfd.readouterr()
+    assert code == 0
+    printed = json.loads(out)
+    assert printed == json.loads(summary_file.read_text(encoding="utf-8"))
+    assert printed["step_path"] == str(step)
+    assert printed["n_faces"] > 0
+    assert printed["units"] == "mm"
+    assert f"Wrote {step}" in err
     assert not list(tmp_path.glob("*.msh"))
 
 

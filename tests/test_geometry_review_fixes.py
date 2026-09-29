@@ -510,6 +510,37 @@ def test_subdomain_interfaces_land_at_their_requested_axial_position():
     assert z == pytest.approx([25.0, 50.0, 75.0], abs=1.0e-9)
 
 
+def test_the_requested_grid_is_built_once_for_interface_configs(monkeypatch):
+    """The requested grid is a full build; resolving must not repeat it."""
+
+    from hornlab_mesher import config_builder
+
+    layouts = []
+    original = config_builder._requested_axial_layout
+
+    def counting(params, formula):
+        layouts.append(formula)
+        return original(params, formula)
+
+    monkeypatch.setattr(config_builder, "_requested_axial_layout", counting)
+    config = {
+        "formula": "OSSE",
+        "profile": {"L": 100.0, "a": 45.0, "a0": 10.0, "r0": 12.7},
+        "mesh": {
+            "lengthSegments": 20,
+            "angularSegments": 32,
+            "subdomainSlices": "5,10,15",
+            "interfaceOffset": 5,
+            "throat_res_mm": 5.0,
+            "mouth_res_mm": 15.0,
+            "rear_res_mm": 20.0,
+        },
+        "enclosure": {"depth_mm": 200.0},
+    }
+    assert resolve_geometry(config).geometry.interfaces
+    assert len(layouts) == 1
+
+
 _ATH_EXTENSION_MORPH_CFG = """\
 Throat.Profile = 1
 Throat.Diameter = 25.4

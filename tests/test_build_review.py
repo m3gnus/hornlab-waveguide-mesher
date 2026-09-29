@@ -8,6 +8,8 @@ gmsh option state a build inherits from a caller-owned session.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -270,6 +272,28 @@ def test_a_callers_mesh_options_neither_leak_in_nor_get_clobbered(tmp_path):
         finally:
             gmsh.finalize()
     assert counts[0] == counts[1]
+
+
+def test_a_callers_binary_mesh_setting_is_not_inherited_by_the_build(
+    tmp_path, monkeypatch
+):
+    seen = []
+    real_write = gmsh.write
+
+    def spying_write(path):
+        seen.append(gmsh.option.getNumber("Mesh.Binary"))
+        return real_write(path)
+
+    monkeypatch.setattr(gmsh, "write", spying_write)
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("Mesh.Binary", 1.0)
+        result = build_from_config(_config(mode="bare", wall=0.0), tmp_path / "b.msh")
+        assert gmsh.option.getNumber("Mesh.Binary") == 1.0
+    finally:
+        gmsh.finalize()
+    assert seen and set(seen) == {0.0}
+    assert Path(result.mesh_path).read_bytes().startswith(b"$MeshFormat\n2.2 0 8")
 
 
 def test_direct_api_rear_resolution_matches_the_config_default():

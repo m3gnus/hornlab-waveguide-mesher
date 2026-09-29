@@ -167,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run(args: argparse.Namespace) -> dict | None:
-    """Do the work; returns the build summary, or None for a STEP-only run."""
+    """Do the work; returns the build summary (the STEP summary for a STEP-only run)."""
 
     config = load_config(args.config)
     if args.step:
@@ -186,7 +186,21 @@ def _run(args: argparse.Namespace) -> dict | None:
             f"units={cad.units})"
         )
         if not args.output:
-            return None
+            step_summary = {
+                "step_path": str(step_path),
+                "body": cad.body,
+                "n_faces": cad.n_faces,
+                "volume_mm3": cad.volume_mm3,
+                "bounding_box_mm": [list(corner) for corner in cad.bounding_box_mm],
+                "throat_opened": cad.throat_opened,
+                "units": cad.units,
+            }
+            if args.summary:
+                Path(args.summary).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.summary).write_text(
+                    json.dumps(step_summary, indent=2) + "\n", encoding="utf-8"
+                )
+            return step_summary
     output = args.output or _pick(
         _section(config, "output"),
         config,

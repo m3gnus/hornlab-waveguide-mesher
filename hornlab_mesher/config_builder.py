@@ -1731,8 +1731,13 @@ def _build_acoustic_sampling_grid(
     density: MeshDensity,
     *,
     topology_mode: str,
+    requested_layout: Any = ...,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     """Fit geometry from a control grid finer than the requested final mesh.
+
+    ``requested_layout`` is ``_requested_axial_layout`` for these ``params``
+    when the caller already has it (building it costs a full grid); left at its
+    default it is computed here.
 
     OCC B-spline surfaces approximate their control points; they do not
     interpolate every sample. Keep angular chords within twice the local mesh
@@ -1755,7 +1760,11 @@ def _build_acoustic_sampling_grid(
         }
 
     formula = _normalise_formula(working.get("type"))
-    requested = _requested_axial_layout(params, formula)
+    requested = (
+        _requested_axial_layout(params, formula)
+        if requested_layout is ...
+        else requested_layout
+    )
     if requested is not None:
         # The fit resamples the surface on its own axial map, so everything the
         # requested grid resolves *by station* is carried over explicitly: the
@@ -2060,10 +2069,16 @@ def resolve_geometry(
             "set wall thickness to 0 for bare mode or use a resolvable thickness"
         )
 
+    requested_layout = (
+        _requested_axial_layout(params, formula)
+        if topology_mode == "acoustic"
+        else None
+    )
     grid, geometry_sampling_metadata = _build_acoustic_sampling_grid(
         params,
         density,
         topology_mode=topology_mode,
+        requested_layout=requested_layout,
     )
 
     n_phi = int(grid["grid_n_phi"])
@@ -2084,7 +2099,6 @@ def resolve_geometry(
 
     interface_offsets = _number_list(params.get("interfaceOffset"))
     if topology_mode == "acoustic" and _number_list(params.get("subdomainSlices")):
-        requested_layout = _requested_axial_layout(params, formula)
         interfaces = _interfaces_from_params(
             params,
             n_length,
