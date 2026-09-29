@@ -1339,7 +1339,7 @@ def _mesh_density_from_config(
                 "aperture_cap_coarsening",
                 "apertureCapCoarsening",
             ),
-            default=1.5,
+            default=1.0,
         ),
         enc_front_res_mm=_pick(
             mesh,

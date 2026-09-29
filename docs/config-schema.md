@@ -34,9 +34,8 @@ consistent interior-domain winding: source normals point +z while the aperture
 normals point -z into the cavity. It has no `I1-2` mouth interface, outer wall,
 baffle skin,
 wall thickening, rear cap, enclosure box, or geometry in front of the baffle
-plane. The aperture cap reuses the wall rim curves and defaults to a coarser
-interior mesh via `aperture_res_scale = 1.5`; set it to `1.0` for a mouth-density
-cap.
+plane. The aperture cap reuses the wall rim curves and defaults to mouth density
+via `aperture_res_scale = 1.0`; larger values coarsen its interior.
 
 ## Sections
 
@@ -282,7 +281,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |
 | `mouth_res_mm` | `mouth_res`, `mouthResolution` | `26.0` (`8.0` for text imports) | Mesh density, not grid shape. |
 | `rear_res_mm` | `rear_res`, `rearResolution` | `15.0` | Mesh density, not grid shape. |
-| `aperture_res_scale` | `apertureResolutionScale`, `aperture_cap_coarsening`, `apertureCapCoarsening` | `1.5` | Infinite-baffle aperture-cap interior size multiplier relative to `mouth_res_mm`; the welded rim keeps mouth density. |
+| `aperture_res_scale` | `apertureResolutionScale`, `aperture_cap_coarsening`, `apertureCapCoarsening` | `1.0` | Infinite-baffle aperture-cap interior size multiplier relative to `mouth_res_mm`; the welded rim keeps mouth density. |
 | `subdomain_slices` | `subdomainSlices` | empty | Comma/list of requested point-grid ring indices for interfaces. If the acoustic fit changes the axial grid density, indices are relocated to preserve their normalized axial positions. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
 | `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |

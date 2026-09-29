@@ -2798,7 +2798,7 @@ def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
     assert result.native_symmetry_plane is None
     assert result.native_check_open_edges is True
     assert result.metadata["apertureTag"] == 12
-    assert result.metadata["apertureMeshResolutionScale"] == pytest.approx(1.5)
+    assert result.metadata["apertureMeshResolutionScale"] == pytest.approx(1.0)
 
     mesh = meshio.read(result.mesh_path)
     triangles, tags = _triangles_and_tags(mesh)
@@ -2838,8 +2838,8 @@ def test_infinite_baffle_coupled_aperture_is_closed_z_negative_domain(
     assert _duplicate_used_vertex_coordinates(points, triangles) == []
 
 
-def test_infinite_baffle_default_coarsens_aperture_interior(tmp_path):
-    """The aperture cap keeps the wall rim but defaults to a coarser interior."""
+def test_infinite_baffle_default_matches_mouth_resolution(tmp_path):
+    """The default cap matches the mouth; explicit scaling still coarsens it."""
 
     def _cfg(aperture_scale):
         mesh = {
@@ -2871,7 +2871,7 @@ def test_infinite_baffle_default_coarsens_aperture_interior(tmp_path):
 
     counts = {}
     metadata = {}
-    for label, scale in (("fine", 1.0), ("default", None)):
+    for label, scale in (("fine", 1.0), ("default", None), ("coarse", 1.5)):
         result = build_from_config(_cfg(scale), tmp_path / f"ib-aperture-{label}.msh")
         mesh = meshio.read(result.mesh_path)
         triangles, tags = _triangles_and_tags(mesh)
@@ -2879,10 +2879,12 @@ def test_infinite_baffle_default_coarsens_aperture_interior(tmp_path):
         metadata[label] = result.metadata
 
     assert metadata["fine"]["apertureMeshResolutionScale"] == pytest.approx(1.0)
-    assert metadata["default"]["apertureMeshResolutionScale"] == pytest.approx(1.5)
+    assert metadata["default"]["apertureMeshResolutionScale"] == pytest.approx(1.0)
     assert metadata["default"]["apertureMeshRimSizeMm"] == pytest.approx(10.0)
-    assert metadata["default"]["apertureMeshInteriorSizeMm"] == pytest.approx(15.0)
-    assert counts["default"] < counts["fine"] * 0.75
+    assert metadata["default"]["apertureMeshInteriorSizeMm"] == pytest.approx(10.0)
+    assert counts["default"] == counts["fine"]
+    assert metadata["coarse"]["apertureMeshInteriorSizeMm"] == pytest.approx(15.0)
+    assert counts["coarse"] < counts["default"] * 0.75
 
 
 @pytest.mark.parametrize(

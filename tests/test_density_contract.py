@@ -7,6 +7,7 @@ import types
 import pytest
 
 from hornlab_mesher.cost import TRIANGLES_PER_AREA_OVER_H2
+from hornlab_mesher.config_builder import _mesh_density_from_config
 from hornlab_mesher.density import (
     _axial_ramp_effective_size_mm,
     configure_density,
@@ -44,6 +45,34 @@ def test_axial_ramp_effective_size_is_geometric_mean():
 def test_mesh_density_validation_rejects_invalid_controls(density):
     with pytest.raises(ValueError):
         validate_mesh_density(density)
+
+
+@pytest.mark.parametrize(
+    ("mesh", "expected"),
+    [
+        ({}, 1.0),
+        ({"aperture_res_scale": 1.0}, 1.0),
+        ({"apertureResolutionScale": 1.5}, 1.5),
+        ({"aperture_cap_coarsening": 2.0}, 2.0),
+        ({"apertureCapCoarsening": 2.5}, 2.5),
+    ],
+)
+def test_aperture_scale_defaults_and_aliases(mesh, expected):
+    assert MeshDensity().aperture_res_scale == 1.0
+    assert _mesh_density_from_config({"mesh": mesh}).aperture_res_scale == expected
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, 0.5, math.nan, math.inf, -math.inf])
+def test_direct_density_rejects_invalid_aperture_scale(monkeypatch, scale):
+    fake_gmsh = types.SimpleNamespace(model=_FakeModel({}))
+    monkeypatch.setitem(sys.modules, "gmsh", fake_gmsh)
+    geometry = BuiltGeometry(surface_groups={}, axial_bounds_mm=(-1.0, 0.0))
+    density = MeshDensity(aperture_res_scale=scale)
+    message = "aperture_res_scale must be finite and >= 1"
+    with pytest.raises(ValueError, match=message):
+        validate_mesh_density(density)
+    with pytest.raises(ValueError, match=message):
+        configure_density(geometry, density)
 
 
 def test_enclosure_resolution_formula_hits_wg_corner_targets():

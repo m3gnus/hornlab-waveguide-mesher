@@ -933,7 +933,9 @@ def test_infinite_baffle_build_emits_coupled_aperture_contract(tmp_path):
         encoding="utf-8",
     )
 
-    result = build_from_config(load_config(cfg_path), tmp_path / "ib.msh")
+    result = build_from_config(
+        load_config(cfg_path), tmp_path / "ib.msh", allow_large_mesh=True
+    )
 
     assert result.mode == "infinite-baffle"
     assert result.native_symmetry_plane is None
@@ -989,7 +991,8 @@ def test_infinite_baffle_supports_quadrant_native_symmetry(
     )
 
     result = build_from_config(
-        load_config(cfg_path), tmp_path / f"ib-quarter-{quadrants}.msh"
+        load_config(cfg_path), tmp_path / f"ib-quarter-{quadrants}.msh",
+        allow_large_mesh=True,
     )
 
     assert result.mode == "infinite-baffle"
@@ -1007,7 +1010,9 @@ def test_auto_source_cap_is_flat_at_zero_throat_angle(tmp_path):
         encoding="utf-8",
     )
 
-    result = build_from_config(load_config(cfg_path), tmp_path / "flat-source.msh")
+    result = build_from_config(
+        load_config(cfg_path), tmp_path / "flat-source.msh", allow_large_mesh=True
+    )
 
     import meshio
     import numpy as np

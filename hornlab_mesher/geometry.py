@@ -297,7 +297,7 @@ class MeshDensity:
     throat_res_mm: float = 4.0
     mouth_res_mm: float = 26.0
     rear_res_mm: float = 15.0
-    aperture_res_scale: float = 1.5
+    aperture_res_scale: float = 1.0
     enc_front_res_mm: float | str | None = None
     enc_back_res_mm: float | str | None = None
     interface_res_mm: float | None = None
@@ -311,6 +311,15 @@ class MeshDensity:
     allow_large_mesh: bool = False
 
 
+def validate_aperture_res_scale(value: float) -> float:
+    """Return a valid aperture-to-mouth size ratio."""
+
+    scale = float(value)
+    if not math.isfinite(scale) or scale < 1.0:
+        raise ValueError("aperture_res_scale must be finite and >= 1")
+    return scale
+
+
 def validate_mesh_density(density: MeshDensity) -> None:
     """Reject invalid mesh controls before any sizing or allocation work."""
 
@@ -318,7 +327,6 @@ def validate_mesh_density(density: MeshDensity) -> None:
         "throat_res_mm": density.throat_res_mm,
         "mouth_res_mm": density.mouth_res_mm,
         "rear_res_mm": density.rear_res_mm,
-        "aperture_res_scale": density.aperture_res_scale,
     }
     optional_positive = {
         "interface_res_mm": density.interface_res_mm,
@@ -340,8 +348,7 @@ def validate_mesh_density(density: MeshDensity) -> None:
         raise ValueError(
             "mesh resolution values must be finite and > 0: " + ", ".join(invalid)
         )
-    if float(density.aperture_res_scale) < 1.0:
-        raise ValueError("aperture_res_scale must be finite and >= 1")
+    validate_aperture_res_scale(density.aperture_res_scale)
     if (
         density.min_size_mm is not None
         and density.max_size_mm is not None

@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from .cost import TRIANGLES_PER_AREA_OVER_H2
-from .geometry import BuiltGeometry, MeshDensity
+from .geometry import BuiltGeometry, MeshDensity, validate_aperture_res_scale
 from .profile_common import _parse_number_list
 
 logger = logging.getLogger(__name__)
@@ -831,9 +831,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         raise ValueError(
             "mesh resolution values must be finite and > 0: " + ", ".join(invalid)
         )
-    aperture_res_scale = float(getattr(density, "aperture_res_scale", 1.0) or 1.0)
-    if not math.isfinite(aperture_res_scale) or aperture_res_scale < 1.0:
-        aperture_res_scale = 1.0
+    aperture_res_scale = validate_aperture_res_scale(density.aperture_res_scale)
     aperture_res = mouth_res * aperture_res_scale
 
     enclosure_resolution_values: list[float] = []
