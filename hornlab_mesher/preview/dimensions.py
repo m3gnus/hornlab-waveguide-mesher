@@ -142,10 +142,20 @@ def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
             except Exception:
                 stored = None
         with _CACHE_LOCK:
-            if stored is not None:
-                _DIMENSIONS_CACHE[key] = stored
-                if len(_DIMENSIONS_CACHE) > _CACHE_LIMIT:
-                    _DIMENSIONS_CACHE.popitem(last=False)
+            try:
+                if stored is not None:
+                    _DIMENSIONS_CACHE[key] = stored
+                    if len(_DIMENSIONS_CACHE) > _CACHE_LIMIT:
+                        _DIMENSIONS_CACHE.popitem(last=False)
+            except Exception as exc:
+                # Publication can fail after insertion (during eviction). Do
+                # not leave a successful value behind for this failed outcome.
+                result = _unavailable(exc)
+                stored = None
+                try:
+                    _DIMENSIONS_CACHE.pop(key, None)
+                except Exception:
+                    pass
             future.set_result(stored if stored is not None else result)
         return result
     except BaseException as exc:

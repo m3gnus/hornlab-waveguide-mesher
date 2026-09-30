@@ -363,10 +363,11 @@ def build_preview_geometry(
         raise TypeError("config must be a mapping")
     if not isinstance(options, PreviewOptionsV1):
         raise TypeError("options must be PreviewOptionsV1")
-    # Capture measurement identity before rendering reads a mutable caller's
-    # config. Failure to own it is a measurement failure, never a render error.
+    # Render and measure one owned design throughout this call. If ownership
+    # fails, retain the renderer's existing handling of the caller's config.
     try:
         dimensions_config = copy.deepcopy(dict(config))
+        config = dimensions_config
         dimensions_snapshot_error = None
     except Exception as exc:
         dimensions_config = None

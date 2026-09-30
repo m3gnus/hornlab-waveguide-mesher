@@ -353,8 +353,10 @@ when they differ, rather than presenting the request as the resolved size.
 Only fine and inspection frames compute the canonical measurement. A bounded
 process cache stores readouts and failures by an owned snapshot of the full
 supplied design config; concurrent settled frames share one resolution.
-The content key and the resolved snapshot always describe the same design.
-Repeated settled frames reuse them. Coarse frames never resolve geometry: they
+When snapshot ownership succeeds, rendering, the content key and measurement
+use the same owned design for the entire preview call. If snapshotting fails,
+the renderer retains its existing config handling and dimensions are unavailable.
+Repeated settled frames reuse the cached outcomes. Coarse frames never resolve geometry: they
 look up this exact design and otherwise return `dimensions_mm: null` with
 `dimensions_status: "pending"`. A cached measurement carries status `"current"`.
 A canonical resolution failure carries status `"unavailable"`, null dimensions,
@@ -362,7 +364,12 @@ and `dimensions_error`. Pending has no error. Visibility and LOD options do not
 participate in the measurement identity. Full-object measurement resolves all
 quadrants at the origin; it does not reflect reduced preview samples.
 
-Any measurement exception preserves preview surfaces and pre-existing metadata.
+Ordinary exceptions during config snapshotting, identity encoding, cache lookup,
+result copying, canonical resolution, requested-target parsing, metadata validation,
+cache publication and eviction produce unavailable dimensions while preserving
+preview surfaces and pre-existing metadata. Publication/eviction failures give
+the owner and waiting requests the same unavailable outcome, remove the in-flight
+entry and permit a later retry. Renderer exceptions retain their existing behavior.
 Process-control exceptions (`KeyboardInterrupt`, `SystemExit`) propagate. The
 measurement does not repeat the preview's outer-wall or enclosure-clamp warnings. Consumers should
 hide the readouts for older meshers with absent dimension keys; pending frames
