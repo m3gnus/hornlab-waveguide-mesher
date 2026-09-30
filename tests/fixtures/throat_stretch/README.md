@@ -31,7 +31,9 @@ existing archive parity remains a required final gate.
 `base-compatibility.json` was captured by executing base `5c8ea4dc` from a
 read-only Git archive extraction, with Python 3.13 (64-bit). It records default
 and prefixed dataclass serialization, repr, hashes and builder mappings;
-native and text-imported normalization; and 23 archive imports plus 36
+native and text-imported normalization; full resolved asdict values (array byte
+hashes), fields, instance keys and repr for OSSE, R-OSSE, FREEFORM and ICW;
+and 23 archive imports plus 36
 block/flat rotation/slot variants. Archive inputs are identified by content
 SHA256, so no local paths or archive comments are embedded. The required
 parity gate also runs this entire corpus against the live archive.

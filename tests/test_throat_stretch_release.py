@@ -1,6 +1,6 @@
 """Release regressions against identities/imports captured from 5c8ea4dc."""
 import copy
-from dataclasses import asdict, astuple, replace
+from dataclasses import asdict, astuple, fields, replace
 import hashlib
 import json
 import math
@@ -241,3 +241,29 @@ def test_stretch_cannot_move_rosse_foldback_through_tapered_prefix(tmp_path, mon
     # Changing any active coefficient/prefix input must invalidate validation.
     calculate_rosse_curve(np.array([0, 1]), 0, {**params, 's1': 0.001})
     calculate_rosse_curve(np.array([0, 1]), 0, {**params, 'throatExtAngle': -20})
+
+
+def _resolved_value(value):
+    if isinstance(value, np.ndarray):
+        return {"shape": list(value.shape), "dtype": str(value.dtype),
+                "sha256": hashlib.sha256(value.tobytes()).hexdigest()}
+    if isinstance(value, dict):
+        return {key: _resolved_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_resolved_value(item) for item in value]
+    return value
+
+
+@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE', 'FREEFORM', 'ICW'])
+def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family):
+    captured = BASE['resolved'][family]
+    resolved = cb.resolve_geometry(captured['config'])
+    assert _resolved_value(asdict(resolved)) == captured['asdict']
+    assert [f.name for f in fields(resolved.geometry)] == captured['geometry_fields']
+    assert sorted(vars(resolved.geometry)) == captured['geometry_state_keys']
+    assert repr(resolved) == captured['repr']
+
+
+@pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
+def test_evaluated_zero_import_result_equals_captured_base(case):
+    assert parse_text_config(case['text']) == case['parsed']

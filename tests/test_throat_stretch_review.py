@@ -145,7 +145,9 @@ def test_text_and_native_composition_refusals_have_identical_errors(path, sectio
     assert str(native.value) == str(imported.value)
 
 
-@pytest.mark.parametrize('expression', ['0*p', 'sin(p)^2-sin(p)^2', 'p-p', '(p-p)*cos(p)', '0.0'])
+@pytest.mark.parametrize('expression', ['0*p', 'sin(p)^2-sin(p)^2', 'p-p', '(p-p)*cos(p)', '0.0',
+                                         'sin(p-p)', '0/(1+p^2)', '(p+1)-(1+p)',
+                                         'cos(p)^2+sin(p)^2-1'])
 def test_zero_slot_expression_retains_base_import_mapping(expression):
     config = parse_text_config(f'OSSE = {{\nL = 160\n}}\nSlot.Length = {expression}')
     if expression == '0.0':
@@ -174,7 +176,10 @@ def test_reduced_morphed_stretched_solve_agrees_with_full_step(quadrants, tmp_pa
                        'max_triangles': 100000, 'allow_large_mesh': True}}
     mesh = meshio.read(build_from_config(config, tmp_path / 'solve.msh').mesh_path)
     triangles, tags = _triangles_and_physical_tags(mesh)
+    wall_nodes = np.unique(triangles[tags == PhysicalGroup.RIGID_WALL])
+    assert wall_nodes.size > 0
     points = mesh.points[np.unique(triangles[tags == PhysicalGroup.RIGID_WALL])] * 1000
+    assert points.shape == (wall_nodes.size, 3)
     step, _ = write_step_from_config(config, tmp_path / 'full.step')
     gmsh.initialize(interruptible=False)
     try:
@@ -182,6 +187,7 @@ def test_reduced_morphed_stretched_solve_agrees_with_full_step(quadrants, tmp_pa
         gmsh.model.occ.importShapes(str(step), highestDimOnly=False)
         gmsh.model.occ.synchronize()
         surfaces = gmsh.model.getEntities(2)
+        assert surfaces
         for point in points:
             distance = min(np.linalg.norm(
                 np.asarray(gmsh.model.getClosestPoint(2, tag, point.tolist())[0]) - point)
@@ -238,3 +244,110 @@ def test_native_precedence_cannot_hide_a_coefficient_expression(path, key, tmp_p
               'parameters': {key: '0*p'}}
     with pytest.raises(ConfigError, match='per-azimuth throat stretch is not supported yet'):
         consume(path, config, tmp_path)
+
+
+@pytest.mark.parametrize('family', ['FREEFORM', 'ICW'])
+@pytest.mark.parametrize('section', ['top', 'profile', 'parameters', 'parameters-only', 'secondary-profile'])
+@pytest.mark.parametrize('key', ['s1', 's2'])
+@pytest.mark.parametrize('value', [None, 0, .5, '0*p'])
+def test_foreign_family_refuses_every_supplied_stretch_entry(family, section, key, value):
+    # Fully valid controls ensure removing the guard actually builds a profile.
+    profiles = {
+        'FREEFORM': {
+            'profileH': {'points': [[0, 12.7], [40, 40], [80, 75]],
+                         'throatAngleDeg': 15.5, 'mouthAngleDeg': 45},
+            'profileV': {'points': [[0, 12.7], [40, 35], [80, 60]],
+                         'throatAngleDeg': 15.5, 'mouthAngleDeg': 35}},
+        'ICW': {'r0': 12.7, 'a0': 15.5, 'icw_coeffs': [0, 0, 0, 0, 0, 0], 'icw_S': 80},
+    }
+    config = {'formula': family, 'mode': 'bare', 'profile': profiles[family]}
+    build_geometry_params(config)
+    if section == 'top':
+        config[key] = value
+    elif section == 'parameters-only':
+        config['parameters'] = config.pop('profile')
+        config['parameters'][key] = value
+    elif section == 'secondary-profile':
+        config['parameters'] = config.pop('profile')
+        config['profile'] = {key: value, **profiles[family]}
+    else:
+        config.setdefault(section, {})[key] = value
+    with pytest.raises(ConfigError, match='coefficient keys|shape keys'):
+        build_geometry_params(config)
+
+
+@pytest.mark.parametrize('expression', ['sin(p-p)', '0/(1+p^2)', '(p+1)-(1+p)',
+                                        'cos(p)^2+sin(p)^2-1'])
+@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
+def test_zero_rotation_expression_is_inactive_for_stretch_composition(family, expression):
+    length = 'L = 160' if family == 'OSSE' else 'R = 200'
+    config = parse_text_config(
+        f'{family} = {{\n{length}\ns1 = .5\ns2 = .2\n}}\n'
+        f'Rot = {expression}\nThroat.Ext.Length = 12')
+    resolve_geometry({**config, 'mode': 'bare'})
+
+
+@pytest.mark.parametrize('expression', ['1/0', '0/0', 'sin(missing)', '1e309', '', None,
+                                        'sin(p)', '1e-11', 'sin(16*p)^128',
+                                        '1 if p == pi/2 else 0'])
+def test_zero_parameter_probe_does_not_hide_active_or_invalid_inputs(expression):
+    from hornlab_mesher.throat_stretch import parameter_is_zero
+    assert not parameter_is_zero(expression)
+
+
+@pytest.mark.parametrize('quadrants', ['1', '12', '14'])
+def test_stretched_sector_fit_is_required_for_solve_vs_full_step(quadrants, tmp_path, monkeypatch):
+    from dataclasses import replace
+    import gmsh
+    import meshio
+    from hornlab_mesher import config_builder as cb
+    from hornlab_mesher.mesher import _triangles_and_physical_tags
+    from hornlab_mesher.tags import PhysicalGroup
+
+    # A stretched superellipse at Scale=10 exposes the 0.1 mm failure on
+    # every reduced domain, including quadrant 1. Densities scale with it.
+    config = {'mode': 'bare', 'scale': 10,
+              'profile': {'L': 80, 'r0': 12.7, 'a': 35, 'a0': 5, 's1': .5, 's2': .2},
+              'morph': {'morphTarget': 3, 'morphWidth': 180, 'morphHeight': 110,
+                        'morphExponent': 4, 'morphFixed': .4},
+              'mesh': {'quadrants': quadrants, 'angularSegments': 16, 'lengthSegments': 16,
+                       'throat_res_mm': 80, 'mouth_res_mm': 160, 'surface_fit': 'interpolate',
+                       'allow_large_mesh': True, 'max_triangles': 100000}}
+
+    def wall_distances(label):
+        mesh = meshio.read(cb.build_from_config(config, tmp_path / f'{label}.msh').mesh_path)
+        triangles, tags = _triangles_and_physical_tags(mesh)
+        wall_nodes = np.unique(triangles[tags == PhysicalGroup.RIGID_WALL])
+        assert wall_nodes.size > 0
+        points = mesh.points[wall_nodes] * 1000
+        assert points.shape == (wall_nodes.size, 3)
+        # STEP is the full model even when the solve request is reduced.
+        step, _ = write_step_from_config(config, tmp_path / f'{label}.step')
+        gmsh.initialize(interruptible=False)
+        try:
+            gmsh.option.setNumber('General.Terminal', 0)
+            gmsh.model.occ.importShapes(str(step), highestDimOnly=False)
+            gmsh.model.occ.synchronize()
+            surfaces = gmsh.model.getEntities(2)
+            assert surfaces
+            distances = np.array([
+                min(np.linalg.norm(
+                    np.asarray(gmsh.model.getClosestPoint(2, tag, point.tolist())[0]) - point)
+                    for _, tag in surfaces)
+                for point in points])
+            assert distances.shape == (wall_nodes.size,)
+            return distances
+        finally:
+            gmsh.finalize()
+
+    assert wall_distances('active').max() < .1
+    original = cb.resolve_geometry
+
+    def disable_fit(*args, **kwargs):
+        resolved = original(*args, **kwargs)
+        return replace(resolved, geometry=replace(resolved.geometry, quadrant_patch_fit=False))
+
+    monkeypatch.setattr(cb, 'resolve_geometry', disable_fit)
+    # Negative control: the same geometry exceeds the feature criterion when
+    # both consumers use the previous (unmatched) open/full fitting routes.
+    assert wall_distances('disabled').max() > .1

@@ -24,6 +24,7 @@ from .geometry import (
     HornInterface,
     MeshDensity,
     PointGridHornGeometry,
+    _StretchedPointGridHornGeometry,
     validate_mesh_density,
 )
 from .mesher import MesherError, TriangleBudgetExceeded, build_mesh_with_info
@@ -53,7 +54,7 @@ from .builders.point_grid_freestanding import (
 )
 from .builders.point_grid_surfaces import _rear_rim_points
 from .tags import PhysicalGroup
-from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, stretch_coefficients
+from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 
 logger = logging.getLogger(__name__)
 
@@ -803,10 +804,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     formula = _normalise_formula(
         _pick(config, profile, names=("formula", "type"), default="OSSE")
     )
+    validate_supplied_stretch(config, formula)
     if formula in {"OSSE", "R-OSSE"}:
-        for section in (profile, config, config.get("parameters", {})):
-            if isinstance(section, Mapping):
-                stretch_coefficients(section)
         if formula == "R-OSSE":
             validate_stretch_composition(
                 {"s1": _pick(profile, config, names=("s1",), default=0.0),
@@ -2195,12 +2194,12 @@ def resolve_geometry(
             (np.zeros_like(analytic_v), analytic_v, analytic_z)
         )
         freeform_axis_samples_mm = scale * np.vstack((h_samples, v_samples))
-    geometry = PointGridHornGeometry(
+    geometry_cls = PointGridHornGeometry if stretch_is_inactive(params) else _StretchedPointGridHornGeometry
+    geometry = geometry_cls(
         inner_points=inner_points,
         outer_points=outer_points,
         topology_mode=topology_mode,
         surface_fit=_mesh_surface_fit(mesh),
-        quadrant_patch_fit=not stretch_is_inactive(params),
         # ATH does not scale Mesh.WallThickness by global Scale; the rear-cap
         # depth follows the unscaled wall offset.
         wall_thickness_mm=float(params["wallThickness"] or 0.0),

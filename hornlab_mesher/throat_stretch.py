@@ -1,6 +1,5 @@
 """Shared stretch bounds and canonical identity of an inactive axial map."""
 
-import ast
 import math
 from functools import wraps
 from numbers import Real
@@ -45,57 +44,54 @@ def stretch_is_inactive(params: Mapping[str, Any]) -> bool:
     return s1 == 0.0 or s2 == 0.0
 
 
+# Quarter-degree sampling is independent of mesh density and includes both
+# endpoints and every quadrant boundary. The absolute tolerance absorbs roundoff
+# in identities such as sin(p)^2 + cos(p)^2 - 1, far below geometric tolerances.
+ZERO_PARAMETER_SAMPLES = 1440
+ZERO_PARAMETER_ATOL = 1e-12
+
+
 def parameter_is_zero(value: Any) -> bool:
-    """Recognize numeric zero and algebraically zero ATH expressions.
+    """Evaluate inactivity over a fixed full-circle sample, in parameter units.
 
-    Never infer an all-azimuth identity from samples. Simplification preserves
-    identical subexpressions, zero products and constant arithmetic, including
-    ATH's common ``0*p`` and ``sin(p)^2-sin(p)^2`` spellings. Unknown forms are
-    conservatively active.
+    This is a sampled decision, not a symbolic proof. Invalid/nonfinite values
+    and missing/empty expression inputs are never classified as zero.
     """
+    from .profile_common import eval_param
+
     if isinstance(value, Real):
-        return value == 0
-    if not isinstance(value, str):
+        return abs(value) <= ZERO_PARAMETER_ATOL and math.isfinite(value)
+    if not isinstance(value, str) or not value.strip():
         return False
-
-    def simplify(node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
-        if isinstance(node, ast.UnaryOp):
-            operand = simplify(node.operand)
-            if isinstance(operand, (int, float)):
-                if isinstance(node.op, ast.USub):
-                    return -operand
-                if isinstance(node.op, ast.UAdd):
-                    return operand
-        if isinstance(node, ast.BinOp):
-            left, right = simplify(node.left), simplify(node.right)
-            if isinstance(node.op, ast.Sub) and left == right:
-                return 0
-            if isinstance(node.op, ast.Mult) and (left == 0 or right == 0):
-                return 0
-            if isinstance(node.op, (ast.Add, ast.Sub)) and right == 0:
-                return left
-            if isinstance(node.op, ast.Add) and left == 0:
-                return right
-            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-                if isinstance(node.op, ast.Add):
-                    return left + right
-                if isinstance(node.op, ast.Sub):
-                    return left - right
-                if isinstance(node.op, ast.Mult):
-                    return left * right
-                if isinstance(node.op, ast.Div):
-                    return left / right
-                if isinstance(node.op, ast.Pow) and abs(right) <= 16:
-                    return left ** right
-            return (type(node.op).__name__, left, right)
-        return ast.dump(node)
-
     try:
-        return simplify(ast.parse(value.replace("^", "**"), mode="eval").body) == 0
-    except (SyntaxError, ArithmeticError, ValueError):
+        for i in range(ZERO_PARAMETER_SAMPLES + 1):
+            result = eval_param(value, i * (2 * math.pi / ZERO_PARAMETER_SAMPLES))
+            if not math.isfinite(result) or abs(result) > ZERO_PARAMETER_ATOL:
+                return False
+        return True
+    except (ValueError, ArithmeticError, TypeError):
         return False
+
+
+def stretch_input_sections(config: Mapping[str, Any]):
+    """Scan supplied native entries even when section precedence ignores them."""
+    for section in (config, config.get("profile", {}), config.get("parameters", {})):
+        if isinstance(section, Mapping):
+            yield section
+
+
+def validate_supplied_stretch(config: Mapping[str, Any], formula: str) -> None:
+    from .config_parser import ConfigError
+
+    for section in stretch_input_sections(config):
+        if formula in {"OSSE", "R-OSSE"}:
+            stretch_coefficients(section)
+        elif any(key in section for key in ("s1", "s2")):
+            if formula == "ICW":
+                message = "OSSE/R-OSSE shape keys are not valid with formula ICW"
+            else:
+                message = f"formula {formula} does not accept OSSE/R-OSSE profile coefficient keys"
+            raise ConfigError(message)
 
 
 def validate_stretch_composition(params: Mapping[str, Any], formula: str,
@@ -130,10 +126,10 @@ def stretch_config_errors(function):
         except (ValueError, ArithmeticError, MesherError) as exc:
             if isinstance(exc, ConfigError):
                 raise
-            sections = [config]
-            if isinstance(config, Mapping):
-                sections += [config.get(k, {}) for k in ("profile", "parameters")]
-            if any(isinstance(s, Mapping) and any(k in s for k in ("s1", "s2")) for s in sections):
+            if isinstance(config, Mapping) and any(
+                any(k in section for k in ("s1", "s2"))
+                for section in stretch_input_sections(config)
+            ):
                 raise ConfigError(f"throat stretch geometry is invalid: {exc}") from exc
             raise
     return wrapped

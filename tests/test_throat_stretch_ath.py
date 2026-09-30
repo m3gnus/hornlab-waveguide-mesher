@@ -28,12 +28,15 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
         del expected_params["s1"], expected_params["s2"]
     assert params == expected_params
     data = np.loadtxt(ROOT / (name + ".csv"), delimiter=",", skiprows=1)
+    assert data.shape == (64, 10)
+    np.testing.assert_array_equal(np.unique(data[:, 0]), [0, 2, 4, 6])
     scalar, vector = (
         (calculate_osse, calculate_osse_curve) if params["type"] == "OSSE"
         else (calculate_rosse, calculate_rosse_curve)
     )
     for meridian in np.unique(data[:, 0]):
         rows = data[data[:, 0] == meridian]
+        assert rows.shape == (16, 10)
         phi = rows[0, 2]
         stations = rows[:, 3]
         expected = np.column_stack((rows[:, 6], np.hypot(rows[:, 4], rows[:, 5])))

@@ -8,12 +8,12 @@ import json
 import os
 from pathlib import Path
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 base_dir = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(base_dir))
 from hornlab_mesher.geometry import OsseHornGeometry, RosseHornGeometry
-from hornlab_mesher.config_builder import build_geometry_params
+from hornlab_mesher.config_builder import build_geometry_params, resolve_geometry
 from hornlab_mesher.config_parser import parse_text_config
 from hornlab_mesher.builders.osse_waveguide import _osse_params
 from hornlab_mesher.builders.rosse_waveguide import _rosse_params
@@ -77,4 +77,46 @@ for family in ['OSSE', 'R-OSSE']:
                         'text': text, **result,
                     })
 out['icw_disabled_key'] = _icw_cache_key({'icw_seed': {'type': 'OSSE', 'L': 160}})
+# Full resolved schema/value oracles for every C4 family, including native
+# families that cannot receive stretch. Hash arrays without lossy rounding.
+import numpy as np
+
+
+def resolved_value(value):
+    if isinstance(value, np.ndarray):
+        return {"shape": list(value.shape), "dtype": str(value.dtype),
+                "sha256": hashlib.sha256(value.tobytes()).hexdigest()}
+    if isinstance(value, dict):
+        return {key: resolved_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [resolved_value(item) for item in value]
+    return value
+
+
+out['zero_imports'] = []
+for expression in ['sin(p-p)', '0/(1+p^2)', '(p+1)-(1+p)', 'cos(p)^2+sin(p)^2-1']:
+    for scale in ['', '\nScale = .48']:
+        text = 'OSSE = {\nL = 160\n}\nSlot.Length = ' + expression + scale
+        out['zero_imports'].append({'text': text, 'parsed': parse_text_config(text)})
+out['resolved'] = {}
+for family, profile in {
+    'OSSE': {'L': 80},
+    'R-OSSE': {'R': 80},
+    'FREEFORM': {
+        'profileH': {'points': [[0, 12.7], [40, 40], [80, 75]],
+                     'throatAngleDeg': 15.5, 'mouthAngleDeg': 45},
+        'profileV': {'points': [[0, 12.7], [40, 35], [80, 60]],
+                     'throatAngleDeg': 15.5, 'mouthAngleDeg': 35}},
+    'ICW': {'r0': 12.7, 'a0': 15.5, 'icw_coeffs': [0, 0, 0, 0, 0, 0], 'icw_S': 80},
+}.items():
+    config = {'mode': 'bare', 'profile': {'formula': family, **profile},
+              'mesh': {'angularSegments': 16, 'lengthSegments': 12,
+                       'surface_fit': 'approximate' if family == 'FREEFORM' else 'interpolate'}}
+    resolved = resolve_geometry(config)
+    out['resolved'][family] = {
+        'config': config, 'asdict': resolved_value(asdict(resolved)),
+        'geometry_fields': [f.name for f in fields(resolved.geometry)],
+        'geometry_state_keys': sorted(vars(resolved.geometry)),
+        'repr': repr(resolved),
+    }
 Path(sys.argv[2]).write_text(json.dumps(out, indent=2) + '\n')

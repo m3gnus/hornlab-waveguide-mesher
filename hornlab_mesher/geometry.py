@@ -275,8 +275,6 @@ class PointGridHornGeometry:
     # these optional so every existing point-grid caller remains unchanged.
     freeform_axis_samples_mm: NDArray[np.float64] | None = None
     freeform_report: dict[str, Any] | None = None
-    # Active stretch fits identical quadrant patches in reduced and full builds.
-    quadrant_patch_fit: bool = False
 
     def __post_init__(self) -> None:
         if self.topology_mode not in {"acoustic", "legacy"}:
@@ -338,6 +336,13 @@ HornGeometry = OsseHornGeometry | PointGridHornGeometry
 # the internal axial loft helper cannot consume it. Use compute_rosse_profile_points
 # (in builders.rosse_waveguide) for the curve, or hand the result to a
 # free-form sweep builder once one exists.
+
+
+@dataclass(frozen=True)
+class _StretchedPointGridHornGeometry(PointGridHornGeometry):
+    """Active stretch fits identical quadrant patches in reduced/full builds."""
+
+    quadrant_patch_fit: bool = True
 
 
 @dataclass(frozen=True)

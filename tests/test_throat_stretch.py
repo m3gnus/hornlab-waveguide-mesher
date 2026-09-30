@@ -320,6 +320,7 @@ def test_preview_solve_and_step_use_the_same_stretched_profile(family, tmp_path)
         :: max(1, resolved.geometry.inner_points.shape[0] // 4),
         :: max(1, resolved.geometry.inner_points.shape[1] // 12),
     ].reshape(-1, 3)
+    assert probes.shape[0] > 0 and probes.shape[1] == 3
     mesh = build_from_config(config, tmp_path / "stretched.msh")
     from hornlab_mesher.mesher import _triangles_and_physical_tags
     from hornlab_mesher.tags import PhysicalGroup
@@ -330,6 +331,7 @@ def test_preview_solve_and_step_use_the_same_stretched_profile(family, tmp_path)
     wall_nodes = np.unique(triangles[tags == PhysicalGroup.RIGID_WALL])
     assert wall_nodes.size > 0
     wall_points_mm = mesh_points[wall_nodes] * 1000
+    assert wall_points_mm.shape == (wall_nodes.size, 3)
     # Solve writes metres; canonical grids and CAD use mm.
     assert mesh_points[:, 2].max() * 1000 == pytest.approx(
         resolved.geometry.inner_points[:, :, 2].max(), abs=0.1
@@ -342,6 +344,7 @@ def test_preview_solve_and_step_use_the_same_stretched_profile(family, tmp_path)
         gmsh.model.occ.importShapes(str(step), highestDimOnly=False)
         gmsh.model.occ.synchronize()
         surfaces = gmsh.model.getEntities(2)
+        assert surfaces
         for point in np.concatenate((probes, wall_points_mm)):
             distances = [
                 np.linalg.norm(
