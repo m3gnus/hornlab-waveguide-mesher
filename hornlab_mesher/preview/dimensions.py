@@ -1,4 +1,4 @@
-"""Settled-frame measurements of the solve/CAD control geometry."""
+"""Settled-frame sizes of the canonical resolved design geometry."""
 from __future__ import annotations
 
 import copy
@@ -6,19 +6,23 @@ import json
 import logging
 import threading
 from collections import OrderedDict
+from concurrent.futures import Future
 from typing import Any, Mapping
 
 import numpy as np
 
-from ..config_builder import resolve_geometry
+from ..config_builder import build_geometry_params, resolve_geometry
 from ..builders.enclosure import enclosure_box_bounds
+from ..profiles import eval_param
 from .contract import _validate_finite_metadata
 
-DIMENSIONS_SAMPLING = {"method": "resolved-canonical-geometry", "lod_independent": True}
+DIMENSIONS_SAMPLING = {"method": "resolved-design-geometry", "lod_independent": True}
 # Only small readouts are retained, never the resolved point grids. The full
 # supplied config is the identity (including sampling, scale and morph inputs).
 _DIMENSIONS_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _CACHE_LIMIT = 128
+_CACHE_LOCK = threading.RLock()
+_IN_FLIGHT: dict[str, Future] = {}
 
 
 class _MeasurementWarnings(logging.Filter):
@@ -29,24 +33,33 @@ class _MeasurementWarnings(logging.Filter):
     def filter(self, record):
         # The preview already reported this warning. Do not silence unrelated
         # warnings or another thread's preview/solve work.
-        return record.thread != self.thread or "outer wall" not in record.getMessage()
+        return record.thread != self.thread or not any(
+            text in record.getMessage() for text in ("outer wall", "enc_depth", "enc_edge")
+        )
 
 
 def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Resolve the full object using exactly the solve/CAD geometry path."""
+    """Bound the full design's resolved controls, before CAD surface fitting."""
     full = copy.deepcopy(dict(config))
     mesh = full.get("mesh", {})
     if not isinstance(mesh, Mapping):
         raise TypeError("dimension measurement requires mesh to be a mapping")
     full["mesh"] = dict(mesh, quadrants="1234", vertical_offset_mm=0.0)
     full["mesh"].pop("verticalOffset", None)
-    logger = logging.getLogger("hornlab_mesher.profile_sampling")
+    loggers = [logging.getLogger(name) for name in (
+        "hornlab_mesher.profile_sampling", "hornlab_mesher.builders.enclosure")]
     warning_filter = _MeasurementWarnings()
-    logger.addFilter(warning_filter)
+    for logger in loggers:
+        logger.addFilter(warning_filter)
     try:
         geometry = resolve_geometry(full).geometry
+        return _geometry_dimensions(geometry)
     finally:
-        logger.removeFilter(warning_filter)
+        for logger in loggers:
+            logger.removeFilter(warning_filter)
+
+
+def _geometry_dimensions(geometry) -> dict[str, Any]:
     inner = geometry.inner_points
     points = [inner.reshape(-1, 3)]
     if geometry.outer_points is not None:
@@ -65,32 +78,79 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _requested_dimensions(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    # Parse the same aliases and expressions as the resolver; these are the
+    # requested targets, before implicit sizing and the no-shrink floor.
+    if not config.get("morph") and not any(key in config for key in ("morphTarget", "morph_target")):
+        return None
+    params, _, _ = build_geometry_params(config)
+    if not eval_param(params.get("morphTarget"), 0.0, 0.0):
+        return None
+    scale = eval_param(params.get("scale"), 0.0, 1.0)
+    return {"mouth_opening": [
+        scale * eval_param(params.get("morphWidth"), 0.0, 0.0),
+        scale * eval_param(params.get("morphHeight"), np.pi / 2, 0.0),
+    ]}
+
+
+def _unavailable(exc: Exception) -> dict[str, Any]:
+    return {"dimensions_mm": None, "dimensions_status": "unavailable",
+            "dimensions_error": str(exc) or type(exc).__name__}
+
+
 def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
     """Coarse frames only look up; settled frames resolve each design once.
 
-    Content serialization keeps mutable caller dictionaries safe. Options and
+    Resolve an owned snapshot decoded from its immutable content key. Options and
     visibility are deliberately excluded; no preview buffers enter this path.
     Errors are cached too, so repeated requests for an invalid design are cheap.
     """
     try:
         key = json.dumps(dict(config), sort_keys=True, separators=(",", ":"), allow_nan=False)
-        cached = _DIMENSIONS_CACHE.get(key)
-        if cached is not None:
-            return copy.deepcopy(cached)
-        if lod == "coarse":
-            return {"dimensions_mm": None, "dimensions_status": "pending"}
-        dimensions = canonical_dimensions(config)
-        if dimensions is None:
-            raise ValueError("canonical measurement returned no dimensions")
-        _validate_finite_metadata(dimensions, "dimensions_mm")
-        result = {"dimensions_mm": dimensions, "dimensions_status": "current"}
+        with _CACHE_LOCK:
+            cached = _DIMENSIONS_CACHE.get(key)
+            if cached is not None:
+                return copy.deepcopy(cached)
+            if lod == "coarse":
+                return {"dimensions_mm": None, "dimensions_status": "pending"}
+            future = _IN_FLIGHT.get(key)
+            owner = future is None
+            if owner:
+                future = _IN_FLIGHT[key] = Future()
+        if not owner:
+            return copy.deepcopy(future.result())
     except Exception as exc:
-        result = {"dimensions_mm": None, "dimensions_status": "unavailable",
-                  "dimensions_error": str(exc) or type(exc).__name__}
-        # Unsupported config identities cannot be cached, but never break a draft.
-        if "key" not in locals():
-            return result
-    _DIMENSIONS_CACHE[key] = copy.deepcopy(result)
-    if len(_DIMENSIONS_CACHE) > _CACHE_LIMIT:
-        _DIMENSIONS_CACHE.popitem(last=False)
-    return result
+        return _unavailable(exc)
+    try:
+        try:
+            snapshot = json.loads(key)
+            dimensions = canonical_dimensions(snapshot)
+            if dimensions is None:
+                raise ValueError("canonical measurement returned no dimensions")
+            result = {"dimensions_mm": dimensions, "dimensions_status": "current"}
+            requested = _requested_dimensions(snapshot)
+            if requested is not None:
+                result["dimensions_requested_mm"] = requested
+            _validate_finite_metadata(result, "dimensions")
+            stored = copy.deepcopy(result)
+        except Exception as exc:
+            result = _unavailable(exc)
+            # Even failure-copy errors belong to measurement. A result can be
+            # returned without caching if the cache cannot safely own it.
+            try:
+                stored = copy.deepcopy(result)
+            except Exception:
+                stored = None
+        with _CACHE_LOCK:
+            if stored is not None:
+                _DIMENSIONS_CACHE[key] = stored
+                if len(_DIMENSIONS_CACHE) > _CACHE_LIMIT:
+                    _DIMENSIONS_CACHE.popitem(last=False)
+            future.set_result(stored if stored is not None else result)
+        return result
+    except BaseException as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _CACHE_LOCK:
+            _IN_FLIGHT.pop(key, None)

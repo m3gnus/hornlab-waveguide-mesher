@@ -363,6 +363,14 @@ def build_preview_geometry(
         raise TypeError("config must be a mapping")
     if not isinstance(options, PreviewOptionsV1):
         raise TypeError("options must be PreviewOptionsV1")
+    # Capture measurement identity before rendering reads a mutable caller's
+    # config. Failure to own it is a measurement failure, never a render error.
+    try:
+        dimensions_config = copy.deepcopy(dict(config))
+        dimensions_snapshot_error = None
+    except Exception as exc:
+        dimensions_config = None
+        dimensions_snapshot_error = str(exc) or type(exc).__name__
     lod = str(options.lod).strip().lower()
     if lod not in _LOD_PRESETS:
         raise ValueError("lod must be 'coarse', 'fine', or 'inspection'")
@@ -1051,7 +1059,10 @@ def build_preview_geometry(
             )
 
     assembly_ms = (time.perf_counter() - assembly_start) * 1000.0
-    dimensions = dimension_metadata(config, lod)
+    dimensions = dimension_metadata(dimensions_config, lod) if dimensions_config is not None else {
+        "dimensions_mm": None, "dimensions_status": "unavailable",
+        "dimensions_error": dimensions_snapshot_error,
+    }
     total_ms = (time.perf_counter() - start) * 1000.0
     metadata: dict[str, Any] = {
         "api_version": _API_VERSION,

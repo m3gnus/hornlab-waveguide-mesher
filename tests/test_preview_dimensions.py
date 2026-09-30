@@ -107,7 +107,7 @@ def test_coarse_is_pending_until_this_exact_design_is_measured(config, monkeypat
         assert preview.metadata['dimensions_mm'] == fine.metadata['dimensions_mm']
         assert preview.metadata['dimensions_status'] == 'current'
     assert len(calls) == 1
-    assert fine.metadata['dimensions_sampling'] == {'method': 'resolved-canonical-geometry', 'lod_independent': True}
+    assert fine.metadata['dimensions_sampling'] == {'method': 'resolved-design-geometry', 'lod_independent': True}
     json.dumps(fine.metadata, allow_nan=False)
 
 
@@ -167,7 +167,7 @@ def _assert_preview_equal(left, right):
                 np.testing.assert_array_equal(actual, expected)
             else:
                 assert actual == expected
-    added = {'dimensions_mm', 'dimensions_error', 'dimensions_sampling', 'dimensions_status', 'timings_ms'}
+    added = {'dimensions_mm', 'dimensions_requested_mm', 'dimensions_error', 'dimensions_sampling', 'dimensions_status', 'timings_ms'}
     assert {k: v for k, v in left.metadata.items() if k not in added} == {k: v for k, v in right.metadata.items() if k not in added}
 
 

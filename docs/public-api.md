@@ -311,8 +311,8 @@ surface construction strategies.
 
 ### Design dimensions
 
-Preview `geometry.metadata.dimensions_mm` contains `mouth_opening: [W, H]`
-(and the actual terminating aperture, even when the curve rolls back),
+Preview `geometry.metadata.dimensions_mm` describes the **resolved design size**:
+`mouth_opening: [W, H]` (the terminating design aperture, even when the curve rolls back),
 `horn_overall: [W, H, D]`, and `enclosure_overall: [W, H, D]` only when an
 enclosure exists. All values are millimetres; W/H/D are x/y/z bounding extents
 (maximum minus minimum). The horn includes its modelled offset wall, rim and
@@ -326,16 +326,35 @@ axial excursion anywhere on the curve, including the wall and rear plane,
 not the terminating station's coordinate. The enclosure uses the same outer
 box bounds, depth clamp and whole-mm rounding as the mesh/CAD builder.
 
-`dimensions_sampling` states `method: "resolved-canonical-geometry"` and
-`lod_independent: true`. Values are measured from `resolve_geometry`, the same
-control geometry used by solve and CAD, including repaired outer walls. No
-measurement tolerance is published. CAD surface fitting retains its separate
-existing approximation contract. Global Scale acts on the inner geometry
+`dimensions_sampling` states `method: "resolved-design-geometry"` and
+`lod_independent: true`. Values bound the point grids from `resolve_geometry`,
+including repaired outer-wall controls. They are design sizes, not measurements
+of fitted CAD surfaces, exported STEP solids or meshes. Exported surfaces on
+morphed mouths can differ from the design by the surface-fitting tolerance.
+See [surface fitting](config-schema.md#meshsurface_fit) for the fitting modes,
+measured errors and limitations. The acoustic sampling criteria bound angular
+chords to twice the local mesh target, smooth angular sagitta to 5% of it, and
+axial chords to half of it; these are fitting criteria, not a universal bound
+on exported dimensional error. Interpolation between controls can overshoot,
+and approximate fits can shrink. The readouts promise no STEP measurement
+accuracy. Global Scale acts on the inner geometry
 before the unscaled wall thickness is applied.
 
+When a morph target exists, `dimensions_requested_mm.mouth_opening: [W, H]`
+reports its requested target before implicit sizing and the no-shrink floor,
+with global Scale applied. Width and height expressions are evaluated at the
+horizontal and vertical cardinal azimuths. Zero means an implicit target.
+The effective design aperture remains in `dimensions_mm.mouth_opening`.
+For example, an unscaled OSSE with a raw round mouth of 348.579 mm and a
+320 × 240 mm rectangle request without shrinkage reports requested
+`[320, 240]` and effective `[348.579…, 348.579…]`. Consumers should show both
+when they differ, rather than presenting the request as the resolved size.
+
 Only fine and inspection frames compute the canonical measurement. A bounded
-process cache stores readouts and failures by the full supplied design config;
-repeated settled frames reuse them. Coarse frames never resolve geometry: they
+process cache stores readouts and failures by an owned snapshot of the full
+supplied design config; concurrent settled frames share one resolution.
+The content key and the resolved snapshot always describe the same design.
+Repeated settled frames reuse them. Coarse frames never resolve geometry: they
 look up this exact design and otherwise return `dimensions_mm: null` with
 `dimensions_status: "pending"`. A cached measurement carries status `"current"`.
 A canonical resolution failure carries status `"unavailable"`, null dimensions,
@@ -345,6 +364,6 @@ quadrants at the origin; it does not reflect reduced preview samples.
 
 Any measurement exception preserves preview surfaces and pre-existing metadata.
 Process-control exceptions (`KeyboardInterrupt`, `SystemExit`) propagate. The
-measurement does not repeat the preview's outer-wall warning. Consumers should
+measurement does not repeat the preview's outer-wall or enclosure-clamp warnings. Consumers should
 hide the readouts for older meshers with absent dimension keys; pending frames
 may retain the same document's last canonical values, labelled as updating.
