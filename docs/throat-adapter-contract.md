@@ -284,7 +284,7 @@ R-OSSE branch with a backward axial tangent is refused for the initial adapter;
 a retained body may fold later. No axial inverse or nearest ring selects tJ.
 
 Resolve the final body meridian `C_phi(t)=(Z_phi(t),R_phi(t))` after C4 stretch
-and supported body shaping/morph, before wall offset, scale or placement. Use
+and supported body shaping/morph, before scale, wall offset or placement. Use
 the actual derivative with respect to the original t. Let
 
 ```text
@@ -363,8 +363,12 @@ original base curve and original t
 → supported cross-section/body morph (with qualified derivative)
 → resolve J_phi/T_phi and cut the body at tJ
 → derive the cubic and rebase retained meridians
-→ wall construction → uniform Scale → rigid placement.
+→ uniform Scale of the inner geometry → wall construction → rigid placement.
 ```
+
+Scale and wall keep today's convention: the inner surface is scaled, then the wall is
+built from the scaled surface with its thickness in unscaled mm. Wall thickness is never
+multiplied by Scale.
 
 C4 transforms the body, **before** adapter construction:
 
