@@ -359,8 +359,6 @@ def calculate_osse(
             )
 
     x = float(z)
-    if z > ext_len + slot_len and s1 != 0.0 and s2 != 0.0:
-        x = ext_len + slot_len + _stretch_x(z - ext_len - slot_len, s1, s2)
     y = float(radius)
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
@@ -369,6 +367,11 @@ def calculate_osse(
         dy = y - r0_base
         x = dx * math.cos(rot) - dy * math.sin(rot)
         y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+    # ATH V2025-12 stretches after Rot. Native explicit-prefix mode keeps
+    # its prefix outside the map; imported Rot + prefix is unqualified.
+    # Keep the disabled path arithmetic unchanged.
+    if z > ext_len + slot_len and s1 != 0.0 and s2 != 0.0:
+        x = ext_len + slot_len + _stretch_x(x - ext_len - slot_len, s1, s2)
     return x, y
 
 
@@ -434,11 +437,6 @@ def calculate_osse_curve(
             )
 
     x = z
-    if s1 != 0.0 and s2 != 0.0:
-        x = z.copy()
-        x[in_main] = ext_len + slot_len + _stretch_x_curve(
-            z[in_main] - ext_len - slot_len, s1, s2
-        )
     y = radius
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
@@ -447,6 +445,11 @@ def calculate_osse_curve(
         dy = y - r0_base
         x = dx * math.cos(rot) - dy * math.sin(rot)
         y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+    if s1 != 0.0 and s2 != 0.0:
+        x = x.copy()
+        x[in_main] = ext_len + slot_len + _stretch_x_curve(
+            x[in_main] - ext_len - slot_len, s1, s2
+        )
     return x, y
 
 

@@ -82,7 +82,12 @@ stretch exactly. Both accept per-azimuth expressions. They belong inside
 seed may contain them). The total-length helpers and `L` remain unstretched
 sampling parameters; use the resulting point grid for physical dimensions.
 See [the geometry contract](geometry-contract.md#r-osse-s--os-se-s-throat-stretching)
-for prefix and rotation order and the **ATH confirmation still owed**.
+for measured ATH V2025-12 prefix, rotation and Scale behavior, and the
+combinations refused on ATH text import. In particular, OSSE blocks with a
+nonzero `Slot.Length` are refused even at zero stretch because ATH's radial
+transition differs from the native explicit slot. Active stretch with `Rot`
+plus a prefix, `GCurve` plus a prefix/`Rot`, or R-OSSE `Rot`/top-level `Length`
+also needs further ATH probes.
 
 Driver adapter keys are convenience inputs for OSSE/R-OSSE. When both driver
 and waveguide throat diameters are provided, `r0` anchors the main waveguide

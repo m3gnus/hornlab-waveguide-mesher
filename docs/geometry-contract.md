@@ -55,7 +55,8 @@ Implementation rules:
   OS-SE profile. `r0` anchors the main waveguide throat; a throat extension
   tapers backward to the driver-end radius and does not enlarge the main curve
   or mouth.
-- A final `Rot` transforms the computed 2D profile around `(0, r0)`.
+- `Rot` transforms the unstretched 2D profile around `(0, r0)`, before
+  the optional axial throat stretch.
 
 For a freestanding OSSE wall, a regular normal offset is preserved exactly.
 When neighboring normals cross inside a concave throat or guiding-curve groove,
@@ -153,7 +154,11 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   preserves its intentional foldback in **t**, rather than straightening it.
 - The native composition is extension, slot, stretched main profile:
   `x = ext + slot + S(x_main)`. The straight extension and slot keep their
-  lengths and radii. For OS-SE, stretch precedes the final `Rot`.
+  lengths and radii. For OS-SE without a prefix, ATH applies `Rot` first and stretches the
+  resulting axial coordinate; the rotated radius is unchanged by stretch.
+  The combination of stretch, `Rot` and a prefix is unmeasured and refused
+  on ATH text import. Native explicit-prefix composition is retained but
+  is not claimed as ATH parity for that combination.
 - `L`/`Length` remains an **unstretched sampling/profile parameter**, not a
   requested final depth. Native main-length mode retains `main_L = L`;
   ATH total-length mode retains `main_L = Length - Slot.Length` and adds
@@ -172,16 +177,77 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   seed mapping, so changing a nested stretch coefficient invalidates the seed.
   Caller-owned design/cache identities must include both coefficients.
 
-**ATH confirmation owed:** the available executable identifies itself as
-V2025-12 and contains the s1/s2 diagnostic, but Wine could not start
-(`wineserver: bind: Operation not permitted`). Thus degree-mode behavior is
-verified against Desmos, not yet measured against ATH output. The native
-prefix/Length/Rot/guiding-curve composition above defines this implementation;
-its ATH equivalence is unconfirmed. In particular July 2025 initially shipped
-R-OSSE-S only; OSSE support appeared in the August release. Before claiming ATH
-parity for stretched profiles, run the prepared plain, extension, slot,
-combined-prefix and Length probes and compare exported points. Existing ATH
-archive parity tests do not establish parity for this new feature.
+**Measured ATH evidence (V2025-12):** all 36 paired probe exports carry
+`; Ath version V2025-12` in their generated `config.txt`. The run logs have no
+version banner. The portable points and generating configs are in
+`tests/fixtures/throat_stretch/ath-v2025-12/`. All 60,096 exported profile
+points (16 meridians per case) were compared in ordinal order. OSSE stations
+come from the paired zero axial coordinate, undoing `Rot` where needed;
+R-OSSE stations come from the published radial equation, preserving station
+order through axial foldback. The 28 accepted cases agree in both evaluators
+within 2.634e-5 mm, below the 2e-4 mm GridExport tolerance. Eight OSSE slot
+cases are refused rather than claimed as parity; see below.
+
+- Degree convention: OSSE `s1=0.5,s2=0.2,L=160` ends at 204.105045 mm,
+  an addition of 44.105045 mm. Its log prints
+  `s1=28.647890,s2=0.200000` (the input s1 multiplied by 180/pi).
+  R-OSSE `s1=1,s2=0.05` has maximum depth 150.832199 -> 233.278973 mm,
+  an addition of 82.446774 mm. R-OSSE logs contain no stretch diagnostic;
+  the exported points establish the same degree convention. All paired
+  main axial differences follow the degree map within 2.628e-6 mm, and
+  all paired exported transverse coordinates are identical.
+- `s1=0` with nonzero `s2` disables stretch in both families. The exported
+  zero profiles match the unstretched equations. Both zero-coefficient paths
+  retain identical evaluator arithmetic; this does not excuse the preexisting
+  importer errors described below.
+- Extensions stay straight and unstretched. A 12 mm extension adds exactly
+  12 mm to OSSE and R-OSSE depth and preserves the main radii. R-OSSE's
+  8 mm slot adds 8 mm outside the map, alone or with the extension; its
+  main curve, derived L and mouth stay unchanged.
+- **OSSE block Slot.Length is unsupported on text import**, including at
+  zero stretch. ATH retains axial L=160 and stretched depth 204.105045 mm
+  with Slot.Length=8, but changes the mouth radius 205.931011 -> 195.623160 mm
+  and the intervening radial transition. This differs from the native explicit
+  tube prefix even with stretch off (maximum deviation 7.699858 mm; the
+  Scale=0.48 cases differ by up to 3.788557 mm). The 36 probes do not establish
+  that transition's construction. A dense block/flat slot/no-slot comparison
+  must settle it before the importer can support it. Active stretch with a
+  slot in flat OSSE text is also unmeasured and refused. Native JSON explicit
+  slot geometry and its zero-feature behavior remain unchanged.
+- OSSE block L takes precedence over top-level Length: adding Length=180
+  beside L=160 produces byte-identical profile CSVs to the plain case,
+  both at zero and active stretch. Likewise Tritonia L=135 with Length=180.
+  The flat ATH total-length budget described above remains the native
+  unstretched import rule; these block probes do not qualify flat stretch
+  with Slot.Length. Top-level Length with R-OSSE stretch is unmeasured and refused on
+  text import; it must not be interpreted as a target stretched depth.
+- OSSE Rot=10 is honoured at top level beside a block. At the terminating
+  Desmos station, rotated zero x=123.546177 mm becomes 167.387410 mm while
+  radius stays 230.738088 mm. This is S(x_rot); rotating S(x) would change
+  that radius. The scalar and vector evaluators now stretch after rotation.
+  In-block Rot, active stretch with R-OSSE Rot, and active stretch with
+  OSSE Rot plus an extension/slot are refused on text import pending probes.
+- Guiding curves resolve against the unstretched profile. With Width=250,
+  Dist=0.5 and SE.n=2 the Desmos coverage is 57.392970 degrees, identical
+  in the paired profiles, and its mouth radius stays 320.434282 mm.
+  The guide station is parameter z=80 mm, which stretches to 123.211833 mm;
+  it is not a requirement to pass through radius 125 mm at physical z=80.
+  Active stretch plus a guiding curve and a prefix or Rot is unmeasured
+  and refused on text import.
+- Scale is applied **after** stretch. Tritonia-S uses L=135, s1=0.8,
+  s2=0.06 and Scale=0.48: depth 64.800000 -> 96.657431 mm equals
+  `0.48*S(135)`. At Scale=0.48, extension 12 contributes 5.76 mm.
+  A consumer which pre-scales dimensions, such as WG's preview translator,
+  must also send `s1_scaled=Scale*s1` and `s2_scaled=s2/Scale`, preserving
+  expressions. This satisfies `S_scaled(Scale*x)=Scale*S(x)`, including
+  rotation and guiding curves. Applying unchanged s2 to pre-scaled x changes
+  the measured throat shape.
+
+Text import treats expressions as potentially active when deciding whether
+an unmeasured combination must be refused. No extrapolated combination is
+claimed as ATH parity. These measurements qualify the inner profile, not
+ATH wall meshing, guiding curves combined with other transforms, or C5 adapter
+composition. Existing archive parity still runs as a separate required gate.
 
 Point reference tolerance is 1e-10 mm (double precision); scalar/array agreement
 uses 64 machine eps times the profile scale. An ATH GridExport comparison must

@@ -396,6 +396,19 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if formula == "OSSE":
         if "L" not in profile:
             raise ConfigError("ATH OSSE text configs must set Length")
+        if "OSSE" in blocks:
+            # V2025-12 honours top-level Rot even with an OSSE block; Length
+            # stays subordinate to the block's L. Slot changes the radial
+            # transition in a way the explicit native prefix does not model.
+            if "Rot" in blocks["OSSE"]:
+                raise ConfigError("Rot must be top-level for ATH OSSE import; in-block Rot is unverified")
+            profile.update(mapped(flat, (("Rot", "rot"),)))
+            if common_profile.get("slotLength", 0) != 0:
+                raise ConfigError(
+                    "OSSE block with nonzero Slot.Length is not supported: ATH V2025-12 "
+                    "changes the radial transition while retaining the L axial span; "
+                    "the slot transition is not yet established by ATH probes"
+                )
         # ATH defaults for keys the import may omit (Ath 4.8.2 User Guide 4.1.1).
         # Native TOML/JSON configs keep the package defaults in config_builder.
         profile.setdefault("a0", 0)
@@ -550,6 +563,22 @@ def parse_text_config(content: str) -> dict[str, Any]:
             )
 
     _reject_unsupported_ath_keys(flat, profile_items, mesh_items, blocks)
+
+    # Expressions count as potentially active. Do not infer a composition
+    # from individually measured features when their combination is unprobed.
+    stretch_active = all(profile.get(key, 0) != 0 for key in ("s1", "s2"))
+    if stretch_active:
+        prefix_active = any(profile.get(key, 0) != 0 for key in ("throatExtLength", "slotLength"))
+        rot_active = _maybe_number(flat.get("Rot", "0")) != 0
+        guide_active = gcurve.get("gcurveType", 0) != 0 and gcurve.get("gcurveWidth", 0) != 0
+        if formula == "OSSE" and profile.get("slotLength", 0) != 0:
+            raise ConfigError("throat stretch with Slot.Length in flat OSSE text is unverified; an ATH probe is required")
+        if formula == "R-OSSE" and "Length" in flat:
+            raise ConfigError("throat stretch with top-level Length in R-OSSE text is unverified; an ATH probe is required")
+        if rot_active and (formula != "OSSE" or prefix_active):
+            raise ConfigError("throat stretch with Rot and a prefix (or R-OSSE Rot) is unverified; an ATH probe is required")
+        if guide_active and (prefix_active or rot_active):
+            raise ConfigError("throat stretch with GCurve and a prefix or Rot is unverified; an ATH probe is required")
 
     # ABEC.SimType selects the mesh topology: 1 = infinite baffle (the ATH
     # default), 2 = free standing. An enclosure implies a free-standing sim.
