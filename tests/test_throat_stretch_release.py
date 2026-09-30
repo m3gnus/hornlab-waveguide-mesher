@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 
 import numpy as np
@@ -33,11 +34,14 @@ def _assert_base_equal(actual, expected):
     if isinstance(expected, np.ndarray):
         assert isinstance(actual, np.ndarray)
         assert actual.shape == expected.shape and actual.dtype == expected.dtype
-        zero = expected == 0
-        np.testing.assert_allclose(actual[~zero], expected[~zero], rtol=1e-12, atol=0)
-        np.testing.assert_allclose(actual[zero], expected[zero], rtol=0, atol=1e-12)
-    elif isinstance(expected, float):
-        assert isinstance(actual, (int, float)) and not isinstance(actual, bool)
+        if np.issubdtype(expected.dtype, np.floating):
+            zero = expected == 0
+            np.testing.assert_allclose(actual[~zero], expected[~zero], rtol=1e-12, atol=0)
+            np.testing.assert_allclose(actual[zero], expected[zero], rtol=0, atol=1e-12)
+        else:
+            np.testing.assert_array_equal(actual, expected)
+    elif isinstance(expected, (float, np.floating)):
+        assert isinstance(actual, (int, float, np.floating)) and not isinstance(actual, bool)
         if isinstance(actual, int):
             assert actual == expected
         else:
@@ -61,10 +65,40 @@ def _assert_base_equal(actual, expected):
         assert actual == expected
 
 
+# Consume quoted strings and identifiers whole so their numeric-looking text
+# (including field names and dtypes) can never receive float tolerance.
+_REPR_TOKEN = re.compile(
+    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|[A-Za-z_]\w*|"
+    r'(?P<float>(?<![\w.])[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])'
+    r'|(?<![\w.])[+-]?\d+[eE][+-]?\d+(?![\w.]))'
+)
+
+
+def _assert_base_repr_equal(actual, expected):
+    """Compare every character outside float tokens to the captured repr."""
+    def split(text):
+        chunks, floats, start = [], [], 0
+        for token in _REPR_TOKEN.finditer(text):
+            if token.group('float') is not None:
+                chunks.append(text[start:token.start()])
+                floats.append(float(token.group()))
+                start = token.end()
+        chunks.append(text[start:])
+        return chunks, floats
+
+    actual_text, actual_floats = split(actual)
+    expected_text, expected_floats = split(expected)
+    assert actual_text == expected_text
+    assert len(actual_floats) == len(expected_floats)
+    for actual_float, expected_float in zip(actual_floats, expected_floats):
+        assert math.isclose(actual_float, expected_float, rel_tol=1e-12, abs_tol=0)
+
+
 def test_captured_base_float_tolerance_includes_only_expected_zero_atol():
     _assert_base_equal({'x': np.nextafter(1., 2.).item(), 'zero': 5e-13},
                        {'x': 1., 'zero': 0.})
     _assert_base_equal(np.array([np.nextafter(1., 2.), 5e-13]), np.array([1., 0.]))
+    _assert_base_equal(np.float32(1.), np.float32(1.))
     for actual, expected in [(0., 1e-300), (1. + 2e-12, 1.), (2e-12, 0.),
                              (np.array([0.]), np.array([1e-300]))]:
         with pytest.raises(AssertionError):
@@ -75,10 +109,44 @@ def test_captured_base_float_tolerance_includes_only_expected_zero_atol():
     ({'other': 1.}, {'x': 1.}), ([1.], [1., 2.]), ('1.000000000001', '1'),
     (True, 1), (1, True), (1. + 5e-13, 1),
     (np.ones(2), np.ones(3)), (np.ones(2, dtype=np.float32), np.ones(2)),
+    (np.array([10**12 + 1], dtype=np.int64), np.array([10**12], dtype=np.int64)),
+    (np.array([2**60 + 1], dtype=np.int64), np.array([2**60], dtype=np.int64)),
+    (np.array([True]), np.array([False])),
+    (np.array(['changed']), np.array(['capture'])),
 ])
 def test_captured_base_non_float_structure_remains_exact(actual, expected):
     with pytest.raises(AssertionError):
         _assert_base_equal(actual, expected)
+
+
+def test_captured_base_repr_allows_only_float_token_drift():
+    _assert_base_repr_equal('Geometry(x=1.0000000000000002, y=-2e-3, z=.0)',
+                            'Geometry(x=1.0, y=-0.002, z=0.0)')
+    # Array whitespace, signs, scientific notation and multiple lines survive.
+    _assert_base_repr_equal('array([[ +1.0000000000000002, -2.0],\n [ 3e0, 4.]])',
+                            'array([[ +1.0, -2.],\n [ 3.0, 4.0]])')
+
+
+@pytest.mark.parametrize('actual,expected', [
+    ('Xeometry(x=1.0)', 'Geometry(x=1.0)'),
+    ('Geometry(x=1.0) ', 'Geometry(x=1.0)'),
+    ('Geometry(x =1.0)', 'Geometry(x=1.0)'),
+    ('Geometry(x=1.000000000002)', 'Geometry(x=1.0)'),
+    ('Geometry(x=0.0)', 'Geometry(x=1e-300)'),
+    ('Geometry(x=1e-300)', 'Geometry(x=0.0)'),
+    ('Geometry(n=1000000000001)', 'Geometry(n=1000000000000)'),
+    ('Geometry(flag=False)', 'Geometry(flag=True)'),
+    ("Geometry(name='1.0000000000000002')", "Geometry(name='1.0')"),
+    ('Geometry(name="1.0000000000000002")', 'Geometry(name="1.0")'),
+    (r"Geometry(name='it\'s 1.0000000000000002')", r"Geometry(name='it\'s 1.0')"),
+    ('Geometry(field1=1.0)', 'Geometry(field2=1.0)'),
+    ('array([1.0], dtype=float32)', 'array([1.0], dtype=float64)'),
+    ('Geometry(x=1)', 'Geometry(x=1.0)'),
+    ('Geometry(x=1.0, y=2.0)', 'Geometry(x=1.0)'),
+])
+def test_captured_base_repr_non_float_text_remains_exact(actual, expected):
+    with pytest.raises(AssertionError):
+        _assert_base_repr_equal(actual, expected)
 
 
 @pytest.mark.parametrize('name', [k for k in BASE['identities'] if not k.endswith('-config')])
@@ -92,6 +160,7 @@ def test_dataclass_legacy_identity_and_serialization(name, dormant):
     _assert_base_equal(asdict(geometry), captured['asdict'])
     assert astuple(geometry) == astuple(legacy)
     assert repr(geometry) == repr(legacy)
+    _assert_base_repr_equal(repr(geometry), captured['repr'])
     _assert_base_equal(adapter(geometry), captured['adapter'])
     # None's hash is interpreter-dependent on older supported Python versions.
     # The literal base hashes were captured with Python 3.13 on a 64-bit build.
@@ -327,8 +396,7 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
         _assert_base_equal(_resolved_value(asdict(resolved)), expected)
     assert [f.name for f in fields(resolved.geometry)] == captured['geometry_fields']
     assert sorted(vars(resolved.geometry)) == captured['geometry_state_keys']
-    # Repr repeats asdict's float fields; exact identity is checked on the same
-    # platform separately, rather than against a macOS string capture.
+    _assert_base_repr_equal(repr(resolved), captured['repr'])
 
 
 @pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
