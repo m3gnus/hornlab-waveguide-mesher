@@ -1,6 +1,6 @@
 # Curved throat adapter: geometry and import contract
 
-**Status: proposed contract for Program C5; review before implementation.**
+**Status: contract for Program C5, reviewed by the owner on 2026-09-30 (decisions below).**
 This document adds no executable behavior. Existing imports must not be described
 as supporting `Throat.Ext.Ctrl` merely because they retain its text. The future
 implementation must distinguish `off`, `ath` and `authored` modes and satisfy all
@@ -654,6 +654,19 @@ explicitly identified as proposed. Do not begin this work before review.
    independent diff review and exact-pin qualification through the lander.
    Document the final enabled ATH interpretation matrix and restrictions in
    both repositories; all unmeasured cases keep their explicit refusal.
+
+## Owner decisions (2026-09-30)
+
+- Build the WG-authored adapter first. Imported ATH `Throat.Ext.Ctrl` stays refused
+  per the table above until the A1–A9 experiments are run; they will be run against
+  ATH V2025-12, which recognizes `Throat.Ext.Ctrl` and `trunc`.
+- Question 1 (common join plane): accepted as recommended.
+- Question 3 (imported tangent mismatch): accepted as recommended. Keep and report the
+  corner; refuse a positive wall thickness at it.
+- Question 5 (C4 order): stretch the body **before** deriving the adapter.
+- Question 6 (morph and offset), including the continuous-onset rule for an active
+  morph: accepted.
+- Questions 2, 4, 7 and 8 proceed on their recommendations unless changed later.
 
 ## Owner questions and recommended answers
 
