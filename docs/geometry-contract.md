@@ -144,25 +144,30 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
 - Radius is unchanged. R-OSSE uses the complete main `x(t)`, including its
   `b` term; OS-SE uses the main axial parameter in millimetres.
 - `s1` has units mm/degree and `s2` has units 1/mm. Both default to zero and
-  must resolve to finite values in `[0, 10000]` at every evaluated azimuth.
+  must be plain finite numbers in `[0, 10000]` in this release.
   The explicit upper bound limits added displacement to 900,000 mm. This is
   far below half an ulp at the largest finite double, so the axial map stays
   finite for any finite input coordinate (an overflowing atan argument uses
   its finite limiting angle). Coefficients above the bound are refused during
-  validation, including expressions, before acoustic resolution or meshing.
-  They accept the same per-azimuth expressions as the other coefficients
-  (`p` and expression trigonometry use radians; only this axial atan uses degrees).
+  validation before acoustic resolution or meshing. Any string or per-azimuth
+  form, including an expression that evaluates to zero and a numeric string in
+  native JSON, raises `ConfigError`: “per-azimuth throat stretch is not supported
+  yet”. ATH text numeric tokens are numbers; expression tokens are refused.
+  Both inputs are validated before a dormant pair is canonicalized.
 - Either coefficient zero bypasses the map, preserving the existing floating
   point operations and geometry exactly.
 - `S'(x) = 1 + (180/pi)*s1*s2/(1+(s2*x)^2) >= 1`. The map is strictly
   increasing in **x**. OS-SE remains axially monotone before `Rot`; R-OSSE
   preserves its intentional foldback in **t**, rather than straightening it.
-- The native composition is extension, slot, stretched main profile:
+- The supported native composition is a straight extension followed by a
+  stretched main profile (R-OSSE also supports a slot):
   `x = ext + slot + S(x_main)`. The straight extension and slot keep their
   lengths and radii. For OS-SE without a prefix, ATH applies `Rot` first and stretches the
   resulting axial coordinate; the rotated radius is unchanged by stretch.
-  The combination of stretch, `Rot` and a prefix is unmeasured and refused
-  in both ATH text import and native evaluators, before mesh generation.
+  A single composition rule refuses active OSSE slots, `Rot` with a prefix,
+  R-OSSE `Rot` or an explicit `Length`, and `GCurve` with a prefix or `Rot`.
+  It applies to both native configurations and ATH text imports, before any
+  consumer generates geometry.
   This includes a slot alone, extension alone, and combined prefixes; an
   evaluated nonzero rotation with active stretch cannot use an unmeasured
   join convention. The scalar and vector evaluators check the actual radial
@@ -172,7 +177,15 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   coordinates retain their ordering after stretch and prefix translation,
   refusing floating-point collapse. R-OSSE foldback is also checked against
   the unchanged straight prefix, on a 1,025-station full-main probe and on
-  the requested vector stations; intersections are refused. Validation is
+  the requested vector stations. A complete composite polyline includes the
+  exact source/driver point and both main endpoints. Nonadjacent segment
+  crossings, endpoint contacts and collinear overlaps are refused at the OCC
+  geometric tolerance of 1e-7 mm, including main-only self-contact. Only
+  adjacent joins are exempt. Prefix-line and driver-plane roots and local
+  distance minima are refined on the continuous R-OSSE curve to catch contacts
+  between probe stations, including returns through the driver disc. This
+  finite probe is not a proof about arbitrary continuous meridians between
+  stations. Validation is
   cached by every resolved main coefficient, prefix input and truncation.
   Existing R-OSSE foldback that remains clear of the prefix is preserved.
 - `L`/`Length` remains an **unstretched sampling/profile parameter**, not a
@@ -192,10 +205,21 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   instances expose the legacy field schema to `asdict`/`astuple`, equality,
   hash and repr, exactly as at base `5c8ea4dc`. Dormant values do not contribute.
   Active instances include both coefficients in serialization and identity.
-  Potentially active expressions are retained without deciding identity at
-  a single azimuth. There is no OSSE/R-OSSE geometry memo. ICW seed memo keys
+  Coefficient expressions are refused, even with a zero companion. There is
+  no OSSE/R-OSSE geometry memo. ICW seed memo keys
   canonicalize dormant stretch pairs and retain both active coefficients.
   Caller-owned cache keys should use these canonical geometry mappings.
+
+Active stretch fits the solve and STEP wall as matching quadrant patches. Cut-axis
+endpoints receive half weight in the averaged axial chord parameterization, so a
+reduced sector and the full model use the same knots. This fixes the reduced
+morphed-wall discrepancy without adding axial stations or changing stretch-off
+fits. Active rectangle
+morphs retain at least 64 angular segments and four corner-arc subdivisions
+so the quadrant interpolants follow the sampled morph corners.
+All stretch-related failures on resolve, preview, solve mesh and STEP paths raise
+`ConfigError`. Zero-valued slot expressions retain the legacy import mapping;
+identity is recognized algebraically rather than from one azimuth sample.
 
 **Measured ATH evidence (V2025-12):** all 36 paired probe exports carry
 `; Ath version V2025-12` in their generated `config.txt`. The run logs have no
@@ -232,22 +256,23 @@ cases are refused rather than claimed as parity; see below.
   Scale=0.48 cases differ by up to 3.788557 mm). The 36 probes do not establish
   that transition's construction. A dense block/flat slot/no-slot comparison
   must settle it before the importer can support it. Active stretch with a
-  slot in flat OSSE text is also unmeasured and refused. Native JSON explicit
-  slot geometry and its zero-feature behavior remain unchanged.
+  slot is refused in both native JSON and flat/block OSSE text. The native
+  explicit slot retains its previous behavior when stretch is off.
 - OSSE block L takes precedence over top-level Length: adding Length=180
   beside L=160 produces byte-identical profile CSVs to the plain case,
   both at zero and active stretch. Likewise Tritonia L=135 with Length=180.
   The flat ATH total-length budget described above remains the native
   unstretched import rule; these block probes do not qualify flat stretch
   with Slot.Length. Top-level Length with R-OSSE stretch is unmeasured and refused on
-  text import; it must not be interpreted as a target stretched depth.
+  every configuration path; it must not be interpreted as a target stretched depth.
 - OSSE Rot=10 is honoured at top level beside a block. At the terminating
   Desmos station, rotated zero x=123.546177 mm becomes 167.387410 mm while
   radius stays 230.738088 mm. This is S(x_rot); rotating S(x) would change
   that radius. The scalar and vector evaluators now stretch after rotation.
   In-block Rot retains its legacy import behavior with stretch off (including
-  precedence over top-level Rot). With active stretch it is unmeasured and
-  refused. Active stretch with R-OSSE Rot is refused on text import; OSSE Rot
+  precedence over top-level Rot). In-block and top-level OSSE Rot use the same
+  supported composition rule.
+  Active stretch with R-OSSE Rot is refused in every configuration path; OSSE Rot
   plus an extension/slot is refused in both import and native evaluation.
   The only existing import changes against `5c8ea4dc` with stretch absent are:
   top-level Rot beside an OSSE block is now imported when the block has no
@@ -258,7 +283,7 @@ cases are refused rather than claimed as parity; see below.
   The guide station is parameter z=80 mm, which stretches to 123.211833 mm;
   it is not a requirement to pass through radius 125 mm at physical z=80.
   Active stretch plus a guiding curve and a prefix or Rot is unmeasured
-  and refused on text import.
+  and refused in every configuration path.
 - Scale is applied **after** stretch. Tritonia-S uses L=135, s1=0.8,
   s2=0.06 and Scale=0.48: depth 64.800000 -> 96.657431 mm equals
   `0.48*S(135)`. At Scale=0.48, extension 12 contributes 5.76 mm.

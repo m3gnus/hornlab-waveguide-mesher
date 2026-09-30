@@ -175,7 +175,14 @@ def _build_coupled_baffle_point_grid(
         )
 
     else:
-        if geometry.closed:
+        if geometry.quadrant_patch_fit:
+            cap_boundary_groups = _bspline_patch_phi_groups(
+                n_phi, closed=geometry.closed, n_sectors=_open_sector_count(geometry))
+            wall = _add_occ_bspline_patch_wall_surfaces(
+                inner_points, closed=geometry.closed, phi_groups=cap_boundary_groups,
+                surface_fit=geometry.surface_fit, quadrant_patch_fit=True,
+            )
+        elif geometry.closed:
             cap_boundary_groups = [list(range(n_phi)) + [0]]
             wall = build_surface_from_points(
                 inner_points,
@@ -189,6 +196,7 @@ def _build_coupled_baffle_point_grid(
                 closed=False,
                 phi_groups=cap_boundary_groups,
                 surface_fit=geometry.surface_fit,
+                quadrant_patch_fit=geometry.quadrant_patch_fit,
             )
         require_gmsh().model.occ.synchronize()
 
@@ -198,6 +206,7 @@ def _build_coupled_baffle_point_grid(
             source_axis="z",
             use_min=False,
             closed=geometry.closed,
+            split_open_sectors=geometry.quadrant_patch_fit,
         )
     else:
         aperture = _add_mouth_aperture_surfaces(
@@ -324,6 +333,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 closed=geometry.closed,
                 phi_groups=wall_groups,
                 surface_fit=geometry.surface_fit,
+                quadrant_patch_fit=geometry.quadrant_patch_fit,
             )
             cap_boundary_groups = wall_groups
             throat = _add_occ_source_cap_surfaces(
@@ -361,11 +371,19 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                 cap_builder, inner_points, geometry, wall_dimtags=wall
             )
         else:
-            wall = build_surface_from_points(
-                inner_points,
-                closed=geometry.closed,
-                surface_fit=geometry.surface_fit,
-            )
+            if geometry.quadrant_patch_fit:
+                wall = _add_occ_bspline_patch_wall_surfaces(
+                    inner_points, closed=geometry.closed,
+                    phi_groups=_bspline_patch_phi_groups(
+                        inner_points.shape[0], closed=geometry.closed,
+                        n_sectors=_open_sector_count(geometry)),
+                    surface_fit=geometry.surface_fit, quadrant_patch_fit=True,
+                )
+            else:
+                wall = build_surface_from_points(
+                    inner_points, closed=geometry.closed,
+                    surface_fit=geometry.surface_fit,
+                )
             require_gmsh().model.occ.synchronize()
 
             if source_shape == SOURCE_SHAPE_ROUNDED_CAP:
@@ -377,9 +395,11 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                     inner_points,
                     geometry,
                     boundary_phi_groups=(
-                        None
-                        if geometry.closed
-                        else [list(range(inner_points.shape[0]))]
+                        _bspline_patch_phi_groups(
+                            inner_points.shape[0], closed=geometry.closed,
+                            n_sectors=_open_sector_count(geometry))
+                        if geometry.quadrant_patch_fit else
+                        (None if geometry.closed else [list(range(inner_points.shape[0]))])
                     ),
                     wall_dimtags=wall,
                 )

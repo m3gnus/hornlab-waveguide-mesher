@@ -79,28 +79,34 @@ Shared OSSE/R-OSSE keys:
 `s1 * degrees(atan(s2 * x))`, leaving its radius unchanged. Either zero disables
 stretch exactly; inactive normalization omits both keys and retains the legacy
 geometry serialization, equality, hashes and cache identity. Active pairs
-include both keys. Both accept per-azimuth expressions; the inclusive upper
-bound of 10000 applies at every evaluated azimuth. It limits added displacement
-to 900,000 mm and keeps the axial map finite for every finite input coordinate.
-They belong inside
-`R-OSSE`/`OSSE` ATH blocks and are refused on other profile families (an ICW
-seed may contain them). The total-length helpers and `L` remain unstretched
-sampling parameters; use the resulting point grid for physical dimensions.
+include both keys. Both must be plain finite numbers in the inclusive range
+`[0, 10000]`. Native JSON strings, expression strings and per-azimuth forms are
+refused with `ConfigError` saying “per-azimuth throat stretch is not supported
+yet”, including expressions that evaluate to zero and a pair with a zero
+companion. ATH text numeric tokens are accepted as numbers. The bound limits
+added displacement to 900,000 mm and keeps the map finite for finite coordinates.
+They belong inside `R-OSSE`/`OSSE` ATH blocks and are refused on other profile
+families (an ICW seed may contain numeric coefficients). Total-length helpers
+and `L` remain unstretched sampling parameters; physical dimensions come from
+the point grid.
+
+One composition refusal rule applies to native JSON/dict configs and ATH text:
+active OSSE slots, rotation with a prefix, R-OSSE rotation or explicit `Length`,
+and guiding curves with a prefix or rotation are unsupported. In-block and
+top-level OSSE rotation obey the same rule. Discontinuous joins, floating-point
+loss of axial ordering and nonadjacent meridian intersections or contacts,
+including source/driver and mouth endpoints, also raise `ConfigError` before a
+consumer runs. Resolve, both preview levels, solve mesh and STEP share that
+error contract. With active stretch, solve and STEP use matching quadrant
+patches and axial knot weighting; stretch-off retains the previous fitting path.
+
 See [the geometry contract](geometry-contract.md#r-osse-s--os-se-s-throat-stretching)
-for measured ATH V2025-12 prefix, rotation and Scale behavior, and the
-combinations refused on ATH text import. In particular, OSSE blocks with a
-nonzero `Slot.Length` are refused even at zero stretch because ATH's radial
-transition differs from the native explicit slot. Active stretch with `Rot`
-plus a prefix, `GCurve` plus a prefix/`Rot`, or R-OSSE `Rot`/top-level `Length`
-also needs further ATH probes.
-The active `Rot` plus prefix combination is refused in native evaluation too,
-before meshing. Stretched composite meridians with discontinuous prefix/main
-joins, an axial map that loses the unstretched ordering, or R-OSSE foldback
-that intersects the extension/slot prefix are also refused.
-In-block OSSE `Rot` imports exactly as before when stretch is off; active
-stretch with in-block `Rot` is refused as unmeasured. With stretch absent the
-only changes to existing imports are top-level `Rot` beside an OSSE block
-(now honored if no in-block `Rot`) and the nonzero block `Slot.Length` refusal.
+for the measured ATH evidence and finite meridian-validation tolerance. With
+stretch absent, the only existing import changes are top-level `Rot` beside an
+OSSE block (honored if no in-block `Rot`) and refusal of a nonzero OSSE block
+`Slot.Length`, whose ATH radial transition differs from a native explicit slot.
+Zero slot expressions such as `0*p` and `sin(p)^2-sin(p)^2` retain their original
+mapping and import successfully.
 
 Driver adapter keys are convenience inputs for OSSE/R-OSSE. When both driver
 and waveguide throat diameters are provided, `r0` anchors the main waveguide

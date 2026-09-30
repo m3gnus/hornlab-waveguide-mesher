@@ -41,6 +41,8 @@ from typing import Any, Literal, Mapping
 
 import numpy as np
 
+from .throat_stretch import stretch_config_errors
+
 from .datums import DEFAULT_PLANE_TOLERANCE_MM, derive_datums
 from .geometry import (
     BuiltGeometry,
@@ -549,6 +551,7 @@ def write_step(
                     gmsh.finalize()
 
 
+@stretch_config_errors
 def write_step_from_config(
     config,
     output_path: str | Path | None = None,

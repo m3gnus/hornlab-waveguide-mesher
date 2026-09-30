@@ -407,7 +407,8 @@ def _build_acoustic_freestanding_point_grid(
     phi_groups = _bspline_patch_phi_groups(
         n_phi,
         closed=geometry.closed,
-        n_sectors=1,
+        n_sectors=(2 if geometry.quadrant_patch_fit and not geometry.closed
+                   and len(geometry.symmetry_planes) == 1 else 1),
     )
     axisymmetric = _grid_is_axisymmetric(inner_points)
     inner_wall = _add_occ_bspline_patch_wall_surfaces(
@@ -415,6 +416,7 @@ def _build_acoustic_freestanding_point_grid(
         closed=geometry.closed,
         phi_groups=phi_groups,
         surface_fit=geometry.surface_fit,
+        quadrant_patch_fit=geometry.quadrant_patch_fit,
         # Explicit ``approximate`` may approximate the meridian direction, but
         # must not turn a circular cross-section into an azimuth-dependent one.
         interpolate_u=axisymmetric,
@@ -490,6 +492,7 @@ def _build_acoustic_freestanding_point_grid(
         source_axis="z",
         use_min=True,
         closed=geometry.closed,
+        split_open_sectors=geometry.quadrant_patch_fit,
     )
     cap_builder = _SharedSurfaceBuilder()
     cap_builder.add_grid("inner", inner_points)

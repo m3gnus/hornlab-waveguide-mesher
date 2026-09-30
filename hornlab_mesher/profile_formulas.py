@@ -10,7 +10,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .freeform import build_freeform_geometry
-from .throat_stretch import STRETCH_COEFFICIENT_MAX, canonical_stretch_params
+from .config_parser import ConfigError
+from .throat_stretch import canonical_stretch_params, stretch_coefficients, validate_stretch_composition
 from .profile_common import (
     _DEFAULTS,
     _lossless_key_value,
@@ -279,25 +280,12 @@ def _validate_osse_termination(params: Mapping[str, Any], p: float) -> None:
             )
 
 
-def _stretch_coefficients(params: Mapping[str, Any], p: float) -> tuple[float, float]:
-    """Resolve the degree-mode axial map, independently of radial coefficients."""
-    values = tuple(eval_param(params.get(name), p, 0.0) for name in ("s1", "s2"))
-    for name, value in zip(("s1", "s2"), values):
-        if not (math.isfinite(value) and 0.0 <= value <= STRETCH_COEFFICIENT_MAX):
-            raise ValueError(
-                f"throat stretch {name} must be finite and >= 0 and <= "
-                f"{STRETCH_COEFFICIENT_MAX:g}, got {value:g} "
-                f"at phi={math.degrees(p) % 360.0:.1f} deg"
-            )
-    return values
-
-
 def _stretch_x(x: float, s1: float, s2: float) -> float:
     if s1 == 0.0 or s2 == 0.0:
         return x
     result = x + s1 * math.degrees(math.atan(s2 * x))
     if not math.isfinite(result):
-        raise ValueError("throat stretch produced a non-finite axial coordinate")
+        raise ConfigError("throat stretch produced a non-finite axial coordinate")
     return result
 
 
@@ -321,12 +309,12 @@ def _verify_stretched_axial_map(base: Any, stretched: Any) -> None:
     """
     base, stretched = np.asarray(base), np.asarray(stretched)
     if not np.all(np.isfinite(stretched)):
-        raise ValueError("throat stretch produced a non-finite axial coordinate")
+        raise ConfigError("throat stretch produced a non-finite axial coordinate")
     order = np.argsort(base, axis=None)
     before = base.ravel()[order]
     after = stretched.ravel()[order]
     if np.any((before[1:] > before[:-1]) & (after[1:] <= after[:-1])):
-        raise ValueError("throat stretch axial map is not monotone at distinct unstretched stations")
+        raise ConfigError("throat stretch axial map is not monotone at distinct unstretched stations")
 
 
 def _verify_stretch_junction(prefix: tuple[float, float], main: tuple[float, float]) -> None:
@@ -334,7 +322,7 @@ def _verify_stretch_junction(prefix: tuple[float, float], main: tuple[float, flo
         abs(a - b) > 64 * np.finfo(float).eps * max(1.0, abs(a), abs(b))
         for a, b in zip(prefix, main)
     ):
-        raise ValueError("throat stretch composite meridian is not continuous at the prefix/main junction")
+        raise ConfigError("throat stretch composite meridian is not continuous at the prefix/main junction")
 
 
 def _stretch_prefix_endpoint(r0: float, ext_len: float, slot_len: float, ext_angle: float) -> tuple[float, float]:
@@ -351,14 +339,9 @@ def _validate_osse_stretch_composition(
     params: Mapping[str, Any], p: float, s1: float, s2: float,
     L: float, ext_len: float, slot_len: float, coverage_angle: float | None,
 ) -> None:
+    validate_stretch_composition(params, "OSSE")
     if s1 == 0.0 or s2 == 0.0 or ext_len + slot_len == 0.0:
         return
-    rot = eval_param(params.get("rot"), p, 0.0)
-    if rot != 0.0:
-        raise ValueError(
-            "throat stretch with OSSE Rot and a prefix (extension or slot) is "
-            "unmeasured by ATH and is refused before geometry generation"
-        )
     r0 = eval_param(params.get("r0"), p, 12.7)
     a = coverage_angle
     if a is None:
@@ -388,7 +371,7 @@ def calculate_osse(
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
     L, _, ext_len, slot_len = osse_length_config(params, p)
-    s1, s2 = _stretch_coefficients(params, p)
+    s1, s2 = stretch_coefficients(params)
     _validate_osse_stretch_composition(params, p, s1, s2, L, ext_len, slot_len, coverage_angle)
     _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
@@ -468,7 +451,7 @@ def calculate_osse_curve(
 
     z = np.asarray(z_values, dtype=np.float64)
     L, _total, ext_len, slot_len = osse_length_config(params, p)
-    s1, s2 = _stretch_coefficients(params, p)
+    s1, s2 = stretch_coefficients(params)
     _validate_osse_stretch_composition(params, p, s1, s2, L, ext_len, slot_len, coverage_angle)
     _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
@@ -653,7 +636,7 @@ def _rosse_main_coefficients(
     a = _deg(params.get("a"), p, 60.0)
     a0 = _deg(params.get("a0"), p, 15.5)
     L = _rosse_length(params, p)
-    s1, s2 = _stretch_coefficients(params, p)
+    s1, s2 = stretch_coefficients(params)
     return _RosseMainCoefficients(
         R=R,
         r0=r0,
@@ -690,7 +673,7 @@ def _verify_rosse_stretch_junction(params: Mapping[str, Any], p: float, r0: floa
     try:
         main_x, main_y = _calculate_rosse_main(0.0, p, params)
     except (ArithmeticError, ValueError) as exc:
-        raise ValueError(
+        raise ConfigError(
             "throat stretch cannot establish a continuous prefix/main junction "
             f"for these R-OSSE parameters: {exc}"
         ) from exc
@@ -714,9 +697,127 @@ def _verify_rosse_stretch_prefix_intersection(
     for a scalar call or a sparse requested array. The cache contains only
     validation results, keyed by every resolved coefficient and prefix input.
     """
-    main_x, radius = _rosse_main_curve(np.linspace(0.0, tmax, 1025), coefficients)
+    stations = np.linspace(0.0, tmax, 1025)
+    main_x, radius = _rosse_main_curve(stations, coefficients)
     prefix = ext_len + slot_len
+    points = list(zip(main_x + prefix, radius))
+    if slot_len > 0:
+        points.insert(0, (ext_len, coefficients.r0))
+    if ext_len > 0:
+        points.insert(0, (0.0, _throat_extension_start_radius(coefficients.r0, ext_len, ext_angle)))
+    _verify_meridian_self_contact(np.asarray(points, dtype=np.float64))
     _verify_prefix_intersection(main_x + prefix, radius, coefficients.r0, ext_len, slot_len, ext_angle)
+    _verify_rosse_source_contact(coefficients, stations, main_x + prefix, radius,
+                                 ext_len, slot_len, ext_angle)
+
+
+def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
+                                stations: NDArray[np.float64], x: NDArray[np.float64],
+                                radius: NDArray[np.float64], ext_len: float,
+                                slot_len: float, ext_angle: float) -> None:
+    """Refine contacts with the exact prefix lines and the driver plane.
+
+    Chords can miss a continuous-curve contact at a prefix endpoint between
+    probe stations. Locate roots and local distance minima on the curve itself,
+    and explicitly include its terminating endpoint. The driver disc includes
+    its rim, so returning through its interior is also invalid.
+    """
+    from scipy.optimize import brentq, minimize_scalar
+
+    tolerance = 1e-7
+    prefix = ext_len + slot_len
+
+    def point(t):
+        z, r = _rosse_main_curve(np.array([t]), coefficients)
+        return float(z[0] + prefix), float(r[0])
+
+    def roots(values, evaluate):
+        candidates = [float(stations[-1])]
+        for i in np.flatnonzero(values[:-1] * values[1:] < 0):
+            candidates.append(brentq(evaluate, stations[i], stations[i + 1], xtol=1e-14))
+        for i in np.flatnonzero(np.abs(values) <= tolerance):
+            candidates.append(float(stations[i]))
+        distances = np.abs(values)
+        minima = np.flatnonzero((distances[1:-1] < distances[:-2]) &
+                                (distances[1:-1] <= distances[2:])) + 1
+        for i in minima:
+            result = minimize_scalar(lambda t: abs(evaluate(t)),
+                                     bounds=(stations[i - 1], stations[i + 1]),
+                                     method="bounded", options={"xatol": 1e-14})
+            if result.fun <= tolerance:
+                candidates.append(float(result.x))
+        return (t for t in candidates if t > 1e-12)
+
+    driver_radius = _throat_extension_start_radius(coefficients.r0, ext_len, ext_angle)
+    for t in roots(x, lambda t: point(t)[0]):
+        z, r = point(t)
+        if abs(z) <= tolerance and -tolerance <= r <= driver_radius + tolerance:
+            raise ConfigError("throat stretch main meridian has self-contact with the source/driver ring or disc")
+    for start, end, slope in ((0.0, ext_len, math.tan(ext_angle)),
+                              (ext_len, prefix, 0.0)):
+        if end <= start:
+            continue
+        values = radius - coefficients.r0 - (x - end) * slope
+        def distance(t):
+            z, r = point(t)
+            return r - coefficients.r0 - (z - end) * slope
+        for t in roots(values, distance):
+            z, _ = point(t)
+            if start - tolerance <= z <= end + tolerance and abs(distance(t)) <= tolerance:
+                raise ConfigError("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints")
+
+
+def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
+    """Include endpoints and collinear contacts, exempting only adjacent joins.
+
+    The exact driver point and prefix segments are part of this polyline. The
+    tolerance is the OCC geometric tolerance in millimetres, so endpoint
+    roundoff cannot let two rings reach a consumer as coincident topology.
+    """
+    from .config_parser import ConfigError
+
+    if not np.all(np.isfinite(points)):
+        raise ConfigError("throat stretch composite meridian has non-finite points")
+    tolerance = 1e-7
+    starts, ends = points[:-1], points[1:]
+    delta = ends - starts
+    lower, upper = np.minimum(starts, ends), np.maximum(starts, ends)
+
+    def cross(a, b):
+        return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+    def point_distance(point, a, direction):
+        length_sq = np.sum(direction * direction, axis=-1)
+        fraction = np.divide(np.sum((point - a) * direction, axis=-1), length_sq,
+                             out=np.zeros_like(length_sq), where=length_sq > 0)
+        projection = a + np.clip(fraction, 0, 1)[..., None] * direction
+        return np.linalg.norm(point - projection, axis=-1)
+
+    for i in range(len(starts) - 2):
+        indices = np.arange(i + 2, len(starts))
+        overlap = np.all((lower[i] <= upper[indices] + tolerance) &
+                         (lower[indices] <= upper[i] + tolerance), axis=1)
+        indices = indices[overlap]
+        if not len(indices):
+            continue
+        a, b = starts[indices], ends[indices]
+        directions = delta[indices]
+        separation = a - starts[i]
+        denominator = cross(delta[i], directions)
+        nonparallel = denominator != 0
+        u = np.divide(cross(separation, directions), denominator,
+                      out=np.full_like(denominator, -1), where=nonparallel)
+        v = np.divide(cross(separation, delta[i]), denominator,
+                      out=np.full_like(denominator, -1), where=nonparallel)
+        crossing = nonparallel & (u >= 0) & (u <= 1) & (v >= 0) & (v <= 1)
+        contact = np.minimum.reduce([
+            point_distance(starts[i], a, directions),
+            point_distance(ends[i], a, directions),
+            point_distance(a, starts[i], np.broadcast_to(delta[i], directions.shape)),
+            point_distance(b, starts[i], np.broadcast_to(delta[i], directions.shape)),
+        ]) <= tolerance
+        if np.any(crossing | contact):
+            raise ConfigError("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)")
 
 
 def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float64],
@@ -739,7 +840,7 @@ def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float
         fraction = d0[candidates] / (d0[candidates] - d1[candidates])
         crossing_x = x[:-1][candidates] + fraction * (x[1:][candidates] - x[:-1][candidates])
         if np.any((crossing_x > start) & (crossing_x < end)):
-            raise ValueError("throat stretch main meridian intersects the extension/slot prefix")
+            raise ConfigError("throat stretch main meridian intersects the extension/slot prefix")
 
 
 def _rosse_main_curve(
@@ -814,12 +915,13 @@ def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialL
 def calculate_rosse(
     t: float, p: float, params: Mapping[str, Any]
 ) -> tuple[float, float]:
-    s1, s2 = _stretch_coefficients(params, p)  # validate even prefix stations
+    validate_stretch_composition(params, "R-OSSE")
+    s1, s2 = stretch_coefficients(params)  # validate even prefix stations
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
     layout = rosse_axial_layout(params, p)
     ext_len, slot_len, main_length = layout.ext_len, layout.slot_len, layout.main_length
-    if s1 != 0.0 and s2 != 0.0 and ext_len + slot_len > 0.0:
+    if s1 != 0.0 and s2 != 0.0:
         _verify_rosse_stretch_junction(params, p, r0_base, ext_len, slot_len, ext_angle)
     # ATH convention (same as OSSE since the c198956 re-anchoring): r0 is the
     # MAIN throat radius; the extension tapers back from r0 to the driver end
@@ -860,13 +962,14 @@ def calculate_rosse_curve(
     rather than once per grid point is the whole cost of an R-OSSE preview.
     """
 
-    s1, s2 = _stretch_coefficients(params, p)
+    validate_stretch_composition(params, "R-OSSE")
+    s1, s2 = stretch_coefficients(params)
     t = np.asarray(t_values, dtype=np.float64)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
     layout = rosse_axial_layout(params, p)
     ext_len, slot_len, main_length = layout.ext_len, layout.slot_len, layout.main_length
-    if s1 != 0.0 and s2 != 0.0 and ext_len + slot_len > 0.0:
+    if s1 != 0.0 and s2 != 0.0:
         _verify_rosse_stretch_junction(params, p, r0_base, ext_len, slot_len, ext_angle)
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
 

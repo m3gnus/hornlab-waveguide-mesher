@@ -5,7 +5,7 @@ import logging
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
-from .throat_stretch import canonical_stretch_params, stretch_is_inactive
+from .throat_stretch import canonical_stretch_params, parameter_is_zero, validate_stretch_composition, stretch_coefficients
 
 import numpy as np
 
@@ -273,6 +273,10 @@ def _warn_ignored_ath_keys(
 def parse_text_config(content: str) -> dict[str, Any]:
     """Parse the text `.cfg` shape used by imported waveguide configs."""
     blocks, flat = _parse_ath_blocks(content)
+    # Validate supplied coefficients even in a section ATH would otherwise
+    # ignore. Field precedence must not conceal an unsupported expression.
+    for items in (flat, *blocks.values()):
+        stretch_coefficients({key: _maybe_number(items[key]) for key in ("s1", "s2") if key in items})
     formula = None
     profile_items: Mapping[str, str] = {}
     if "R-OSSE" in blocks:
@@ -403,7 +407,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # transition in a way the explicit native prefix does not model.
             if "Rot" not in blocks["OSSE"]:
                 profile.update(mapped(flat, (("Rot", "rot"),)))
-            if common_profile.get("slotLength", 0) != 0:
+            if not parameter_is_zero(common_profile.get("slotLength", 0)):
+                validate_stretch_composition(profile, formula)
                 raise ConfigError(
                     "OSSE block with nonzero Slot.Length is not supported: ATH V2025-12 "
                     "changes the radial transition while retaining the L axial span; "
@@ -564,23 +569,12 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     _reject_unsupported_ath_keys(flat, profile_items, mesh_items, blocks)
 
-    # Expressions count as potentially active. Do not infer a composition
-    # from individually measured features when their combination is unprobed.
-    stretch_active = not stretch_is_inactive(profile)
-    if stretch_active:
-        if formula == "OSSE" and "Rot" in blocks.get("OSSE", {}):
-            raise ConfigError("throat stretch with in-block Rot is unmeasured; an ATH probe is required")
-        prefix_active = any(profile.get(key, 0) != 0 for key in ("throatExtLength", "slotLength"))
-        rot_active = _maybe_number(flat.get("Rot", "0")) != 0
-        guide_active = gcurve.get("gcurveType", 0) != 0 and gcurve.get("gcurveWidth", 0) != 0
-        if formula == "OSSE" and profile.get("slotLength", 0) != 0:
-            raise ConfigError("throat stretch with Slot.Length in flat OSSE text is unverified; an ATH probe is required")
-        if formula == "R-OSSE" and "Length" in flat:
-            raise ConfigError("throat stretch with top-level Length in R-OSSE text is unverified; an ATH probe is required")
-        if rot_active and (formula != "OSSE" or prefix_active):
-            raise ConfigError("throat stretch with Rot and a prefix (or R-OSSE Rot) is unverified; an ATH probe is required")
-        if guide_active and (prefix_active or rot_active):
-            raise ConfigError("throat stretch with GCurve and a prefix or Rot is unverified; an ATH probe is required")
+    validate_stretch_composition(
+        {**profile, **gcurve,
+         "rot": profile.get("rot", _maybe_number(flat.get("Rot", "0")))},
+        formula,
+        length_supplied="Length" in flat,
+    )
 
     # ABEC.SimType selects the mesh topology: 1 = infinite baffle (the ATH
     # default), 2 = free standing. An enclosure implies a free-standing sim.

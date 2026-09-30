@@ -74,9 +74,9 @@ def test_unmeasured_stretch_compositions_refused(extra):
         parse_text_config("OSSE = {\nL = 160\ns1 = 0.5\ns2 = 0.2\n}\n" + extra)
 
 
-@pytest.mark.parametrize("coefficient", ["0.5", "0.5 + cos(p)^2"])
+@pytest.mark.parametrize("coefficient", ["0.5"])
 def test_unmeasured_flat_slot_stretch_refused(coefficient):
-    with pytest.raises(ConfigError, match="flat OSSE.*unverified"):
+    with pytest.raises(ConfigError, match="OSSE Slot.Length.*unverified"):
         parse_text_config(f"Length = 160\nCoverage.Angle = 40\ns1 = {coefficient}\ns2 = 0.2\nSlot.Length = 8")
 
 
@@ -95,9 +95,10 @@ def test_rot_and_prefix_with_zero_s1_remains_accepted():
     assert config["profile"]["rot"] == 10
 
 
-def test_active_in_block_rot_is_refused_as_unmeasured():
-    with pytest.raises(ConfigError, match="in-block Rot.*unmeasured"):
-        parse_text_config("OSSE = {\nL = 160\nRot = 10\ns1 = 0.5\ns2 = 0.2\n}")
+def test_in_block_and_top_level_rotation_share_the_supported_composition():
+    inside = parse_text_config("OSSE = {\nL = 160\nRot = 10\ns1 = 0.5\ns2 = 0.2\n}")
+    outside = parse_text_config("OSSE = {\nL = 160\ns1 = 0.5\ns2 = 0.2\n}\nRot = 10")
+    assert build_geometry_params(inside) == build_geometry_params(outside)
 
 
 @pytest.mark.parametrize("variant", ["plain", "rotated", "gcurve", "extension"])

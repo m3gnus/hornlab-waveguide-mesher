@@ -530,6 +530,7 @@ def _add_occ_bspline_patch_wall_surfaces(
     phi_groups: list[list[int]] | None = None,
     surface_fit: str = SURFACE_FIT_APPROXIMATE,
     interpolate_u: bool = False,
+    quadrant_patch_fit: bool = False,
 ) -> list[tuple[int, int]]:
     """Build enclosure-mode horn walls as large OCC BSpline patches.
 
@@ -544,7 +545,7 @@ def _add_occ_bspline_patch_wall_surfaces(
     surfaces: list[tuple[int, int]] = []
     degree_v = min(3, max(1, n_len - 1))
     groups = phi_groups if phi_groups is not None else _bspline_patch_phi_groups(n_phi, closed=closed)
-    v_params = grid_v_parameters(arr)
+    v_params = grid_v_parameters(arr, closed=closed if quadrant_patch_fit else None)
     for indices in groups:
         surfaces.append(
             (

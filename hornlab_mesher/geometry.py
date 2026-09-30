@@ -275,6 +275,8 @@ class PointGridHornGeometry:
     # these optional so every existing point-grid caller remains unchanged.
     freeform_axis_samples_mm: NDArray[np.float64] | None = None
     freeform_report: dict[str, Any] | None = None
+    # Active stretch fits identical quadrant patches in reduced and full builds.
+    quadrant_patch_fit: bool = False
 
     def __post_init__(self) -> None:
         if self.topology_mode not in {"acoustic", "legacy"}:

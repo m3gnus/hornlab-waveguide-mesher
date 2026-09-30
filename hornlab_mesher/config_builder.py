@@ -53,7 +53,7 @@ from .builders.point_grid_freestanding import (
 )
 from .builders.point_grid_surfaces import _rear_rim_points
 from .tags import PhysicalGroup
-from .throat_stretch import STRETCH_COEFFICIENT_MAX, canonical_stretch_params
+from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, stretch_coefficients
 
 logger = logging.getLogger(__name__)
 
@@ -790,6 +790,7 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
         raise ConfigError(f"formula ICW does not support throat extension ({joined})")
 
 
+@stretch_config_errors
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
@@ -802,6 +803,21 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     formula = _normalise_formula(
         _pick(config, profile, names=("formula", "type"), default="OSSE")
     )
+    if formula in {"OSSE", "R-OSSE"}:
+        for section in (profile, config, config.get("parameters", {})):
+            if isinstance(section, Mapping):
+                stretch_coefficients(section)
+        if formula == "R-OSSE":
+            validate_stretch_composition(
+                {"s1": _pick(profile, config, names=("s1",), default=0.0),
+                 "s2": _pick(profile, config, names=("s2",), default=0.0),
+                 "rot": _pick(profile, config, names=("rot_deg", "rot"), default=0.0),
+                 "throatExtLength": _pick(profile, config, names=("throat_ext_length_mm", "throatExtLength"), default=0.0),
+                 "slotLength": _pick(profile, config, names=("slot_length_mm", "slotLength"), default=0.0),
+                 "gcurveType": _pick(gcurve, config, names=("gcurve_type", "gcurveType"), default=0),
+                 "gcurveWidth": _pick(gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0)},
+                formula, length_supplied=_has_any(profile, config, names=("L_mm", "L", "Length")),
+            )
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, profile, cross, morph, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure, formula)
@@ -1042,13 +1058,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     _apply_driver_adapter(common, profile, config)
     if formula in {"OSSE", "R-OSSE"}:
         for name in ("s1", "s2"):
-            common[name] = _scalar_or_expr(profile, config, names=(name,), default=0.0)
-            value = _static_float_or_none(common[name])
-            if value is not None and not 0.0 <= value <= STRETCH_COEFFICIENT_MAX:
-                raise ConfigError(
-                    f"throat stretch {name} must be finite and >= 0 and <= "
-                    f"{STRETCH_COEFFICIENT_MAX:g}, got {value:g}"
-                )
+            common[name] = _pick(profile, config, names=(name,), default=0.0)
         common = canonical_stretch_params(common)
     if formula == "ICW":
         _reject_icw_throat_extension(common)
@@ -1178,6 +1188,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
 
+    if formula in {"OSSE", "R-OSSE"}:
+        validate_stretch_composition(
+            {**common, "rot": _pick(profile, config, names=("rot_deg", "rot"), default=0.0)},
+            formula,
+            length_supplied=_has_any(profile, config, names=("L_mm", "L", "Length")),
+        )
     return common, formula, mode
 
 
@@ -1824,6 +1840,16 @@ def _build_acoustic_sampling_grid(
         )
     )
 
+    stretch_active = not stretch_is_inactive(working)
+    # Sector fits preserve solve/CAD identity; curved morph corners also need
+    # sufficient samples to represent the analytic preview between fit nodes.
+    curved_morph = stretch_active and _static_float_or_none(working.get("morphTarget", 0)) == 1.0
+    angular_floor = 64 if curved_morph else 4
+    corner_floor = 4 if curved_morph else 1
+    if curved_morph:
+        working["angularSegments"] = max(angular_floor, int(working["angularSegments"]))
+        working[ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY] = max(
+            corner_floor, int(working.get(ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY) or 1))
     max_segments = 2048
     # 3*k intervals per corner quadrant; the cap only exists to keep a genuinely
     # non-convergent geometry from looping, not as a practical ceiling.
@@ -1997,7 +2023,7 @@ def _build_acoustic_sampling_grid(
         first_probe = attempt == 0
         working["angularSegments"] = _retarget(
             current_angular, ordinary_factor, max_segments,
-            floor=4, may_shrink=first_probe or slack["angular"],
+            floor=angular_floor, may_shrink=first_probe or slack["angular"],
         )
         working["lengthSegments"] = _retarget(
             current_length, axial_factor, max_segments,
@@ -2006,7 +2032,7 @@ def _build_acoustic_sampling_grid(
         if has_corner:
             working[ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY] = _retarget(
                 current_arc, corner_factor, max_arc_subdivision,
-                floor=1, may_shrink=first_probe or slack["corner"],
+                floor=corner_floor, may_shrink=first_probe or slack["corner"],
             )
 
         if (
@@ -2063,6 +2089,7 @@ class ResolvedGeometry:
     freeform_report: dict[str, Any] | None = None
 
 
+@stretch_config_errors
 def resolve_geometry(
     config: Mapping[str, Any],
     *,
@@ -2173,6 +2200,7 @@ def resolve_geometry(
         outer_points=outer_points,
         topology_mode=topology_mode,
         surface_fit=_mesh_surface_fit(mesh),
+        quadrant_patch_fit=not stretch_is_inactive(params),
         # ATH does not scale Mesh.WallThickness by global Scale; the rear-cap
         # depth follows the unscaled wall offset.
         wall_thickness_mm=float(params["wallThickness"] or 0.0),
@@ -2210,6 +2238,7 @@ def resolve_geometry(
     )
 
 
+@stretch_config_errors
 def build_from_config(
     config: Mapping[str, Any],
     output_path: str | Path,

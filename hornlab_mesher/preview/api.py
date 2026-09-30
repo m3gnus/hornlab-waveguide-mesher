@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
+
+from ..throat_stretch import stretch_config_errors
 from numpy.typing import NDArray
 
 from ..config_builder import build_geometry_params
@@ -350,6 +352,7 @@ def _sample_master_level(
     )
 
 
+@stretch_config_errors
 def build_preview_geometry(
     config: Mapping[str, Any], options: PreviewOptionsV1 = PreviewOptionsV1()
 ) -> PreviewGeometryV1:

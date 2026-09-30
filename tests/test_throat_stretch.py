@@ -70,7 +70,9 @@ def test_scalar_vector_and_radius_invariance(family, prefix, phi):
     params = dict(
         next(r["params"] for r in REFERENCES if r["params"]["type"] == family)
     )
-    params.update(prefix, s1="0.5 + 0.4*cos(p)^2", s2="0.05 + 0.1*sin(p)^2")
+    if family == "OSSE":
+        prefix = {k: v for k, v in prefix.items() if k != "slotLength"}
+    params.update(prefix, s1=0.5, s2=0.2)
     scalar, vector = (
         (calculate_osse, calculate_osse_curve)
         if family == "OSSE"
@@ -104,11 +106,13 @@ def test_rejects_invalid_coefficients_even_in_prefix(family, key, value):
 
 
 @pytest.mark.parametrize("key", ["s1", "s2"])
-def test_negative_per_angle_expression_is_rejected_at_the_evaluated_angle(key):
+def test_per_angle_expression_is_refused_at_every_angle(key):
     params = {"L": 120, key: "cos(p)"}
-    calculate_osse(10, 0, params)
-    with pytest.raises(ValueError, match=key):
-        calculate_osse_curve(np.array([10]), math.pi, params)
+    for phi in (0, math.pi):
+        with pytest.raises(ConfigError, match="per-azimuth throat stretch is not supported yet"):
+            calculate_osse(10, phi, params)
+        with pytest.raises(ConfigError, match="per-azimuth throat stretch is not supported yet"):
+            calculate_osse_curve(np.array([10]), phi, params)
 
 
 @pytest.mark.parametrize("family", ["OSSE", "R-OSSE"])
@@ -119,11 +123,24 @@ def test_config_validation(family, key, value):
         build_geometry_params({"profile": {"formula": family, key: value}})
 
 
-@pytest.mark.parametrize("family", ["LOOKUP", "ICW", "FREEFORM"])
+@pytest.mark.parametrize("family", ["ICW", "FREEFORM"])
 @pytest.mark.parametrize("key", ["s1", "s2"])
-def test_refuses_stretch_on_other_profile_families(family, key):
-    with pytest.raises(ConfigError, match="profile|shape"):
-        build_geometry_params({"profile": {"formula": family, key: 0.5}})
+@pytest.mark.parametrize("location", ["profile", "top"])
+def test_refuses_stretch_on_other_profile_families(family, key, location):
+    profile = (
+        {"profileH": {"points": [[0, 12.7], [80, 75]]},
+         "profileV": {"points": [[0, 12.7], [80, 60]]}}
+        if family == "FREEFORM" else
+        {"r0": 12.7, "a0": 15.5, "icw_coeffs": [0, 0, 0, 0, 0, 0], "icw_S": 80}
+    )
+    config = {"formula": family, "mode": "bare", "profile": profile}
+    # Resolve the complete, valid family first, so another missing field cannot
+    # make removal of the coefficient refusal survive this test.
+    resolve_geometry(config)
+    (profile if location == "profile" else config)[key] = 0.5
+    message = "profile coefficient keys" if family == "FREEFORM" else "shape keys.*ICW"
+    with pytest.raises(ConfigError, match=message):
+        build_geometry_params(config)
 
 
 def test_axial_map_is_monotone_and_preserves_rosse_foldback():
@@ -145,28 +162,28 @@ def test_axial_map_is_monotone_and_preserves_rosse_foldback():
 
 
 @pytest.mark.parametrize(
-    "length_mode,main_length,total", [("main", 160, 180), ("total", 152, 172)]
+    "length_mode,main_length,total", [("main", 160, 172), ("total", 160, 172)]
 )
 def test_osse_length_prefix_and_rotation_contract(length_mode, main_length, total):
     params = {
         **REFERENCES[2]["params"],
         "throatExtLength": 12,
         "throatExtAngle": 3,
-        "slotLength": 8,
+        "slotLength": 0,
         "_athLengthMode": length_mode,
     }
     assert osse_total_length(params) == total  # parameter span, not stretched depth
-    stations = np.array([0, 6, 12, 16, 20, 20 + main_length / 2, total])
+    stations = np.array([0, 6, 12, 12 + main_length / 2, total])
     x, radius = calculate_osse_curve(stations, 0, params)
-    np.testing.assert_array_equal(x[:5], stations[:5])
-    for j in [5, 6]:
-        u = stations[j] - 20
+    np.testing.assert_array_equal(x[:3], stations[:3])
+    for j in [3, 4]:
+        u = stations[j] - 12
         assert x[j] == pytest.approx(
-            20 + u + 0.5 * math.degrees(math.atan(0.2 * u)), abs=1e-12
+            12 + u + 0.5 * math.degrees(math.atan(0.2 * u)), abs=1e-12
         )
     plain_radius = calculate_osse_curve(stations, 0, {**params, "s1": 0})[1]
     assert np.array_equal(radius, plain_radius)
-    with pytest.raises(ValueError, match="Rot.*prefix.*unmeasured"):
+    with pytest.raises(ValueError, match="Rot.*prefix.*unverified"):
         calculate_osse_curve(stations, 0, {**params, "rot": 10})
 
 
@@ -192,15 +209,15 @@ def test_rosse_stretches_main_x_before_prefix_translation(tmax):
 
 
 @pytest.mark.parametrize("block", ["OSSE", "R-OSSE"])
-def test_text_and_json_serialization_preserve_coefficients_and_expressions(block):
+def test_text_and_json_serialization_preserve_numeric_coefficients(block):
     length = "L = 160" if block == "OSSE" else "R = 200"
     config = parse_text_config(
-        f"{block} = {{\n{length}\ns1 = 0.5 + cos(p)^2\ns2 = 0.2\n}}"
+        f"{block} = {{\n{length}\ns1 = 0.5\ns2 = 0.2\n}}"
     )
     normalized, _, _ = build_geometry_params(config)
     restored, _, _ = build_geometry_params(json.loads(json.dumps(config)))
     assert normalized == restored
-    assert normalized["s1"] == "0.5 + cos(p)^2"
+    assert normalized["s1"] == 0.5
     assert normalized["s2"] == 0.2
     # Consecutive builds cannot return geometry from a different coefficient.
     config["mesh"].update(angularSegments=16, lengthSegments=8)
@@ -236,7 +253,7 @@ def test_disabled_feature_mesh_and_grid_hashes_are_bit_identical(
 ):
     config = CORPUS[case]
     disabled = copy.deepcopy(config)
-    disabled["profile"].update(s1="0.5 + cos(p)^2", s2="0.2 + cos(p)^2")
+    disabled["profile"].update(s1=0.5, s2=0.2)
     disabled["profile"][zero_key] = 0
     base_params = build_geometry_params(config)[0]
     disabled_params = build_geometry_params(disabled)[0]

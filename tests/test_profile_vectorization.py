@@ -82,8 +82,8 @@ _ROSSE_CASES = {
     "seed": {},
     "stretch": {"s1": 0.45, "s2": 0.2},
     "stretch_prefix": {
-        "s1": "0.5 + cos(p)^2",
-        "s2": "0.2 + sin(p)^2",
+        "s1": 0.5,
+        "s2": 0.2,
         "throatExtLength": 12.0,
         "slotLength": 8.0,
     },
@@ -120,10 +120,9 @@ _OSSE_CASES = {
     "seed": {},
     "stretch": {"s1": 0.45, "s2": 0.2},
     "stretch_prefix": {
-        "s1": "0.5 + cos(p)^2",
-        "s2": "0.2 + sin(p)^2",
+        "s1": 0.5,
+        "s2": 0.2,
         "throatExtLength": 12.0,
-        "slotLength": 8.0,
     },
     "throat_extension": {"throatExtLength": 15.0, "throatExtAngle": 4.0},
     "slot": {"slotLength": 6.0},

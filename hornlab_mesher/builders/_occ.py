@@ -312,9 +312,16 @@ def make_planar_fill_from_boundary(
     source_axis: str = "z",
     use_min: bool = True,
     closed: bool = True,
+    split_open_sectors: bool = False,
 ) -> list[tuple[int, int]]:
     """Fill an extreme boundary loop using the existing OCC boundary curves."""
 
+    if split_open_sectors and not closed and len(dimtags) > 1:
+        # Separate quadrant patches carry coincident, independently authored
+        # seam endpoint tags. Fill each sector on its own rim rather than
+        # treating those interior endpoint tags as the two exterior cut axes.
+        return [face for surface in dimtags for face in make_planar_fill_from_boundary(
+            [surface], source_axis=source_axis, use_min=use_min, closed=False)]
     loop_curves = extreme_boundary_loop_curves(
         dimtags, source_axis=source_axis, use_min=use_min
     )
@@ -548,8 +555,20 @@ def throat_boundary_curve(
     )
 
 
-def grid_v_parameters(points: NDArray[np.float64]) -> NDArray[np.float64]:
+def grid_v_parameters(points: NDArray[np.float64], *, closed: bool | None = None) -> NDArray[np.float64]:
     """Shared v-parameterisation for every patch cut from one phi-major grid."""
 
     grid = np.ascontiguousarray(np.asarray(points).transpose(1, 0, 2))
+    if closed is False:
+        # A reduced symmetric sector contains both cut-axis endpoints. Weight
+        # them by half, matching their contribution to the full ring average.
+        # Otherwise stretch magnifies the different axial knot vectors into
+        # visibly different surfaces between the same data stations.
+        chords = np.linalg.norm(np.diff(grid, axis=0), axis=-1)
+        weights = np.ones(grid.shape[1])
+        weights[[0, -1]] = 0.5
+        mean_chords = np.average(chords, axis=1, weights=weights)
+        total = float(mean_chords.sum())
+        if math.isfinite(total) and total > 0 and np.all(mean_chords > 0):
+            return np.concatenate(([0.0], np.cumsum(mean_chords))) / total
     return _averaged_chord_parameters(grid, axis=0)
