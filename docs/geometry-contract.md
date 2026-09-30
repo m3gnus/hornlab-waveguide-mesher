@@ -144,8 +144,8 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
 - Radius is unchanged. R-OSSE uses the complete main `x(t)`, including its
   `b` term; OS-SE uses the main axial parameter in millimetres.
 - `s1` has units mm/degree and `s2` has units 1/mm. Both default to zero and
-  must be plain finite numbers in `[0, 10000]` in this release.
-  The explicit upper bound limits added displacement to 900,000 mm. This is
+  must be plain finite numbers in `[0, 10]` in this release.
+  The explicit upper bound limits added displacement to 900 mm. This is
   far below half an ulp at the largest finite double, so the axial map stays
   finite for any finite input coordinate (an overflowing atan argument uses
   its finite limiting angle). Coefficients above the bound are refused during
@@ -154,8 +154,9 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   native JSON, raises `ConfigError`: “per-azimuth throat stretch is not supported
   yet”. ATH text numeric tokens are numbers; expression tokens are refused.
   Both inputs are validated before a dormant pair is canonicalized.
-- Either coefficient zero bypasses the map, preserving the existing floating
-  point operations and geometry exactly.
+- Either coefficient zero bypasses stretch-specific geometry validation and
+  error translation as well as the map, preserving existing floating point
+  operations, geometry, error types and messages exactly.
 - `S'(x) = 1 + (180/pi)*s1*s2/(1+(s2*x)^2) >= 1`. The map is strictly
   increasing in **x**. OS-SE remains axially monotone before `Rot`; R-OSSE
   preserves its intentional foldback in **t**, rather than straightening it.
@@ -179,9 +180,10 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   the actual radial
   and axial main endpoint against the prefix endpoint. A discontinuous
   composite meridian is refused. The map is analytically increasing; the
-  vector evaluator additionally checks that distinct unstretched axial
-  coordinates retain their ordering after stretch and prefix translation,
-  refusing floating-point collapse. R-OSSE foldback is also checked against
+  scalar and vector evaluators use the same analytical monotonicity test
+  and refuse non-finite output. Adjacent representable input stations can
+  round to equal output coordinates; both evaluators accept those stations.
+  R-OSSE foldback is also checked against
   the unchanged straight prefix, on a 1,025-station full-main probe and on
   the requested vector stations. A complete composite polyline includes the
   exact source/driver point and both main endpoints. Nonadjacent segment

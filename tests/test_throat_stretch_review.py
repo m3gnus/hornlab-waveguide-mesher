@@ -40,6 +40,50 @@ def consume(path, config, tmp_path):
 PUBLIC = ['resolve', 'coarse', 'fine', 'mesh', 'step']
 
 
+@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
+@pytest.mark.parametrize('path', ['coarse', 'fine'])
+@pytest.mark.parametrize('zero', [0, 0.0, -0.0, float('1e-400')])
+@pytest.mark.parametrize('key', ['s1', 's2'])
+def test_explicit_zero_preserves_existing_half14_preview_error(family, path, zero, key, tmp_path):
+    corpus = json.loads((Path(__file__).parent / 'fixtures/throat_stretch/disabled-corpus.json').read_text())
+    config = copy.deepcopy(corpus['osse-bare' if family == 'OSSE' else 'rosse-bare'])
+    config['scale'] = .48
+    config['mesh'].update(quadrants='14', vertical_offset_mm=7)
+    with pytest.raises(ValueError, match='source_cap: inconsistent local orientation') as base:
+        consume(path, config, tmp_path)
+    for section in ['profile', 'parameters', 'top']:
+        disabled = copy.deepcopy(config)
+        if section == 'parameters':
+            disabled['parameters'] = disabled.pop('profile')
+        target = disabled if section == 'top' else disabled[section]
+        target.update(s1=.5, s2=.2)
+        target[key] = zero
+        with pytest.raises(type(base.value)) as inactive:
+            consume(path, disabled, tmp_path)
+        assert type(inactive.value) is type(base.value)
+        assert str(inactive.value) == str(base.value)
+
+
+@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
+@pytest.mark.parametrize('path', PUBLIC)
+def test_inactive_raw_ath_sampling_error_equals_absent_stretch(family, path, tmp_path):
+    cases = json.loads((Path(__file__).parent / 'fixtures/throat_stretch/ath-v2025-12/cases.json').read_text())['cases']
+    name = 'osse-desmos-plain-zero' if family == 'OSSE' else 'rosse-published-plain-zero'
+    config = parse_text_config(cases[name]['config'])
+    config['profile'].pop('s1', None)
+    config['profile'].pop('s2', None)
+    with pytest.raises(ValueError) as base:
+        consume(path, config, tmp_path)
+    assert type(base.value) is ValueError
+    for pair in [{'s1': 0, 's2': .2}, {'s1': .5, 's2': 0}]:
+        disabled = copy.deepcopy(config)
+        disabled['profile'].update(pair)
+        with pytest.raises(type(base.value)) as inactive:
+            consume(path, disabled, tmp_path)
+        assert type(inactive.value) is type(base.value)
+        assert str(inactive.value) == str(base.value)
+
+
 @pytest.mark.parametrize('path', PUBLIC)
 @pytest.mark.parametrize('key', ['s1', 's2'])
 @pytest.mark.parametrize('value', ['0.1-0.2*sin(16*p)^128', '-1+0*p', '10001+0*p',

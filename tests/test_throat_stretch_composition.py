@@ -1,6 +1,7 @@
 """Numeric composition boundaries, independent of any azimuth zero probe."""
 import itertools
 import math
+import sys
 
 import numpy as np
 import pytest
@@ -141,3 +142,34 @@ def test_native_composition_alias_cannot_hide_an_expression(key, alias):
     config.setdefault('gcurve' if key in COMPOSITION_GUIDE_KEYS else 'profile', {})[alias] = '0*p'
     with pytest.raises(ConfigError, match=f'per-azimuth {KEYS[key][0]} yet'):
         build_geometry_params(config)
+
+
+@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
+@pytest.mark.parametrize('s1,s2', list(itertools.product(
+    [0, sys.float_info.min, 1e-13, .05, .2, 1, 5, np.nextafter(10., 0), 10.], repeat=2)))
+@pytest.mark.parametrize('station', [0., sys.float_info.min, .25, .5, .999])
+def test_scalar_vector_acceptance_at_adjacent_stations_across_coefficient_range(family, s1, s2, station):
+    p = {('L' if family == 'OSSE' else 'R'): 160, 's1': s1, 's2': s2}
+    scalar, vector = (calculate_osse, calculate_osse_curve) if family == 'OSSE' else (calculate_rosse, calculate_rosse_curve)
+    stations = np.array([station, np.nextafter(station, math.inf)])
+    expected = np.array([scalar(float(t), 0, p) for t in stations])
+    actual = np.column_stack(vector(stations, 0, p))
+    assert np.all(np.isfinite(actual))
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=0)
+
+
+@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
+@pytest.mark.parametrize('key', ['s1', 's2'])
+@pytest.mark.parametrize('value', [np.nextafter(10., math.inf), 11., 10000.])
+def test_above_ten_refused_by_both_evaluators_and_native_normalization(family, key, value):
+    value = float(value)
+    p = {('L' if family == 'OSSE' else 'R'): 160, 's1': .5, 's2': .2, key: value}
+    scalar, vector = (calculate_osse, calculate_osse_curve) if family == 'OSSE' else (calculate_rosse, calculate_rosse_curve)
+    errors = []
+    for call in [lambda: scalar(.5, 0, p), lambda: vector([.5], 0, p),
+                 lambda: build_geometry_params({'formula': family, 'profile': p}),
+                 lambda: parse_text_config(f'{family} = {{\n{key} = {value!r}\n}}')]:
+        with pytest.raises(ConfigError, match=key + r'.*<= 10(?:,|$)') as error:
+            call()
+        errors.append(str(error.value))
+    assert len(set(errors[:3])) == 1

@@ -3,7 +3,8 @@
 These are verbatim subsets of GridExport profile points from 36 configs
 executed by ATH V2025-12. Each generated `config.txt` identifies that version.
 `cases.json` contains the generating text (output destination removed),
-normalized parameters, and full-export comparison results. No executable or
+normalized parameters, per-file SHA-256 checksums of the raw LF CSV bytes
+(including headers), and full-export comparison results. No executable or
 private reference archive is required for these tests.
 
 Each CSV keeps four meridians (0, 45, 90, 135 degrees) and selected ordinal

@@ -47,3 +47,10 @@ with arguments `<extracted-base>` and `<output-json>`, using the test venv
 with `PYTHONDONTWRITEBYTECODE=1` and `ATH_REFERENCE_ROOT` configured. The script
 asserts that imports resolve into the extracted base. Do not generate these
 expected values with the feature implementation.
+
+`base-resolved-arrays.npz` preserves the numeric arrays from the verified base
+extraction used by `base-compatibility.json`. Each array matches that capture's
+shape, dtype and SHA-256 exactly. Captured-base comparisons use `rtol=1e-12`
+for floats, with `atol=1e-12` only for expected zeros (in the field's unit).
+Structure and non-float fields remain exact; same-platform inactive geometry
+and identity comparisons remain byte-exact.

@@ -65,8 +65,8 @@ Shared OSSE/R-OSSE keys:
 | `a0_deg` | `a0` | `15.5` (`0` for text imports, the ATH default) |
 | `k` | imported `OS.k`, `Term.k` | `1.0` |
 | `q` | none | `0.995` for OSSE, `1.0` for R-OSSE |
-| `s1` | imported block `s1` | `0.0` (mm/degree, finite, 0 through 10000) |
-| `s2` | imported block `s2` | `0.0` (1/mm, finite, 0 through 10000) |
+| `s1` | imported block `s1` | `0.0` (mm/degree, finite, 0 through 10) |
+| `s2` | imported block `s2` | `0.0` (1/mm, finite, 0 through 10) |
 | `throat_ext_length_mm` | `throatExtLength` | `0.0` |
 | `throat_ext_angle_deg` | `throatExtAngle` | `0.0` |
 | `slot_length_mm` | `slotLength` | `0.0` |
@@ -80,11 +80,11 @@ Shared OSSE/R-OSSE keys:
 stretch exactly; inactive normalization omits both keys and retains the legacy
 geometry serialization, equality, hashes and cache identity. Active pairs
 include both keys. Both must be plain finite numbers in the inclusive range
-`[0, 10000]`. Native JSON strings, expression strings and per-azimuth forms are
+`[0, 10]`. Native JSON strings, expression strings and per-azimuth forms are
 refused with `ConfigError` saying “per-azimuth throat stretch is not supported
 yet”, including expressions that evaluate to zero and a pair with a zero
 companion. ATH text numeric tokens are accepted as numbers. The bound limits
-added displacement to 900,000 mm and keeps the map finite for finite coordinates.
+added displacement to 900 mm and keeps the map finite for finite coordinates.
 They belong inside `R-OSSE`/`OSSE` ATH blocks and are refused on other profile
 families (an ICW seed may contain numeric coefficients). Total-length helpers
 and `L` remain unstretched sampling parameters; physical dimensions come from

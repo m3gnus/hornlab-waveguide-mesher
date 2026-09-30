@@ -296,25 +296,19 @@ def _stretch_x_curve(x: NDArray[np.float64], s1: float, s2: float) -> NDArray[np
     # correct limiting angle, just as on the scalar path.
     with np.errstate(over="ignore"):
         result = x + s1 * np.degrees(np.arctan(s2 * x))
-    _verify_stretched_axial_map(x, result)
+    _verify_stretched_axial_map(result)
     return result
 
 
-def _verify_stretched_axial_map(base: Any, stretched: Any) -> None:
-    """Refuse non-finite output or loss of ordering at representable stations.
+def _verify_stretched_axial_map(stretched: Any) -> None:
+    """Use the scalar path's analytical monotonicity and finite-output rule.
 
-    The positive-coefficient map is analytically increasing everywhere. This
-    additional check catches floating-point collapse, including translation
-    back onto a large prefix, without rejecting R-OSSE's existing foldback.
+    The positive-coefficient map is analytically increasing everywhere.
+    Adjacent representable inputs may round to equal outputs. That does not
+    change acceptance on either path or reject R-OSSE's existing foldback.
     """
-    base, stretched = np.asarray(base), np.asarray(stretched)
     if not np.all(np.isfinite(stretched)):
         raise ConfigError("throat stretch produced a non-finite axial coordinate")
-    order = np.argsort(base, axis=None)
-    before = base.ravel()[order]
-    after = stretched.ravel()[order]
-    if np.any((before[1:] > before[:-1]) & (after[1:] <= after[:-1])):
-        raise ConfigError("throat stretch axial map is not monotone at distinct unstretched stations")
 
 
 def _verify_stretch_junction(prefix: tuple[float, float], main: tuple[float, float]) -> None:
@@ -507,12 +501,11 @@ def calculate_osse_curve(
         x = dx * math.cos(rot) - dy * math.sin(rot)
         y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
     if s1 != 0.0 and s2 != 0.0:
-        base_x = x.copy()
         x = x.copy()
         x[in_main] = ext_len + slot_len + _stretch_x_curve(
             x[in_main] - ext_len - slot_len, s1, s2
         )
-        _verify_stretched_axial_map(base_x, x)
+        _verify_stretched_axial_map(x)
     return x, y
 
 
@@ -1003,14 +996,9 @@ def calculate_rosse_curve(
         # fractional exponents R-OSSE actually uses.
         main_t = (axial_pos[in_main] - ext_len - slot_len) / main_length
         main_x, main_y = _rosse_main_curve(main_t, _rosse_main_coefficients(p, params))
-        base_main_x = None
-        if s1 != 0.0 and s2 != 0.0:
-            base_main_x = _rosse_main_curve(
-                main_t, _rosse_main_coefficients(p, {**params, "s1": 0.0})
-            )[0]
         x[in_main] = main_x + ext_len + slot_len
-        if base_main_x is not None:
-            _verify_stretched_axial_map(base_main_x + ext_len + slot_len, x[in_main])
+        if s1 != 0.0 and s2 != 0.0:
+            _verify_stretched_axial_map(x[in_main])
             order = np.argsort(main_t)
             _verify_prefix_intersection(x[in_main][order], main_y[order], r0_base,
                                         ext_len, slot_len, ext_angle)

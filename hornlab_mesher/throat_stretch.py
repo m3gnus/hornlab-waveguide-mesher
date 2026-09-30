@@ -6,10 +6,10 @@ from numbers import Real
 from typing import Any, Mapping
 
 
-# At most 900,000 mm of displacement, far below half an ulp at the largest
+# At most 900 mm of displacement, far below half an ulp at the largest
 # finite float. Thus adding the displacement to any finite x stays finite.
 # The atan argument may saturate to infinity; atan still has a finite limit.
-STRETCH_COEFFICIENT_MAX = 10_000.0
+STRETCH_COEFFICIENT_MAX = 10.0
 
 
 def stretch_coefficients(params: Mapping[str, Any]) -> tuple[float, float]:
@@ -30,7 +30,9 @@ def stretch_coefficients(params: Mapping[str, Any]) -> tuple[float, float]:
         try:
             number = float(value)
         except (ValueError, OverflowError) as exc:
-            raise ConfigError(f"throat stretch {key} must be finite and >= 0 and <= 10000") from exc
+            raise ConfigError(
+                f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}"
+            ) from exc
         if not math.isfinite(number) or not 0 <= number <= STRETCH_COEFFICIENT_MAX:
             raise ConfigError(
                 f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}, got {value!r}"
@@ -136,11 +138,14 @@ def stretch_config_errors(function):
         except (ValueError, ArithmeticError, MesherError) as exc:
             if isinstance(exc, ConfigError):
                 raise
-            if isinstance(config, Mapping) and any(
-                any(k in section for k in ("s1", "s2"))
-                for section in stretch_input_sections(config)
-            ):
-                raise ConfigError(f"throat stretch geometry is invalid: {exc}") from exc
+            if isinstance(config, Mapping):
+                from .config_builder import _pick, _section
+
+                profile = _section(config, "profile", "parameters")
+                coefficients = {key: _pick(profile, config, names=(key,), default=0.0)
+                                for key in ("s1", "s2")}
+                if not stretch_is_inactive(coefficients):
+                    raise ConfigError(f"throat stretch geometry is invalid: {exc}") from exc
             raise
     return wrapped
 

@@ -79,7 +79,8 @@
       "max_deviation_final_mm": 6.114741930470402,
       "max_vector_deviation_final_mm": 6.114741930470402,
       "max_paired_map_deviation_mm": 1.9953990673116095e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "3689caa832894cc1fdf68d20caf85b7245ed1a8d40f816b23d2a35cb8ebfe58c"
     },
     "osse-desmos-combined-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -159,7 +160,8 @@
       "max_deviation_final_mm": 7.69985741312599,
       "max_vector_deviation_final_mm": 7.69985741312599,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "0ca5bffe7afb521a6c9031044ead6ce3caa86c5c13d8da1306e4c6ceb103a6ed"
     },
     "osse-desmos-extension-stretch": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0.5\n s2 = 0.2\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -239,7 +241,8 @@
       "max_deviation_final_mm": 1.9953990673116095e-06,
       "max_vector_deviation_final_mm": 1.9953990673116095e-06,
       "max_paired_map_deviation_mm": 1.9953990673116095e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "76a2110db7e68dcc209f84aa5c5d50d0500cad2278dda33127f5cce99801e8ba"
     },
     "osse-desmos-extension-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -319,7 +322,8 @@
       "max_deviation_final_mm": 1.7869400039671746e-06,
       "max_vector_deviation_final_mm": 1.7869400039671746e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "9a307473db21ff5f1fdab915e05462606c2d29929c5a785e541d6207668f406c"
     },
     "osse-desmos-gcurve-stretch": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0.5\n s2 = 0.2\n}\nGCurve.Type = 1\nGCurve.Width = 250\nGCurve.Dist = 0.5\nGCurve.SE.n = 2\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -399,7 +403,8 @@
       "max_deviation_final_mm": 5.6438487945342786e-06,
       "max_vector_deviation_final_mm": 5.6438487945342786e-06,
       "max_paired_map_deviation_mm": 1.995399063758896e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "d2b20ac7b18a437b497e909b230a7043dbaeb8315c2913fd5c5a20731934bc9c"
     },
     "osse-desmos-gcurve-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nGCurve.Type = 1\nGCurve.Width = 250\nGCurve.Dist = 0.5\nGCurve.SE.n = 2\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -479,7 +484,8 @@
       "max_deviation_final_mm": 5.6438487945342786e-06,
       "max_vector_deviation_final_mm": 5.6438487945342786e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "349239f3f332eb7e503cfef9c0cc2b57d4341bd36fe0f0786bb6043ab8b1233f"
     },
     "osse-desmos-length-stretch": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0.5\n s2 = 0.2\n}\nLength = 180\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -559,7 +565,8 @@
       "max_deviation_final_mm": 1.995399063758896e-06,
       "max_vector_deviation_final_mm": 1.995399063758896e-06,
       "max_paired_map_deviation_mm": 1.995399063758896e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "a5d98a3aafd9f65a66f60a8de6aee008a686d3e99989b44596f24c56a368e89a"
     },
     "osse-desmos-length-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nLength = 180\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -639,7 +646,8 @@
       "max_deviation_final_mm": 1.7869400039671746e-06,
       "max_vector_deviation_final_mm": 1.7869400039671746e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "00b6e6397ef16440d3ab1adc006db4ad1f02160a0cfbdf5ec9a33c3940322499"
     },
     "osse-desmos-plain-stretch": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0.5\n s2 = 0.2\n}\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -719,7 +727,8 @@
       "max_deviation_final_mm": 1.995399063758896e-06,
       "max_vector_deviation_final_mm": 1.995399063758896e-06,
       "max_paired_map_deviation_mm": 1.995399063758896e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "a5d98a3aafd9f65a66f60a8de6aee008a686d3e99989b44596f24c56a368e89a"
     },
     "osse-desmos-plain-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -799,7 +808,8 @@
       "max_deviation_final_mm": 1.7869400039671746e-06,
       "max_vector_deviation_final_mm": 1.7869400039671746e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "00b6e6397ef16440d3ab1adc006db4ad1f02160a0cfbdf5ec9a33c3940322499"
     },
     "osse-desmos-rotated-stretch": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0.5\n s2 = 0.2\n}\nRot = 10\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -879,7 +889,8 @@
       "max_deviation_final_mm": 7.3046275872457045e-06,
       "max_vector_deviation_final_mm": 7.3046275872457045e-06,
       "max_paired_map_deviation_mm": 2.627987917946939e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "801defd19bced382db6744d0e01f9b4038f4eaf7f2a77b4fe6f0da2f032e169d"
     },
     "osse-desmos-rotated-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nRot = 10\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -959,7 +970,8 @@
       "max_deviation_final_mm": 7.3046275872457045e-06,
       "max_vector_deviation_final_mm": 7.3046275872457045e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "3f9a318d00cfe0ace54551c549edc375c8b35f8cb5068148628351b646f2789b"
     },
     "osse-desmos-slot-stretch": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0.5\n s2 = 0.2\n}\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1039,7 +1051,8 @@
       "max_deviation_final_mm": 6.114741930470414,
       "max_vector_deviation_final_mm": 6.114741930470414,
       "max_paired_map_deviation_mm": 1.995399063758896e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "3ceeb60c01bf60f478054b21f5be12ba2013ea2c6c6013531a52b94f45404fdd"
     },
     "osse-desmos-slot-zero": {
       "config": "OSSE = {\n L = 160\n r0 = 10\n a0 = 7.9\n k = 1.38\n a = 40\n s = 0.7\n n = 4\n q = 0.996\n s1 = 0\n s2 = 0.2\n}\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1119,7 +1132,8 @@
       "max_deviation_final_mm": 7.699857413125992,
       "max_vector_deviation_final_mm": 7.699857413125992,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "e4942b9db4d377a859df3405505bc387d6a9c87583e616ec10f2b2193008ea43"
     },
     "osse-tritonia-s-combined-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1199,7 +1213,8 @@
       "max_deviation_final_mm": 3.647932757165214,
       "max_vector_deviation_final_mm": 3.647932757165214,
       "max_paired_map_deviation_mm": 1.5481148216167638e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "b6abbc9f24a3ec07755e51a006ae0864500e59378e49b1d9ed92ac95c5f8eae5"
     },
     "osse-tritonia-s-combined-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1279,7 +1294,8 @@
       "max_deviation_final_mm": 3.7885564280623916,
       "max_vector_deviation_final_mm": 3.7885564280623916,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "bdc417063861e8dd7b2dcc39c42a4629788ec0f8a5ad606eedb90d147adee03a"
     },
     "osse-tritonia-s-extension-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1359,7 +1375,8 @@
       "max_deviation_final_mm": 1.9674500254041047e-06,
       "max_vector_deviation_final_mm": 1.9674500254041047e-06,
       "max_paired_map_deviation_mm": 1.5481148216167638e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "2191d10afa4691906dde29ff18ea01f229ca6bd7005f69979bcbfe01d27a62a8"
     },
     "osse-tritonia-s-extension-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1439,7 +1456,8 @@
       "max_deviation_final_mm": 1.9674500254041047e-06,
       "max_vector_deviation_final_mm": 1.9674500254041047e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "db8c86c5348069462a8003ebc19cd5f92b9b5c07d54b677a1758bcb1e7c4ccc3"
     },
     "osse-tritonia-s-gcurve-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nGCurve.Type = 1\nGCurve.Width = 250\nGCurve.Dist = 0.5\nGCurve.SE.n = 2\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1519,7 +1537,8 @@
       "max_deviation_final_mm": 8.750787305871199e-06,
       "max_vector_deviation_final_mm": 8.750787305871199e-06,
       "max_paired_map_deviation_mm": 1.5481148216167638e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "ebf2aeb2a28bec50a7b14fd5d1d31e04539bef813aa53f882583e444bc19b1e3"
     },
     "osse-tritonia-s-gcurve-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nGCurve.Type = 1\nGCurve.Width = 250\nGCurve.Dist = 0.5\nGCurve.SE.n = 2\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1599,7 +1618,8 @@
       "max_deviation_final_mm": 8.750787305871199e-06,
       "max_vector_deviation_final_mm": 8.750787305871199e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "73f76a9d585f9c869f67d28e59ed8773a51d469c3b6b80a2da87762bed894013"
     },
     "osse-tritonia-s-length-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nLength = 180\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1679,7 +1699,8 @@
       "max_deviation_final_mm": 1.9674499571920023e-06,
       "max_vector_deviation_final_mm": 1.9674499571920023e-06,
       "max_paired_map_deviation_mm": 1.5481148216167638e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "c9dec91a1695872568f0013704fb3ce464838c1859811443ab1048443fc516c8"
     },
     "osse-tritonia-s-length-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nLength = 180\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1759,7 +1780,8 @@
       "max_deviation_final_mm": 1.9674499571920023e-06,
       "max_vector_deviation_final_mm": 1.9674499571920023e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "e4c20bb1bb438e7302a0d6990693c3ed07dbaa37057d0f5bfb43538ffe6a9b45"
     },
     "osse-tritonia-s-plain-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1839,7 +1861,8 @@
       "max_deviation_final_mm": 1.9674499571920023e-06,
       "max_vector_deviation_final_mm": 1.9674499571920023e-06,
       "max_paired_map_deviation_mm": 1.5481148216167638e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "c9dec91a1695872568f0013704fb3ce464838c1859811443ab1048443fc516c8"
     },
     "osse-tritonia-s-plain-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1919,7 +1942,8 @@
       "max_deviation_final_mm": 1.9674499571920023e-06,
       "max_vector_deviation_final_mm": 1.9674499571920023e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "e4c20bb1bb438e7302a0d6990693c3ed07dbaa37057d0f5bfb43538ffe6a9b45"
     },
     "osse-tritonia-s-rotated-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nRot = 10\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -1999,7 +2023,8 @@
       "max_deviation_final_mm": 3.488590759843646e-06,
       "max_vector_deviation_final_mm": 3.488590759843646e-06,
       "max_paired_map_deviation_mm": 1.961556426408606e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "eaaf15dfdfec0e0f95115bd07ad37063a9dcdda83e771287d29e5dc17c5cbd41"
     },
     "osse-tritonia-s-rotated-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nRot = 10\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2079,7 +2104,8 @@
       "max_deviation_final_mm": 3.488590759843646e-06,
       "max_vector_deviation_final_mm": 3.488590759843646e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "f727953cc3e694d94cfae5cbde5cf162abdcc25c22724483bb167467573e9928"
     },
     "osse-tritonia-s-slot-stretch": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0.8\n s2 = 0.06\n}\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2159,7 +2185,8 @@
       "max_deviation_final_mm": 3.6479327571652247,
       "max_vector_deviation_final_mm": 3.6479327571652247,
       "max_paired_map_deviation_mm": 1.5481148216167638e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "ab239e3b437946b99fa6e1b51af00f3a90a9429b436199e885706dc53be82382"
     },
     "osse-tritonia-s-slot-zero": {
       "config": "Scale = 0.48\nOSSE = {\n L = 135\n r0 = 26.458333\n a0 = 10\n a = 48.5 - 7*cos(2*p)^5 - 16*sin(p)^12\n s = 0.7 + 0.2*cos(p)^2\n n = 3.7\n q = 0.992\n s1 = 0\n s2 = 0.06\n}\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2239,7 +2266,8 @@
       "max_deviation_final_mm": 3.7885564280623942,
       "max_vector_deviation_final_mm": 3.7885564280623942,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "e9fa924347c1fe0275ecbf6e5b927cd5c3f0d31d52b93e6609a4189620c2eaf5"
     },
     "rosse-published-combined-stretch": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 1\n s2 = 0.05\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2319,7 +2347,8 @@
       "max_deviation_final_mm": 2.6337474025694974e-05,
       "max_vector_deviation_final_mm": 2.6337474025694974e-05,
       "max_paired_map_deviation_mm": 1.6295923117581879e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "c45044c2ca4a3749886120ece29f9e07c3697e37b2aef52d9108bc5c316078a7"
     },
     "rosse-published-combined-zero": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 0\n s2 = 0.05\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2399,7 +2428,8 @@
       "max_deviation_final_mm": 6.434840276625664e-06,
       "max_vector_deviation_final_mm": 6.434840276625664e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "d94031c38b8d1dee976925882ff77ae7a3e24291fcbe0810c525fb3efc7160ff"
     },
     "rosse-published-extension-stretch": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 1\n s2 = 0.05\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2479,7 +2509,8 @@
       "max_deviation_final_mm": 2.6337474025694974e-05,
       "max_vector_deviation_final_mm": 2.6337474025694974e-05,
       "max_paired_map_deviation_mm": 1.6295923117581879e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "52219c772a17b69e2f7eaf33b952b278ffc80b1721d7eb0cc877114dc1c7fcb5"
     },
     "rosse-published-extension-zero": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 0\n s2 = 0.05\n}\nThroat.Ext.Length = 12\nThroat.Ext.Angle = 3\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2559,7 +2590,8 @@
       "max_deviation_final_mm": 6.434840274849307e-06,
       "max_vector_deviation_final_mm": 6.434840274849307e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "1d0f117e63d33480ec566f4b3b3b1fd0fbf563c0361f6d6f9cccf3798a552b50"
     },
     "rosse-published-plain-stretch": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 1\n s2 = 0.05\n}\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2639,7 +2671,8 @@
       "max_deviation_final_mm": 2.6337474025694974e-05,
       "max_vector_deviation_final_mm": 2.6337474025694974e-05,
       "max_paired_map_deviation_mm": 1.6295923153109015e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "501714cec74856b97c07b5c3bcf60566eaebc57545edaa11fd19aa451190a94e"
     },
     "rosse-published-plain-zero": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 0\n s2 = 0.05\n}\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2719,7 +2752,8 @@
       "max_deviation_final_mm": 6.43484027595953e-06,
       "max_vector_deviation_final_mm": 6.43484027595953e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "345ca9f480186ed04050eb2b359f04918199bb5cc9f43158e6448e3f7404f19d"
     },
     "rosse-published-slot-stretch": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 1\n s2 = 0.05\n}\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2799,7 +2833,8 @@
       "max_deviation_final_mm": 2.6337474025694974e-05,
       "max_vector_deviation_final_mm": 2.6337474025694974e-05,
       "max_paired_map_deviation_mm": 1.6295923153109015e-06,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "93fc9326f27b05f28b8f95e8abad77e42410ef8a0a4bb298f194e143db2cb429"
     },
     "rosse-published-slot-zero": {
       "config": "R-OSSE = {\n R = 200\n r0 = 8.25\n a0 = 3\n k = 4\n a = 35\n m = 0.84\n r = 0.37\n b = 0.2\n q = 4\n s1 = 0\n s2 = 0.05\n}\nSlot.Length = 8\nMesh.Quadrants = 1234\nMesh.AngularSegments = 16\nMesh.LengthSegments = 100\nMesh.WallThickness = 0\nMesh.SubdomainSlices =\nMesh.ZMapPoints = 0,0,1,1\nOutput.STL = 0\nOutput.MSH = 0\nOutput.ABECProject = 0\nGridExport:c4 = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = 1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n",
@@ -2879,7 +2914,8 @@
       "max_deviation_final_mm": 6.434840274849307e-06,
       "max_vector_deviation_final_mm": 6.434840274849307e-06,
       "max_paired_map_deviation_mm": 0.0,
-      "max_paired_radius_deviation_mm": 0.0
+      "max_paired_radius_deviation_mm": 0.0,
+      "csv_sha256": "2bf9e9e122f25eb60a4908153fc70312b58cca13b6c21ba320fa42af0ac6cb2d"
     }
   }
 }

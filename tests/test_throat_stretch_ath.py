@@ -1,6 +1,8 @@
 """Portable points exported by ATH V2025-12, matched by meridian/station."""
 from pathlib import Path
 import json
+import hashlib
+from io import BytesIO
 
 import numpy as np
 import pytest
@@ -13,6 +15,32 @@ from hornlab_mesher.profile_formulas import (
 
 ROOT = Path(__file__).parent / "fixtures/throat_stretch/ath-v2025-12"
 CASES = json.loads((ROOT / "cases.json").read_text())["cases"]
+
+
+def _ath_points(name):
+    raw = (ROOT / (name + ".csv")).read_bytes()
+    assert b"\r" not in raw and raw.endswith(b"\n")
+    assert hashlib.sha256(raw).hexdigest() == CASES[name]["csv_sha256"]
+    return np.loadtxt(BytesIO(raw), delimiter=",", skiprows=1)
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_ath_fixture_bytes(name):
+    _ath_points(name)
+
+
+@pytest.mark.parametrize("mutation", ["crlf", "header"])
+def test_ath_fixture_mutations_fail(mutation, tmp_path, monkeypatch):
+    name = "osse-desmos-plain-stretch"
+    raw = (ROOT / (name + ".csv")).read_bytes()
+    if mutation == "crlf":
+        raw = raw.replace(b"\n", b"\r\n")
+    else:
+        raw = b"changed header\n" + raw.split(b"\n", 1)[1]
+    (tmp_path / (name + ".csv")).write_bytes(raw)
+    monkeypatch.setattr(__import__(__name__), "ROOT", tmp_path)
+    with pytest.raises(AssertionError):
+        _ath_points(name)
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
@@ -35,7 +63,7 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
         # discrepancy is separate work, not a C4 parity claim.
         assert params["slotLength"] != 0
         return
-    data = np.loadtxt(ROOT / (name + ".csv"), delimiter=",", skiprows=1)
+    data = _ath_points(name)
     assert data.shape == (64, 10)
     np.testing.assert_array_equal(np.unique(data[:, 0]), [0, 2, 4, 6])
     scalar, vector = (
@@ -59,7 +87,7 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
 def test_paired_ath_stretch_uses_degrees_main_coordinate_and_post_scale(name):
     case = CASES[name]
     params = case["params"]
-    data = np.loadtxt(ROOT / (name + ".csv"), delimiter=",", skiprows=1)
+    data = _ath_points(name)
     scale = params["scale"]
     zero_z = data[:, 9] / scale
     prefix = params["throatExtLength"]
@@ -121,7 +149,7 @@ def test_prescaled_consumer_coefficient_rule_against_tritonia(variant):
     for key in ("L", "r0", "throatExtLength", "slotLength", "gcurveWidth", "s1"):
         scaled[key] *= scale
     scaled["s2"] /= scale
-    data = np.loadtxt(ROOT / (name + ".csv"), delimiter=",", skiprows=1)
+    data = _ath_points(name)
     actual = np.array([calculate_osse(row[3] * scale, row[2], scaled) for row in data])
     expected = np.column_stack((data[:, 6], np.hypot(data[:, 4], data[:, 5])))
     np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-4)
