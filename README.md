@@ -34,6 +34,7 @@ see:
 - [docs/builder-invariants.md](docs/builder-invariants.md)
 - [docs/change-guide.md](docs/change-guide.md)
 - [docs/public-api.md](docs/public-api.md)
+- [docs/throat-adapter-contract.md](docs/throat-adapter-contract.md) — proposed curved-adapter geometry and ATH import contract
 
 For geometry rules and compatibility boundaries, see
 [docs/geometry-contract.md](docs/geometry-contract.md).
