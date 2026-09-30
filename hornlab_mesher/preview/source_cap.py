@@ -51,7 +51,9 @@ def _source_cap(
         # translates the finished model. The preview ring is already placed,
         # so its axis must retain that same rigid Y translation.
         center[0] = 0.0
-        center[1] = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
+        # "+ 0.0" turns an offset of -0.0 into +0.0, so a zero offset leaves
+        # the cap byte-identical to the unshifted construction.
+        center[1] = float(eval_param(params.get("verticalOffset"), 0.0, 0.0)) + 0.0
     radial = ring[:, :2] - center[:2]
     radii = np.linalg.norm(radial, axis=1)
     throat_radius = float(np.mean(radii[radii > 1.0e-12]))

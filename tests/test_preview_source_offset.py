@@ -49,14 +49,29 @@ def test_source_cap_is_a_rigid_translation_in_both_symmetry_planes(quadrants, of
         inner + translation, {**params, "verticalOffset": offset}, "OSSE", 8,
         closed_phi=closed, include_curvature=True,
     )
-    np.testing.assert_allclose(placed.positions, reference.positions + translation, atol=1e-12)
-    np.testing.assert_allclose(placed.normals, reference.normals, atol=1e-12)
+    np.testing.assert_allclose(placed.positions, reference.positions + translation, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(placed.normals, reference.normals, rtol=0, atol=1e-12)
     np.testing.assert_array_equal(placed.indices, reference.indices)
-    np.testing.assert_allclose(placed.curvature_mean, reference.curvature_mean, atol=1e-12)
-    np.testing.assert_allclose(placed.curvature_principal, reference.curvature_principal, atol=1e-12)
+    np.testing.assert_allclose(placed.curvature_mean, reference.curvature_mean, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(placed.curvature_principal, reference.curvature_principal, rtol=0, atol=1e-12)
     assert placed_details == pytest.approx(details)
     if fidelity is not None:
         assert placed_fidelity == pytest.approx(fidelity)
     if shape == 1:
-        np.testing.assert_allclose(placed.positions[0, :2], [0.0, offset], atol=1e-12)
-        np.testing.assert_allclose(placed.positions[-len(ring):], ring + translation, atol=1e-12)
+        np.testing.assert_allclose(placed.positions[0, :2], [0.0, offset], rtol=0, atol=1e-12)
+        np.testing.assert_allclose(placed.positions[-len(ring):], ring + translation, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("offset", [0.0, -0.0])
+@pytest.mark.parametrize("quadrants", ["1", "12", "14"])
+def test_zero_offset_cap_is_bytewise_the_unshifted_cap(quadrants, offset):
+    spans = {"1": (0, np.pi / 2), "12": (0, np.pi), "14": (-np.pi / 2, np.pi / 2)}
+    phi = np.linspace(*spans[quadrants], 65)
+    ring = np.column_stack((12.7 * np.cos(phi), 12.7 * np.sin(phi), np.zeros(len(phi))))
+    params = {"sourceShape": 1, "sourceCurv": 1, "sourceRadius": 32.0}
+    reference, _, _ = _source_cap(ring[:, None, :], params, "OSSE", 8,
+                                  closed_phi=False, include_curvature=True)
+    placed, _, _ = _source_cap(ring[:, None, :], {**params, "verticalOffset": offset},
+                               "OSSE", 8, closed_phi=False, include_curvature=True)
+    assert placed.positions.tobytes() == reference.positions.tobytes()
+    assert placed.normals.tobytes() == reference.normals.tobytes()
