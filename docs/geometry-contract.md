@@ -144,7 +144,7 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
 - Radius is unchanged. R-OSSE uses the complete main `x(t)`, including its
   `b` term; OS-SE uses the main axial parameter in millimetres.
 - `s1` has units mm/degree and `s2` has units 1/mm. Both default to zero and
-  must be plain finite numbers in `[0, 10]` in this release.
+  must be plain finite numbers in `[0, 10]` in this release. Negative values are refused: ATH V2025-12 accepts them, but for all but very small magnitudes (s1*s2 below about -pi/180) they fold the profile back through the throat.
   The explicit upper bound limits added displacement to 900 mm. This is
   far below half an ulp at the largest finite double, so the axial map stays
   finite for any finite input coordinate (an overflowing atan argument uses

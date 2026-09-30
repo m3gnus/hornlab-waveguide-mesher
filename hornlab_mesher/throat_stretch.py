@@ -33,6 +33,12 @@ def stretch_coefficients(params: Mapping[str, Any]) -> tuple[float, float]:
             raise ConfigError(
                 f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}"
             ) from exc
+        if math.isfinite(number) and number < 0:
+            raise ConfigError(
+                f"throat stretch {key} must not be negative, got {value!r}: negative values "
+                "are not supported (ATH accepts them, but they fold the profile back "
+                "through the throat for all but very small magnitudes)"
+            )
         if not math.isfinite(number) or not 0 <= number <= STRETCH_COEFFICIENT_MAX:
             raise ConfigError(
                 f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}, got {value!r}"

@@ -344,3 +344,12 @@ def test_inactive_composition_imports_equal_true_base(case, dormant):
     if 'top_level_rot' in case:
         expected['profile']['rot'] = case['top_level_rot']
     _assert_base_equal(parse_text_config(text), expected)
+
+
+@pytest.mark.parametrize('key', ['s1', 's2'])
+@pytest.mark.parametrize('formula', ['OSSE', 'R-OSSE'])
+def test_negative_coefficient_is_refused_with_its_own_reason(key, formula):
+    profile = {'L': 80} if formula == 'OSSE' else {'formula': 'R-OSSE', 'R': 150}
+    profile.update({'s1': 0.5, 's2': 0.2, key: -0.05})
+    with pytest.raises(ConfigError, match=key + ' must not be negative.*fold the profile back'):
+        cb.resolve_geometry({'mode': 'bare', 'profile': profile})

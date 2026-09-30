@@ -80,7 +80,7 @@ Shared OSSE/R-OSSE keys:
 stretch exactly; inactive normalization omits both keys and retains the legacy
 geometry serialization, equality, hashes and cache identity. Active pairs
 include both keys. Both must be plain finite numbers in the inclusive range
-`[0, 10]`. Native JSON strings, expression strings and per-azimuth forms are
+`[0, 10]`. Negative values are refused: ATH V2025-12 accepts them, but for all but very small magnitudes (s1*s2 below about -pi/180) they fold the profile back through the throat. Native JSON strings, expression strings and per-azimuth forms are
 refused with `ConfigError` saying “per-azimuth throat stretch is not supported
 yet”, including expressions that evaluate to zero and a pair with a zero
 companion. ATH text numeric tokens are accepted as numbers. The bound limits
