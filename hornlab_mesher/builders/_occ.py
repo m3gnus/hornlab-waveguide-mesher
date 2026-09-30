@@ -247,11 +247,72 @@ def extreme_boundary_loop_curves(
         target = min(flat.values()) if use_min else max(flat.values())
     else:
         target = lo_all if use_min else hi_all
-    return [
+    selected = [
         curve_tag
         for curve_tag, (lo, hi) in bounds.items()
         if abs(lo - target) <= eps and abs(hi - target) <= eps
     ]
+    return _single_extreme_loop(selected, axis_idx=axis_idx, use_min=use_min)
+
+
+def _single_extreme_loop(curve_tags: list[int], *, axis_idx: int, use_min: bool) -> list[int]:
+    """Keep one ring when several disjoint rings share the extreme plane.
+
+    An R-OSSE that rolls back to the throat plane puts its mouth ring in the
+    same plane as its throat ring. Both are flat and both sit on the extreme,
+    so both were returned as one "loop", and OCC cannot make a wire out of two
+    rings. The min side of a horn is its throat end and the max side its mouth
+    end, so the ring nearest the axis is kept for the min plane and the one
+    farthest from it for the max plane. With a single ring, as in every design
+    whose mouth is clear of the throat plane, the selection is unchanged.
+    """
+
+    if len(curve_tags) < 2:
+        return curve_tags
+    gmsh = require_gmsh()
+    parent = {tag: tag for tag in curve_tags}
+
+    def find(tag: int) -> int:
+        while parent[tag] != tag:
+            parent[tag] = parent[parent[tag]]
+            tag = parent[tag]
+        return tag
+
+    # Neighbouring patch curves end on coincident points that are still
+    # separate OCC entities at this stage, so curves are joined by where their
+    # end points are, not by point tag.
+    ends: list[tuple[int, NDArray[np.float64]]] = []
+    for curve_tag in curve_tags:
+        for dim, point in gmsh.model.getBoundary([(1, curve_tag)], oriented=False, combined=False):
+            if int(dim) == 0:
+                xyz = np.asarray(gmsh.model.getValue(0, int(abs(point)), []), dtype=np.float64)
+                ends.append((curve_tag, xyz))
+    if ends:
+        coordinates = np.asarray([xyz for _tag, xyz in ends])
+        span = float(np.max(np.ptp(coordinates, axis=0)))
+        tolerance = max(1e-6, span * 1e-6)
+        for i, (tag_i, xyz_i) in enumerate(ends):
+            for tag_j, xyz_j in ends[i + 1 :]:
+                if tag_i != tag_j and float(np.linalg.norm(xyz_i - xyz_j)) <= tolerance:
+                    parent[find(tag_i)] = find(tag_j)
+
+    rings: dict[int, list[int]] = {}
+    for curve_tag in curve_tags:
+        rings.setdefault(find(curve_tag), []).append(curve_tag)
+    if len(rings) < 2:
+        return curve_tags
+
+    radial_axes = [axis for axis in range(3) if axis != axis_idx]
+
+    def reach(ring: list[int]) -> float:
+        extent = 0.0
+        for curve_tag in ring:
+            box = gmsh.model.getBoundingBox(1, curve_tag)
+            extent = max(extent, *(abs(float(box[axis + shift])) for axis in radial_axes for shift in (0, 3)))
+        return extent
+
+    ordered = sorted(rings.values(), key=reach)
+    return ordered[0] if use_min else ordered[-1]
 
 
 def _make_planar_fill_from_loop_curves(
