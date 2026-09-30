@@ -428,8 +428,11 @@ Use `[enclosure]`. A positive `depth_mm` enables enclosure topology.
 `edge_type`: `1` rounded fillet, `2` chamfer.
 
 Enclosure front/back mesh sizes may be scalar values or comma-separated
-quadrant lists. Missing or invalid quadrant entries fall back to
-`mouth_res_mm`.
+quadrant lists in the order q1 (+x, +y), q2 (-x, +y), q3 (-x, -y), q4 (+x, -y).
+A list shorter than four repeats its last value, as ATH does: `8,12` is
+`8,12,12,12`. An entry that is present but not a positive number falls back to
+`mouth_res_mm`, and a list that cannot be read at all uses `mouth_res_mm` for
+all four.
 
 ## Morph Keys
 

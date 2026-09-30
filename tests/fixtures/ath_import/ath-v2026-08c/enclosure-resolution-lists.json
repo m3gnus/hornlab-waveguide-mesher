@@ -1,0 +1,70 @@
+{
+  "ath_build": "V2026-08c",
+  "source": "mesh size of the enclosure corner points in the bem_mesh.geo ATH writes",
+  "cases": {
+    "e4": {
+      "FrontResolution": "8,9,16,17",
+      "BackResolution": "20,21,22,23",
+      "front": [
+        8.0,
+        9.0,
+        16.0,
+        17.0
+      ],
+      "back": [
+        20.0,
+        21.0,
+        22.0,
+        23.0
+      ]
+    },
+    "e3": {
+      "FrontResolution": "8,12,14",
+      "BackResolution": "20,24,26",
+      "front": [
+        8.0,
+        12.0,
+        14.0,
+        14.0
+      ],
+      "back": [
+        20.0,
+        24.0,
+        26.0,
+        26.0
+      ]
+    },
+    "e2": {
+      "FrontResolution": "8,12",
+      "BackResolution": "20,24",
+      "front": [
+        8.0,
+        12.0,
+        12.0,
+        12.0
+      ],
+      "back": [
+        20.0,
+        24.0,
+        24.0,
+        24.0
+      ]
+    },
+    "e1": {
+      "FrontResolution": "8",
+      "BackResolution": "20",
+      "front": [
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ],
+      "back": [
+        20.0,
+        20.0,
+        20.0,
+        20.0
+      ]
+    }
+  }
+}

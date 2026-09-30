@@ -39,7 +39,13 @@ _ENCLOSURE_SEAM_DISTANCE_SAMPLING_MAX = 2000.0
 def _parse_quadrant_resolutions(
     value: float | str | None, fallback: float
 ) -> list[float]:
-    """Parse WG-style per-quadrant resolution list q1..q4."""
+    """Parse a per-quadrant resolution list q1..q4.
+
+    A list shorter than four repeats its last value, as ATH does (``8,12`` is
+    ``8,12,12,12``; measured on ATH V2026-08c, fixture
+    ``tests/fixtures/ath_import/ath-v2026-08c/enclosure-resolution-lists.json``).
+    A value that is present but not a positive number takes ``fallback``.
+    """
 
     fallback = float(fallback)
     if value is None:
@@ -62,7 +68,11 @@ def _parse_quadrant_resolutions(
 
     out: list[float] = []
     for i in range(4):
-        if i < len(parts) and math.isfinite(parts[i]) and parts[i] > 0.0:
+        if i >= len(parts):
+            # Missing trailing entries used to take ``fallback`` (the mouth
+            # resolution), so ``20,24`` on a back baffle came out ``20,24,8,8``.
+            out.append(out[-1])
+        elif math.isfinite(parts[i]) and parts[i] > 0.0:
             out.append(float(parts[i]))
         else:
             out.append(fallback)

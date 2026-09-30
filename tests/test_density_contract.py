@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -20,8 +22,35 @@ from hornlab_mesher.geometry import BuiltGeometry, MeshDensity, validate_mesh_de
 def test_quadrant_resolution_parsing_matches_wg_contract():
     assert _parse_quadrant_resolutions("5", 9.0) == [5.0, 5.0, 5.0, 5.0]
     assert _parse_quadrant_resolutions("6,7,8,9", 9.0) == [6.0, 7.0, 8.0, 9.0]
-    assert _parse_quadrant_resolutions("6,7", 9.0) == [6.0, 7.0, 9.0, 9.0]
     assert _parse_quadrant_resolutions("", 9.0) == [9.0, 9.0, 9.0, 9.0]
+
+
+def test_short_quadrant_resolution_list_repeats_its_last_value():
+    assert _parse_quadrant_resolutions("6,7", 9.0) == [6.0, 7.0, 7.0, 7.0]
+    assert _parse_quadrant_resolutions("6,7,8", 9.0) == [6.0, 7.0, 8.0, 8.0]
+    # A present but unusable entry still takes the fallback, and is what a
+    # later missing entry repeats.
+    assert _parse_quadrant_resolutions("6,0", 9.0) == [6.0, 9.0, 9.0, 9.0]
+    assert _parse_quadrant_resolutions("6,-1,8", 9.0) == [6.0, 9.0, 8.0, 8.0]
+
+
+_ATH_RESOLUTION_LISTS = json.loads(
+    (
+        Path(__file__).parent
+        / "fixtures"
+        / "ath_import"
+        / "ath-v2026-08c"
+        / "enclosure-resolution-lists.json"
+    ).read_text(encoding="utf-8")
+)["cases"]
+
+
+@pytest.mark.parametrize("case", sorted(_ATH_RESOLUTION_LISTS))
+def test_quadrant_resolution_lists_match_ath_corner_sizes(case):
+    measured = _ATH_RESOLUTION_LISTS[case]
+    # A fallback ATH never produces, so a fallback leaking in cannot pass.
+    assert _parse_quadrant_resolutions(measured["FrontResolution"], 99.0) == measured["front"]
+    assert _parse_quadrant_resolutions(measured["BackResolution"], 99.0) == measured["back"]
 
 
 def test_axial_ramp_effective_size_is_geometric_mean():
