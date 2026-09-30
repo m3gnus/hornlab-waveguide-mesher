@@ -65,8 +65,8 @@ Shared OSSE/R-OSSE keys:
 | `a0_deg` | `a0` | `15.5` (`0` for text imports, the ATH default) |
 | `k` | imported `OS.k`, `Term.k` | `1.0` |
 | `q` | none | `0.995` for OSSE, `1.0` for R-OSSE |
-| `s1` | imported block `s1` | `0.0` (mm/degree, finite and >= 0) |
-| `s2` | imported block `s2` | `0.0` (1/mm, finite and >= 0) |
+| `s1` | imported block `s1` | `0.0` (mm/degree, finite, 0 through 10000) |
+| `s2` | imported block `s2` | `0.0` (1/mm, finite, 0 through 10000) |
 | `throat_ext_length_mm` | `throatExtLength` | `0.0` |
 | `throat_ext_angle_deg` | `throatExtAngle` | `0.0` |
 | `slot_length_mm` | `slotLength` | `0.0` |
@@ -77,7 +77,12 @@ Shared OSSE/R-OSSE keys:
 
 `s1` and `s2` stretch the main axial coordinate by
 `s1 * degrees(atan(s2 * x))`, leaving its radius unchanged. Either zero disables
-stretch exactly. Both accept per-azimuth expressions. They belong inside
+stretch exactly; inactive normalization omits both keys and retains the legacy
+geometry serialization, equality, hashes and cache identity. Active pairs
+include both keys. Both accept per-azimuth expressions; the inclusive upper
+bound of 10000 applies at every evaluated azimuth. It limits added displacement
+to 900,000 mm and keeps the axial map finite for every finite input coordinate.
+They belong inside
 `R-OSSE`/`OSSE` ATH blocks and are refused on other profile families (an ICW
 seed may contain them). The total-length helpers and `L` remain unstretched
 sampling parameters; use the resulting point grid for physical dimensions.
@@ -88,6 +93,14 @@ nonzero `Slot.Length` are refused even at zero stretch because ATH's radial
 transition differs from the native explicit slot. Active stretch with `Rot`
 plus a prefix, `GCurve` plus a prefix/`Rot`, or R-OSSE `Rot`/top-level `Length`
 also needs further ATH probes.
+The active `Rot` plus prefix combination is refused in native evaluation too,
+before meshing. Stretched composite meridians with discontinuous prefix/main
+joins, an axial map that loses the unstretched ordering, or R-OSSE foldback
+that intersects the extension/slot prefix are also refused.
+In-block OSSE `Rot` imports exactly as before when stretch is off; active
+stretch with in-block `Rot` is refused as unmeasured. With stretch absent the
+only changes to existing imports are top-level `Rot` beside an OSSE block
+(now honored if no in-block `Rot`) and the nonzero block `Slot.Length` refusal.
 
 Driver adapter keys are convenience inputs for OSSE/R-OSSE. When both driver
 and waveguide throat diameters are provided, `r0` anchors the main waveguide

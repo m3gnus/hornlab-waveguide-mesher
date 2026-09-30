@@ -23,7 +23,10 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
             parse_text_config(case["config"])
         return
     params = build_geometry_params(parse_text_config(case["config"]))[0]
-    assert params == case["params"]
+    expected_params = dict(case["params"])
+    if expected_params["s1"] == 0 or expected_params["s2"] == 0:
+        del expected_params["s1"], expected_params["s2"]
+    assert params == expected_params
     data = np.loadtxt(ROOT / (name + ".csv"), delimiter=",", skiprows=1)
     scalar, vector = (
         (calculate_osse, calculate_osse_curve) if params["type"] == "OSSE"
@@ -38,7 +41,7 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
             np.array([scalar(t, phi, params) for t in stations]),
             np.column_stack(vector(stations, phi, params)),
         ):
-            np.testing.assert_allclose(actual * params["scale"], expected, rtol=0, atol=2e-4)
+            np.testing.assert_allclose(actual * params["scale"], expected, rtol=0, atol=2.7e-5)
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
@@ -92,9 +95,9 @@ def test_rot_and_prefix_with_zero_s1_remains_accepted():
     assert config["profile"]["rot"] == 10
 
 
-def test_in_block_rot_is_refused():
-    with pytest.raises(ConfigError, match="Rot must be top-level"):
-        parse_text_config("OSSE = {\nL = 160\nRot = 10\n}")
+def test_active_in_block_rot_is_refused_as_unmeasured():
+    with pytest.raises(ConfigError, match="in-block Rot.*unmeasured"):
+        parse_text_config("OSSE = {\nL = 160\nRot = 10\ns1 = 0.5\ns2 = 0.2\n}")
 
 
 @pytest.mark.parametrize("variant", ["plain", "rotated", "gcurve", "extension"])

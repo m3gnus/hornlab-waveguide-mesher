@@ -6,6 +6,7 @@ import numpy as np
 
 from ..geometry import RosseHornGeometry
 from ..profiles import profile_points
+from ..throat_stretch import canonical_stretch_params
 
 
 def _rosse_params(geometry: RosseHornGeometry) -> dict[str, float]:
@@ -28,7 +29,7 @@ def _rosse_params(geometry: RosseHornGeometry) -> dict[str, float]:
         params["r"] = float(geometry.r)
     if geometry.b is not None:
         params["b"] = float(geometry.b)
-    return params
+    return canonical_stretch_params(params)
 
 
 def compute_rosse_profile_points(

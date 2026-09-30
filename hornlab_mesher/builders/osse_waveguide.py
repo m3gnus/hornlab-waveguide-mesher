@@ -8,6 +8,7 @@ import numpy as np
 
 from ..geometry import BuiltGeometry, OsseHornGeometry
 from ..profiles import build_point_grid, profile_points
+from ..throat_stretch import canonical_stretch_params
 from .axisymmetric import _build_axisymmetric
 
 
@@ -54,7 +55,7 @@ def compute_osse_inner_points(
 
 
 def _osse_params(geometry: OsseHornGeometry) -> dict[str, Any]:
-    return {
+    return canonical_stretch_params({
         "type": "OSSE",
         "L": float(geometry.L_mm),
         "r0": float(geometry.r0_mm),
@@ -76,4 +77,4 @@ def _osse_params(geometry: OsseHornGeometry) -> dict[str, Any]:
                 "aspectRatio": float(geometry.cross_section.aspect_ratio),
             },
         },
-    }
+    })

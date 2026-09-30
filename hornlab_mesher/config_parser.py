@@ -5,6 +5,7 @@ import logging
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
+from .throat_stretch import canonical_stretch_params, stretch_is_inactive
 
 import numpy as np
 
@@ -400,9 +401,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # V2025-12 honours top-level Rot even with an OSSE block; Length
             # stays subordinate to the block's L. Slot changes the radial
             # transition in a way the explicit native prefix does not model.
-            if "Rot" in blocks["OSSE"]:
-                raise ConfigError("Rot must be top-level for ATH OSSE import; in-block Rot is unverified")
-            profile.update(mapped(flat, (("Rot", "rot"),)))
+            if "Rot" not in blocks["OSSE"]:
+                profile.update(mapped(flat, (("Rot", "rot"),)))
             if common_profile.get("slotLength", 0) != 0:
                 raise ConfigError(
                     "OSSE block with nonzero Slot.Length is not supported: ATH V2025-12 "
@@ -566,8 +566,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     # Expressions count as potentially active. Do not infer a composition
     # from individually measured features when their combination is unprobed.
-    stretch_active = all(profile.get(key, 0) != 0 for key in ("s1", "s2"))
+    stretch_active = not stretch_is_inactive(profile)
     if stretch_active:
+        if formula == "OSSE" and "Rot" in blocks.get("OSSE", {}):
+            raise ConfigError("throat stretch with in-block Rot is unmeasured; an ATH probe is required")
         prefix_active = any(profile.get(key, 0) != 0 for key in ("throatExtLength", "slotLength"))
         rot_active = _maybe_number(flat.get("Rot", "0")) != 0
         guide_active = gcurve.get("gcurveType", 0) != 0 and gcurve.get("gcurveWidth", 0) != 0
@@ -592,7 +594,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if sim_type == 1 and enclosure:
         raise ConfigError("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
 
-    config: dict[str, Any] = {"formula": formula, "profile": profile, "mesh": mesh, "simType": sim_type}
+    config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type}
     # Global Scale multiplies every linear geometry dimension after profile
     # evaluation (resolutions and mesh sizes stay in raw millimetres).
     scale = _maybe_number(flat.get("Scale"))

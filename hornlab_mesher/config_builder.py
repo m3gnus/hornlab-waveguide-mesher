@@ -53,6 +53,7 @@ from .builders.point_grid_freestanding import (
 )
 from .builders.point_grid_surfaces import _rear_rim_points
 from .tags import PhysicalGroup
+from .throat_stretch import STRETCH_COEFFICIENT_MAX, canonical_stretch_params
 
 logger = logging.getLogger(__name__)
 
@@ -1043,8 +1044,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         for name in ("s1", "s2"):
             common[name] = _scalar_or_expr(profile, config, names=(name,), default=0.0)
             value = _static_float_or_none(common[name])
-            if value is not None and value < 0.0:
-                raise ConfigError(f"throat stretch {name} must be >= 0, got {value:g}")
+            if value is not None and not 0.0 <= value <= STRETCH_COEFFICIENT_MAX:
+                raise ConfigError(
+                    f"throat stretch {name} must be finite and >= 0 and <= "
+                    f"{STRETCH_COEFFICIENT_MAX:g}, got {value:g}"
+                )
+        common = canonical_stretch_params(common)
     if formula == "ICW":
         _reject_icw_throat_extension(common)
 

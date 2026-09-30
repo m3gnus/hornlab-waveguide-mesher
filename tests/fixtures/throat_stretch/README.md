@@ -24,6 +24,21 @@ historical golden hashes into a cross-platform requirement. Pre-implementation
 and post-implementation hashes at base 5c8ea4dc are retained as local producer
 evidence and listed in the handoff report.
 
-These are mathematical reference fixtures, not executable ATH exports. Direct
-ATH stretch confirmation remains owed; existing archive parity is a separate
-gate.
+These Desmos fixtures are mathematical references. Executable ATH V2025-12
+exports and their provenance are stored separately in `ath-v2025-12/`;
+existing archive parity remains a required final gate.
+
+`base-compatibility.json` was captured by executing base `5c8ea4dc` from a
+read-only Git archive extraction, with Python 3.13 (64-bit). It records default
+and prefixed dataclass serialization, repr, hashes and builder mappings;
+native and text-imported normalization; and 23 archive imports plus 36
+block/flat rotation/slot variants. Archive inputs are identified by content
+SHA256, so no local paths or archive comments are embedded. The required
+parity gate also runs this entire corpus against the live archive.
+
+To recapture: extract `git archive 5c8ea4dc` into a scratch directory, mark
+that extraction read-only, then run `scripts/capture_throat_stretch_base.py`
+with arguments `<extracted-base>` and `<output-json>`, using the test venv
+with `PYTHONDONTWRITEBYTECODE=1` and `ATH_REFERENCE_ROOT` configured. The script
+asserts that imports resolve into the extracted base. Do not generate these
+expected values with the feature implementation.

@@ -166,19 +166,8 @@ def test_osse_length_prefix_and_rotation_contract(length_mode, main_length, tota
         )
     plain_radius = calculate_osse_curve(stations, 0, {**params, "s1": 0})[1]
     assert np.array_equal(radius, plain_radius)
-    rotated = np.column_stack(calculate_osse_curve(stations, 0, {**params, "rot": 10}))
-    base_x = stations
-    angle = math.radians(10)
-    rotated_x = base_x * math.cos(angle) - (radius - 10) * math.sin(angle)
-    in_main = stations > 20
-    rotated_x[in_main] = 20 + _stretch_x_curve(rotated_x[in_main] - 20, 0.5, 0.2)
-    expected = np.column_stack(
-        (
-            rotated_x,
-            10 + base_x * math.sin(angle) + (radius - 10) * math.cos(angle),
-        )
-    )
-    np.testing.assert_allclose(rotated, expected, rtol=0, atol=1e-12)
+    with pytest.raises(ValueError, match="Rot.*prefix.*unmeasured"):
+        calculate_osse_curve(stations, 0, {**params, "rot": 10})
 
 
 @pytest.mark.parametrize("tmax", [0.8, 1])
@@ -228,6 +217,7 @@ def test_text_and_json_serialization_preserve_coefficients_and_expressions(block
     [(OsseHornGeometry(), _osse_params), (RosseHornGeometry(), _rosse_params)],
 )
 def test_geometry_identity_serialization_and_builder_mapping(geometry, adapter):
+    geometry = replace(geometry, s1=0.5, s2=0.2)
     for key in ["s1", "s2"]:
         changed = replace(geometry, **{key: 0.25})
         assert geometry != changed

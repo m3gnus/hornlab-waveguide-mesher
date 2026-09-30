@@ -144,7 +144,12 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
 - Radius is unchanged. R-OSSE uses the complete main `x(t)`, including its
   `b` term; OS-SE uses the main axial parameter in millimetres.
 - `s1` has units mm/degree and `s2` has units 1/mm. Both default to zero and
-  must resolve to finite, nonnegative values at every evaluated azimuth.
+  must resolve to finite values in `[0, 10000]` at every evaluated azimuth.
+  The explicit upper bound limits added displacement to 900,000 mm. This is
+  far below half an ulp at the largest finite double, so the axial map stays
+  finite for any finite input coordinate (an overflowing atan argument uses
+  its finite limiting angle). Coefficients above the bound are refused during
+  validation, including expressions, before acoustic resolution or meshing.
   They accept the same per-azimuth expressions as the other coefficients
   (`p` and expression trigonometry use radians; only this axial atan uses degrees).
 - Either coefficient zero bypasses the map, preserving the existing floating
@@ -157,8 +162,19 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   lengths and radii. For OS-SE without a prefix, ATH applies `Rot` first and stretches the
   resulting axial coordinate; the rotated radius is unchanged by stretch.
   The combination of stretch, `Rot` and a prefix is unmeasured and refused
-  on ATH text import. Native explicit-prefix composition is retained but
-  is not claimed as ATH parity for that combination.
+  in both ATH text import and native evaluators, before mesh generation.
+  This includes a slot alone, extension alone, and combined prefixes; an
+  evaluated nonzero rotation with active stretch cannot use an unmeasured
+  join convention. The scalar and vector evaluators check the actual radial
+  and axial main endpoint against the prefix endpoint. A discontinuous
+  composite meridian is refused. The map is analytically increasing; the
+  vector evaluator additionally checks that distinct unstretched axial
+  coordinates retain their ordering after stretch and prefix translation,
+  refusing floating-point collapse. R-OSSE foldback is also checked against
+  the unchanged straight prefix, on a 1,025-station full-main probe and on
+  the requested vector stations; intersections are refused. Validation is
+  cached by every resolved main coefficient, prefix input and truncation.
+  Existing R-OSSE foldback that remains clear of the prefix is preserved.
 - `L`/`Length` remains an **unstretched sampling/profile parameter**, not a
   requested final depth. Native main-length mode retains `main_L = L`;
   ATH total-length mode retains `main_L = Length - Slot.Length` and adds
@@ -171,11 +187,15 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   stretched surface. Preview, solve and CAD use the same profile evaluator.
   With stretch, a guiding-curve distance is therefore a parameter location,
   not a final physical axial distance.
-- Config normalization carries `s1` and `s2` without dropping expressions;
-  geometry dataclasses carry both in their equality/hash/serialization.
-  There is no OSSE/R-OSSE geometry memo. ICW seed memo keys include the entire
-  seed mapping, so changing a nested stretch coefficient invalidates the seed.
-  Caller-owned design/cache identities must include both coefficients.
+- With either coefficient absent or a literal zero, config normalization and
+  builder mappings omit both coefficients. Inactive geometry dataclass
+  instances expose the legacy field schema to `asdict`/`astuple`, equality,
+  hash and repr, exactly as at base `5c8ea4dc`. Dormant values do not contribute.
+  Active instances include both coefficients in serialization and identity.
+  Potentially active expressions are retained without deciding identity at
+  a single azimuth. There is no OSSE/R-OSSE geometry memo. ICW seed memo keys
+  canonicalize dormant stretch pairs and retain both active coefficients.
+  Caller-owned cache keys should use these canonical geometry mappings.
 
 **Measured ATH evidence (V2025-12):** all 36 paired probe exports carry
 `; Ath version V2025-12` in their generated `config.txt`. The run logs have no
@@ -225,8 +245,13 @@ cases are refused rather than claimed as parity; see below.
   Desmos station, rotated zero x=123.546177 mm becomes 167.387410 mm while
   radius stays 230.738088 mm. This is S(x_rot); rotating S(x) would change
   that radius. The scalar and vector evaluators now stretch after rotation.
-  In-block Rot, active stretch with R-OSSE Rot, and active stretch with
-  OSSE Rot plus an extension/slot are refused on text import pending probes.
+  In-block Rot retains its legacy import behavior with stretch off (including
+  precedence over top-level Rot). With active stretch it is unmeasured and
+  refused. Active stretch with R-OSSE Rot is refused on text import; OSSE Rot
+  plus an extension/slot is refused in both import and native evaluation.
+  The only existing import changes against `5c8ea4dc` with stretch absent are:
+  top-level Rot beside an OSSE block is now imported when the block has no
+  Rot, and an OSSE block with nonzero Slot.Length is now refused.
 - Guiding curves resolve against the unstretched profile. With Width=250,
   Dist=0.5 and SE.n=2 the Desmos coverage is 57.392970 degrees, identical
   in the paired profiles, and its mouth radius stays 320.434282 mm.

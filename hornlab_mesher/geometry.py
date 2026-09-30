@@ -1,13 +1,57 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
+
+from .throat_stretch import stretch_is_inactive
+
+
+class _StretchIdentity:
+    """Keep the legacy dataclass schema and tuple identity when inactive.
+
+    dataclasses.asdict/astuple/replace inspect the instance's field mapping.
+    A frozen inactive instance exposes the legacy fields and instance state;
+    the class retains both constructor arguments, so replace can enable
+    stretch later. Do not store Field objects in the instance: their metadata
+    is a mappingproxy, which would break deepcopy and pickle.
+    """
+
+    def __post_init__(self) -> None:
+        if stretch_is_inactive({"s1": self.s1, "s2": self.s2}):
+            # Attribute reads fall back to the class's zero defaults, while
+            # vars/pickle retain exactly the legacy instance state.
+            object.__delattr__(self, "s1")
+            object.__delattr__(self, "s2")
+
+    def __getattribute__(self, name: str) -> Any:
+        value = object.__getattribute__(self, name)
+        if name == "__dataclass_fields__" and (
+            object.__getattribute__(self, "s1") == 0.0 or
+            object.__getattribute__(self, "s2") == 0.0
+        ):
+            return {k: v for k, v in value.items() if k not in {"s1", "s2"}}
+        return value
+
+    def _identity(self) -> tuple[Any, ...]:
+        return tuple(getattr(self, f.name) for f in fields(self))
+
+    def __eq__(self, other: object) -> bool:
+        if type(self) is not type(other):
+            return NotImplemented
+        return self._identity() == other._identity()
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def __repr__(self) -> str:
+        values = ", ".join(f"{f.name}={getattr(self, f.name)!r}" for f in fields(self))
+        return f"{type(self).__qualname__}({values})"
 
 
 @dataclass(frozen=True)
@@ -26,8 +70,8 @@ class Enclosure:
     wall_thickness_mm: float = 0.0
 
 
-@dataclass(frozen=True)
-class RosseHornGeometry:
+@dataclass(frozen=True, eq=False, repr=False)
+class RosseHornGeometry(_StretchIdentity):
     """R-OSSE waveguide profile parameters.
 
     ROSSE derives its axial length internally from ``R``, ``r0``, ``k``, ``a``,
@@ -55,8 +99,8 @@ class RosseHornGeometry:
     s2: float = 0.0
 
 
-@dataclass(frozen=True)
-class OsseHornGeometry:
+@dataclass(frozen=True, eq=False, repr=False)
+class OsseHornGeometry(_StretchIdentity):
     """OSSE waveguide profile parameters.
 
     The mesh build is handed to an internal axial loft helper.
