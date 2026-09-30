@@ -92,7 +92,11 @@ the point grid.
 
 One composition refusal rule applies to native JSON/dict configs and ATH text:
 active OSSE slots, rotation with a prefix, R-OSSE rotation or explicit `Length`,
-and guiding curves with a prefix or rotation are unsupported. In-block and
+and guiding curves with a prefix or rotation are unsupported. With active
+stretch, Slot.Length, Rot, throat extension length/angle and every guiding-curve
+input must be plain finite numbers. Expressions, including zero identities,
+raise `ConfigError`: “throat stretch does not support per-azimuth <name> yet”.
+Composition activity uses exact numeric comparisons with zero. In-block and
 top-level OSSE rotation obey the same rule. Discontinuous joins, floating-point
 loss of axial ordering and nonadjacent meridian intersections or contacts,
 including source/driver and mouth endpoints, also raise `ConfigError` before a
@@ -102,19 +106,14 @@ patches and axial knot weighting; stretch-off retains the previous fitting path.
 
 See [the geometry contract](geometry-contract.md#r-osse-s--os-se-s-throat-stretching)
 for the measured ATH evidence and finite meridian-validation tolerance. With
-stretch absent, the only existing import changes are top-level `Rot` beside an
-OSSE block (honored if no in-block `Rot`) and refusal of a nonzero OSSE block
-`Slot.Length`, whose ATH radial transition differs from a native explicit slot.
-Zero slot expressions such as `0*p` and `sin(p)^2-sin(p)^2` retain their original
-mapping and import successfully. Slot, rotation and stretch-composition inactivity
-use the shared parameter evaluator on 1,441 fixed azimuths (0 through 360 degrees
-in 0.25-degree steps, including quadrant boundaries). Every result must be finite
-and within 1e-12 of zero in the parameter's unit (mm, degrees or dimensionless).
-This absorbs floating-point roundoff in zero identities far below the geometric
-tolerances; it is a sampled decision rather than a symbolic proof. Unevaluable
-expressions are active. Supplied s1/s2 entries, including null, are scanned at
-top level and in both native profile/parameters sections before precedence;
-FREEFORM and ICW refuse every such entry.
+stretch inactive, the only existing import change is top-level `Rot` beside an
+OSSE block (honored if no in-block `Rot`). Numeric and expression-valued slots
+and rotations otherwise retain the base import mapping, without classifying
+expressions as zero. The existing inactive OSSE-block slot discrepancy against
+ATH V2025-12 is recorded in the geometry contract. Supplied s1/s2 entries,
+including null, are scanned at top level and in every native mapping section
+before precedence; FREEFORM and ICW refuse every such entry. An ICW seed may
+contain numeric OSSE/R-OSSE stretch coefficients.
 
 Driver adapter keys are convenience inputs for OSSE/R-OSSE. When both driver
 and waveguide throat diameters are provided, `r0` anchors the main waveguide

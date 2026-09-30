@@ -44,38 +44,36 @@ def stretch_is_inactive(params: Mapping[str, Any]) -> bool:
     return s1 == 0.0 or s2 == 0.0
 
 
-# Quarter-degree sampling is independent of mesh density and includes both
-# endpoints and every quadrant boundary. The absolute tolerance absorbs roundoff
-# in identities such as sin(p)^2 + cos(p)^2 - 1, far below geometric tolerances.
-ZERO_PARAMETER_SAMPLES = 1440
-ZERO_PARAMETER_ATOL = 1e-12
-
-
-def parameter_is_zero(value: Any) -> bool:
-    """Evaluate inactivity over a fixed full-circle sample, in parameter units.
-
-    This is a sampled decision, not a symbolic proof. Invalid/nonfinite values
-    and missing/empty expression inputs are never classified as zero.
-    """
-    from .profile_common import eval_param
-
-    if isinstance(value, Real):
-        return abs(value) <= ZERO_PARAMETER_ATOL and math.isfinite(value)
-    if not isinstance(value, str) or not value.strip():
-        return False
-    try:
-        for i in range(ZERO_PARAMETER_SAMPLES + 1):
-            result = eval_param(value, i * (2 * math.pi / ZERO_PARAMETER_SAMPLES))
-            if not math.isfinite(result) or abs(result) > ZERO_PARAMETER_ATOL:
-                return False
-        return True
-    except (ValueError, ArithmeticError, TypeError):
-        return False
+# Canonical composition inputs and their native aliases. These also drive the
+# early raw-input check, before normalization can coerce numeric strings.
+COMPOSITION_PROFILE_KEYS = {
+    "slotLength": ("Slot.Length", ("slot_length_mm", "slotLength")),
+    "rot": ("Rot", ("rot_deg", "rot")),
+    "throatExtLength": ("Throat.Ext.Length", ("throat_ext_length_mm", "throatExtLength")),
+    "throatExtAngle": ("Throat.Ext.Angle", ("throat_ext_angle_deg", "throatExtAngle")),
+}
+COMPOSITION_GUIDE_KEYS = {
+    "gcurveType": ("GCurve.Type", ("gcurve_type", "gcurveType")),
+    "gcurveWidth": ("GCurve.Width", ("gcurve_width_mm", "gcurveWidth")),
+    "gcurveAspectRatio": ("GCurve.AspectRatio", ("gcurve_aspect_ratio", "gcurveAspectRatio")),
+    "gcurveDist": ("GCurve.Dist", ("gcurve_dist", "gcurveDist")),
+    "gcurveRot": ("GCurve.Rot", ("gcurve_rot_deg", "gcurveRot")),
+    "gcurveSF": ("GCurve.SF", ("gcurve_sf", "gcurveSf", "gcurveSF")),
+    "gcurveSf": ("GCurve.SF", ("gcurve_sf", "gcurveSf", "gcurveSF")),
+    "gcurveSeN": ("GCurve.SE.n", ("gcurve_se_n", "gcurveSeN")),
+    "gcurveSfA": ("GCurve.SF.a", ("gcurve_sf_a", "gcurveSfA")),
+    "gcurveSfB": ("GCurve.SF.b", ("gcurve_sf_b", "gcurveSfB")),
+    "gcurveSfM1": ("GCurve.SF.m1", ("gcurve_sf_m1", "gcurveSfM1")),
+    "gcurveSfM2": ("GCurve.SF.m2", ("gcurve_sf_m2", "gcurveSfM2")),
+    "gcurveSfN1": ("GCurve.SF.n1", ("gcurve_sf_n1", "gcurveSfN1")),
+    "gcurveSfN2": ("GCurve.SF.n2", ("gcurve_sf_n2", "gcurveSfN2")),
+    "gcurveSfN3": ("GCurve.SF.n3", ("gcurve_sf_n3", "gcurveSfN3")),
+}
 
 
 def stretch_input_sections(config: Mapping[str, Any]):
     """Scan supplied native entries even when section precedence ignores them."""
-    for section in (config, config.get("profile", {}), config.get("parameters", {})):
+    for section in (config, *(value for key, value in config.items() if key != "icw_seed")):
         if isinstance(section, Mapping):
             yield section
 
@@ -101,16 +99,28 @@ def validate_stretch_composition(params: Mapping[str, Any], formula: str,
 
     if stretch_is_inactive(params):
         return
-    prefix = any(not parameter_is_zero(params.get(k, 0)) for k in ("throatExtLength", "slotLength"))
-    rotation = not parameter_is_zero(params.get("rot", 0))
-    guide = all(not parameter_is_zero(params.get(k, 0)) for k in ("gcurveType", "gcurveWidth"))
+    for key, (name, _) in {**COMPOSITION_PROFILE_KEYS, **COMPOSITION_GUIDE_KEYS}.items():
+        if key not in params:
+            continue
+        value = params[key]
+        if not isinstance(value, Real) or isinstance(value, bool):
+            raise ConfigError(f"throat stretch does not support per-azimuth {name} yet; must be a plain finite number")
+        try:
+            finite = math.isfinite(value)
+        except (ValueError, OverflowError):
+            finite = False
+        if not finite:
+            raise ConfigError(f"throat stretch {name} must be a plain finite number")
+    prefix = any(params.get(k, 0) != 0 for k in ("throatExtLength", "slotLength"))
+    rotation = params.get("rot", 0) != 0
+    guide = all(params.get(k, 0) != 0 for k in ("gcurveType", "gcurveWidth"))
     if rotation and (formula == "R-OSSE" or prefix):
         raise ConfigError("throat stretch with Rot and a prefix (or R-OSSE Rot) is unverified and not supported")
-    if formula == "OSSE" and not parameter_is_zero(params.get("slotLength", 0)):
+    if formula == "OSSE" and params.get("slotLength", 0) != 0:
         raise ConfigError("throat stretch with OSSE Slot.Length is unverified and not supported")
     if guide and (prefix or rotation):
         raise ConfigError("throat stretch with GCurve and a prefix or Rot is unverified and not supported")
-    if formula == "R-OSSE" and length_supplied:
+    if formula == "R-OSSE" and (length_supplied or any(k in params for k in ("L", "L_mm", "Length"))):
         raise ConfigError("throat stretch with R-OSSE top-level Length is unverified and not supported")
 
 

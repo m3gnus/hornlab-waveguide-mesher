@@ -10221,5 +10221,1547 @@
         "scale": 0.48
       }
     }
+  ],
+  "composition_imports": [
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 0\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 0\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 0,
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 8",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 8",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 8",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 8",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 8",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 8\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 8\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 8,
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 1e-13",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 1e-13",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 1e-13",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 1e-13",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 1e-13",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 1e-13\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 1e-13\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": 1e-13,
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 0*p",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 0*p",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 0*p",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 0*p",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 0*p",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 0*p\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 0*p\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "0*p",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = sin(720*p)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = sin(720*p)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = sin(720*p)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = sin(720*p)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = sin(720*p)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = sin(720*p)\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = sin(720*p)\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = sin(720*p)^2\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = sin(720*p)^2\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 20*sin(720*p)^2\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 20*sin(720*p)^2\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20*sin(720*p)^2",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 20 if abs(p-pi/64)<0.001 else 0\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "20 if abs(p-pi/64)<0.001 else 0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 10000*(cos(p)^2+sin(p)^2-1)\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "10000*(cos(p)^2+sin(p)^2-1)",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0\n}\nSlot.Length = 1/0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 0,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10\n}\nSlot.Length = 1/0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": 10,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 0*p\n}\nSlot.Length = 1/0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "0*p",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 20*sin(720*p)^2\n}\nSlot.Length = 1/0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "20*sin(720*p)^2",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\nRot = 10000*(cos(p)^2+sin(p)^2-1)\n}\nSlot.Length = 1/0",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "rot": "10000*(cos(p)^2+sin(p)^2-1)",
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      }
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 1/0\nRot = 10",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": 10.0
+    },
+    {
+      "text": "OSSE = {\nL = 160\n}\nSlot.Length = 1/0\nRot = 20*sin(720*p)^2",
+      "parsed": {
+        "formula": "OSSE",
+        "profile": {
+          "slotLength": "1/0",
+          "_athLengthMode": "total",
+          "L": 160,
+          "a0": 0,
+          "s": 0.7
+        },
+        "mesh": {
+          "samplingMode": "ath-default-zmap",
+          "wallThickness": 5,
+          "throatResolution": 4,
+          "mouthResolution": 8,
+          "rearResolution": 15
+        },
+        "simType": 1
+      },
+      "top_level_rot": "20*sin(720*p)^2"
+    }
   ]
 }

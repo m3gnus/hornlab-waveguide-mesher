@@ -5,7 +5,7 @@ import logging
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
-from .throat_stretch import canonical_stretch_params, parameter_is_zero, validate_stretch_composition, stretch_coefficients
+from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_coefficients
 
 import numpy as np
 
@@ -403,17 +403,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
             raise ConfigError("ATH OSSE text configs must set Length")
         if "OSSE" in blocks:
             # V2025-12 honours top-level Rot even with an OSSE block; Length
-            # stays subordinate to the block's L. Slot changes the radial
-            # transition in a way the explicit native prefix does not model.
+            # stays subordinate to the block's L.
             if "Rot" not in blocks["OSSE"]:
                 profile.update(mapped(flat, (("Rot", "rot"),)))
-            if not parameter_is_zero(common_profile.get("slotLength", 0)):
-                validate_stretch_composition(profile, formula)
-                raise ConfigError(
-                    "OSSE block with nonzero Slot.Length is not supported: ATH V2025-12 "
-                    "changes the radial transition while retaining the L axial span; "
-                    "the slot transition is not yet established by ATH probes"
-                )
         # ATH defaults for keys the import may omit (Ath 4.8.2 User Guide 4.1.1).
         # Native TOML/JSON configs keep the package defaults in config_builder.
         profile.setdefault("a0", 0)

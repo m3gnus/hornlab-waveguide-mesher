@@ -98,6 +98,26 @@ for expression in ['sin(p-p)', '0/(1+p^2)', '(p+1)-(1+p)', 'cos(p)^2+sin(p)^2-1'
     for scale in ['', '\nScale = .48']:
         text = 'OSSE = {\nL = 160\n}\nSlot.Length = ' + expression + scale
         out['zero_imports'].append({'text': text, 'parsed': parse_text_config(text)})
+# Preserve the inactive importer, even for slots/rotations whose expressions
+# alias finite azimuth samples or have floating-point identity residuals.
+out['composition_imports'] = []
+for slot in ['0', '8', '1e-13', '0*p', 'sin(720*p)', 'sin(720*p)^2',
+             '20*sin(720*p)^2', '20 if abs(p-pi/64)<0.001 else 0',
+             '10000*(cos(p)^2+sin(p)^2-1)', '1/0']:
+    for rot, placement in [('0', 'block'), ('10', 'block'), ('0*p', 'block'),
+                           ('20*sin(720*p)^2', 'block'),
+                           ('10000*(cos(p)^2+sin(p)^2-1)', 'block'),
+                           ('10', 'top'), ('20*sin(720*p)^2', 'top')]:
+        text = 'OSSE = {\nL = 160'
+        if placement == 'block':
+            text += '\nRot = ' + rot
+        text += '\n}\nSlot.Length = ' + slot
+        if placement == 'top':
+            text += '\nRot = ' + rot
+        case = {'text': text, 'parsed': parse_text_config(text)}
+        if placement == 'top':
+            case['top_level_rot'] = float(rot) if rot == '10' else rot
+        out['composition_imports'].append(case)
 out['resolved'] = {}
 for family, profile in {
     'OSSE': {'L': 80},

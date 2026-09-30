@@ -34,7 +34,10 @@ and prefixed dataclass serialization, repr, hashes and builder mappings;
 native and text-imported normalization; full resolved asdict values (array byte
 hashes), fields, instance keys and repr for OSSE, R-OSSE, FREEFORM and ICW;
 and 23 archive imports plus 36
-block/flat rotation/slot variants. Archive inputs are identified by content
+block/flat rotation/slot variants, eight zero-expression imports and 70 OSSE
+block composition imports covering numeric slots, expression slots/rotations,
+finite-sample aliases, narrow spikes and scaled zero identities. Inactive
+imports equal base except top-level Rot beside a block without its own Rot. Archive inputs are identified by content
 SHA256, so no local paths or archive comments are embedded. The required
 parity gate also runs this entire corpus against the live archive.
 

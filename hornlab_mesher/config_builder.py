@@ -54,7 +54,7 @@ from .builders.point_grid_freestanding import (
 )
 from .builders.point_grid_surfaces import _rear_rim_points
 from .tags import PhysicalGroup
-from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
+from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +370,11 @@ def _validate_formula_specific_keys(
         return
 
     names = ("L_mm", "L", "n", "s", "rot_deg", "rot")
+    if not stretch_is_inactive({key: _pick(profile, config, names=(key,), default=0)
+                                for key in ("s1", "s2")}):
+        # The shared composition boundary already refused active R-OSSE Rot.
+        # A numeric zero rotation is harmless, just as on the text path.
+        names = ("L_mm", "L", "n", "s")
     if _has_any(profile, config, names=names):
         raise ConfigError("OSSE-only profile keys are not valid with formula R-OSSE")
 
@@ -806,17 +811,19 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     )
     validate_supplied_stretch(config, formula)
     if formula in {"OSSE", "R-OSSE"}:
-        if formula == "R-OSSE":
-            validate_stretch_composition(
-                {"s1": _pick(profile, config, names=("s1",), default=0.0),
-                 "s2": _pick(profile, config, names=("s2",), default=0.0),
-                 "rot": _pick(profile, config, names=("rot_deg", "rot"), default=0.0),
-                 "throatExtLength": _pick(profile, config, names=("throat_ext_length_mm", "throatExtLength"), default=0.0),
-                 "slotLength": _pick(profile, config, names=("slot_length_mm", "slotLength"), default=0.0),
-                 "gcurveType": _pick(gcurve, config, names=("gcurve_type", "gcurveType"), default=0),
-                 "gcurveWidth": _pick(gcurve, config, names=("gcurve_width_mm", "gcurveWidth"), default=0)},
-                formula, length_supplied=_has_any(profile, config, names=("L_mm", "L", "Length")),
-            )
+        composition = {key: _pick(profile, config, names=(key,), default=0.0)
+                       for key in ("s1", "s2")}
+        for section, keys in ((profile, COMPOSITION_PROFILE_KEYS), (gcurve, COMPOSITION_GUIDE_KEYS)):
+            for key, (_, aliases) in keys.items():
+                for supplied in (section, config):
+                    matches = [name for name in aliases if name in supplied]
+                    if matches:
+                        composition[key] = supplied[matches[0]]
+                        break
+        validate_stretch_composition(
+            composition, formula,
+            length_supplied=_has_any(profile, config, names=("L_mm", "L", "Length")),
+        )
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, profile, cross, morph, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure, formula)
@@ -1188,6 +1195,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             raise ConfigError(str(exc)) from exc
 
     if formula in {"OSSE", "R-OSSE"}:
+        if not stretch_is_inactive(common):
+            # Omit absent optional guide inputs on the numeric-only path.
+            # Explicit nonnumeric values were refused before normalization.
+            for key, absent in (("gcurveSF", ""), ("gcurveSf", ""), ("gcurveSfM2", None)):
+                if common[key] == absent:
+                    common.pop(key)
         validate_stretch_composition(
             {**common, "rot": _pick(profile, config, names=("rot_deg", "rot"), default=0.0)},
             formula,

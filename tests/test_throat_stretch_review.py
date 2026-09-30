@@ -247,7 +247,7 @@ def test_native_precedence_cannot_hide_a_coefficient_expression(path, key, tmp_p
 
 
 @pytest.mark.parametrize('family', ['FREEFORM', 'ICW'])
-@pytest.mark.parametrize('section', ['top', 'profile', 'parameters', 'parameters-only', 'secondary-profile'])
+@pytest.mark.parametrize('section', ['top', 'profile', 'parameters', 'parameters-only', 'secondary-profile', 'mesh', 'morph', 'source', 'output', 'enclosure', 'gcurve'])
 @pytest.mark.parametrize('key', ['s1', 's2'])
 @pytest.mark.parametrize('value', [None, 0, .5, '0*p'])
 def test_foreign_family_refuses_every_supplied_stretch_entry(family, section, key, value):
@@ -274,25 +274,6 @@ def test_foreign_family_refuses_every_supplied_stretch_entry(family, section, ke
         config.setdefault(section, {})[key] = value
     with pytest.raises(ConfigError, match='coefficient keys|shape keys'):
         build_geometry_params(config)
-
-
-@pytest.mark.parametrize('expression', ['sin(p-p)', '0/(1+p^2)', '(p+1)-(1+p)',
-                                        'cos(p)^2+sin(p)^2-1'])
-@pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
-def test_zero_rotation_expression_is_inactive_for_stretch_composition(family, expression):
-    length = 'L = 160' if family == 'OSSE' else 'R = 200'
-    config = parse_text_config(
-        f'{family} = {{\n{length}\ns1 = .5\ns2 = .2\n}}\n'
-        f'Rot = {expression}\nThroat.Ext.Length = 12')
-    resolve_geometry({**config, 'mode': 'bare'})
-
-
-@pytest.mark.parametrize('expression', ['1/0', '0/0', 'sin(missing)', '1e309', '', None,
-                                        'sin(p)', '1e-11', 'sin(16*p)^128',
-                                        '1 if p == pi/2 else 0'])
-def test_zero_parameter_probe_does_not_hide_active_or_invalid_inputs(expression):
-    from hornlab_mesher.throat_stretch import parameter_is_zero
-    assert not parameter_is_zero(expression)
 
 
 @pytest.mark.parametrize('quadrants', ['1', '12', '14'])

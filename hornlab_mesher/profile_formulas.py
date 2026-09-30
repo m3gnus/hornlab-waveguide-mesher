@@ -339,7 +339,6 @@ def _validate_osse_stretch_composition(
     params: Mapping[str, Any], p: float, s1: float, s2: float,
     L: float, ext_len: float, slot_len: float, coverage_angle: float | None,
 ) -> None:
-    validate_stretch_composition(params, "OSSE")
     if s1 == 0.0 or s2 == 0.0 or ext_len + slot_len == 0.0:
         return
     r0 = eval_param(params.get("r0"), p, 12.7)
@@ -370,6 +369,7 @@ def calculate_osse(
     *,
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
+    validate_stretch_composition(params, "OSSE")
     L, _, ext_len, slot_len = osse_length_config(params, p)
     s1, s2 = stretch_coefficients(params)
     _validate_osse_stretch_composition(params, p, s1, s2, L, ext_len, slot_len, coverage_angle)
@@ -449,6 +449,7 @@ def calculate_osse_curve(
     terminating-arc solve are each paid once per meridian.
     """
 
+    validate_stretch_composition(params, "OSSE")
     z = np.asarray(z_values, dtype=np.float64)
     L, _total, ext_len, slot_len = osse_length_config(params, p)
     s1, s2 = stretch_coefficients(params)

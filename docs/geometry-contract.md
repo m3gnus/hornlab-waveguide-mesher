@@ -169,8 +169,14 @@ S(x) = x + s1 * (180 / pi) * atan(s2 * x)
   It applies to both native configurations and ATH text imports, before any
   consumer generates geometry.
   This includes a slot alone, extension alone, and combined prefixes; an
-  evaluated nonzero rotation with active stretch cannot use an unmeasured
-  join convention. The scalar and vector evaluators check the actual radial
+  numeric nonzero rotation with active stretch cannot use an unmeasured
+  join convention. With active stretch, Slot.Length, Rot, throat extension
+  length and angle, and all guiding-curve inputs must be plain finite numbers.
+  Expression-valued inputs, including mathematical zero identities, raise
+  `ConfigError`: “throat stretch does not support per-azimuth <name> yet”.
+  Composition rules compare numeric inputs with zero exactly; no expression
+  is sampled or classified as zero. The scalar and vector evaluators check
+  the actual radial
   and axial main endpoint against the prefix endpoint. A discontinuous
   composite meridian is refused. The map is analytically increasing; the
   vector evaluator additionally checks that distinct unstretched axial
@@ -228,9 +234,10 @@ version banner. The portable points and generating configs are in
 points (16 meridians per case) were compared in ordinal order. OSSE stations
 come from the paired zero axial coordinate, undoing `Rot` where needed;
 R-OSSE stations come from the published radial equation, preserving station
-order through axial foldback. The 28 accepted cases agree in both evaluators
+order through axial foldback. The 28 ATH-qualified cases agree in both evaluators
 within 2.634e-5 mm, below the 2e-4 mm GridExport tolerance. Eight OSSE slot
-cases are refused rather than claimed as parity; see below.
+cases are outside the ATH parity claim: active stretch refuses them, and
+inactive imports retain the known base discrepancy; see below.
 
 - Degree convention: OSSE `s1=0.5,s2=0.2,L=160` ends at 204.105045 mm,
   an addition of 44.105045 mm. Its log prints
@@ -248,16 +255,10 @@ cases are refused rather than claimed as parity; see below.
   12 mm to OSSE and R-OSSE depth and preserves the main radii. R-OSSE's
   8 mm slot adds 8 mm outside the map, alone or with the extension; its
   main curve, derived L and mouth stay unchanged.
-- **OSSE block Slot.Length is unsupported on text import**, including at
-  zero stretch. ATH retains axial L=160 and stretched depth 204.105045 mm
-  with Slot.Length=8, but changes the mouth radius 205.931011 -> 195.623160 mm
-  and the intervening radial transition. This differs from the native explicit
-  tube prefix even with stretch off (maximum deviation 7.699858 mm; the
-  Scale=0.48 cases differ by up to 3.788557 mm). The 36 probes do not establish
-  that transition's construction. A dense block/flat slot/no-slot comparison
-  must settle it before the importer can support it. Active stretch with a
-  slot is refused in both native JSON and flat/block OSSE text. The native
-  explicit slot retains its previous behavior when stretch is off.
+- Active stretch with OSSE Slot.Length is refused in native and flat/block
+  text configs: the ATH slot transition is not established by these probes.
+  Inactive slot imports retain base behavior, whatever the slot value or
+  expression.
 - OSSE block L takes precedence over top-level Length: adding Length=180
   beside L=160 produces byte-identical profile CSVs to the plain case,
   both at zero and active stretch. Likewise Tritonia L=135 with Length=180.
@@ -274,9 +275,8 @@ cases are refused rather than claimed as parity; see below.
   supported composition rule.
   Active stretch with R-OSSE Rot is refused in every configuration path; OSSE Rot
   plus an extension/slot is refused in both import and native evaluation.
-  The only existing import changes against `5c8ea4dc` with stretch absent are:
-  top-level Rot beside an OSSE block is now imported when the block has no
-  Rot, and an OSSE block with nonzero Slot.Length is now refused.
+  The only existing import change against `5c8ea4dc` with stretch inactive is
+  top-level Rot beside an OSSE block, now imported when the block has no Rot.
 - Guiding curves resolve against the unstretched profile. With Width=250,
   Dist=0.5 and SE.n=2 the Desmos coverage is 57.392970 degrees, identical
   in the paired profiles, and its mouth radius stays 320.434282 mm.
@@ -288,13 +288,16 @@ cases are refused rather than claimed as parity; see below.
   s2=0.06 and Scale=0.48: depth 64.800000 -> 96.657431 mm equals
   `0.48*S(135)`. At Scale=0.48, extension 12 contributes 5.76 mm.
   A consumer which pre-scales dimensions, such as WG's preview translator,
-  must also send `s1_scaled=Scale*s1` and `s2_scaled=s2/Scale`, preserving
-  expressions. This satisfies `S_scaled(Scale*x)=Scale*S(x)`, including
+  must also send numeric `s1_scaled=Scale*s1` and `s2_scaled=s2/Scale`. This satisfies `S_scaled(Scale*x)=Scale*S(x)`, including
   rotation and guiding curves. Applying unchanged s2 to pre-scaled x changes
   the measured throat shape.
 
-Text import treats expressions as potentially active when deciding whether
-an unmeasured combination must be refused. No extrapolated combination is
+Known limitation: with stretch inactive, OSSE blocks with Slot.Length import
+exactly as on base, although their geometry can differ from ATH V2025-12 by up
+to 7.7 mm. ATH changes the radial transition while retaining the block's axial
+L span; establishing and reproducing that transition is separate work.
+
+Active stretch supports numeric compositions only. No extrapolated combination is
 claimed as ATH parity. These measurements qualify the inner profile, not
 ATH wall meshing, guiding curves combined with other transforms, or C5 adapter
 composition. Existing archive parity still runs as a separate required gate.

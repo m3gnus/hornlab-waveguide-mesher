@@ -69,7 +69,7 @@ def test_dormant_icw_seed_key_matches_base(dormant):
 
 
 @pytest.mark.parametrize('case', BASE['imports'], ids=lambda c: c['id'])
-def test_import_corpus_equal_base_except_two_approved_corrections(case):
+def test_import_corpus_equal_base_except_top_level_osse_rot(case):
     if 'text' in case:
         text = case['text']
     else:
@@ -82,16 +82,11 @@ def test_import_corpus_equal_base_except_two_approved_corrections(case):
                    if hashlib.sha256(p.read_text().encode()).hexdigest() == case['sha256']]
         assert len(matches) == 1, 'captured archive config missing or changed'
         text = matches[0].read_text()
-    # Only these two existing imports may differ. In-block Rot still wins
+    # Only top-level Rot beside an OSSE block may differ. In-block Rot still wins
     # over a top-level Rot when both are supplied, exactly as at the base.
     osse_block = text.startswith('OSSE = {')
     block_text = text.split('}', 1)[0]
-    approved_slot = osse_block and 'Slot.Length = 8' in text
     approved_rot = osse_block and 'Rot = 10' in text and 'Rot = 5' not in block_text
-    if approved_slot:
-        with pytest.raises(ConfigError, match='OSSE block with nonzero Slot.Length'):
-            parse_text_config(text)
-        return
     if 'error' in case:
         with pytest.raises(ConfigError, match=case['message']):
             parse_text_config(text)
@@ -136,7 +131,8 @@ def test_review_discontinuous_and_self_intersecting_native_design_refused(prefix
 def test_stretched_composite_junction_is_continuous_and_foldback_preserved(family, prefix):
     if family == 'OSSE':
         prefix = {k: v for k, v in prefix.items() if k != 'slotLength'}
-    params = dict(r0=10, L=160, R=200, a=40, a0=7.9, k=1.38, q=4, s1=0.5, s2=0.2, **prefix)
+    params = dict(r0=10, a=40, a0=7.9, k=1.38, q=4, s1=0.5, s2=0.2, **prefix)
+    params.update({'L': 160} if family == 'OSSE' else {'R': 200})
     if family == 'OSSE':
         scalar, vector = calculate_osse, calculate_osse_curve
         join = sum(prefix.values())
@@ -152,7 +148,8 @@ def test_stretched_composite_junction_is_continuous_and_foldback_preserved(famil
 
 @pytest.mark.parametrize('family', list(CLASSES))
 def test_radially_broken_junction_refused_even_when_axial_join_is_valid(family):
-    params = dict(r0=10, L=160, R=200, k=-1, throatExtLength=20, s1=0.5, s2=0.2)
+    params = dict(r0=10, k=-1, throatExtLength=20, s1=0.5, s2=0.2)
+    params.update({'L': 160} if family == 'OSSE' else {'R': 200})
     scalar, vector = (calculate_osse, calculate_osse_curve) if family == 'OSSE' else (calculate_rosse, calculate_rosse_curve)
     for evaluate, station in [(scalar, 0), (vector, np.array([0]))]:
         with pytest.raises(ConfigError, match='continuous.*prefix/main junction'):
@@ -187,8 +184,9 @@ def test_float_collapse_of_monotone_axial_map_is_refused():
 
 @pytest.mark.parametrize('family', list(CLASSES))
 def test_long_tapered_extension_rounding_discontinuity_is_refused(family):
-    params = dict(r0=10, L=160, R=200, throatExtLength=1e17,
+    params = dict(r0=10, throatExtLength=1e17,
                   throatExtAngle=-45, s1=0.5, s2=0.2)
+    params.update({'L': 160} if family == 'OSSE' else {'R': 200})
     scalar, vector = (calculate_osse, calculate_osse_curve) if family == 'OSSE' else (calculate_rosse, calculate_rosse_curve)
     for evaluate, station in [(scalar, 0), (vector, np.array([0]))]:
         with pytest.raises(ConfigError, match='continuous.*prefix/main junction'):
@@ -267,3 +265,13 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
 @pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
 def test_evaluated_zero_import_result_equals_captured_base(case):
     assert parse_text_config(case['text']) == case['parsed']
+
+
+@pytest.mark.parametrize('case', BASE['composition_imports'])
+@pytest.mark.parametrize('dormant', DORMANT)
+def test_inactive_composition_imports_equal_true_base(case, dormant):
+    text = case['text'].replace('\n}', ''.join(f'\n{k} = {v}' for k, v in dormant.items()) + '\n}')
+    expected = copy.deepcopy(case['parsed'])
+    if 'top_level_rot' in case:
+        expected['profile']['rot'] = case['top_level_rot']
+    assert parse_text_config(text) == expected
