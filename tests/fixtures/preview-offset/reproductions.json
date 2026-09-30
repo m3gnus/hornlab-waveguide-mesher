@@ -1,0 +1,302 @@
+{
+  "OSSE-bare": {
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "r0": 12.7,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3
+    },
+    "mode": "bare",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "OSSE-freestanding": {
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "r0": 12.7,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3
+    },
+    "mode": "freestanding",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "OSSE-enclosure": {
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "r0": 12.7,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3
+    },
+    "mode": "enclosure",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "enclosure": {
+      "depth_mm": 110,
+      "edge_mm": 5
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "OSSE-infinite-baffle": {
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "r0": 12.7,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3
+    },
+    "mode": "infinite-baffle",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "R-OSSE-bare": {
+    "profile": {
+      "formula": "R-OSSE",
+      "R": 80,
+      "r0": 12.7,
+      "a": 40,
+      "a0": 5,
+      "m": 0.8,
+      "r": 0.4,
+      "b": 0.2,
+      "q": 3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3,
+      "slotLength": 5,
+      "tmax": 0.8
+    },
+    "mode": "bare",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "R-OSSE-freestanding": {
+    "profile": {
+      "formula": "R-OSSE",
+      "R": 80,
+      "r0": 12.7,
+      "a": 40,
+      "a0": 5,
+      "m": 0.8,
+      "r": 0.4,
+      "b": 0.2,
+      "q": 3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3,
+      "slotLength": 5,
+      "tmax": 0.8
+    },
+    "mode": "freestanding",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "R-OSSE-enclosure": {
+    "profile": {
+      "formula": "R-OSSE",
+      "R": 80,
+      "r0": 12.7,
+      "a": 40,
+      "a0": 5,
+      "m": 0.8,
+      "r": 0.4,
+      "b": 0.2,
+      "q": 3,
+      "throatExtLength": 8,
+      "throatExtAngle": -3,
+      "slotLength": 5,
+      "tmax": 0.8
+    },
+    "mode": "enclosure",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "enclosure": {
+      "depth_mm": 110,
+      "edge_mm": 5
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  },
+  "R-OSSE-infinite-baffle": {
+    "profile": {
+      "formula": "R-OSSE",
+      "R": 80,
+      "r0": 12.7,
+      "a": 40,
+      "a0": 5,
+      "m": 0.8,
+      "r": 0.4,
+      "b": 0.2,
+      "q": 3,
+      "tmax": 0.65,
+      "throatExtLength": 8,
+      "throatExtAngle": -3,
+      "slotLength": 5
+    },
+    "mode": "infinite-baffle",
+    "mesh": {
+      "quadrants": "14",
+      "angularSegments": 16,
+      "lengthSegments": 16,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "interpolate",
+      "allow_large_mesh": true,
+      "max_triangles": 100000,
+      "vertical_offset_mm": 7
+    },
+    "scale": 0.48,
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    }
+  }
+}

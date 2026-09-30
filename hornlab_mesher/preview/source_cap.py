@@ -47,12 +47,11 @@ def _source_cap(
     center = np.mean(ring, axis=0)
     if not closed_phi:
         # A reduced (quadrant/half) model's throat ring is an arc, so its mean
-        # lies off the axis. The solved build pins the cap on the axis for an
-        # open ring (``point_grid_sources._throat_radius`` and
-        # ``_add_source_surfaces``); so must the preview, or the pole, the cap
-        # height and the sphere radius all differ from the full model's.
+        # lies off the axis. The solve builds the cap at the origin, then
+        # translates the finished model. The preview ring is already placed,
+        # so its axis must retain that same rigid Y translation.
         center[0] = 0.0
-        center[1] = 0.0
+        center[1] = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
     radial = ring[:, :2] - center[:2]
     radii = np.linalg.norm(radial, axis=1)
     throat_radius = float(np.mean(radii[radii > 1.0e-12]))
