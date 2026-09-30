@@ -2,3 +2,4 @@
 # on every platform. Without this, a Windows checkout converts them to CRLF.
 tests/fixtures/**/*.csv text eol=lf
 tests/fixtures/**/*.json text eol=lf
+tests/fixtures/**/*.md text eol=lf
