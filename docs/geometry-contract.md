@@ -224,8 +224,9 @@ fits. Active rectangle
 morphs retain at least 64 angular segments and four corner-arc subdivisions
 so the quadrant interpolants follow the sampled morph corners.
 All stretch-related failures on resolve, preview, solve mesh and STEP paths raise
-`ConfigError`. Zero-valued slot expressions retain the legacy import mapping;
-identity is recognized algebraically rather than from one azimuth sample.
+`ConfigError`. With stretch inactive, slot and rotation expressions are imported
+as on the base and are never classified as zero or non-zero; with stretch active,
+every parameter in a composition rule must be a plain number.
 
 **Measured ATH evidence (V2025-12):** all 36 paired probe exports carry
 `; Ath version V2025-12` in their generated `config.txt`. The run logs have no
