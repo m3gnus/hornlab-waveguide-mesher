@@ -1,0 +1,76 @@
+{
+  "case_id": "a9-rosse-N512-mesh-throatextsegments",
+  "ath_version": "V2025-12",
+  "contract_interpretation": "ATH-V2025-12-C5-R1",
+  "profile_syntax": "R-OSSE block",
+  "role": "ctrl",
+  "expected_import": "qualified",
+  "config": {
+    "R-OSSE": {
+      "R": "200",
+      "r0": "18",
+      "a": "40",
+      "a0": "8",
+      "k": "2",
+      "r": "0.3",
+      "m": "0.8",
+      "b": "0",
+      "q": "4",
+      "tmax": "1",
+      "s1": "0",
+      "s2": "0",
+      "trunc": "10"
+    },
+    "Throat.Ext.Length": "0",
+    "Throat.Ext.Angle": "0",
+    "Slot.Length": "0",
+    "Scale": "1",
+    "Source.Shape": "-1",
+    "Source.Velocity": "1",
+    "Mesh.Quadrants": "1234",
+    "Mesh.AngularSegments": "16",
+    "Mesh.LengthSegments": "512",
+    "Mesh.WallThickness": "0",
+    "Mesh.SubdomainSlices": "",
+    "Mesh.ZMapPoints": "0,0,1,1",
+    "Output.STL": "0",
+    "Output.MSH": "0",
+    "Output.ABECProject": "0",
+    "Mesh.ThroatExtSegments": "8",
+    "Throat.Ext.Ctrl": "-38,17.78,-27.4,18.6,-12.8,21.441923768883",
+    "GridExport:c5": {
+      "ExportProfiles": "1",
+      "ExportSlices": "1",
+      "Scale": "1",
+      "Delimiter": "\";\"",
+      "FileExtension": "\"csv\"",
+      "SeparateFiles": "0"
+    }
+  },
+  "baseline_case_id": "a9-rosse-N512-mesh-throatextsegments-noctrl",
+  "adapter": {
+    "control_points_join_local_mm": [
+      [
+        -38.0,
+        17.78
+      ],
+      [
+        -27.4,
+        18.6
+      ],
+      [
+        -12.8,
+        21.441923768883
+      ],
+      [
+        0.0,
+        20.540426
+      ]
+    ],
+    "axial_translation_mm": 38.0,
+    "first_station": 0,
+    "segments": 8,
+    "endpoint_axial_offset_mm": 0.0,
+    "fourth_point_source": "measured exported join radius at 0 degrees"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "case_id": "base-osse-top-06",
+  "ath_version": "V2025-12",
+  "contract_interpretation": "ATH-V2025-12-C5-O1",
+  "profile_syntax": "flat OSSE",
+  "role": "baseline",
+  "expected_import": "qualified",
+  "config": {
+    "Throat.Ext.Length": "0",
+    "Throat.Ext.Angle": "0",
+    "Slot.Length": "0",
+    "Scale": "1",
+    "Source.Shape": "-1",
+    "Source.Velocity": "1",
+    "Mesh.Quadrants": "1234",
+    "Mesh.AngularSegments": "16",
+    "Mesh.LengthSegments": "32",
+    "Mesh.WallThickness": "0",
+    "Mesh.SubdomainSlices": "",
+    "Mesh.ZMapPoints": "0,0,1,1",
+    "Output.STL": "0",
+    "Output.MSH": "0",
+    "Output.ABECProject": "0",
+    "Length": "140",
+    "Throat.Diameter": "36",
+    "Throat.Angle": "8",
+    "Coverage.Angle": "40",
+    "OS.k": "1",
+    "Term.s": "0",
+    "Term.n": "4",
+    "Term.q": "0.995",
+    "GridExport:c5": {
+      "ExportProfiles": "1",
+      "ExportSlices": "1",
+      "Scale": "1",
+      "Delimiter": "\";\"",
+      "FileExtension": "\"csv\"",
+      "SeparateFiles": "0"
+    }
+  }
+}

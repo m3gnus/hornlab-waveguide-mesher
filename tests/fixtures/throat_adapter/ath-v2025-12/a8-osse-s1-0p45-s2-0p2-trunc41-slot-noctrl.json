@@ -1,0 +1,46 @@
+{
+  "case_id": "a8-osse-s1-0p45-s2-0p2-trunc41-slot-noctrl",
+  "ath_version": "V2025-12",
+  "contract_interpretation": "ATH-V2025-12-C5-O1",
+  "profile_syntax": "OSSE block",
+  "role": "baseline",
+  "expected_import": "qualified",
+  "config": {
+    "OSSE": {
+      "L": "120",
+      "r0": "18",
+      "a0": "8",
+      "k": "1",
+      "a": "40",
+      "s": "0",
+      "n": "4",
+      "q": "0.995",
+      "s1": "0.45",
+      "s2": "0.2",
+      "trunc": "41"
+    },
+    "Throat.Ext.Length": "0",
+    "Throat.Ext.Angle": "0",
+    "Slot.Length": "10",
+    "Scale": "1",
+    "Source.Shape": "-1",
+    "Source.Velocity": "1",
+    "Mesh.Quadrants": "1234",
+    "Mesh.AngularSegments": "16",
+    "Mesh.LengthSegments": "32",
+    "Mesh.WallThickness": "0",
+    "Mesh.SubdomainSlices": "",
+    "Mesh.ZMapPoints": "0,0,1,1",
+    "Output.STL": "0",
+    "Output.MSH": "0",
+    "Output.ABECProject": "0",
+    "GridExport:c5": {
+      "ExportProfiles": "1",
+      "ExportSlices": "1",
+      "Scale": "1",
+      "Delimiter": "\";\"",
+      "FileExtension": "\"csv\"",
+      "SeparateFiles": "0"
+    }
+  }
+}

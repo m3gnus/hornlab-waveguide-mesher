@@ -135,6 +135,16 @@ that post. Do not pair these controls with the template's rJ and call the result
 
 ### ATH V2025-12 acceptance boundary
 
+**Build scope:** the contract's tested top-level (flat) OSSE syntax is ATH
+V2025-12 behavior. ATH V2026-08c reproduces the block-form numbers on a
+32-case sample to all six exported decimals, but rejects the flat form with
+`Parsing NULL expression!`. Top-level O1 reference points therefore come from
+V2025-12. Fixtures acquired from newer builds use `OSSE = { ... }` block form
+and are marked with their actual build; do not substitute them for flat cases.
+The [V2025-12 fixture archive](../tests/fixtures/throat_adapter/ath-v2025-12/README.md)
+preserves the selected profiles and generating parameters. Its tests validate
+fixture integrity and the declared cubic only; no mesher adapter exists yet.
+
 The overseer executed 478 configs in broker job `260930-102659-compute-6bb1`.
 Evidence is the scratchpad `c5-ath-verification/runs/20260930T084815Z`
 (`status.tsv`, per-case logs and environment digest), with CSVs under
@@ -659,7 +669,8 @@ on this branch. Tests must fail under the listed mutations.
 
 Select these small parity fixtures when implementation begins; archive config,
 run digest/log, profiles/slices and relevant physical-source artifacts together.
-Do not add fixture files on this docs branch:
+The fixture archive linked above publishes the geometry parity cases and their
+Ctrl-omitted partners; diagnostic/source artifacts remain separate evidence:
 
 - `a1-b0-block-ttrunc`, `a1-b0-top-fortyone`: exact explicit split and ignored scope.
 - `a2-t1-block-two-roots`, `a2-t0p8-block-two-roots`: first-root parity and required refusal.
