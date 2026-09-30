@@ -277,6 +277,33 @@ def _validate_osse_termination(params: Mapping[str, Any], p: float) -> None:
             )
 
 
+def _stretch_coefficients(params: Mapping[str, Any], p: float) -> tuple[float, float]:
+    """Resolve the degree-mode axial map, independently of radial coefficients."""
+    values = tuple(eval_param(params.get(name), p, 0.0) for name in ("s1", "s2"))
+    for name, value in zip(("s1", "s2"), values):
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(
+                f"throat stretch {name} must be finite and >= 0, got {value:g} "
+                f"at phi={math.degrees(p) % 360.0:.1f} deg"
+            )
+    return values
+
+
+def _stretch_x(x: float, s1: float, s2: float) -> float:
+    if s1 == 0.0 or s2 == 0.0:
+        return x
+    return x + s1 * math.degrees(math.atan(s2 * x))
+
+
+def _stretch_x_curve(x: NDArray[np.float64], s1: float, s2: float) -> NDArray[np.float64]:
+    if s1 == 0.0 or s2 == 0.0:
+        return x
+    # Finite coefficients can still overflow their product; atan(inf) is the
+    # correct limiting angle, just as on the scalar path.
+    with np.errstate(over="ignore"):
+        return x + s1 * np.degrees(np.arctan(s2 * x))
+
+
 def calculate_osse(
     z: float,
     p: float,
@@ -285,6 +312,7 @@ def calculate_osse(
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
     L, _, ext_len, slot_len = osse_length_config(params, p)
+    s1, s2 = _stretch_coefficients(params, p)
     _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
@@ -331,6 +359,8 @@ def calculate_osse(
             )
 
     x = float(z)
+    if z > ext_len + slot_len and s1 != 0.0 and s2 != 0.0:
+        x = ext_len + slot_len + _stretch_x(z - ext_len - slot_len, s1, s2)
     y = float(radius)
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
@@ -359,6 +389,7 @@ def calculate_osse_curve(
 
     z = np.asarray(z_values, dtype=np.float64)
     L, _total, ext_len, slot_len = osse_length_config(params, p)
+    s1, s2 = _stretch_coefficients(params, p)
     _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
@@ -403,6 +434,11 @@ def calculate_osse_curve(
             )
 
     x = z
+    if s1 != 0.0 and s2 != 0.0:
+        x = z.copy()
+        x[in_main] = ext_len + slot_len + _stretch_x_curve(
+            z[in_main] - ext_len - slot_len, s1, s2
+        )
     y = radius
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
@@ -518,6 +554,8 @@ class _RosseMainCoefficients(NamedTuple):
     c1: float
     c2: float
     c3: float
+    s1: float
+    s2: float
 
 
 def _rosse_main_coefficients(
@@ -533,6 +571,7 @@ def _rosse_main_coefficients(
     a = _deg(params.get("a"), p, 60.0)
     a0 = _deg(params.get("a0"), p, 15.5)
     L = _rosse_length(params, p)
+    s1, s2 = _stretch_coefficients(params, p)
     return _RosseMainCoefficients(
         R=R,
         r0=r0,
@@ -545,6 +584,8 @@ def _rosse_main_coefficients(
         c1=(k * r0) ** 2,
         c2=2 * k * r0 * math.tan(a0),
         c3=math.tan(a) ** 2,
+        s1=s1,
+        s2=s2,
     )
 
 
@@ -552,14 +593,14 @@ def _calculate_rosse_main(
     t: float, p: float, params: Mapping[str, Any]
 ) -> tuple[float, float]:
     c = _rosse_main_coefficients(p, params)
-    R, r0, k, q, m, r, b, L, c1, c2, c3 = c
+    R, r0, k, q, m, r, b, L, c1, c2, c3, s1, s2 = c
 
     x = L * (math.sqrt(r**2 + m**2) - math.sqrt(r**2 + (t - m) ** 2))
     x += b * L * (math.sqrt(r**2 + (1 - m) ** 2) - math.sqrt(r**2 + m**2)) * (t**2)
     throat_r = math.sqrt(c1 + c2 * L * t + c3 * (L * t) ** 2) + r0 * (1 - k)
     mouth_r = max(0.0, R + L * (1 - math.sqrt(1 + c3 * (t - 1) ** 2)))
     y = (1 - t**q) * throat_r + (t**q) * mouth_r
-    return x, y
+    return _stretch_x(x, s1, s2), y
 
 
 def _rosse_main_curve(
@@ -574,7 +615,7 @@ def _rosse_main_curve(
     wide of it. ``tests/test_profile_vectorization.py`` pins that bound.
     """
 
-    R, r0, k, q, m, r, b, L, c1, c2, c3 = c
+    R, r0, k, q, m, r, b, L, c1, c2, c3, s1, s2 = c
 
     x = L * (math.sqrt(r**2 + m**2) - np.sqrt(r**2 + (t - m) ** 2))
     x += b * L * (math.sqrt(r**2 + (1 - m) ** 2) - math.sqrt(r**2 + m**2)) * (t**2)
@@ -582,7 +623,7 @@ def _rosse_main_curve(
     mouth_r = np.maximum(0.0, R + L * (1 - np.sqrt(1 + c3 * (t - 1) ** 2)))
     t_q = t**q
     y = (1 - t_q) * throat_r + t_q * mouth_r
-    return x, y
+    return _stretch_x_curve(x, s1, s2), y
 
 
 def _rosse_tmax(params: Mapping[str, Any]) -> float:
@@ -634,6 +675,7 @@ def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialL
 def calculate_rosse(
     t: float, p: float, params: Mapping[str, Any]
 ) -> tuple[float, float]:
+    _stretch_coefficients(params, p)  # validate even stations in the straight prefix
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
     layout = rosse_axial_layout(params, p)
@@ -677,6 +719,7 @@ def calculate_rosse_curve(
     rather than once per grid point is the whole cost of an R-OSSE preview.
     """
 
+    _stretch_coefficients(params, p)
     t = np.asarray(t_values, dtype=np.float64)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)

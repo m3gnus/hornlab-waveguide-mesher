@@ -64,6 +64,8 @@ def _osse_params(geometry: OsseHornGeometry) -> dict[str, Any]:
         "n": float(geometry.n),
         "q": float(geometry.q),
         "s": float(geometry.s),
+        "s1": float(geometry.s1),
+        "s2": float(geometry.s2),
         "throatExtLength": float(geometry.throat_ext_length_mm),
         "throatExtAngle": float(geometry.throat_ext_angle_deg),
         "slotLength": float(geometry.slot_length_mm),

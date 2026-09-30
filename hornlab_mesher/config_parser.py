@@ -340,6 +340,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("Term.k", "k"),
             ("q", "q"),
             ("Term.q", "q"),
+            ("s1", "s1"),
+            ("s2", "s2"),
             ("Throat.Ext.Length", "throatExtLength"),
             ("Throat.Ext.Angle", "throatExtAngle"),
             ("Slot.Length", "slotLength"),

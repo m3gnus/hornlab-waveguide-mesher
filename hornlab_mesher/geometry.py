@@ -51,6 +51,8 @@ class RosseHornGeometry:
     throat_ext_angle_deg: float = 0.0
     slot_length_mm: float = 0.0
     n_axial: int = 32
+    s1: float = 0.0
+    s2: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,8 @@ class OsseHornGeometry:
     enclosure: Enclosure = field(default_factory=Enclosure)
     n_phi: int = 64
     n_axial: int = 32
+    s1: float = 0.0
+    s2: float = 0.0
 
 
 @dataclass(frozen=True)

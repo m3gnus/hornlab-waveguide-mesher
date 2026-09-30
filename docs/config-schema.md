@@ -65,6 +65,8 @@ Shared OSSE/R-OSSE keys:
 | `a0_deg` | `a0` | `15.5` (`0` for text imports, the ATH default) |
 | `k` | imported `OS.k`, `Term.k` | `1.0` |
 | `q` | none | `0.995` for OSSE, `1.0` for R-OSSE |
+| `s1` | imported block `s1` | `0.0` (mm/degree, finite and >= 0) |
+| `s2` | imported block `s2` | `0.0` (1/mm, finite and >= 0) |
 | `throat_ext_length_mm` | `throatExtLength` | `0.0` |
 | `throat_ext_angle_deg` | `throatExtAngle` | `0.0` |
 | `slot_length_mm` | `slotLength` | `0.0` |
@@ -72,6 +74,15 @@ Shared OSSE/R-OSSE keys:
 | `driver_throat_diameter_in` | `driverThroatDiameterIn` | none |
 | `waveguide_throat_diameter_mm` | `waveguideThroatDiameter`, `waveguideThroatDiameterMm` | none |
 | `waveguide_throat_diameter_in` | `waveguideThroatDiameterIn` | none |
+
+`s1` and `s2` stretch the main axial coordinate by
+`s1 * degrees(atan(s2 * x))`, leaving its radius unchanged. Either zero disables
+stretch exactly. Both accept per-azimuth expressions. They belong inside
+`R-OSSE`/`OSSE` ATH blocks and are refused on other profile families (an ICW
+seed may contain them). The total-length helpers and `L` remain unstretched
+sampling parameters; use the resulting point grid for physical dimensions.
+See [the geometry contract](geometry-contract.md#r-osse-s--os-se-s-throat-stretching)
+for prefix and rotation order and the **ATH confirmation still owed**.
 
 Driver adapter keys are convenience inputs for OSSE/R-OSSE. When both driver
 and waveguide throat diameters are provided, `r0` anchors the main waveguide

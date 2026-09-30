@@ -130,6 +130,65 @@ extension duct. That recess is a transmission-line detail expected to matter
 acoustically only for horns with a long throat extension; revisit it only if a
 real device shows a response discrepancy.
 
+## R-OSSE-S / OS-SE-S throat stretching
+
+The reference is the degree-mode Desmos graphs `sljsrsipbq`, `5jogzxvqvb`
+and `k0akvpmsnn`, published in the ATH thread, posts #18211–18214 and #18259.
+The axial map is:
+
+```text
+S(x) = x + s1 * (180 / pi) * atan(s2 * x)
+```
+
+- Radius is unchanged. R-OSSE uses the complete main `x(t)`, including its
+  `b` term; OS-SE uses the main axial parameter in millimetres.
+- `s1` has units mm/degree and `s2` has units 1/mm. Both default to zero and
+  must resolve to finite, nonnegative values at every evaluated azimuth.
+  They accept the same per-azimuth expressions as the other coefficients
+  (`p` and expression trigonometry use radians; only this axial atan uses degrees).
+- Either coefficient zero bypasses the map, preserving the existing floating
+  point operations and geometry exactly.
+- `S'(x) = 1 + (180/pi)*s1*s2/(1+(s2*x)^2) >= 1`. The map is strictly
+  increasing in **x**. OS-SE remains axially monotone before `Rot`; R-OSSE
+  preserves its intentional foldback in **t**, rather than straightening it.
+- The native composition is extension, slot, stretched main profile:
+  `x = ext + slot + S(x_main)`. The straight extension and slot keep their
+  lengths and radii. For OS-SE, stretch precedes the final `Rot`.
+- `L`/`Length` remains an **unstretched sampling/profile parameter**, not a
+  requested final depth. Native main-length mode retains `main_L = L`;
+  ATH total-length mode retains `main_L = Length - Slot.Length` and adds
+  `Throat.Ext.Length` on top. The OS-SE mouth is at
+  `ext + slot + S(main_L)` before rotation. The public total-length helpers
+  continue to return the unstretched parameter span used by samplers.
+  R-OSSE likewise retains its derived L and composite t/tmax allocation.
+- Guiding-curve inversion, radial bulge and morph progress retain their
+  unstretched parameter coordinates. Wall offsets are computed from the
+  stretched surface. Preview, solve and CAD use the same profile evaluator.
+  With stretch, a guiding-curve distance is therefore a parameter location,
+  not a final physical axial distance.
+- Config normalization carries `s1` and `s2` without dropping expressions;
+  geometry dataclasses carry both in their equality/hash/serialization.
+  There is no OSSE/R-OSSE geometry memo. ICW seed memo keys include the entire
+  seed mapping, so changing a nested stretch coefficient invalidates the seed.
+  Caller-owned design/cache identities must include both coefficients.
+
+**ATH confirmation owed:** the available executable identifies itself as
+V2025-12 and contains the s1/s2 diagnostic, but Wine could not start
+(`wineserver: bind: Operation not permitted`). Thus degree-mode behavior is
+verified against Desmos, not yet measured against ATH output. The native
+prefix/Length/Rot/guiding-curve composition above defines this implementation;
+its ATH equivalence is unconfirmed. In particular July 2025 initially shipped
+R-OSSE-S only; OSSE support appeared in the August release. Before claiming ATH
+parity for stretched profiles, run the prepared plain, extension, slot,
+combined-prefix and Length probes and compare exported points. Existing ATH
+archive parity tests do not establish parity for this new feature.
+
+Point reference tolerance is 1e-10 mm (double precision); scalar/array agreement
+uses 64 machine eps times the profile scale. An ATH GridExport comparison must
+use its printed precision (normally 2e-4 mm), with no fitted degree/radian scale.
+This smooth map is separate from the C5 throat adapter and changes no adapter
+control points or extension construction.
+
 ## ICW Profile
 
 ICW (Intrinsic-Curvature Waveguide) is a native mesher profile rather than an

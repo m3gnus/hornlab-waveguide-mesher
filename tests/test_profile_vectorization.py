@@ -80,6 +80,13 @@ _ROSSE_SEED = {
 
 _ROSSE_CASES = {
     "seed": {},
+    "stretch": {"s1": 0.45, "s2": 0.2},
+    "stretch_prefix": {
+        "s1": "0.5 + cos(p)^2",
+        "s2": "0.2 + sin(p)^2",
+        "throatExtLength": 12.0,
+        "slotLength": 8.0,
+    },
     "throat_extension": {"throatExtLength": 12.0, "throatExtAngle": 3.0},
     "slot": {"slotLength": 8.0},
     "extension_and_slot": {
@@ -111,6 +118,13 @@ _OSSE_SEED = {
 
 _OSSE_CASES = {
     "seed": {},
+    "stretch": {"s1": 0.45, "s2": 0.2},
+    "stretch_prefix": {
+        "s1": "0.5 + cos(p)^2",
+        "s2": "0.2 + sin(p)^2",
+        "throatExtLength": 12.0,
+        "slotLength": 8.0,
+    },
     "throat_extension": {"throatExtLength": 15.0, "throatExtAngle": 4.0},
     "slot": {"slotLength": 6.0},
     "extension_and_slot": {
@@ -119,6 +133,7 @@ _OSSE_CASES = {
         "slotLength": 6.0,
     },
     "rotated": {"rot": 7.5},
+    "stretch_rotated": {"s1": 0.45, "s2": 0.2, "rot": 7.5},
     "saturating_superellipse": {"q": 4.0, "n": 2.0, "s": 1.0},
     # s = 0 is the legitimate way to switch the termination term off; n <= 0
     # and q <= 0 are refused (tests/test_geometry_review_fixes.py).
@@ -246,8 +261,7 @@ def test_morph_factors_match_the_scalar_oracle(
     t_values = np.linspace(0.0, 1.0, 401)
     actual = _morph_factors(t_values, phi, params, morph_start=morph_start)
     expected = [
-        _morph_factor(float(t), phi, params, morph_start=morph_start)
-        for t in t_values
+        _morph_factor(float(t), phi, params, morph_start=morph_start) for t in t_values
     ]
     # ``** 2`` and ``** 0.5`` are the two exponents NumPy reroutes away from
     # the platform pow, so those two rates are exactly where a factor can land
@@ -266,10 +280,7 @@ def test_morph_factors_leave_a_dormant_rate_expression_unevaluated() -> None:
     t_values = np.linspace(0.0, 1.0, 17)
 
     actual = _morph_factors(t_values, 0.0, params, morph_start=1.0)
-    expected = [
-        _morph_factor(float(t), 0.0, params, morph_start=1.0)
-        for t in t_values
-    ]
+    expected = [_morph_factor(float(t), 0.0, params, morph_start=1.0) for t in t_values]
 
     assert np.array_equal(actual, expected)
 

@@ -1,0 +1,144 @@
+{
+  "osse-bare": {
+    "mode": "bare",
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 12,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "approximate"
+    }
+  },
+  "osse-freestanding": {
+    "mode": "freestanding",
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 12,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "approximate"
+    }
+  },
+  "osse-infinite-baffle": {
+    "mode": "infinite-baffle",
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "a": 35,
+      "a0": 5,
+      "s": 0.3
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 12,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "approximate"
+    }
+  },
+  "rosse-bare": {
+    "mode": "bare",
+    "profile": {
+      "formula": "R-OSSE",
+      "R": 80,
+      "a": 40,
+      "a0": 5,
+      "m": 0.8,
+      "r": 0.4,
+      "b": 0.2,
+      "q": 3
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 12,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "approximate"
+    }
+  },
+  "rosse-freestanding": {
+    "mode": "freestanding",
+    "profile": {
+      "formula": "R-OSSE",
+      "R": 80,
+      "a": 40,
+      "a0": 5,
+      "m": 0.8,
+      "r": 0.4,
+      "b": 0.2,
+      "q": 3
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 12,
+      "wall_thickness_mm": 3,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "rear_res_mm": 12,
+      "surface_fit": "approximate"
+    }
+  },
+  "osse-prefix-morph": {
+    "mode": "bare",
+    "profile": {
+      "formula": "OSSE",
+      "L": 80,
+      "a": 35,
+      "throatExtLength": 8,
+      "throatExtAngle": 3,
+      "slotLength": 5
+    },
+    "morph": {
+      "morphTarget": 1,
+      "morphWidth": 150,
+      "morphHeight": 110,
+      "morphCorner": 15,
+      "morphFixed": 0.4
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 16,
+      "surface_fit": "approximate"
+    }
+  },
+  "osse-enclosure": {
+    "mode": "enclosure",
+    "profile": {
+      "L": 80,
+      "a": 35
+    },
+    "enclosure": {
+      "depth_mm": 110,
+      "edge_mm": 5
+    },
+    "mesh": {
+      "angular_segments": 16,
+      "length_segments": 12,
+      "throat_res_mm": 8,
+      "mouth_res_mm": 16,
+      "surface_fit": "approximate"
+    }
+  }
+}

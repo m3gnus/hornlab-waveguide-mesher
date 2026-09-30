@@ -16,6 +16,8 @@ def _rosse_params(geometry: RosseHornGeometry) -> dict[str, float]:
         a0=float(geometry.a0_deg),
         k=float(geometry.k),
         q=float(geometry.q),
+        s1=float(geometry.s1),
+        s2=float(geometry.s2),
         throatExtLength=float(geometry.throat_ext_length_mm),
         throatExtAngle=float(geometry.throat_ext_angle_deg),
         slotLength=float(geometry.slot_length_mm),

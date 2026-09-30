@@ -259,6 +259,8 @@ def _validate_formula_specific_keys(
             "n",
             "k",
             "q",
+            "s1",
+            "s2",
         )
         if _has_any(profile, config, names=names):
             raise ConfigError(
@@ -300,6 +302,8 @@ def _validate_formula_specific_keys(
             "n",
             "s",
             "rot_deg",
+            "s1",
+            "s2",
             "rot",
             "R_mm",
             "R",
@@ -358,7 +362,7 @@ def _validate_formula_specific_keys(
         # Coverage/manufacturability keys (coverage_angle, hold_*, kappa_abs_max,
         # dkappa_ds_abs_max, theta_max_deg, pin_mouth_radius) are valid ICW
         # top-level keys and are intentionally not part of this reject set.
-        names = ("n", "s", "rot_deg", "rot", "m", "r", "b", "tmax")
+        names = ("n", "s", "s1", "s2", "rot_deg", "rot", "m", "r", "b", "tmax")
         if _has_any(profile, config, names=names):
             raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
         return
@@ -1035,6 +1039,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     if length_mode is not None:
         common["_athLengthMode"] = length_mode
     _apply_driver_adapter(common, profile, config)
+    if formula in {"OSSE", "R-OSSE"}:
+        for name in ("s1", "s2"):
+            common[name] = _scalar_or_expr(profile, config, names=(name,), default=0.0)
+            value = _static_float_or_none(common[name])
+            if value is not None and value < 0.0:
+                raise ConfigError(f"throat stretch {name} must be >= 0, got {value:g}")
     if formula == "ICW":
         _reject_icw_throat_extension(common)
 
