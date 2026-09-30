@@ -1,9 +1,8 @@
 # Mouth roundover: geometry and import contract
 
-**Status: proposed contract for Program C6, not yet reviewed by the owner.**
+**Status: contract for Program C6, reviewed by the owner on 2026-09-30 (decisions below).**
 This document adds no executable behaviour. The ATH text importer refuses
-`Mesh.Roundover` until an implementation satisfies this contract. The open
-decisions are listed under "Owner questions" at the end.
+`Mesh.Roundover` until an implementation satisfies this contract.
 
 A mouth roundover is an extra radius added at the mouth of a free-standing
 horn: the inner wall continues past the mouth as a circular arc that turns back
@@ -108,7 +107,7 @@ n = 4, q = 0.995 }`, free standing, `Mesh.WallThickness = 5`,
    | `ABEC.SimProfile = 0` (CircSym) | the roundover is logged but the node list ends at the mouth radius, followed by a small stray loop |
    | `Mesh.Roundover = 25` (scalar form) | ATH exits with an access violation |
 
-## Mesher construction (proposed)
+## Mesher construction
 
 The roundover is a **geometry control** of the free-standing wall, in the
 meridian plane of each profile:
@@ -265,7 +264,19 @@ thickness 10; `Mesh.LengthSegments = 40`; `Scale = 2`; quadrants 1 and 14; and
 the refused cases (`R <= w`, negative radius, R-OSSE, infinite baffle, morph,
 enclosure, CircSym).
 
-## Owner questions
+## Owner decisions (2026-09-30)
+
+All six questions below are decided as recommended:
+
+- Question 1: the tangent-continuous lip, not ATH's circle.
+- Question 2: the lip ends where its tangent points straight back.
+- Question 3: ATH `Mesh.Roundover` is imported for the supported combinations,
+  with the differences from ATH documented and shown in the import report.
+- Question 4: the radius is not multiplied by `Scale`.
+- Question 5: a radius at or below the wall thickness is refused.
+- Question 6: non-circular mouths stay refused in the first release.
+
+## Owner questions and recommended answers
 
 1. **Tangent-continuous lip, or ATH's circle?** Recommended: the construction
    above. ATH's circle centred behind the mouth point leaves a corner at the
