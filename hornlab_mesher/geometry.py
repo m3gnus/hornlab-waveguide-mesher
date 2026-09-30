@@ -345,6 +345,40 @@ class _StretchedPointGridHornGeometry(PointGridHornGeometry):
     quadrant_patch_fit: bool = True
 
 
+def _validate_outer_clearance_probe(geometry):
+    probe = np.asarray(geometry.outer_clearance_points_mm, dtype=np.float64)
+    if (geometry.outer_points is None or probe.ndim != 3
+            or probe.shape[0] < 2 or probe.shape[1:] != geometry.inner_points.shape[1:]
+            or not np.all(np.isfinite(probe))):
+        raise ValueError("outer clearance probe must be finite and share the axial grid")
+
+
+@dataclass(frozen=True)
+class _MouthFittedPointGridHornGeometry(PointGridHornGeometry):
+    """Derived sizing probe only for an actively refined freestanding mouth.
+
+    Leave the base dataclass fields, state and serialization unchanged. This
+    probe is sizing input; solve, STEP and CAD payload still use outer_points.
+    """
+
+    outer_clearance_points_mm: NDArray[np.float64] | None = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        _validate_outer_clearance_probe(self)
+
+
+@dataclass(frozen=True)
+class _MouthFittedStretchedPointGridHornGeometry(_StretchedPointGridHornGeometry):
+    """Retain the stretched sector-fit contract with a derived sizing probe."""
+
+    outer_clearance_points_mm: NDArray[np.float64] | None = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        _validate_outer_clearance_probe(self)
+
+
 @dataclass(frozen=True)
 class MeshDensity:
     """Mesh sizing parameters in millimetres."""

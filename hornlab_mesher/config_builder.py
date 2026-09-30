@@ -1781,7 +1781,8 @@ def _build_acoustic_sampling_grid(
     *,
     topology_mode: str,
     requested_layout: Any = ...,
-) -> tuple[dict[str, Any], dict[str, int]]:
+    interpolate_mouth: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Fit geometry from a control grid finer than the requested final mesh.
 
     ``requested_layout`` is ``_requested_axial_layout`` for these ``params``
@@ -1837,7 +1838,13 @@ def _build_acoustic_sampling_grid(
         # the final offset validation stay unchanged.
         if formula == "OSSE" and grid.get("outer_offset_fold"):
             grid = build_point_grid(fitted_params)
-        return grid, _sampling_metadata(fitted_params, grid)
+        fit_metadata = {}
+        if interpolate_mouth:
+            from .mouth_fit import refine_mouth_grid
+
+            grid, fit_metadata = refine_mouth_grid(fitted_params, grid)
+            _check_effective_grid_caps(grid, density)
+        return grid, {**_sampling_metadata(fitted_params, grid), **fit_metadata}
 
     # The sagitta limit is a smooth-curvature heuristic, so it is only applied
     # where the target is smooth. A morph target can carry a genuine vertex (a
@@ -2144,6 +2151,7 @@ def resolve_geometry(
         density,
         topology_mode=topology_mode,
         requested_layout=requested_layout,
+        interpolate_mouth=_mesh_surface_fit(mesh) != "approximate",
     )
 
     n_phi = int(grid["grid_n_phi"])
@@ -2208,6 +2216,16 @@ def resolve_geometry(
         )
         freeform_axis_samples_mm = scale * np.vstack((h_samples, v_samples))
     geometry_cls = PointGridHornGeometry if stretch_is_inactive(params) else _StretchedPointGridHornGeometry
+    probe_kwargs = {}
+    if outer_points is not None and "outer_clearance_points" in grid:
+        from .geometry import (
+            _MouthFittedPointGridHornGeometry, _MouthFittedStretchedPointGridHornGeometry,
+        )
+
+        geometry_cls = (_MouthFittedPointGridHornGeometry if stretch_is_inactive(params)
+                        else _MouthFittedStretchedPointGridHornGeometry)
+        probe_kwargs["outer_clearance_points_mm"] = np.asarray(
+            grid["outer_clearance_points"], dtype=np.float64)
     geometry = geometry_cls(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -2233,6 +2251,7 @@ def resolve_geometry(
         interfaces=interfaces,
         enclosure=enclosure_obj,
         infinite_baffle=(mode == "infinite-baffle"),
+        **probe_kwargs,
     )
     scale_to_metres = _bool(
         mesh, names=("scale_to_metres", "scaleToMetres"), default=True

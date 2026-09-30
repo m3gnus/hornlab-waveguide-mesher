@@ -258,8 +258,12 @@ def _wall_clearance_metadata(
     corner can carry.
     """
 
+    probe = getattr(geometry, "outer_clearance_points_mm", None)
+    # A discretisation-scale curvature probe, not the minimum curvature of the
+    # refined spline. Preserve the existing guard at the same user resolution.
+    points = outer_points if probe is None else np.asarray(probe, dtype=np.float64)
     curvature = _ring_curvature_radius_mm(
-        outer_points[..., :2], closed=bool(geometry.closed)
+        points[..., :2], closed=bool(geometry.closed)
     )
     ring_curvature = curvature.min(axis=0)
     finite = ring_curvature[np.isfinite(ring_curvature)]
@@ -267,7 +271,10 @@ def _wall_clearance_metadata(
         "wallThicknessMm": float(geometry.wall_thickness_mm),
         "minOuterCurvatureRadiusMm": float(finite.min()) if finite.size else 0.0,
         "ringMinCurvatureRadiusMm": [float(value) for value in ring_curvature],
-        "ringMaxAxialMm": [float(value) for value in outer_points[..., 2].max(axis=0)],
+        "ringMaxAxialMm": [float(value) for value in points[..., 2].max(axis=0)],
+        **({"curvatureSampling": "accepted-acoustic-net",
+            "clearanceProbePhiProfiles": int(points.shape[0]),
+            "fitPhiProfiles": int(outer_points.shape[0])} if probe is not None else {}),
     }
 
 

@@ -244,6 +244,12 @@ def _angle_list(
     morph_half_width: float | None = None,
     morph_half_height: float | None = None,
 ) -> tuple[np.ndarray, bool]:
+    # Derived acoustic fit stations never enter the preview or user parameters.
+    if "_acoustic_mouth_angles" in params:
+        return _restrict_to_quadrants(
+            np.asarray(params["_acoustic_mouth_angles"], dtype=np.float64),
+            _normalise_quadrants(params.get("quadrants", "1234")),
+        )
     angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
     morphed_full = _morph_angle_list(
         params,
