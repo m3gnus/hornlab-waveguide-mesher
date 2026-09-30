@@ -1,181 +1,164 @@
-"""C2 dimensions are full canonical extents, not render-mesh statistics."""
+"""Canonical readouts use independently resolved solve/CAD control geometry."""
 import copy
-import json
 import dataclasses
-import time
-from statistics import median
+import json
 
 import numpy as np
 import pytest
 
 from hornlab_mesher.preview import PreviewOptionsV1, build_preview_geometry
-from hornlab_mesher.preview.dimensions import canonical_dimensions, DIMENSIONS_SAMPLING
 import hornlab_mesher.preview.api as preview_api
+import hornlab_mesher.preview.dimensions as measurement
+from hornlab_mesher.config_builder import resolve_geometry
+from hornlab_mesher.builders.enclosure import enclosure_box_bounds
 from test_offset_envelope import _grooved_config
-from hornlab_mesher.profile_sampling import build_point_grid_arrays
-from hornlab_mesher.config_builder import build_geometry_params, resolve_geometry
-from test_preview_api import (
-    OSSE_FREESTANDING, ROSSE_ENCLOSURE, FREEFORM_FREESTANDING, ICW_FLAT_BAFFLE,
-)
+from test_freeform_morph import _config_with_morph
+from test_preview_morph import ROUNDED_RECT_MORPH
+from test_preview_api import OSSE_FREESTANDING, ROSSE_ENCLOSURE, FREEFORM_FREESTANDING, ICW_FLAT_BAFFLE
 
 
-@pytest.mark.parametrize('config', [OSSE_FREESTANDING, ROSSE_ENCLOSURE,
-                                    FREEFORM_FREESTANDING, ICW_FLAT_BAFFLE, _grooved_config()])
-def test_dimensions_do_not_follow_lod_or_visibility(config):
-    coarse = build_preview_geometry(config, PreviewOptionsV1(lod='coarse'))
-    fine = build_preview_geometry(config, PreviewOptionsV1(lod='fine', include_inner=False,
-        include_outer=False, include_enclosure=False, include_source_cap=False,
-        include_rear_cap=False, include_curvature=False))
-    assert coarse.metadata['dimensions_mm'] is not None
+def freeform_morph():
+    config = _config_with_morph(1)
+    config['morph']['morphCorner'] = 15
+    return config
+
+
+def folded_morph():
+    config = _grooved_config()
+    config['morph'] = {'morphTarget': 1, 'morphWidth': 300, 'morphHeight': 300,
+                       'morphCorner': 30, 'morphFixed': 0.6}
+    return config
+
+
+CORPUS = [OSSE_FREESTANDING, ROSSE_ENCLOSURE, FREEFORM_FREESTANDING,
+          ICW_FLAT_BAFFLE, _grooved_config(), freeform_morph(), folded_morph(), ROUNDED_RECT_MORPH]
+
+
+@pytest.fixture(autouse=True)
+def empty_measurement_cache():
+    measurement._DIMENSIONS_CACHE.clear()
+    yield
+    measurement._DIMENSIONS_CACHE.clear()
+
+
+def independently_resolved(config):
+    full = copy.deepcopy(config)
+    full.setdefault('mesh', {}).update(quadrants='1234', vertical_offset_mm=0)
+    full['mesh'].pop('verticalOffset', None)
+    geometry = resolve_geometry(full).geometry
+    inner = geometry.inner_points
+    material = [inner.reshape(-1, 3)]
+    if geometry.outer_points is not None:
+        material.append(geometry.outer_points.reshape(-1, 3))
+        rear = geometry.outer_points[:, 0].copy()
+        rear[:, 2] = inner[:, 0, 2].mean() - geometry.wall_thickness_mm
+        material.append(rear)
+    expected = {'mouth_opening': np.ptp(inner[:, -1, :2], axis=0),
+                'horn_overall': np.ptp(np.concatenate(material), axis=0)}
+    if geometry.enclosure is not None:
+        bounds = enclosure_box_bounds(inner, geometry.enclosure, closed=True)
+        expected['enclosure_overall'] = np.array([bounds['bx1'] - bounds['bx0'],
+            bounds['by1'] - bounds['by0'], bounds['z_front'] - bounds['z_back']])
+    return expected
+
+
+@pytest.mark.parametrize('config', CORPUS)
+@pytest.mark.parametrize('scale', [1, 2])
+def test_family_dimensions_match_independent_solve_cad_geometry(config, scale):
+    config = copy.deepcopy(config)
+    config['scale'] = scale
+    expected = independently_resolved(config)
+    numbers = []
+    for quadrant in ['1234', '12', '1']:
+        config.setdefault('mesh', {}).update(quadrants=quadrant)
+        preview = build_preview_geometry(config, PreviewOptionsV1(lod='fine', include_source_cap=False))
+        dims = preview.metadata['dimensions_mm']
+        assert dims is not None
+        assert preview.metadata['dimensions_status'] == 'current'
+        assert set(dims) == set(expected)
+        for key, values in expected.items():
+            assert dims[key] == pytest.approx(values, abs=1e-9)
+        numbers.append(dims)
+    assert numbers[0] == numbers[1] == numbers[2]
+    if config['formula'] == 'FREEFORM' and 'morph' in config:
+        assert numbers[0]['mouth_opening'] == [300 * scale, 300 * scale]
+
+
+@pytest.mark.parametrize('config', CORPUS)
+def test_coarse_is_pending_until_this_exact_design_is_measured(config, monkeypatch):
+    real = measurement.canonical_dimensions
+    calls = []
+    def measure(config):
+        calls.append(copy.deepcopy(config))
+        return real(config)
+    monkeypatch.setattr(measurement, 'canonical_dimensions', measure)
+    coarse = build_preview_geometry(config, PreviewOptionsV1(lod='coarse', include_source_cap=False))
+    assert coarse.metadata['dimensions_mm'] is None
+    assert coarse.metadata['dimensions_status'] == 'pending'
+    assert 'dimensions_error' not in coarse.metadata
+    assert calls == []
+    fine = build_preview_geometry(config, PreviewOptionsV1(lod='fine', include_source_cap=False))
     assert fine.metadata['dimensions_mm'] is not None
-    tolerance = coarse.metadata['dimensions_sampling']['tolerance_mm']
-    for key, value in coarse.metadata['dimensions_mm'].items():
-        assert value == pytest.approx(fine.metadata['dimensions_mm'][key], abs=tolerance)
-    assert coarse.metadata['dimensions_sampling'] == fine.metadata['dimensions_sampling']
-    json.dumps(coarse.metadata, allow_nan=False)
+    assert len(calls) == 1
+    hidden = PreviewOptionsV1(lod='inspection', include_inner=False, include_outer=False,
+        include_enclosure=False, include_source_cap=False, include_rear_cap=False, include_curvature=False)
+    for options in [hidden, PreviewOptionsV1(lod='coarse', include_source_cap=False), PreviewOptionsV1(lod='fine', include_source_cap=False)]:
+        preview = build_preview_geometry(copy.deepcopy(config), options)
+        assert preview.metadata['dimensions_mm'] == fine.metadata['dimensions_mm']
+        assert preview.metadata['dimensions_status'] == 'current'
+    assert len(calls) == 1
+    assert fine.metadata['dimensions_sampling'] == {'method': 'resolved-canonical-geometry', 'lod_independent': True}
+    json.dumps(fine.metadata, allow_nan=False)
 
 
-@pytest.mark.parametrize('quadrants', ['1', '12', '14', '1234'])
-@pytest.mark.parametrize('config', [OSSE_FREESTANDING, ROSSE_ENCLOSURE,
-                                    FREEFORM_FREESTANDING, ICW_FLAT_BAFFLE])
-def test_origin_and_symmetry_do_not_change_full_dimensions(config, quadrants):
-    changed = copy.deepcopy(config)
-    changed.setdefault('mesh', {}).update(quadrants=quadrants, vertical_offset_mm=87.3)
-    # A shifted reduced source cap has an existing orientation limitation.
-    # Material dimensions exclude the acoustic source cap.
-    options = PreviewOptionsV1(lod='coarse', include_source_cap=False)
-    baseline = build_preview_geometry(config, options)
-    preview = build_preview_geometry(changed, options)
-    assert preview.metadata['dimensions_mm'] is not None
-    for key, value in baseline.metadata['dimensions_mm'].items():
-        assert preview.metadata['dimensions_mm'][key] == pytest.approx(value, abs=1.0)
-
-
-def test_mouth_is_terminating_opening_and_horn_includes_wall_and_rear_plane():
+@pytest.mark.parametrize('section,key,value', [('profile', 'L_mm', 240), ('mesh', 'wall_thickness_mm', 8),
+    ('mesh', 'angular_segments', 200), ('morph', 'morphCorner', 15), (None, 'scale', 2)])
+def test_full_config_is_cache_identity(section, key, value):
     config = copy.deepcopy(OSSE_FREESTANDING)
-    config['profile'].update(s=0, q=1)
-    dims = canonical_dimensions(config)
-    no_wall = copy.deepcopy(config)
-    no_wall['mesh']['wall_thickness_mm'] = 0
-    no_wall['mode'] = 'bare'
-    bare = canonical_dimensions(no_wall)
-    assert dims['mouth_opening'] == bare['mouth_opening']
-    assert dims['horn_overall'][0] > bare['horn_overall'][0]
-    assert dims['horn_overall'][1] > bare['horn_overall'][1]
-    assert dims['horn_overall'][2] >= 126
-    assert 'enclosure_overall' not in dims
+    first = measurement.dimension_metadata(config, 'fine')
+    assert first['dimensions_status'] == 'current'
+    if section is None:
+        config[key] = value
+    else:
+        config.setdefault(section, {})[key] = value
+    assert measurement.dimension_metadata(config, 'coarse') == {'dimensions_mm': None, 'dimensions_status': 'pending'}
 
 
-def test_rollback_depth_is_maximum_excursion_not_final_z():
+def test_cached_values_are_owned_by_each_frame():
+    first = measurement.dimension_metadata(OSSE_FREESTANDING, 'fine')
+    expected = copy.deepcopy(first)
+    first['dimensions_mm']['horn_overall'][0] = 1
+    assert measurement.dimension_metadata(OSSE_FREESTANDING, 'coarse') == expected
+
+
+def test_origin_does_not_change_enclosure_rounding():
+    config = copy.deepcopy(ROSSE_ENCLOSURE)
+    original = measurement.canonical_dimensions(config)
+    config.setdefault('mesh', {})['vertical_offset_mm'] = 87.3
+    assert measurement.canonical_dimensions(config) == original
+
+
+def test_enclosure_spacing_and_depth_clamp():
+    config = copy.deepcopy(ROSSE_ENCLOSURE)
+    config['enclosure'].update(space_l_mm=11, space_r_mm=23, space_b_mm=17, space_t_mm=29, depth_mm=1)
+    dims = measurement.canonical_dimensions(config)
+    assert dims['enclosure_overall'][:2] == [334, 346]
+    assert dims['enclosure_overall'][2] > 1
+
+
+def test_rollback_depth_is_maximum_excursion():
     config = copy.deepcopy(ROSSE_ENCLOSURE)
     config.pop('enclosure')
     config['mode'] = 'bare'
     config['mesh'] = {'wall_thickness_mm': 0}
     config['profile'].update(m=0.5, b=0, tmax=1)
-    dims = canonical_dimensions(config)
-    params, _, _ = build_geometry_params(config)
-    grid = build_point_grid_arrays(params)
+    dims = measurement.canonical_dimensions(config)
     points = resolve_geometry(config).geometry.inner_points
-    assert dims['horn_overall'][2] == pytest.approx(np.ptp(points[:, :, 2]), abs=1.0)
+    assert dims['horn_overall'][2] == pytest.approx(np.ptp(points[:, :, 2]))
     assert dims['horn_overall'][2] > points[:, -1, 2].max() + 10
-    assert dims['mouth_opening'] == pytest.approx([300, 300])
-
-
-def test_enclosure_extents_include_asymmetric_spacing_and_depth_clamp():
-    config = copy.deepcopy(ROSSE_ENCLOSURE)
-    config['enclosure'].update(space_l_mm=11, space_r_mm=23,
-                               space_b_mm=17, space_t_mm=29, depth_mm=1)
-    dims = canonical_dimensions(config)
-    assert dims['enclosure_overall'][:2] == pytest.approx([334, 346])
-    assert dims['enclosure_overall'][2] > 1
-
-
-def test_dimensions_use_real_canonical_sampling_for_expression_extrema():
-    config = copy.deepcopy(OSSE_FREESTANDING)
-    config['mode'] = 'bare'
-    config['mesh'].update(wall_thickness_mm=0, angular_segments=512, length_segments=192, topology_mode='legacy')
-    config['profile']['a_deg'] = '55+20*sin(128*p)**2'
-    params, _, _ = build_geometry_params(config)
-    real = build_point_grid_arrays(params)['inner_grid']
-    dims = canonical_dimensions(config)
-    assert dims['mouth_opening'] == pytest.approx(np.ptp(real[:, -1, :2], axis=0))
-    assert dims['mouth_opening'][0] > 800
-
-
-def test_readout_cannot_be_mutated_or_reused_for_a_new_design():
-    config = copy.deepcopy(OSSE_FREESTANDING)
-    original = canonical_dimensions(config)
-    modified_readout = canonical_dimensions(config)
-    modified_readout['horn_overall'][0] = 1
-    assert canonical_dimensions(config) == original
-    config['profile']['L_mm'] = 240
-    changed = canonical_dimensions(config)
-    assert changed['horn_overall'] != original['horn_overall']
-    assert changed['mouth_opening'] != original['mouth_opening']
-
-
-def test_preview_keeps_renderable_draft_but_marks_canonical_dimensions_unavailable():
-    config = copy.deepcopy(OSSE_FREESTANDING)
-    config['mesh']['wall_thickness_mm'] = 0
-    preview = build_preview_geometry(config, PreviewOptionsV1(lod='coarse'))
-    assert preview.surfaces
-    assert preview.metadata['dimensions_mm'] is None
-    assert 'freestanding mode requires' in preview.metadata['dimensions_error']
-
-
-CORPUS = [OSSE_FREESTANDING, ROSSE_ENCLOSURE, FREEFORM_FREESTANDING,
-          ICW_FLAT_BAFFLE, _grooved_config()]
-
-
-@pytest.mark.parametrize('config', CORPUS)
-def test_family_dimensions_match_independent_full_model_surfaces(config):
-    preview = build_preview_geometry(config, PreviewOptionsV1(lod='fine'))
-    dims = preview.metadata['dimensions_mm']
-    assert dims is not None
-    by_role = {s.role: s for s in preview.surfaces}
-    # Emitted grids are axial-major. The last ring is the actual terminating
-    # opening even for a curve whose maximum axial excursion precedes it.
-    n_phi = preview.metadata['actual_segment_counts']['horn_phi']
-    mouth = by_role['horn.inner'].positions[-n_phi:]
-    expected_mouth = np.ptp(mouth[:, :2], axis=0)
-    horn = np.concatenate([s.positions for s in preview.surfaces
-                           if not s.role.startswith('enclosure.') and s.role != 'source_cap'])
-    assert dims['mouth_opening'] == pytest.approx(expected_mouth, abs=1.0)
-    assert dims['horn_overall'] == pytest.approx(np.ptp(horn, axis=0), abs=1.0)
-    if 'enclosure_overall' in dims:
-        enclosure = np.concatenate([s.positions for s in preview.surfaces
-                                    if s.role.startswith('enclosure.')])
-        assert dims['enclosure_overall'] == pytest.approx(np.ptp(enclosure, axis=0), abs=1.0)
-    # Additional first-principles checks guard against matching absent or
-    # incorrectly selected surfaces on the two previously vacuous families.
-    if config['formula'] == 'FREEFORM':
-        assert dims['mouth_opening'] == pytest.approx([320, 220])
-        assert dims['horn_overall'][2] == pytest.approx(120 + 6)
-    if config['formula'] == 'ICW':
-        assert dims['mouth_opening'] == pytest.approx([2 * 110, 2 * 110])
-        assert dims['horn_overall'][2] == pytest.approx(120 + 6)
-
-
-@pytest.mark.parametrize('config', CORPUS)
-def test_normal_offset_approximation_is_within_published_canonical_tolerance(config):
-    # Independent oracle: the solve/CAD control geometry, with wall repair.
-    geometry = resolve_geometry(config).geometry
-    points = [geometry.inner_points.reshape(-1, 3)]
-    if geometry.outer_points is not None:
-        points.append(geometry.outer_points.reshape(-1, 3))
-        rear = geometry.outer_points[:, 0].copy()
-        rear[:, 2] = geometry.inner_points[:, 0, 2].mean() - geometry.wall_thickness_mm
-        points.append(rear)
-    expected = np.ptp(np.concatenate(points), axis=0)
-    for lod in ['coarse', 'fine']:
-        preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
-        assert preview.metadata['dimensions_mm'] is not None
-        assert preview.metadata['dimensions_mm']['horn_overall'] == pytest.approx(
-            expected, abs=DIMENSIONS_SAMPLING['tolerance_mm'])
 
 
 def _assert_preview_equal(left, right):
-    # All surface fields/arrays and existing metadata must remain unchanged.
     assert len(left.surfaces) == len(right.surfaces)
     for a, b in zip(left.surfaces, right.surfaces):
         for field in dataclasses.fields(a):
@@ -184,104 +167,75 @@ def _assert_preview_equal(left, right):
                 np.testing.assert_array_equal(actual, expected)
             else:
                 assert actual == expected
-    def existing(metadata):
-        return {k: v for k, v in metadata.items() if k not in
-                {'dimensions_mm', 'dimensions_error', 'dimensions_sampling', 'timings_ms'}}
-    assert existing(left.metadata) == existing(right.metadata)
+    added = {'dimensions_mm', 'dimensions_error', 'dimensions_sampling', 'dimensions_status', 'timings_ms'}
+    assert {k: v for k, v in left.metadata.items() if k not in added} == {k: v for k, v in right.metadata.items() if k not in added}
 
 
-@pytest.mark.parametrize('lod', ['coarse', 'fine'])
 @pytest.mark.parametrize('config', CORPUS)
-def test_measurement_does_not_change_any_surface_or_existing_metadata(config, lod, monkeypatch):
-    measured = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
-    monkeypatch.setattr(preview_api, 'canonical_dimensions', lambda *a, **kw: None)
-    disabled = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
-    _assert_preview_equal(measured, disabled)
-
-
-@pytest.mark.parametrize('kind', ['tiny-density', 'non-mapping-mesh', 'generic'])
-def test_measurement_failure_cannot_break_a_renderable_draft(kind, monkeypatch):
-    config = copy.deepcopy(OSSE_FREESTANDING)
-    if kind == 'tiny-density':
-        config['mesh'].update(throat_res_mm=1e-308, mouth_res_mm=1e-308, rear_res_mm=1e-308)
-    elif kind == 'non-mapping-mesh':
-        config['mesh'] = 6
-    else:
-        def fail(*args, **kwargs):
-            raise RuntimeError('generic dimension failure')
-        monkeypatch.setattr(preview_api, 'canonical_dimensions', fail)
-    measured = build_preview_geometry(config, PreviewOptionsV1(lod='coarse'))
-    assert measured.surfaces
-    if kind == 'tiny-density':
-        # No acoustic-density fitting remains in the measurement path, so
-        # this draft now has dimensions rather than overflowing.
-        assert measured.metadata['dimensions_mm'] is not None
-    else:
-        assert measured.metadata['dimensions_mm'] is None
-        assert measured.metadata['dimensions_error']
-    monkeypatch.setattr(preview_api, 'canonical_dimensions', lambda *a, **kw: None)
-    disabled = build_preview_geometry(config, PreviewOptionsV1(lod='coarse'))
+@pytest.mark.parametrize('lod', ['coarse', 'fine'])
+def test_measurement_preserves_all_surfaces_and_existing_metadata(config, lod, monkeypatch):
+    options = PreviewOptionsV1(lod=lod, include_source_cap=False)
+    measured = build_preview_geometry(config, options)
+    monkeypatch.setattr(preview_api, 'dimension_metadata', lambda *a: {})
+    disabled = build_preview_geometry(config, options)
     _assert_preview_equal(measured, disabled)
 
 
 @pytest.mark.parametrize('exception', [OverflowError, TypeError, RuntimeError])
-def test_all_measurement_exceptions_mark_dimensions_unavailable(exception, monkeypatch):
-    def fail(*args, **kwargs):
+def test_any_measurement_exception_is_isolated_and_cached(exception, monkeypatch):
+    def fail(*args):
         raise exception('measurement failed')
-    monkeypatch.setattr(preview_api, 'canonical_dimensions', fail)
-    preview = build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod='coarse'))
+    monkeypatch.setattr(measurement, 'canonical_dimensions', fail)
+    options = PreviewOptionsV1(lod='fine')
+    preview = build_preview_geometry(OSSE_FREESTANDING, options)
+    assert preview.metadata['dimensions_mm'] is None
+    assert preview.metadata['dimensions_status'] == 'unavailable'
+    assert preview.metadata['dimensions_error'] == 'measurement failed'
+    monkeypatch.setattr(preview_api, 'dimension_metadata', lambda *a: {})
+    _assert_preview_equal(preview, build_preview_geometry(OSSE_FREESTANDING, options))
+    assert measurement.dimension_metadata(OSSE_FREESTANDING, 'coarse')['dimensions_status'] == 'unavailable'
+
+
+@pytest.mark.parametrize('kind', ['mesh', 'density', 'wall'])
+def test_unresolvable_draft_keeps_base_preview(kind, monkeypatch):
+    config = copy.deepcopy(OSSE_FREESTANDING)
+    if kind == 'mesh':
+        config['mesh'] = 6
+    elif kind == 'density':
+        config['mesh'].update(throat_res_mm=1e-308, mouth_res_mm=1e-308, rear_res_mm=1e-308)
+    else:
+        config['mesh']['wall_thickness_mm'] = 0
+    options = PreviewOptionsV1(lod='fine')
+    preview = build_preview_geometry(config, options)
     assert preview.surfaces
     assert preview.metadata['dimensions_mm'] is None
-    assert preview.metadata['dimensions_error'] == 'measurement failed'
+    assert preview.metadata['dimensions_status'] == 'unavailable'
+    assert preview.metadata['dimensions_error']
+    monkeypatch.setattr(preview_api, 'dimension_metadata', lambda *a: {})
+    _assert_preview_equal(preview, build_preview_geometry(config, options))
 
 
 @pytest.mark.parametrize('exception', [KeyboardInterrupt, SystemExit])
-def test_measurement_does_not_swallow_process_control_exceptions(exception, monkeypatch):
-    def fail(*args, **kwargs):
+def test_process_control_exceptions_propagate(exception, monkeypatch):
+    def fail(*args):
         raise exception()
-    monkeypatch.setattr(preview_api, 'canonical_dimensions', fail)
+    monkeypatch.setattr(measurement, 'canonical_dimensions', fail)
     with pytest.raises(exception):
-        build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod='coarse'))
+        build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod='fine'))
 
 
-@pytest.mark.parametrize('config', CORPUS)
-def test_changing_design_measurement_has_small_frame_overhead(config, monkeypatch):
-    # Interleaved paired requests with NEW revisions, no warm dimension cache.
-    # Median pairs and a generous 35% ratio tolerate scheduling/load noise;
-    # the separate benchmark reports the stricter 10% / 10 ms production goal.
-    measured, disabled = [], []
-    real = preview_api.canonical_dimensions
-    options = PreviewOptionsV1(lod='coarse')
-    for revision in range(5):
-        changed = copy.deepcopy(config)
-        changed.setdefault('scale', 1.0)
-        changed['scale'] += revision * 0.001
-        for enabled in ([True, False] if revision % 2 == 0 else [False, True]):
-            monkeypatch.setattr(preview_api, 'canonical_dimensions', real if enabled else lambda *a, **kw: None)
-            start = time.perf_counter()
-            preview = build_preview_geometry(changed, options)
-            elapsed = time.perf_counter() - start
-            (measured if enabled else disabled).append(elapsed)
-            if enabled:
-                assert preview.metadata['dimensions_mm'] is not None
-    assert median(measured) <= 1.35 * median(disabled)
-
-
-@pytest.mark.parametrize('value', [float('nan'), float('inf')])
-def test_nonfinite_measurements_are_isolated(value, monkeypatch):
-    monkeypatch.setattr(preview_api, 'canonical_dimensions',
-                        lambda *a, **kw: {'horn_overall': [value, 1, 1]})
-    preview = build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod='coarse'))
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), None])
+def test_invalid_measurement_result_is_isolated(value, monkeypatch):
+    monkeypatch.setattr(measurement, 'canonical_dimensions', lambda *a: None if value is None else {'horn_overall': [value, 1, 1]})
+    preview = build_preview_geometry(OSSE_FREESTANDING, PreviewOptionsV1(lod='fine'))
     assert preview.surfaces
+    assert preview.metadata['dimensions_status'] == 'unavailable'
     assert preview.metadata['dimensions_mm'] is None
-    assert 'finite' in preview.metadata['dimensions_error']
+    assert preview.metadata['dimensions_error']
 
 
-def test_dimension_work_does_not_repeat_outer_wall_warning(caplog):
-    config = _grooved_config()
-    preview = build_preview_geometry(config, PreviewOptionsV1(lod='coarse'))
-    before = list(caplog.records)
-    canonical_dimensions(config)
-    assert not [record for record in caplog.records[len(before):]
-                if 'outer wall' in record.getMessage()]
-    assert preview.metadata['dimensions_mm'] is not None
+def test_measurement_does_not_repeat_outer_wall_warning(caplog):
+    build_preview_geometry(_grooved_config(), PreviewOptionsV1(lod='coarse'))
+    before = len(caplog.records)
+    measurement.canonical_dimensions(_grooved_config())
+    assert not [record for record in caplog.records[before:] if 'outer wall' in record.getMessage()]

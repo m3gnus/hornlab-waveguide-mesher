@@ -1,100 +1,96 @@
-"""Cheap full-object measurements of the preview's analytic reference surface."""
-
+"""Settled-frame measurements of the solve/CAD control geometry."""
 from __future__ import annotations
 
 import copy
+import json
+import logging
+import threading
+from collections import OrderedDict
 from typing import Any, Mapping
 
 import numpy as np
 
-from ..config_builder import (build_geometry_params, _validate_mode_contract,
-                              _enclosure_from_config, _section)
-from ..profile_sampling import build_point_grid_arrays
-from ..viewport import build_enclosure_viewport_grid
-from .fidelity import analytic_grid_normals
+from ..config_builder import resolve_geometry
+from ..builders.enclosure import enclosure_box_bounds
+from .contract import _validate_finite_metadata
+
+DIMENSIONS_SAMPLING = {"method": "resolved-canonical-geometry", "lod_independent": True}
+# Only small readouts are retained, never the resolved point grids. The full
+# supplied config is the identity (including sampling, scale and morph inputs).
+_DIMENSIONS_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_CACHE_LIMIT = 128
 
 
-DIMENSIONS_SAMPLING = {
-    "method": "preview-reference-normal-offset",
-    "lod_independent": True,
-    "tolerance_mm": 1.0,
-    "best_effort": True,
-    "wall": "unrepaired normal offset; no solve/CAD exterior-envelope repair",
-    "reduced_domain_reference": {"angular_segments_min": 128, "angular_segments_max": 512,
-                                 "length_segments": 48},
-}
+class _MeasurementWarnings(logging.Filter):
+    def __init__(self):
+        super().__init__()
+        self.thread = threading.get_ident()
+
+    def filter(self, record):
+        # The preview already reported this warning. Do not silence unrelated
+        # warnings or another thread's preview/solve work.
+        return record.thread != self.thread or "outer wall" not in record.getMessage()
 
 
-def _full_reference(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Bounded fallback for standalone measurements and reduced previews.
-
-    Evaluate the full object, rather than reflecting a possibly asymmetric
-    expression from the visible quadrant. Never fit acoustic mesh density or
-    build/validate/repair a second wall. ICW's profile kernel is already cached
-    by the preview that calls us.
-    """
-    params, _, mode = build_geometry_params(config)
-    _validate_mode_contract(params, mode)
-    sampling = copy.deepcopy(params)
-    sampling.update(quadrants="1234", verticalOffset=0.0, wallThickness=0.0,
-                    angularSegments=min(512, max(128, int(params.get("angularSegments", 128)))),
-                    lengthSegments=48)
-    grid = build_point_grid_arrays(sampling)
-    inner = grid["inner_grid"].transpose(1, 0, 2)
-    phi = grid.get("phi_grid")
-    phi = (np.asarray(phi).T if phi is not None else
-           np.broadcast_to(np.asarray(grid["angle_list"]), inner.shape[:2]))
-    normals = analytic_grid_normals(inner, closed_phi=True,
-        t_coordinates=np.asarray(grid["slice_map"]), phi_coordinates=phi)
-    # Use the shared enclosure bounds only on this uncommon fallback. The
-    # normal full-domain hot path reuses bounds the preview already computed.
-    enclosure = _enclosure_from_config(config, _section(config, "mesh"),
-                                      _section(config, "enclosure"))
-    bounds = None
-    if enclosure is not None:
-        bounds = build_enclosure_viewport_grid(grid["inner_grid"], enclosure)["bounds"]
-    return {"inner": inner, "normals": normals, "params": params,
-            "mode": mode, "bounds": bounds, "closed_phi": True}
-
-
-def canonical_dimensions(config: Mapping[str, Any], *,
-                         reference: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Measure master samples, before render selection or visibility filtering.
-
-    Extrema use the existing analytic normals and an unrepaired normal-offset
-    shell. The approximation (including finite sampling) is disclosed in
-    dimensions_sampling; corpus tests bound its difference from solve/CAD.
-    This function never mutates the reference or resolves solve/CAD geometry.
-    """
-    mesh = config.get("mesh")
-    if mesh is not None and not isinstance(mesh, Mapping):
+def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve the full object using exactly the solve/CAD geometry path."""
+    full = copy.deepcopy(dict(config))
+    mesh = full.get("mesh", {})
+    if not isinstance(mesh, Mapping):
         raise TypeError("dimension measurement requires mesh to be a mapping")
-    if (reference is None or not reference["closed_phi"] or
-        int(reference["params"].get("angularSegments", 0)) > reference["inner"].shape[1]):
-        reference = _full_reference(config)
-    params = reference["params"]
-    _validate_mode_contract(params, str(reference["mode"]))
-    inner = np.asarray(reference["inner"])
-    lower = inner.min(axis=(0, 1))
-    upper = inner.max(axis=(0, 1))
-    wall = float(params.get("wallThickness") or 0.0)
-    # Enclosed horns have no separate shell, regardless of a wall setting.
-    if wall > 0.0 and float(params.get("encDepth") or 0.0) <= 0.0:
-        outer = inner + wall * reference["normals"]
-        lower = np.minimum(lower, outer.min(axis=(0, 1)))
-        upper = np.maximum(upper, outer.max(axis=(0, 1)))
-        rear_z = float(inner[0, :, 2].mean() - wall)
-        lower[2] = min(lower[2], rear_z)
-        upper[2] = max(upper[2], rear_z)
-    dimensions = {
-        "mouth_opening": np.ptp(inner[-1, :, :2], axis=0).tolist(),
-        "horn_overall": (upper - lower).tolist(),
+    full["mesh"] = dict(mesh, quadrants="1234", vertical_offset_mm=0.0)
+    full["mesh"].pop("verticalOffset", None)
+    logger = logging.getLogger("hornlab_mesher.profile_sampling")
+    warning_filter = _MeasurementWarnings()
+    logger.addFilter(warning_filter)
+    try:
+        geometry = resolve_geometry(full).geometry
+    finally:
+        logger.removeFilter(warning_filter)
+    inner = geometry.inner_points
+    points = [inner.reshape(-1, 3)]
+    if geometry.outer_points is not None:
+        points.append(geometry.outer_points.reshape(-1, 3))
+        rear = geometry.outer_points[:, 0].copy()
+        rear[:, 2] = inner[:, 0, 2].mean() - geometry.wall_thickness_mm
+        points.append(rear)
+    result = {
+        "mouth_opening": np.ptp(inner[:, -1, :2], axis=0).tolist(),
+        "horn_overall": np.ptp(np.concatenate(points), axis=0).tolist(),
     }
-    bounds = reference["bounds"]
-    if bounds is not None:
-        dimensions["enclosure_overall"] = [
-            bounds["bx1"] - bounds["bx0"],
-            bounds["by1"] - bounds["by0"],
-            bounds["z_front"] - bounds["z_back"],
-        ]
-    return dimensions
+    if geometry.enclosure is not None:
+        bounds = enclosure_box_bounds(inner, geometry.enclosure, closed=True)
+        result["enclosure_overall"] = [bounds["bx1"] - bounds["bx0"],
+            bounds["by1"] - bounds["by0"], bounds["z_front"] - bounds["z_back"]]
+    return result
+
+
+def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
+    """Coarse frames only look up; settled frames resolve each design once.
+
+    Content serialization keeps mutable caller dictionaries safe. Options and
+    visibility are deliberately excluded; no preview buffers enter this path.
+    Errors are cached too, so repeated requests for an invalid design are cheap.
+    """
+    try:
+        key = json.dumps(dict(config), sort_keys=True, separators=(",", ":"), allow_nan=False)
+        cached = _DIMENSIONS_CACHE.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        if lod == "coarse":
+            return {"dimensions_mm": None, "dimensions_status": "pending"}
+        dimensions = canonical_dimensions(config)
+        if dimensions is None:
+            raise ValueError("canonical measurement returned no dimensions")
+        _validate_finite_metadata(dimensions, "dimensions_mm")
+        result = {"dimensions_mm": dimensions, "dimensions_status": "current"}
+    except Exception as exc:
+        result = {"dimensions_mm": None, "dimensions_status": "unavailable",
+                  "dimensions_error": str(exc) or type(exc).__name__}
+        # Unsupported config identities cannot be cached, but never break a draft.
+        if "key" not in locals():
+            return result
+    _DIMENSIONS_CACHE[key] = copy.deepcopy(result)
+    if len(_DIMENSIONS_CACHE) > _CACHE_LIMIT:
+        _DIMENSIONS_CACHE.popitem(last=False)
+    return result

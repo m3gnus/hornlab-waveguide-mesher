@@ -396,8 +396,12 @@ def test_the_repaired_grooved_shell_builds_a_bounded_manifold_mesh(tmp_path):
 @pytest.mark.parametrize("rounded_morph", [False, True])
 def test_folded_preview_repairs_only_the_selected_grid(lod, rounded_morph, monkeypatch):
     import hornlab_mesher.profile_sampling as sampling
+    import hornlab_mesher.preview.api as preview_api
     from hornlab_mesher.preview import PreviewOptionsV1, build_preview_geometry
 
+    # This test isolates the render repair. Settled canonical measurements
+    # deliberately repair solve/CAD geometry too, covered by the C2 tests.
+    monkeypatch.setattr(preview_api, "dimension_metadata", lambda *args: {})
     config = _grooved_config()
     if rounded_morph:
         config["morph"] = {
@@ -418,7 +422,6 @@ def test_folded_preview_repairs_only_the_selected_grid(lod, rounded_morph, monke
     result = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
     outer = next(surface for surface in result.surfaces if surface.role == "horn.outer")
     assert len(repaired_shapes) == 1
-    assert result.metadata["dimensions_mm"] is not None
     # The master is deliberately denser than the render grid. Repairing it
     # first discarded most of the expensive result on every drag frame.
     assert repaired_shapes[0][0] * repaired_shapes[0][1] == len(outer.positions)

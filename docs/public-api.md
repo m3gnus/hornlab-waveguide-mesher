@@ -326,38 +326,25 @@ axial excursion anywhere on the curve, including the wall and rear plane,
 not the terminating station's coordinate. The enclosure uses the same outer
 box bounds, depth clamp and whole-mm rounding as the mesh/CAD builder.
 
-`dimensions_sampling` documents the measurement basis:
-`method: "preview-reference-normal-offset"`, `lod_independent: true`,
-`tolerance_mm: 1.0`, `best_effort: true`. Measurement reuses the preview's
-analytic master surface, semantic stations, analytic finite-difference normals,
-and enclosure bounds, before render selection and visibility filtering. It
-never performs a second acoustic mesh fit or solve/CAD wall repair. The wall
-approximation is the **unrepaired normal offset**, including its extrema even
-where the normal correspondence folds. The rear plane uses the inner throat
-mean minus the unscaled wall thickness. Uniform Scale acts on the inner
-geometry before that wall is applied.
+`dimensions_sampling` states `method: "resolved-canonical-geometry"` and
+`lod_independent: true`. Values are measured from `resolve_geometry`, the same
+control geometry used by solve and CAD, including repaired outer walls. No
+measurement tolerance is published. CAD surface fitting retains its separate
+existing approximation contract. Global Scale acts on the inner geometry
+before the unscaled wall thickness is applied.
 
-The 1 mm tolerance applies to each reported bounding extent across preview
-LODs, and against solve/CAD control geometry on the tested OSSE, R-OSSE,
-FREEFORM, ICW and grooved/folded OSSE corpus. This is an empirical accuracy
-contract for those cases, not a certified bound for arbitrary expressions,
-sub-sample spikes, very tight corners or arbitrarily thick folded walls.
-`best_effort` explicitly records that limitation. Extrema between master
-stations and the solve/CAD repaired exterior envelope can differ; fitted CAD
-surfaces also retain their existing surface-fit approximation contract.
+Only fine and inspection frames compute the canonical measurement. A bounded
+process cache stores readouts and failures by the full supplied design config;
+repeated settled frames reuse them. Coarse frames never resolve geometry: they
+look up this exact design and otherwise return `dimensions_mm: null` with
+`dimensions_status: "pending"`. A cached measurement carries status `"current"`.
+A canonical resolution failure carries status `"unavailable"`, null dimensions,
+and `dimensions_error`. Pending has no error. Visibility and LOD options do not
+participate in the measurement identity. Full-object measurement resolves all
+quadrants at the origin; it does not reflect reduced preview samples.
 
-Reduced-domain previews evaluate a small full-object reference rather than
-mirroring possibly asymmetric expressions: 48 axial intervals, at least 128
-azimuth segments, respecting requested angular counts up to a cap of 512.
-Standalone measurements use the same fallback. An explicitly requested
-angular count denser than the current master also uses this fallback. Its
-limits are recorded in `dimensions_sampling.reduced_domain_reference`.
-There is no dimensions cache or second copy of the outer-wall warning.
-Readouts belong to the supplied design revision and cannot mutate later ones.
-
-Any measurement exception makes `dimensions_mm` null and sets
-`dimensions_error`; preview surfaces and existing metadata are preserved.
-Process-control exceptions (`KeyboardInterrupt`, `SystemExit`) propagate.
-Draft mesh resolutions too small for acoustic fitting can still have dimensions
-because measurement no longer runs that fit. Consumers should tolerate absent
-keys from older mesher versions and label null dimensions unavailable.
+Any measurement exception preserves preview surfaces and pre-existing metadata.
+Process-control exceptions (`KeyboardInterrupt`, `SystemExit`) propagate. The
+measurement does not repeat the preview's outer-wall warning. Consumers should
+hide the readouts for older meshers with absent dimension keys; pending frames
+may retain the same document's last canonical values, labelled as updating.
