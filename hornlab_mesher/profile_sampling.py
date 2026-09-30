@@ -663,19 +663,33 @@ def _outer_offset_shell(
         lengths = np.linalg.norm(normals, axis=1, keepdims=True)
         degenerate = lengths[:, 0] <= 1.0e-12
 
-    sample_idx = np.arange(0, vertices.shape[0], max(1, vertices.shape[0] // 64))
-    sample_x = vertices[sample_idx, 0]
-    sample_z = vertices[sample_idx, 2]
-    radial_len = np.hypot(sample_x, sample_z)
-    normal_len = lengths[sample_idx, 0]
-    valid = (radial_len > 1.0e-9) & (normal_len > 1.0e-12)
-    dot_sum = float(
-        np.sum(
-            (normals[sample_idx[valid], 0] / normal_len[valid]) * (sample_x[valid] / radial_len[valid])
-            + (normals[sample_idx[valid], 2] / normal_len[valid]) * (sample_z[valid] / radial_len[valid])
+    def radial_dot_sum(idx: np.ndarray) -> tuple[float, int]:
+        radial_len = np.hypot(vertices[idx, 0], vertices[idx, 2])
+        normal_len = lengths[idx, 0]
+        valid = (radial_len > 1.0e-9) & (normal_len > 1.0e-12)
+        picked = idx[valid]
+        total = float(
+            np.sum(
+                (normals[picked, 0] * vertices[picked, 0] + normals[picked, 2] * vertices[picked, 2])
+                / (normal_len[valid] * radial_len[valid])
+            )
         )
-    )
-    offset_sign = -1.0 if not np.any(valid) or dot_sum < 0.0 else 1.0
+        return total, int(np.count_nonzero(valid))
+
+    # The derivative normals are oriented consistently over the whole grid, so
+    # one sign puts the wall on the right side everywhere, and the throat ring
+    # says which: there the wall lies outside the bore, away from the axis. A
+    # sum over nodes spread across the grid does not. Along an R-OSSE rollback
+    # the wall lies on the axis side of the surface, those nodes vote the other
+    # way, and which side won depended on how many of the strided samples fell
+    # on the rollback -- the same design was offset outward at one preview
+    # level and inward at another.
+    dot_sum, n_valid = radial_dot_sum(np.arange(n_phi))
+    if n_valid == 0 or abs(dot_sum) <= 1.0e-6 * n_valid:
+        # A throat wall perpendicular to the axis has no radial normal to read.
+        sample_idx = np.arange(0, vertices.shape[0], max(1, vertices.shape[0] // 64))
+        dot_sum, n_valid = radial_dot_sum(sample_idx)
+    offset_sign = -1.0 if n_valid == 0 or dot_sum < 0.0 else 1.0
 
     # Unit normals with the _normalise3 fallback for degenerate rows.
     if np.all(lengths > 1.0e-12):
