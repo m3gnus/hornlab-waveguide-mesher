@@ -765,6 +765,10 @@ def _raw_radial_grid(
     aspect_ratio: float,
     n_length: int,
 ) -> tuple[np.ndarray, np.ndarray, "_ThroatPrefix"]:
+    # The per-azimuth loop below ends in an R-OSSE branch, so any formula it
+    # does not name would be evaluated as R-OSSE without a word.
+    if formula not in {"OSSE", "R-OSSE", "ICW", "LOOKUP"}:
+        raise ValueError(f"no meridian formula for {formula!r} in the shared radial grid")
     raw_radials = np.empty((len(angles), n_length + 1), dtype=np.float64)
     z_values = np.empty((len(angles), n_length + 1), dtype=np.float64)
     prefix_fraction = 0.0
@@ -1656,7 +1660,12 @@ def build_point_grid_arrays(
             raw_half_height,
             round_implicit_up=morph_target != 3,
         )
-        if morph_target == 1:
+        # FREEFORM samples its own azimuths per ring, morph included, in
+        # ``_freeform_raw_radial_grid``. Re-deriving the rectangle-morph angle
+        # list here and resampling through ``_raw_radial_grid`` evaluated the
+        # R-OSSE formula on a FREEFORM design: a 100 mm horn came back as the
+        # 40 mm default R-OSSE whenever the two angle lists differed.
+        if morph_target == 1 and formula != "FREEFORM":
             new_angles, full_circle = _angle_list(
                 params,
                 morph_half_width=resolved_half_width,
