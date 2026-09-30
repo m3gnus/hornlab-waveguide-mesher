@@ -1,0 +1,4 @@
+# Reference fixtures are compared byte for byte, so they keep LF line endings
+# on every platform. Without this, a Windows checkout converts them to CRLF.
+tests/fixtures/**/*.csv text eol=lf
+tests/fixtures/**/*.json text eol=lf
