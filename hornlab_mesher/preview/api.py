@@ -78,7 +78,7 @@ from .primitives import (
     _surface_grid,
 )
 from .source_cap import _source_cap
-from .dimensions import canonical_dimensions
+from .dimensions import DIMENSIONS_SAMPLING, canonical_dimensions
 
 
 _MAX_ANGULAR_SAMPLES = 4096
@@ -576,6 +576,15 @@ def build_preview_geometry(
     horn_achieved = level.achieved
     refinement_time_limited = bool(horn_achieved.get("refinement_time_limited"))
     inner_canonical = grid_data["inner_grid"]
+    # Retain measurement inputs before reduced-domain enclosure visibility or
+    # deferred-wall assembly changes the output. All buffers are read-only here.
+    dimension_reference = {
+        "inner": inner_master, "normals": inner_normals,
+        "params": parsed_params, "mode": _parsed_mode,
+        "closed_phi": closed_phi,
+        "bounds": (output["enclosure"]["bounds"]
+                   if output.get("enclosure") is not None else None),
+    }
 
     if (
         output.get("enclosure") is not None
@@ -1053,22 +1062,20 @@ def build_preview_geometry(
     assembly_ms = (time.perf_counter() - assembly_start) * 1000.0
     dimension_error = None
     try:
-        dimensions = canonical_dimensions(config)
-    except ValueError as exc:
+        dimensions = canonical_dimensions(config, reference=dimension_reference)
+        _validate_finite_metadata(dimensions, "dimensions_mm")
+    except Exception as exc:
         # A renderable draft can still violate the solve/CAD model contract.
         # Keep its preview, but never manufacture material measurements for it.
         dimensions = None
-        dimension_error = str(exc)
+        dimension_error = str(exc) or type(exc).__name__
     total_ms = (time.perf_counter() - start) * 1000.0
     metadata: dict[str, Any] = {
         "api_version": _API_VERSION,
         "metadata_version": _METADATA_VERSION,
         "units": "mm",
         "dimensions_mm": dimensions,
-        "dimensions_sampling": {
-            "method": "resolved-control-geometry",
-            "lod_independent": True,
-        },
+        "dimensions_sampling": copy.deepcopy(DIMENSIONS_SAMPLING),
         "coordinate_frame": "mesher-xyz",
         "formula": output["formula"],
         "mode": output["mode"],
