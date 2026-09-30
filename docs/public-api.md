@@ -308,3 +308,36 @@ Everything not listed above, in particular:
 
 It does not freeze Gmsh surface counts, internal helper names or private
 surface construction strategies.
+
+### Design dimensions
+
+Preview `geometry.metadata.dimensions_mm` contains `mouth_opening: [W, H]`
+(and the actual terminating aperture, even when the curve rolls back),
+`horn_overall: [W, H, D]`, and `enclosure_overall: [W, H, D]` only when an
+enclosure exists. All values are millimetres; W/H/D are x/y/z bounding extents
+(maximum minus minimum). The horn includes its modelled offset wall, rim and
+rear return/plate; the enclosure is reported separately. An enclosed horn has
+no separate offset shell in the canonical model. Source-cap geometry describes
+an acoustic boundary and is excluded from the material dimensions.
+
+These are full-object extents, independent of origin, symmetry reduction,
+visibility, render LOD. R-OSSE depth uses the largest
+axial excursion anywhere on the curve, including the wall and rear plane,
+not the terminating station's coordinate. The enclosure uses the same outer
+box bounds, depth clamp and whole-mm rounding as the mesh/CAD builder.
+
+`dimensions_sampling` documents the measurement basis:
+`method: "resolved-control-geometry"`, `lod_independent: true`. These are
+bounds of the full resolved canonical control geometry fed to the solve and
+CAD builders, using the design's own sampling settings and adaptive acoustic
+fit where applicable. They are not bounds of the displayed triangle mesh.
+Changing design sampling can change that canonical geometry and its bounds;
+changing preview detail cannot. Fitted CAD surfaces between control stations
+remain subject to the existing surface-fit approximation contract. Consumers
+should tolerate absent keys from older mesher versions.
+
+If a draft can render but cannot resolve a solve/CAD object,
+`dimensions_mm` is null and `dimensions_error` explains the refusal. The
+preview stays available; consumers must label the dimensions unavailable.
+The resolver result is cached across coarse/fine requests using all config
+fields, and returned values cannot mutate that cache.

@@ -407,17 +407,34 @@ def test_folded_preview_repairs_only_the_selected_grid(lod, rounded_morph, monke
             "morphCorner": 30,
             "morphFixed": 0.6,
         }
+    import hornlab_mesher.preview.dimensions as dimensions
+    dimensions._cached_dimensions.cache_clear()
+    measuring_dimensions = False
+    measurement_repairs = []
+    resolve = dimensions.resolve_geometry
+
+    def tracked_dimensions(config):
+        nonlocal measuring_dimensions
+        measuring_dimensions = True
+        try:
+            return resolve(config)
+        finally:
+            measuring_dimensions = False
+
+    monkeypatch.setattr(dimensions, "resolve_geometry", tracked_dimensions)
     repaired_shapes = []
     original = sampling.regularize_outer_offset
 
     def tracked(inner, outer, wall, *, full_circle):
-        repaired_shapes.append(inner.shape)
+        (measurement_repairs if measuring_dimensions else repaired_shapes).append(inner.shape)
         return original(inner, outer, wall, full_circle=full_circle)
 
     monkeypatch.setattr(sampling, "regularize_outer_offset", tracked)
     result = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
     outer = next(surface for surface in result.surfaces if surface.role == "horn.outer")
     assert len(repaired_shapes) == 1
+    assert len(measurement_repairs) == 1  # the solve/CAD canonical wall
+    assert result.metadata["dimensions_mm"] is not None
     # The master is deliberately denser than the render grid. Repairing it
     # first discarded most of the expensive result on every drag frame.
     assert repaired_shapes[0][0] * repaired_shapes[0][1] == len(outer.positions)

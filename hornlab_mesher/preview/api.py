@@ -78,6 +78,7 @@ from .primitives import (
     _surface_grid,
 )
 from .source_cap import _source_cap
+from .dimensions import canonical_dimensions
 
 
 _MAX_ANGULAR_SAMPLES = 4096
@@ -1050,11 +1051,24 @@ def build_preview_geometry(
             )
 
     assembly_ms = (time.perf_counter() - assembly_start) * 1000.0
+    dimension_error = None
+    try:
+        dimensions = canonical_dimensions(config)
+    except ValueError as exc:
+        # A renderable draft can still violate the solve/CAD model contract.
+        # Keep its preview, but never manufacture material measurements for it.
+        dimensions = None
+        dimension_error = str(exc)
     total_ms = (time.perf_counter() - start) * 1000.0
     metadata: dict[str, Any] = {
         "api_version": _API_VERSION,
         "metadata_version": _METADATA_VERSION,
         "units": "mm",
+        "dimensions_mm": dimensions,
+        "dimensions_sampling": {
+            "method": "resolved-control-geometry",
+            "lod_independent": True,
+        },
         "coordinate_frame": "mesher-xyz",
         "formula": output["formula"],
         "mode": output["mode"],
@@ -1162,6 +1176,8 @@ def build_preview_geometry(
         },
         **source_details,
     }
+    if dimension_error is not None:
+        metadata["dimensions_error"] = dimension_error
     if tight_normal_request:
         metadata["refinement_budget"] = {
             "seconds": _TIGHT_NORMAL_REFINEMENT_SECONDS,
