@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
+from .mesh_repair import DEGENERATE_MIN_QUALITY
 from .preview.intersections import _triangles_intersect
 
 
@@ -101,12 +102,18 @@ def repair_fitted_bore_facets(points, triangles, surface_tags, groups):
             new_normal = np.cross(new_xyz[:, 1]-new_xyz[:, 0], new_xyz[:, 2]-new_xyz[:, 0])
             longest_sq = np.square(np.linalg.norm(
                 np.roll(new_xyz, -1, axis=1)-new_xyz, axis=2)).max(axis=1)
+            # Same area convention and threshold as postprocessing, so a swapped
+            # facet is never one that _remove_degenerate_triangles then drops.
             if (np.any(new_normal @ old_normal.sum(axis=0) <= 0)
-                    or np.any(np.linalg.norm(new_normal, axis=1) <= 1e-4*longest_sq)):
+                    or np.any(0.5*np.linalg.norm(new_normal, axis=1)
+                              <= DEGENERATE_MIN_QUALITY*longest_sq)):
                 continue
             old_pairs = [(i, j) for i, j in pairs if i in adjacent]
             new_pairs = shell.hits(new_xyz)
-            if len(new_pairs) >= len(old_pairs):
+            # Fewer pairs is not enough: a swap may only keep crossings with
+            # shell facets the replaced pair already crossed, never add one.
+            if (len(new_pairs) >= len(old_pairs)
+                    or {j for _, j in new_pairs} - {j for _, j in old_pairs}):
                 continue
             # Avoid passing the new diagonal through a disjoint bore facet.
             bore = _FacetIndex(points[inner])
