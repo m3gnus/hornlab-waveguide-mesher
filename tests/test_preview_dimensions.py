@@ -81,7 +81,12 @@ def test_family_dimensions_match_independent_solve_cad_geometry(config, scale):
         numbers.append(dims)
     assert numbers[0] == numbers[1] == numbers[2]
     if config['formula'] == 'FREEFORM' and 'morph' in config:
-        assert numbers[0]['mouth_opening'] == [300 * scale, 300 * scale]
+        # The main FREEFORM dispatch fix uses the drawn H/V profiles instead
+        # of R-OSSE defaults (the old 300 x 300 expectation). With implicit
+        # morph axes, the terminal radii 30/20 stay 30/20; rounding the corners
+        # changes neither axis. This bare horn spans z=0..100 with no wall.
+        assert numbers[0]['mouth_opening'] == [60 * scale, 40 * scale]
+        assert numbers[0]['horn_overall'] == [60 * scale, 40 * scale, 100 * scale]
 
 
 @pytest.mark.parametrize('config', CORPUS)

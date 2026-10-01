@@ -16,6 +16,18 @@ from hornlab_mesher.preview import build_preview_geometry
 from hornlab_mesher.preview.contract import PreviewOptionsV1
 from hornlab_mesher.profile_formulas import _verify_meridian_self_contact
 
+
+@pytest.fixture
+def empty_dimension_cache():
+    # C2 caches by the complete config. A preceding fine case can warm the
+    # absent-stretch config while the explicit-zero config is still cold.
+    # Compare previews at the same cache state without changing expectations.
+    from hornlab_mesher.preview.dimensions import _DIMENSIONS_CACHE
+    _DIMENSIONS_CACHE.clear()
+    yield
+    _DIMENSIONS_CACHE.clear()
+
+
 ENDPOINT = {
     'profile': {'formula': 'R-OSSE', 'R': 200, 'a': 35, 'a0': 3, 'r0': 8.25,
                 'k': 4, 'r': .37, 'm': .2, 'b': 0, 'q': 4, 's1': .5, 's2': .2,
@@ -63,7 +75,7 @@ def _same_preview(a, b, where='preview'):
 @pytest.mark.parametrize('path', ['coarse', 'fine'])
 @pytest.mark.parametrize('zero', [0, 0.0, -0.0, float('1e-400')])
 @pytest.mark.parametrize('key', ['s1', 's2'])
-def test_explicit_zero_previews_a_half14_offset_model_like_absent_stretch(family, path, zero, key, tmp_path):
+def test_explicit_zero_previews_a_half14_offset_model_like_absent_stretch(family, path, zero, key, tmp_path, empty_dimension_cache):
     # This case used to fail in the preview with "source_cap: inconsistent
     # local orientation" with or without stretch; the half-model source-cap fix
     # (fix/preview-half-model-vertical-offset) made it build. The contract C4
