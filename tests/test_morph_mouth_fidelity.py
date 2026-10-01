@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,22 @@ import pytest
 from hornlab_mesher.config_builder import resolve_geometry
 from hornlab_mesher.cad import write_step
 from hornlab_mesher.mesher import build_mesh_with_info
+from scripts.capture_morph_identity import BASE, BaselineUnavailable, cases, extract_baseline
+
+
+def _extract_main_or_skip(source):
+    try:
+        return extract_baseline(source)
+    except BaselineUnavailable as exc:
+        if os.environ.get('HORNLAB_MORPH_IDENTITY') == 'required':
+            pytest.fail(f'Main output identity is required: {exc}', pytrace=False)
+        pytest.skip(f'Main output identity not executed: {exc}')
+
+
+@pytest.fixture(scope='session')
+def main_identity_source(tmp_path_factory):
+    """One clean pinned-main archive, never imported into the pytest process."""
+    return _extract_main_or_skip(tmp_path_factory.mktemp('morph-main') / 'source')
 
 
 def _config(formula, corner, *, morph=True):
@@ -103,27 +120,54 @@ def test_default_step_mouth_curve_and_solve_nodes_follow_design(tmp_path, formul
 @pytest.mark.parametrize('formula', ['OSSE', 'R-OSSE', 'FREEFORM', 'ICW'])
 @pytest.mark.parametrize('quadrants', ['1234', '12', '14', '1'])
 @pytest.mark.parametrize('mouth', ['unmorphed', 'round'])
-def test_disabled_morph_and_round_mouth_preserve_main_output_bytes(tmp_path, formula, quadrants, mouth):
-    """Guard complete solve/normalized STEP bytes against frozen main a7888d7."""
+def test_disabled_morph_and_round_mouth_preserve_main_output_bytes(
+        tmp_path, main_identity_source, formula, quadrants, mouth):
+    """Compare pinned main and this tree in the same Python/native runtime."""
     root = Path(__file__).resolve().parents[1]
-    manifest = json.loads((root / 'tests/fixtures/morph_identity/baseline.json').read_text())
-    assert manifest['baseline_commit'] == 'a7888d701f0c4394b555e69236f844fe2560dc6b'
-    assert len(manifest['cases']) == 32
-    case = next(c for c in manifest['cases'] if c['id'] == f'{formula}-{quadrants}-{mouth}')
+    matrix = list(cases())
+    assert len(matrix) == 32
+    case = next(c for c in matrix if c['id'] == f'{formula}-{quadrants}-{mouth}')
     configs = [case['config']]
     if mouth == 'unmorphed':
         disabled = copy.deepcopy(case['config'])
         disabled['morph'] = {'morphTarget': 0}
         configs.append(disabled)
     for i, config in enumerate(configs):
-        dest = tmp_path / str(i)
-        # Fresh processes reset OCC counters and assert imports from this tree.
-        subprocess.run([sys.executable, str(root / 'tests/morph_identity_export.py'),
-                        str(root), json.dumps(config), str(dest)], cwd=root, check=True)
+        baseline = tmp_path / str(i) / 'main'
+        dest = tmp_path / str(i) / 'head'
+        worker = str(root / 'tests/morph_identity_export.py')
+        # Each child starts with empty package/OCC state and asserts its root.
+        # -I ignores inherited PYTHONPATH/user-site settings; both children use
+        # the same executable and installed gmsh/numpy. Keep the baseline call
+        # separate from the candidate run used by the byte-mutation harness.
+        subprocess.check_call([sys.executable, '-I', worker, str(main_identity_source),
+                               json.dumps(config), str(baseline)],
+                              cwd=main_identity_source, timeout=60)
+        subprocess.run([sys.executable, '-I', worker, str(root), json.dumps(config), str(dest)],
+                       cwd=root, check=True, timeout=60)
+        expected = json.loads((baseline / 'hashes.json').read_text())
         actual = json.loads((dest / 'hashes.json').read_text())
-        assert actual['mesh_sha256'] == case['mesh_sha256'], f'{case["id"]}: solve bytes changed'
-        assert actual['step_sha256'] == case['step_sha256'], f'{case["id"]}: STEP bytes changed'
-        assert actual['sector_step_refusal'] == case['sector_step_refusal']
+        label = case['id'] + ('-explicit-zero' if i else '')
+        assert actual['mesh_sha256'] == expected['mesh_sha256'], f'{label}: solve bytes changed from main {BASE}'
+        assert actual['step_sha256'] == expected['step_sha256'], f'{label}: STEP bytes changed from main {BASE}'
+        assert actual['sector_step_refusal'] == expected['sector_step_refusal']
+
+
+@pytest.mark.parametrize('unavailable', ['git', 'commit'])
+@pytest.mark.parametrize('required', [False, True])
+def test_main_identity_unavailable_is_explicit(monkeypatch, tmp_path, unavailable, required):
+    """Offline runs skip visibly; CI cannot pass without baseline comparisons."""
+    def missing(*args, **kwargs):
+        if unavailable == 'git':
+            raise FileNotFoundError('git')
+        raise subprocess.CalledProcessError(128, args[0])
+    monkeypatch.setattr(subprocess, 'check_output', missing)
+    monkeypatch.setenv('HORNLAB_MORPH_IDENTITY', 'required' if required else '')
+    outcome = pytest.fail.Exception if required else pytest.skip.Exception
+    with pytest.raises(outcome, match='Git is unavailable' if unavailable == 'git'
+                       else 'Pinned main .* is unavailable'):
+        _extract_main_or_skip(tmp_path / 'source')
+    assert not (tmp_path / 'source').exists()
 
 
 @pytest.mark.parametrize('revision', ['fix/morph-mouth-fidelity',

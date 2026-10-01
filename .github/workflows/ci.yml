@@ -25,6 +25,9 @@ jobs:
             deps: latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The export identity guard builds pinned main a7888d7 in this runtime.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           # WG ships CPython 3.13 (its server/requirements-lock.txt).
@@ -61,6 +64,9 @@ jobs:
       # turns those skips into errors, which is what you want when gating a
       # release and not what you want here.
       - name: Tests
+        env:
+          # Missing baseline/Git must fail here, never silently skip the guard.
+          HORNLAB_MORPH_IDENTITY: required
         run: python -m pytest tests/ -v
 
       # A silent skip is indistinguishable from a deleted file, so assert the
