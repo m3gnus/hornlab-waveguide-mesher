@@ -516,8 +516,9 @@ velocity direction.
 
 ## ATH Text Import Boundary
 
-Text import supports OSSE and R-OSSE blocks plus selected flat ATH keys. ICW is
-not part of the ATH text format and is rejected there. The
+Text import supports OSSE and R-OSSE blocks plus selected flat ATH keys, and
+refuses every item it does not read (see "Items the importer refuses" below).
+ICW is not part of the ATH text format and is rejected there. The
 parser strips semicolon comments and accepts block syntax such as:
 
 ```text
@@ -587,14 +588,96 @@ contract, full meshes stay the safe import default. Set `Mesh.Quadrants = 1`
 explicitly for quarter grids and pass the matching symmetry flag to the
 solver.
 
-Solver-only and output keys are intentionally ignored: `ABEC.MeshFrequency`,
-`ABEC.NumFrequencies`, `ABEC.f1`, `ABEC.f2`, `ABEC.Polars:*`, `ABEC.Abscissa`,
-`Report`, `GridExport:*`, and `Output.*` (the CLI owns output paths).
+### Items the importer ignores
 
-Unsupported geometry keys fail explicitly instead of being approximated:
-`Throat.Profile` other than 1 (OS-SE), `Rollback.*`, `Mesh.RearShape` other
-than 1, and `Mesh.ThroatSegments`.
+These configure ATH's output files, its reports and the solver project it
+writes. None of them changes the horn or its source. Every deliberately
+ignored key or block produces a warning that names it and explains why its
+value is unused. When a whole block is skipped, one warning names the parent
+and states that its whole subtree is ignored. This list lives in
+`config_parser.py` as `_IGNORED_ATH_PREFIXES`, `_IGNORED_ATH_KEYS` and
+`_IGNORED_ATH_BLOCKS`.
+
+| Item | What it is in ATH |
+| --- | --- |
+| `ABEC.*` other than `ABEC.SimType`, including `ABEC.Polars:<tag>` and the field blocks | Solver project: frequencies, observation maps and fields, driving values, `ABEC.SimProfile` |
+| `Simulation.*` | Solver-run settings, including `Simulation.F1`, `Simulation.F2` and `Simulation.NumFrequencies`; reported as ignored |
+| `CircArc.TermAngle` | Mouth terminal angle only for `Throat.Profile = 3` (ATH User Guide 4.1.1); dormant for the supported OS-SE profile (`1`), and reported as ignored. Profile `3` remains refused |
+| `Output.*` | Output locations and file switches; the CLI owns output paths |
+| `Report = {}` | Report layout |
+| `GridExport:<tag> = {}`, `FRDExport = {}`, `RespExport = {}` | Coordinate and response export |
+| `LE`, `LE.*` | Lumped-element driver model coupled in the solver project |
+| `Gmsh.*` | Settings for ATH's external Gmsh run; this mesher owns its own meshing |
+| `OutputRootDir`, `MeshCmd`, `GnuplotPath` | Items of ATH's global `ath.cfg` |
+| Any item or block whose name starts with `_` | The ATH convention for parking an item: `_OSSE = {`, `_Source.Contours = {` |
+
+Disabled members inside supported blocks are also ignored and reported,
+including `Mesh = { _ThroatSegments = 4 }` (with members on separate lines).
+All descendants of a parked block are ignored, including nested blocks whose
+own names have no underscore; the warning names their parked ancestor.
+
+`ABEC.SimProfile` selects ATH's circular-symmetry project. Ignoring it means the
+importer builds the three-dimensional horn the rest of the file describes.
+
+A top-level `Length` beside an `OSSE` block is accepted, unused and reported, because
+that is what ATH does: the block's `L` sets the length, and ATH V2026-08c
+exports a byte-identical grid with and without the key
+(`tests/fixtures/ath_import/ath-v2026-08c`).
+
+### Items the importer refuses
+
+Everything else that is not listed under "Imported text mappings" is refused
+with a `ConfigError` that names it. That covers unknown top-level keys, unknown
+blocks, a block nested inside a supported block, and unknown keys inside an
+`OSSE`, `R-OSSE`, `Source` or `Mesh.Enclosure` block. The importer looks up
+the items it supports by name, so before this rule an unrecognised item was
+dropped without a message and the horn built from the rest of the file was
+simpler than the one configured: `Scale.Z`, a `Horn.Part` block, `arcterm`
+inside `R-OSSE`, a `Plan` inside `Mesh.Enclosure` and a mistyped
+`Coverage.Angel` all imported cleanly.
+
+Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
+`Throat.Ext.Included`, `HornGeometry`, `Horn.Adapter`, `Horn.Part:<tag>`,
+`Profile`, `Mesh.Roundover = {}`, `BEE = {}`, `Source.Array`,
+`FusionRotaryProfile = {}`, named enclosure plans, `Plan` and `Dim` inside
+`Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
+of the other formula. OSSE honours top-level `Rot` beside a profile block;
+an in-block `Rot` takes precedence, including an explicit zero. Top-level
+`Rot` is reported as unused when an in-block `Rot` overrides it. Top-level
+`Rot = 0` beside `R-OSSE` is accepted as inactive rotation. Nonzero or
+expression-valued top-level `Rot` beside `R-OSSE` is refused, as is any other
+unverified top-level profile key (`Throat.Diameter`, `Coverage.Angle`, `Length`
+beside `R-OSSE`). A file with multiple profile blocks is refused, including
+repeated blocks of the same name. In-block `Throat.Profile = 1` is accepted
+in both profile families.
+
+Enclosure members written inside `Mesh`, such as `Enclosure.Depth` or
+`Enclosure.Plan`, and scalar `Mesh.Enclosure` / `Enclosure` markers are
+refused with advice to use supported top-level `Mesh.Enclosure.*` keys or
+the separate `Mesh.Enclosure = { ... }` block. Names inside `Mesh` do not
+create an enclosure. These refusals follow throat-stretch composition
+validation so C4 errors retain their specific messages.
+
+If no profile is recognised, the error first names the supplied candidate
+blocks and keys, with reasons or spelling/case suggestions, then explains
+the missing profile. For example, `osse` suggests `OSSE`, `Horn.Part:1`
+names the unsupported two-profile geometry, and `Lenght` suggests `Length`.
+
+Refused with their own messages: `Throat.Profile` other than 1 (OS-SE),
+`Rollback.*` (current ATH builds refuse it too), `Mesh.RearShape` other than 1,
+`Mesh.ThroatSegments` and `Mesh.ThroatExtSegments`, any other unrecognised
+`Mesh.*` key, `Source.Contours`, `LFSource*`, `Source.Velocity = 2`, and a
+`Mesh.Enclosure` `Spacing` with fewer than four values.
+
+The structure of the file is checked as well: a `}` that closes no block, a
+block that is never closed, and a top-level line that is neither `key = value`
+nor `name = {` are errors. Blocks nest; members written after a nested block
+still belong to the outer block.
+
+The one namespace pair that warns instead of refusing is `Morph.*` and
+`GCurve.*`, described above.
 
 The text parser is an import adapter only. It does not build geometry, infer
-unsupported ATH objects, or preserve unknown sections for later use. Unsupported
-geometry families should fail explicitly rather than being approximated.
+unsupported ATH objects, or preserve unknown sections for later use. New ATH
+behaviour is added only after it has been confirmed against ATH output; until
+then the item is refused.

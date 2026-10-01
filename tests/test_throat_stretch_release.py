@@ -190,8 +190,16 @@ def test_dormant_icw_seed_key_matches_base(dormant):
     assert _icw_cache_key({'icw_seed': {'type': 'OSSE', 'L': 160, **dormant}}) == BASE['icw_disabled_key']
 
 
+# These synthetic variants previously dropped nonzero R-OSSE Rot. Refuse it
+# until ATH parity establishes the geometry, as documented in config-schema.
+# No archive case is exempted from the captured import/parameter comparison.
+UNVERIFIED_ROSSE_ROT_VARIANTS = {
+    f'variant-{number:02d}' for number in (22, 23, 24, 26, 28, 30, 31, 32, 33, 34, 35, 36)
+}
+
+
 @pytest.mark.parametrize('case', BASE['imports'], ids=lambda c: c['id'])
-def test_import_corpus_equal_base_except_top_level_osse_rot(case):
+def test_import_corpus_equal_base_except_documented_rotation_changes(case):
     if 'text' in case:
         text = case['text']
     else:
@@ -211,6 +219,10 @@ def test_import_corpus_equal_base_except_top_level_osse_rot(case):
     approved_rot = osse_block and 'Rot = 10' in text and 'Rot = 5' not in block_text
     if 'error' in case:
         with pytest.raises(ConfigError, match=case['message']):
+            parse_text_config(text)
+        return
+    if case['id'] in UNVERIFIED_ROSSE_ROT_VARIANTS:
+        with pytest.raises(ConfigError, match=r'unsupported item.*\bRot\b'):
             parse_text_config(text)
         return
     parsed = parse_text_config(text)
