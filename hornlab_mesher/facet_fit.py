@@ -38,7 +38,8 @@ class _FacetIndex:
         return pairs
 
 
-def repair_fitted_bore_facets(points, triangles, surface_tags, groups):
+def repair_fitted_bore_facets(points, triangles, surface_tags, groups, *,
+                              index_factory=_FacetIndex, proposed_guard=None):
     """Swap internal diagonals only when their local crossing count decreases.
 
     A convex quadrilateral in the actual OCC patch parameter plane, consistent
@@ -54,7 +55,7 @@ def repair_fitted_bore_facets(points, triangles, surface_tags, groups):
     if not len(inner_ids) or not len(outer_ids):
         return
     inner = triangles[inner_ids].copy()
-    shell = _FacetIndex(points[triangles[outer_ids]])
+    shell = index_factory(points[triangles[outer_ids]])
     pairs = shell.hits(points[inner])
     # SAT includes touching contacts: a swap can occur with zero strict
     # crossings. This is harmless under the same patch/vertex/boundary guards;
@@ -118,8 +119,11 @@ def repair_fitted_bore_facets(points, triangles, surface_tags, groups):
             if (len(new_pairs) >= len(old_pairs)
                     or {j for _, j in new_pairs} - {j for _, j in old_pairs}):
                 continue
+            if proposed_guard is not None and not proposed_guard(
+                    inner_ids[adjacent], proposed):
+                continue
             # Avoid passing the new diagonal through a disjoint bore facet.
-            bore = _FacetIndex(points[inner])
+            bore = index_factory(points[inner])
             conflicts = bore.hits(new_xyz)
             if any(not set(proposed[i]).intersection(inner[j]) for i, j in conflicts):
                 continue
@@ -130,6 +134,8 @@ def repair_fitted_bore_facets(points, triangles, surface_tags, groups):
                     if not edges[key]:
                         del edges[key]
             inner[adjacent] = proposed
+            if proposed_guard is not None:
+                triangles[inner_ids[adjacent]] = proposed
             for i in adjacent:
                 for s, t in zip(inner[i], np.roll(inner[i], -1)):
                     edges.setdefault(tuple(sorted((int(s), int(t)))), set()).add(i)

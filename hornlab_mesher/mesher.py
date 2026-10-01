@@ -364,6 +364,10 @@ def build_mesh_with_info(
                 # the aperture tag, not by changing triangle winding.
                 require_positive_volume=not is_infinite_baffle,
                 infinite_baffle=is_infinite_baffle,
+                shell_surface_groups=(built.mesh_surface_groups
+                    if isinstance(geometry, PointGridHornGeometry)
+                    and geometry.build_mode.value == 'freestanding' else None),
+                wall_thickness_mm=float(getattr(geometry, 'wall_thickness_mm', 0)),
             )
             limit = effective_triangle_limit(built, mesh_density)
             if limit is not None:
@@ -457,6 +461,8 @@ def _postprocess_mesh(
     open_shell_wall_normals: np.ndarray | None = None,
     require_positive_volume: bool = True,
     infinite_baffle: bool = False,
+    shell_surface_groups: dict[str, list[int]] | None = None,
+    wall_thickness_mm: float = 0.0,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -464,6 +470,15 @@ def _postprocess_mesh(
         raise MesherError("gmsh produced no triangle elements")
 
     points = np.asarray(mesh.points, dtype=np.float64)
+    # Keep OCC patch identity through both removal passes. Physical tags alone
+    # deliberately combine bore, shell and caps and cannot identify a repair.
+    surfaces = None
+    if shell_surface_groups is not None:
+        surfaces = np.concatenate([
+            mesh.cell_data['gmsh:geometrical'][i]
+            for i, block in enumerate(mesh.cells)
+            if block.type in ('triangle', 'triangle3')])
+        phys = np.column_stack((phys, surfaces))
     # Snap BEFORE welding: snapping near-plane vertices onto the symmetry
     # planes can create coincident nodes, and only a subsequent weld folds
     # them back into single vertices (welding first would leave the
@@ -481,6 +496,14 @@ def _postprocess_mesh(
     )
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
+    shell_stats = None
+    if shell_surface_groups is not None:
+        phys, surfaces = phys[:, 0], phys[:, 1]
+        from .shell_facets import validate_shell_facets
+
+        shell_stats = validate_shell_facets(
+            points, triangles, surfaces, phys, shell_surface_groups,
+            wall_thickness_mm, symmetry_snap_axes)
     # Gmsh/OCC can emit an otherwise valid canonical surface with the whole
     # triangle set inward-wound, most visibly on non-monotonic freestanding
     # R-OSSE point grids. The mesher owns output orientation, so normalize its
@@ -572,6 +595,8 @@ def _postprocess_mesh(
         # that holds the finished arrays and knows their units. Recording it
         # costs a pass over the triangles; acting on it is the caller's choice.
         metadata={
+            **({'shellFacetValidation': shell_stats}
+               if shell_stats is not None and shell_stats['pairs_before'] else {}),
             "quality": mesh_quality_report(
                 points,
                 triangles,

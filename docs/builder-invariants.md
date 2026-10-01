@@ -254,6 +254,23 @@ wall sheets may remain separate edge-connected components when Gmsh gives
 their coincident throat rims different 1D discretisations; their semantic
 orientations remain deterministic in either case.
 
+Every free-standing solve boundary also requires nonintersecting bore and
+outer-shell facets. This check uses the emitted coordinates after symmetry
+snapping, welding and sliver removal, retaining the original CAD patch tags
+through those operations. Clean boundaries keep their exact connectivity.
+Intersecting boundaries may swap internal diagonals within one CAD patch;
+vertices, patch boundaries, physical groups and triangle counts stay fixed.
+Swaps must preserve winding, survive the output sliver threshold and introduce
+no new crossings. Neither geometry sampling nor the user's density changes.
+
+Failing boundaries are checked against the actual CAD patch separation. A
+clearance below one tenth of the nominal wall (or the weld tolerance) refuses
+with advice to change wall thickness or rollback. Otherwise, if guarded swaps
+cannot remove every crossing, the build refuses with the remaining count and
+advice to change the requested resolution or wall thickness. A failed build
+never replaces an existing solve file. These checks do not modify preview or
+STEP geometry; a nearly collapsed wall requires a design change.
+
 A surface that has to weld to a fitted patch must be authored from that
 patch's own curve, not merely from the same sample points. Gmsh welds these
 seams by coincident mesh nodes, so a rim re-authored as a plain pole B-spline
