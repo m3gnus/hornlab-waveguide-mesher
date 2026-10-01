@@ -40,17 +40,40 @@ def consume(path, config, tmp_path):
 PUBLIC = ['resolve', 'coarse', 'fine', 'mesh', 'step']
 
 
+def _same_preview(a, b, where='preview'):
+    """Previews are equal apart from their run-time timings."""
+    if hasattr(a, 'shape') or hasattr(b, 'shape'):
+        assert np.array_equal(np.asarray(a), np.asarray(b)), where
+    elif isinstance(a, dict) or hasattr(a, '__dict__'):
+        da = a if isinstance(a, dict) else vars(a)
+        db = b if isinstance(b, dict) else vars(b)
+        assert set(da) == set(db), where
+        for name in da:
+            if name != 'timings_ms':
+                _same_preview(da[name], db[name], f'{where}.{name}')
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b), where
+        for index, (left, right) in enumerate(zip(a, b)):
+            _same_preview(left, right, f'{where}[{index}]')
+    else:
+        assert a == b, where
+
+
 @pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
 @pytest.mark.parametrize('path', ['coarse', 'fine'])
 @pytest.mark.parametrize('zero', [0, 0.0, -0.0, float('1e-400')])
 @pytest.mark.parametrize('key', ['s1', 's2'])
-def test_explicit_zero_preserves_existing_half14_preview_error(family, path, zero, key, tmp_path):
+def test_explicit_zero_previews_a_half14_offset_model_like_absent_stretch(family, path, zero, key, tmp_path):
+    # This case used to fail in the preview with "source_cap: inconsistent
+    # local orientation" with or without stretch; the half-model source-cap fix
+    # (fix/preview-half-model-vertical-offset) made it build. The contract C4
+    # pinned is unchanged: an explicit zero coefficient behaves exactly like an
+    # absent one, here by giving the same preview.
     corpus = json.loads((Path(__file__).parent / 'fixtures/throat_stretch/disabled-corpus.json').read_text())
     config = copy.deepcopy(corpus['osse-bare' if family == 'OSSE' else 'rosse-bare'])
     config['scale'] = .48
     config['mesh'].update(quadrants='14', vertical_offset_mm=7)
-    with pytest.raises(ValueError, match='source_cap: inconsistent local orientation') as base:
-        consume(path, config, tmp_path)
+    base = consume(path, config, tmp_path)
     for section in ['profile', 'parameters', 'top']:
         disabled = copy.deepcopy(config)
         if section == 'parameters':
@@ -58,10 +81,7 @@ def test_explicit_zero_preserves_existing_half14_preview_error(family, path, zer
         target = disabled if section == 'top' else disabled[section]
         target.update(s1=.5, s2=.2)
         target[key] = zero
-        with pytest.raises(type(base.value)) as inactive:
-            consume(path, disabled, tmp_path)
-        assert type(inactive.value) is type(base.value)
-        assert str(inactive.value) == str(base.value)
+        _same_preview(consume(path, disabled, tmp_path), base)
 
 
 @pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
