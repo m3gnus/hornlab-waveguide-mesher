@@ -39,9 +39,13 @@ def _config(formula):
                       'morphAllowShrinkage': 1, 'morphFixed': .4 if formula == 'ICW' else .35}}
 
 
+# Crossing counts depend on the platform's tessellation (CI saw 99/117 and
+# 271/261 for the same requests), so match the message family, the remedy and
+# a positive count, and keep the clearance only to its stable precision.
 @pytest.mark.parametrize('formula,reason', [
-    ('ICW', r'tessellation.*99 before.*CAD clearance 0\.59.*resolution or wall thickness'),
-    ('R-OSSE', r'CAD bore and outer shell nearly touch or cross.*271 emitted.*Reduce rollback'),
+    ('ICW', r'tessellation has [1-9]\d* remaining.*\([1-9]\d* before; CAD clearance 0\.59\d*'
+            r'.*resolution or wall thickness'),
+    ('R-OSSE', r'CAD bore and outer shell nearly touch or cross.*[1-9]\d* emitted.*Reduce rollback'),
 ])
 def test_intersecting_real_requests_refuse_without_replacing_output(tmp_path, formula, reason):
     resolved = resolve_geometry(_config(formula))
@@ -95,7 +99,10 @@ def test_real_unmorphed_icw_repairs_emitted_boundary_at_user_density(tmp_path, m
     monkeypatch.setattr(sf, 'validate_shell_facets', audit)
     path, info = build_mesh_with_info(resolved.geometry, resolved.density,
                                       tmp_path / 'repaired.msh', scale_to_metres=False)
-    assert captured['result']['pairs_before'] == 10
+    # The count before repair varies with the platform's tessellation; what
+    # the repair guarantees is that it starts from real crossings and ends
+    # with none.
+    assert captured['result']['pairs_before'] > 0
     assert captured['result']['pairs_after'] == 0
     assert captured['result']['changed_facets'] > 0
     assert info.n_triangles == len(captured['before'])
