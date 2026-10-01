@@ -52,8 +52,8 @@ def _shared_contact_only(points, first, second):
 
     For one shared vertex, intersect each face with the other's plane. Their
     intervals must extend in opposite directions from that vertex. Coplanar
-    faces instead use their vertex cones, including boundary rays: overlapping
-    cones imply contact beyond the common vertex, however narrow it is.
+    faces instead use unshrunk 2D projections: positive-area overlap is
+    prohibited, however narrow it is; boundary-only touching is allowed.
     Ambiguous/degenerate results conservatively reject the proposal.
     """
     common = set(first).intersection(second)
@@ -67,25 +67,7 @@ def _shared_contact_only(points, first, second):
     na, nb = na / np.linalg.norm(na), nb / np.linalg.norm(nb)
     direction = np.cross(na, nb)
     if np.linalg.norm(direction) <= 1e-12:
-        axis = int(np.argmax(np.abs(na)))
-        if len(common) == 2:
-            u, v = sorted(common)
-            edge = np.delete(points[v] - points[u], axis)
-            pa = np.delete(points[next(k for k in first if k not in common)] - points[u], axis)
-            pb = np.delete(points[next(k for k in second if k not in common)] - points[u], axis)
-            sa = edge[0] * pa[1] - edge[1] * pa[0]
-            sb = edge[0] * pb[1] - edge[1] * pb[0]
-            return sa * sb < 0
-        origin = points[next(iter(common))]
-        va = np.delete(points[[k for k in first if k not in common]] - origin, axis, axis=1)
-        vb = np.delete(points[[k for k in second if k not in common]] - origin, axis, axis=1)
-        for rays, cone in ((va, vb), (vb, va)):
-            if np.linalg.det(cone.T) == 0:
-                return False
-            coordinates = np.linalg.solve(cone.T, rays.T)
-            if np.any(np.all(coordinates >= 0, axis=0)):
-                return False
-        return True
+        return _coplanar_contact_only(a, b, na)
     if len(common) == 2:
         # Distinct planes containing the same edge meet only on that edge.
         return True
@@ -105,104 +87,206 @@ def _shared_contact_only(points, first, second):
     return ta is None or tb is None or ta * tb < 0
 
 
-def validate_shell_facets(points, triangles, surfaces, physical, groups,
-                          wall_mm, symmetry_axes=()):
-    """Inspect final mm arrays; repair in place or refuse before publication.
+def _coplanar_contact_only(a, b, normal):
+    """Zero-area contact is allowed; positive-area overlap is prohibited.
 
-    CAD patch identities survive all postprocessing filters. Clean arrays are
-    never written to. Repairs keep vertices, patch boundaries, physical groups
-    and triangle count, and must survive the same sliver predicate as output.
+    Use unshrunk 2D projections. The tolerance covers floating-point roundoff,
+    not welding or a geometric margin that could erase a narrow overlap.
+    """
+    scale = max(np.abs(a).max(), np.abs(b).max(), 1.0)
+    tolerance = 32 * np.finfo(float).eps * scale
+    if np.max(np.abs((b - a[0]) @ normal)) > tolerance:
+        return False
+    axis = int(np.argmax(np.abs(normal)))
+    a, b = np.delete(a - a[0], axis, axis=1), np.delete(b - a[0], axis, axis=1)
+    for face in (a, b):
+        for edge in np.roll(face, -1, axis=0) - face:
+            length = np.linalg.norm(edge)
+            if length == 0:
+                return False
+            direction = np.array([-edge[1], edge[0]]) / length
+            pa, pb = a @ direction, b @ direction
+            if min(pa.max(), pb.max()) - max(pa.min(), pb.min()) <= tolerance:
+                return True
+    return False
+
+
+def _contact_only(a, b):
+    # Exact equal coordinates represent the welded topological vertices. No
+    # proximity tolerance is used to manufacture joins between disjoint faces.
+    matches = np.all(a[:, None] == b[None, :], axis=2)
+    if matches.any():
+        second = np.arange(3, 6)
+        for i, j in zip(*np.nonzero(matches)):
+            second[j] = i
+        return _shared_contact_only(np.vstack((a, b)), np.arange(3), second)
+    na, nb = np.cross(a[1]-a[0], a[2]-a[0]), np.cross(b[1]-b[0], b[2]-b[0])
+    la, lb = np.linalg.norm(na), np.linalg.norm(nb)
+    if la == 0 or lb == 0:
+        return False
+    na, nb = na/la, nb/lb
+    return (np.linalg.norm(np.cross(na, nb)) <= 1e-12
+            and _coplanar_contact_only(a, b, na))
+
+
+class CrossingIndex(BoundaryIndex):
+    """Conservative candidates followed by the final contact predicate.
+
+    Validation and repair use the same prohibited-pair count, so harmless
+    contacts never trigger a CAD query or a connectivity change.
+    """
+
+    def hits(self, facets):
+        return [(i, j) for i, j in super().hits(facets)
+                if not _contact_only(facets[i], self.facets[j])]
+
+
+def _proposal_guard(points, triangles, surfaces, physical, symmetry_axes,
+                    active_shell, adjacent, proposed):
+    if len(set(physical[adjacent])) != 1:
+        return False
+    xyz = points[proposed]
+    for axis in symmetry_axes:
+        if np.any(np.all(np.abs(xyz[:, :, 'xyz'.index(axis)]) <= 1e-9, axis=1)):
+            return False
+    obstacles = CrossingIndex(points[triangles])
+    for _, j in obstacles.hits(xyz):
+        # The opposite wall has the decreasing-count/no-new-face guard in
+        # facet_fit. Every other emitted face must be safe, including faces
+        # sharing a vertex or edge with the proposal.
+        if j not in adjacent and surfaces[j] not in active_shell:
+            return False
+    return True
+
+
+def _refusal_context(points, triangles, surfaces, inner_ids, boundary_ids,
+                     pairs, groups, wall_mm, mesh_density):
+    faces = triangles[inner_ids[sorted({i for i, _ in pairs})]]
+    low, high = points[faces, 2].min(), points[faces, 2].max()
+    bore_low, bore_high = points[triangles[inner_ids], 2].min(), points[triangles[inner_ids], 2].max()
+    patches = sorted({int(surfaces[boundary_ids[j]]) for _, j in pairs})
+    if low >= bore_low + .65 * (bore_high-bore_low):
+        region, knob = 'mouth', 'mouth_res_mm'
+    elif high <= bore_low + .35 * (bore_high-bore_low):
+        region, knob = 'throat', 'throat_res_mm'
+    else:
+        region, knob = 'bore', 'mouth_res_mm and throat_res_mm'
+    if any(tag in groups.get('rear', ()) or tag in groups.get('rear_cap', ()) for tag in patches):
+        region, knob = 'rear return/disc', 'rear_res_mm'
+    context = (f'{region} region z={low:.6g}..{high:.6g} mm, boundary patches {patches}; '
+               f'wall_thickness_mm={wall_mm:.6g} mm')
+    if mesh_density is None:
+        return context + '; requested mm sizes unavailable to this array-only call', (
+            f'Try a thicker wall_thickness_mm (suggested {wall_mm*1.5:.6g} mm) '
+            f'or finer (smaller mm) {knob} in the {region} region; '
+            'suggestions require rebuilding and validation.')
+    names = ('throat_res_mm', 'mouth_res_mm', 'rear_res_mm')
+    values = {name: getattr(mesh_density, name) for name in names}
+    def show(value):
+        if np.isscalar(value):
+            return f'{value:.6g}'
+        return '[' + ', '.join(f'{v:.6g}' for v in value) + ']'
+    context += '; requested ' + ', '.join(f'{name}={show(value)} mm' for name, value in values.items())
+    suggestions = []
+    for name in knob.split(' and '):
+        value = values[name]
+        suggestion = np.minimum(np.asarray(value)*.5, 8).tolist()
+        suggestions.append(f'{name}={show(suggestion)} mm')
+    advice = (f'Try a thicker wall_thickness_mm (suggested {wall_mm*1.5:.6g} mm) '
+              f'or finer (smaller mm) resolution in the {region} region: '
+              + ', '.join(suggestions) + ' (suggested, not a guaranteed remedy).')
+    return context, advice
+
+
+def validate_shell_facets(points, triangles, surfaces, physical, groups,
+                          wall_mm, symmetry_axes=(), *, mesh_density=None):
+    """Inspect all final mm boundary components; repair or refuse publication.
+
+    Clean arrays remain untouched. Repairs keep vertices, patch boundaries,
+    physical groups and triangle counts, and survive the output sliver filter.
     """
     import gmsh
     from .mesher import MesherError
 
     start = time.monotonic()
     inner_ids = np.flatnonzero(np.isin(surfaces, groups.get('inner', ())))
-    outer_ids = np.flatnonzero(np.isin(surfaces, groups.get('outer', ())))
-    if not len(inner_ids) or not len(outer_ids):
-        raise MesherError('free-standing boundary has no bore or outer shell facets')
-    shell = BoundaryIndex(points[triangles[outer_ids]])
-    pairs = shell.hits(points[triangles[inner_ids]])
+    # Include every emitted non-bore component, also source and rear caps.
+    # Group aliases (rear/rear_cap) cannot duplicate facets in this index.
+    boundary_ids = np.flatnonzero(~np.isin(surfaces, groups.get('inner', ())))
+    if not len(inner_ids) or not len(boundary_ids):
+        raise MesherError('free-standing boundary has no bore or shell facets')
+    def scan():
+        return CrossingIndex(points[triangles[boundary_ids]]).hits(points[triangles[inner_ids]])
+    pairs = scan()
     stats = {'pairs_before': len(pairs), 'pairs_after': len(pairs),
              'changed_facets': 0, 'seconds': time.monotonic() - start}
     if not pairs:
         return stats
-
-    # Only failing meshes pay for OCC separation queries. A small true CAD
-    # gap cannot be fixed by changing a diagonal and must not be disguised.
+    context, advice = _refusal_context(points, triangles, surfaces, inner_ids,
+                                      boundary_ids, pairs, groups, wall_mm, mesh_density)
     patch_pairs = sorted({(int(surfaces[inner_ids[i]]),
-                           int(surfaces[outer_ids[j]])) for i, j in pairs})
+                           int(surfaces[boundary_ids[j]])) for i, j in pairs})
     clearance = float('inf')
-    for bore, outer in patch_pairs:
+    for bore, boundary in patch_pairs:
         try:
-            distance = gmsh.model.occ.getDistance(2, bore, 2, outer)[0]
+            # Joined CAD patches have zero *global* distance by construction.
+            # It cannot classify a prohibited crossing away from their join.
+            # Keep those pairs in all facet scans/guards, but skip this CAD
+            # near-contact shortcut when the patches share a CAD boundary.
+            ends = [set(gmsh.model.getBoundary([(2, tag)], oriented=False))
+                    | set(gmsh.model.getBoundary([(2, tag)], oriented=False, recursive=True))
+                    for tag in (bore, boundary)]
+            if ends[0].intersection(ends[1]):
+                continue
+            distance = gmsh.model.occ.getDistance(2, bore, 2, boundary)[0]
+            if not np.isfinite(distance) or distance < 0:
+                raise ValueError('invalid CAD distance')
         except Exception as exc:
-            raise MesherError('free-standing bore/shell facets intersect; CAD '
-                              'clearance measurement failed. Change wall '
-                              'thickness or rollback and rebuild.') from exc
-        if not np.isfinite(distance) or distance < 0:
-            raise MesherError('free-standing bore/shell facets intersect; CAD '
-                              'clearance could not be measured. Change wall '
-                              'thickness or rollback and rebuild.')
+            raise MesherError(f'free-standing bore/shell facets intersect ({context}); '
+                              f'CAD clearance measurement failed. {advice}') from exc
         clearance = min(clearance, distance)
-    stats['cad_clearance_mm'] = clearance
+    if np.isfinite(clearance):
+        stats['cad_clearance_mm'] = clearance
     if clearance < max(0.005, 0.1 * wall_mm):
         raise MesherError(
-            f'free-standing CAD bore and outer shell nearly touch or cross '
-            f'(clearance {clearance:.6g} mm, wall thickness {wall_mm:.6g} mm; '
-            f'{len(pairs)} emitted facet intersections). Reduce rollback or '
-            'change wall thickness; mesh resolution cannot restore CAD clearance.')
+            f'free-standing CAD bore and shell nearly touch or cross '
+            f'(clearance {clearance:.6g} mm; {len(pairs)} prohibited emitted facet pairs; '
+            f'{context}). Try reducing wall_thickness_mm '
+            f'(suggested {wall_mm*.5:.6g} mm), then rebuild and check CAD clearance; '
+            'this is not a guaranteed remedy. Mesh resolution cannot restore CAD clearance.')
 
     original = triangles.copy()
-    # Guard against every other emitted face, including rim, source and rear
-    # caps. Accepted proposals cannot introduce a crossing with a new face.
     def guard(adjacent, proposed):
-        if len(set(physical[adjacent])) != 1:
-            return False
-        xyz = points[proposed]
-        for axis in symmetry_axes:
-            if np.any(np.all(np.abs(xyz[:, :, 'xyz'.index(axis)]) <= 1e-9, axis=1)):
-                return False
-        obstacles = BoundaryIndex(points[triangles])
-        for i, j in obstacles.hits(xyz):
-            # The opposite wall already has the stricter decreasing-count /
-            # no-new-shell-facet guard in the swap routine. Existing crossings
-            # may need several successive swaps to disappear.
-            if j in adjacent or surfaces[j] in active_shell:
-                continue
-            if not set(proposed[i]).intersection(triangles[j]):
-                return False
-            if not _shared_contact_only(points, proposed[i], triangles[j]):
-                return False
-        return True
-
-    # Same OCC-parameter convexity, winding, sliver and no-new-crossing guards
-    # as fitted grids, now on the emitted boundary and on either wall.
+        return _proposal_guard(points, triangles, surfaces, physical, symmetry_axes,
+                               active_shell, adjacent, proposed)
     remaining = len(pairs)
+    after = pairs
     try:
         for _ in range(remaining):
             for roles in (groups, {'inner': groups['outer'], 'outer': groups['inner']}):
                 active_shell = set(roles['outer'])
                 repair_fitted_bore_facets(points, triangles, surfaces, roles,
-                                         index_factory=BoundaryIndex, proposed_guard=guard)
-            after = BoundaryIndex(points[triangles[outer_ids]]).hits(points[triangles[inner_ids]])
+                                         index_factory=CrossingIndex, proposed_guard=guard)
+            after = scan()
             if not after or len(after) >= remaining:
                 break
             remaining = len(after)
     except Exception as exc:
         triangles[:] = original
-        raise MesherError(
-            f'free-standing bore/shell boundary has {len(pairs)} facet '
-            'intersections and its CAD patches do not support safe local repair. '
-            'Change the requested mesh resolution or wall thickness.') from exc
+        raise MesherError(f'free-standing bore/shell boundary has {len(pairs)} prohibited '
+                          f'facet pairs and its CAD patches do not support safe local repair '
+                          f'({context}). {advice}') from exc
     if after:
+        # Locate the residual failure before restoring the original connectivity.
+        context, advice = _refusal_context(points, triangles, surfaces, inner_ids,
+                                          boundary_ids, after, groups, wall_mm, mesh_density)
         triangles[:] = original
+        gap = f'{clearance:.6g} mm' if np.isfinite(clearance) else 'joined CAD patches'
         raise MesherError(
             f'free-standing bore/shell tessellation has {len(after)} remaining '
-            f'facet intersections after safe local diagonal swaps '
-            f'({len(pairs)} before; CAD clearance {clearance:.6g} mm, '
-            f'wall thickness {wall_mm:.6g} mm). Change the requested mesh '
-            'resolution or wall thickness; no vertices or elements were added.')
+            f'prohibited facet pairs after safe local diagonal swaps '
+            f'({len(pairs)} before; CAD clearance {gap}; {context}). {advice} '
+            'No vertices or elements were added.')
     stats.update(pairs_after=0,
                  changed_facets=int(np.any(triangles != original, axis=1).sum()),
                  seconds=time.monotonic() - start)

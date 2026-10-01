@@ -368,6 +368,7 @@ def build_mesh_with_info(
                     if isinstance(geometry, PointGridHornGeometry)
                     and geometry.build_mode.value == 'freestanding' else None),
                 wall_thickness_mm=float(getattr(geometry, 'wall_thickness_mm', 0)),
+                shell_mesh_density=mesh_density,
             )
             limit = effective_triangle_limit(built, mesh_density)
             if limit is not None:
@@ -463,6 +464,7 @@ def _postprocess_mesh(
     infinite_baffle: bool = False,
     shell_surface_groups: dict[str, list[int]] | None = None,
     wall_thickness_mm: float = 0.0,
+    shell_mesh_density: MeshDensity | None = None,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -503,7 +505,7 @@ def _postprocess_mesh(
 
         shell_stats = validate_shell_facets(
             points, triangles, surfaces, phys, shell_surface_groups,
-            wall_thickness_mm, symmetry_snap_axes)
+            wall_thickness_mm, symmetry_snap_axes, mesh_density=shell_mesh_density)
     # Gmsh/OCC can emit an otherwise valid canonical surface with the whole
     # triangle set inward-wound, most visibly on non-monotonic freestanding
     # R-OSSE point grids. The mesher owns output orientation, so normalize its

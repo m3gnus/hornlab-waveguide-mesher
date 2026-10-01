@@ -254,22 +254,43 @@ wall sheets may remain separate edge-connected components when Gmsh gives
 their coincident throat rims different 1D discretisations; their semantic
 orientations remain deterministic in either case.
 
-Every free-standing solve boundary also requires nonintersecting bore and
-outer-shell facets. This check uses the emitted coordinates after symmetry
-snapping, welding and sliver removal, retaining the original CAD patch tags
-through those operations. Clean boundaries keep their exact connectivity.
-Intersecting boundaries may swap internal diagonals within one CAD patch;
-vertices, patch boundaries, physical groups and triangle counts stay fixed.
-Swaps must preserve winding, survive the output sliver threshold and introduce
-no new crossings. Neither geometry sampling nor the user's density changes.
+Every free-standing solve boundary requires the bore to avoid prohibited
+crossings or overlap with every emitted boundary component: the outer wall,
+mouth closure, rear return/disc and source cap. Validation uses emitted
+coordinates after symmetry snapping, welding and sliver removal, retaining
+CAD patch tags. Shared topological vertices/edges and coplanar point/edge
+contacts are allowed; positive-area coplanar overlap and crossings extending
+beyond a join are prohibited, even when faces share vertices. The conservative
+candidate scan is filtered before counting, CAD classification or repair.
 
-Failing boundaries are checked against the actual CAD patch separation. A
-clearance below one tenth of the nominal wall (or the weld tolerance) refuses
-with advice to change wall thickness or rollback. Otherwise, if guarded swaps
-cannot remove every crossing, the build refuses with the remaining count and
-advice to change the requested resolution or wall thickness. A failed build
-never replaces an existing solve file. These checks do not modify preview or
-STEP geometry; a nearly collapsed wall requires a design change.
+Clean boundaries keep exact connectivity and metadata. Intersecting boundaries
+may swap internal diagonals within one CAD patch; vertices, patch boundaries,
+physical groups and triangle counts stay fixed. Swaps must preserve winding,
+survive the output sliver threshold and introduce no new crossings against any
+emitted face, including neighboring faces with a shared vertex/edge. Physical
+group boundaries and symmetry-plane facets are protected. Neither geometry
+sampling nor the user's density changes.
+
+Failing boundaries are checked against actual CAD patch separation. Joined
+patches have zero global CAD distance by construction; that distance cannot
+classify a crossing away from the join, which remains subject to facet
+validation and proposal guards. For other implicated patches, clearance below
+one tenth of the nominal wall (or 0.005 mm) causes a CAD near-contact refusal.
+This names the patch/region, current requested throat/mouth/rear mm sizes and
+wall thickness, and suggests trying a smaller `wall_thickness_mm` then
+rechecking CAD clearance. The suggestion does not guarantee a valid design;
+mesh refinement cannot restore missing CAD clearance.
+
+If safe repair leaves crossings, the build refuses and restores connectivity.
+The message names the implicated region, its z range and boundary patches,
+reports the current requested mm sizes and wall thickness, and recommends a
+thicker wall or **finer (smaller mm)** resolution at that named region. Values
+are explicitly labelled suggestions requiring another validated build. For
+the unmorphed full ICW control (120 mm length, 110 mm mouth radius, 1 mm wall,
+4/26/15 mm throat/mouth/rear sizes), changing only `mouth_res_mm` to **8 mm**
+was tested successfully; that result is not a guarantee for other designs.
+An existing solve file is never replaced on refusal, and an absent output
+remains absent. These checks do not modify preview or STEP geometry.
 
 A surface that has to weld to a fitted patch must be authored from that
 patch's own curve, not merely from the same sample points. Gmsh welds these
