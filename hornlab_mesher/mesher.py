@@ -324,6 +324,11 @@ def build_mesh_with_info(
             else:
                 gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
+            if (getattr(acoustic_geometry, 'outer_clearance_points_mm', None) is not None
+                    and np.all(np.diff(acoustic_geometry.inner_points[..., 2], axis=1) >= -1e-6)):
+                from .facet_fit import repair_fitted_wall_mesh
+
+                repair_fitted_wall_mesh(built.mesh_surface_groups)
 
             with tempfile.NamedTemporaryFile(
                 prefix="hornlab-mesher-raw-", suffix=".msh", delete=False
