@@ -1,11 +1,10 @@
-"""Public built boundaries must follow the effective analytic morph outline."""
+"""Bound CAD mouth curves and solve nodes; coarse edges still chord corners."""
 from __future__ import annotations
 
-import hashlib
+import copy
 import json
 import subprocess
 import sys
-import re
 from pathlib import Path
 
 import numpy as np
@@ -38,8 +37,12 @@ def _outline_error(points, corner):
 
 @pytest.mark.parametrize('formula', ['OSSE', 'ICW'])
 @pytest.mark.parametrize('corner', [0., 10., 30., 60.], ids=['sharp', 'r10', 'r30', 'r60'])
-def test_default_built_mouth_follows_design(tmp_path, formula, corner):
-    """Check the surface between fit stations and the written solve boundary."""
+def test_default_step_mouth_curve_and_solve_nodes_follow_design(tmp_path, formula, corner):
+    """CAD/STEP mouth and solve nodes meet 0.6 mm sharp / 0.15 mm rounded.
+
+    This mouth-outline bound does not cover edges between solve nodes or
+    the whole wall. Coarse linear edges still chord across the corners.
+    """
     gmsh = pytest.importorskip('gmsh')
     import meshio
     from scipy.spatial import cKDTree
@@ -70,7 +73,8 @@ def test_default_built_mouth_follows_design(tmp_path, formula, corner):
         gmsh.finalize()
     path, _ = build_mesh_with_info(geometry, resolved.density, tmp_path / 'mouth.msh',
                                    scale_to_metres=False)
-    points = np.asarray(meshio.read(path).points)
+    mesh = meshio.read(path)
+    points = np.asarray(mesh.points)
     mouth = points[np.abs(points[:, 2] - z) < 1e-6]
     assert len(mouth)
     node_error = float(_outline_error(mouth, corner).max())
@@ -79,31 +83,61 @@ def test_default_built_mouth_follows_design(tmp_path, formula, corner):
     # for numeric evaluation and serialization, not additional design error.
     assert step_error <= bound, f'STEP mouth error {step_error:.6f} mm'
     assert node_error <= bound, f'solve mouth node error {node_error:.6f} mm'
+    if formula == 'OSSE' and corner in (0., 10.):
+        faces = mesh.cells_dict['triangle']
+        edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
+                                        faces[:, [2, 0]]]), axis=1)
+        edges, counts = np.unique(edges, axis=0, return_counts=True)
+        edges = edges[(counts == 1) & np.all(np.abs(points[edges, 2]-z) < 1e-6, axis=1)]
+        assert len(edges)
+        xyz = points[edges]
+        samples = xyz[:, :1] + (xyz[:, 1:] - xyz[:, :1]) * np.linspace(0, 1, 257)[None, :, None]
+        edge_error = float(_outline_error(samples.reshape(-1, 3), corner).max())
+        # Default OSSE emits ~5.14 mm sharp / ~6.17 mm R10 analytic-outline
+        # error (~4.32 / ~6.16 mm to the public fine-preview polyline).
+        # Pin the distinction, without treating node accuracy as an edge bound.
+        assert 4.3 < edge_error < 6.3, f'coarse mouth chord error {edge_error:.6f} mm'
+        assert edge_error > bound
 
 
-@pytest.mark.parametrize('formula', ['OSSE', 'ICW'])
-def test_disabled_morph_preserves_output_bytes(tmp_path, formula):
-    """Explicitly disabling the morph must match the original absent setting."""
-    configs = [_config(formula, 0., morph=False), _config(formula, 0., morph=False)]
-    configs[1]['morph'] = {'morphTarget': 0}
-    meshes, steps = [], []
+@pytest.mark.parametrize('formula', ['OSSE', 'R-OSSE', 'FREEFORM', 'ICW'])
+@pytest.mark.parametrize('quadrants', ['1234', '12', '14', '1'])
+@pytest.mark.parametrize('mouth', ['unmorphed', 'round'])
+def test_disabled_morph_and_round_mouth_preserve_main_output_bytes(tmp_path, formula, quadrants, mouth):
+    """Guard complete solve/normalized STEP bytes against frozen main a7888d7."""
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((root / 'tests/fixtures/morph_identity/baseline.json').read_text())
+    assert manifest['baseline_commit'] == 'a7888d701f0c4394b555e69236f844fe2560dc6b'
+    assert len(manifest['cases']) == 32
+    case = next(c for c in manifest['cases'] if c['id'] == f'{formula}-{quadrants}-{mouth}')
+    configs = [case['config']]
+    if mouth == 'unmorphed':
+        disabled = copy.deepcopy(case['config'])
+        disabled['morph'] = {'morphTarget': 0}
+        configs.append(disabled)
     for i, config in enumerate(configs):
-        resolved = resolve_geometry(config)
-        path, _ = build_mesh_with_info(resolved.geometry, resolved.density,
-                                       tmp_path / f'round-{i}.msh')
-        meshes.append(hashlib.sha256(Path(path).read_bytes()).hexdigest())
-        path = tmp_path / f'round-{i}.step'
-        # Fresh processes reset OCC's process-global product-name counter.
-        subprocess.run([sys.executable, '-c',
-                        'import json,sys; from hornlab_mesher.config_builder import resolve_geometry; '
-                        'from hornlab_mesher.cad import write_step; '
-                        'write_step(resolve_geometry(json.loads(sys.argv[1])).geometry,sys.argv[2])',
-                        json.dumps(config), str(path)], check=True)
-        # OCC inserts the wall clock in FILE_NAME; no geometric bytes may differ.
-        data = re.sub(rb"'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d'", b"'TIME'", path.read_bytes())
-        steps.append(hashlib.sha256(data).hexdigest())
-    assert meshes[0] == meshes[1]
-    assert steps[0] == steps[1]
+        dest = tmp_path / str(i)
+        # Fresh processes reset OCC counters and assert imports from this tree.
+        subprocess.run([sys.executable, str(root / 'tests/morph_identity_export.py'),
+                        str(root), json.dumps(config), str(dest)], cwd=root, check=True)
+        actual = json.loads((dest / 'hashes.json').read_text())
+        assert actual['mesh_sha256'] == case['mesh_sha256'], f'{case["id"]}: solve bytes changed'
+        assert actual['step_sha256'] == case['step_sha256'], f'{case["id"]}: STEP bytes changed'
+        assert actual['sector_step_refusal'] == case['sector_step_refusal']
+
+
+@pytest.mark.parametrize('revision', ['fix/morph-mouth-fidelity',
+                                    '4f13401a20e617bd57dbf85eb170bc935895d9ad'])
+def test_identity_capture_refuses_branch_or_nonbaseline_revision(tmp_path, revision):
+    """A working branch must never bless its own changed export bytes."""
+    root = Path(__file__).resolve().parents[1]
+    output = tmp_path / 'refused.json'
+    result = subprocess.run([sys.executable, str(root / 'scripts/capture_morph_identity.py'),
+                             '--revision', revision, '--output', str(output)],
+                            cwd=root, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'refusing regeneration from a branch or another revision' in result.stderr
+    assert not output.exists()
 
 
 @pytest.mark.parametrize('corner,quadrants,main_triangles', [
@@ -132,6 +166,22 @@ def test_nonconvergent_morph_names_fit_reason(monkeypatch):
     config['profile'].update(s1=.45, s2=.2)
     with pytest.raises(ConfigError, match='morphed mouth cubic fit.*outline tolerance.*limit'):
         resolve_geometry(config)
+
+
+def test_natural_station_cap_names_coarser_resolution_and_rounding_remedies():
+    """Sharp 320 x 240 OSSE at 1 mm naturally exceeds 1024 profiles."""
+    from hornlab_mesher.config_parser import ConfigError
+
+    config = _config('OSSE', 0.)
+    config['mesh'].update(throatResolution=1., mouthResolution=1., rearResolution=1.)
+    with pytest.raises(ConfigError, match=r'needs 1084 profiles.*limit is 1024.*coarsen.*mm.*round'):
+        resolve_geometry(config)
+    # Both remedies from the confirmation review work without lowering caps.
+    config['mesh'].update(throatResolution=2., mouthResolution=2., rearResolution=2.)
+    assert resolve_geometry(config).geometry.inner_points.shape[0] <= 1024
+    config['mesh'].update(throatResolution=1., mouthResolution=1., rearResolution=1.)
+    config['morph']['morphCorner'] = 30.
+    assert resolve_geometry(config).geometry.inner_points.shape[0] <= 1024
 
 
 @pytest.mark.parametrize('case', ['approx-sharp', 'approx-rounded', 'circle', 'circle-rectangle'])

@@ -365,6 +365,17 @@ Three values are accepted; anything else raises `ConfigError`.
   sampled grid. The solve is separable and exact to machine precision, adds no
   control points, and therefore leaves the triangle count essentially unchanged.
 
+Complete scalar rectangular morphs additionally refine the mouth fit stations.
+The CAD/STEP mouth and solve-mesh nodes are held to **0.6 mm sharp / 0.15 mm
+rounded** against the effective analytic outline using dense sampled curve
+checks. Solve-mesh edges between nodes still chord corners at coarse resolution
+(for example **4.3–6.2 mm** to the fine preview mouth at default resolution on
+sharp/R10 OSSE). User resolution governs those linear edges; the mouth bound
+does not cover emitted edges, whole walls or outer shells. Circular targets,
+FREEFORM, expressive/incomplete morphs and approximate fits are exempt. If
+refinement exceeds 1024 profiles, coarsen throat/mouth resolution by increasing
+the mm values or round the corners.
+
 `auto` became the default on the evidence below. Measured against a dense
 analytic surface over twelve ATH reference configs, `interpolate` moves the
 median `rms x triangles` -- the equal-cost accuracy comparison, since deviation

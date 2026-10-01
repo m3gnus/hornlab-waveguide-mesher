@@ -331,6 +331,14 @@ box bounds, depth clamp and whole-mm rounding as the mesh/CAD builder.
 including repaired outer-wall controls. They are design sizes, not measurements
 of fitted CAD surfaces, exported STEP solids or meshes. Exported surfaces on
 morphed mouths can differ from the design by the surface-fitting tolerance.
+For supported complete scalar rectangle morphs with interpolating fits,
+the CAD/STEP mouth and the solve-mesh nodes are held to **0.6 mm sharp /
+0.15 mm rounded** against the effective analytic mouth outline, with dense
+sampled curve checks. Solve-mesh edges between nodes still chord the corner
+at coarse resolution (for example, **4.3–6.2 mm** to the fine preview mouth
+on default-resolution sharp/R10 OSSE). This is a mouth-outline bound, not
+a bound on emitted edges, whole walls or outer shells. Circular targets,
+FREEFORM, expressive/incomplete morphs and approximate fits are exempt.
 See [surface fitting](config-schema.md#meshsurface_fit) for the fitting modes,
 measured errors and limitations. The acoustic sampling criteria bound angular
 chords to twice the local mesh target, smooth angular sagitta to 5% of it, and

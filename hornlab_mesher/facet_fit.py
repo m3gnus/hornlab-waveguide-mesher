@@ -56,6 +56,9 @@ def repair_fitted_bore_facets(points, triangles, surface_tags, groups):
     inner = triangles[inner_ids].copy()
     shell = _FacetIndex(points[triangles[outer_ids]])
     pairs = shell.hits(points[inner])
+    # SAT includes touching contacts: a swap can occur with zero strict
+    # crossings. This is harmless under the same patch/vertex/boundary guards;
+    # connectivity stays unchanged when there are no detected contacts.
     if not pairs:
         return
     edges = {}

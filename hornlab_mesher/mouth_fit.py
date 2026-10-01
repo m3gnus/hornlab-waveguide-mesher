@@ -13,7 +13,9 @@ from .builders.point_grid_freestanding import _restored_outer_throat_points
 from .config_parser import ConfigError
 from . import profile_sampling as sampling
 
-# These are geometry tolerances in built millimetres, not element sizes.
+# CAD/STEP mouth curves and solve nodes use these built-mm tolerances.
+# Linear solve edges between nodes still chord corners at coarse resolution;
+# these are not whole-wall or emitted-edge bounds and do not set element sizes.
 _ROUNDED_TOLERANCE_MM = 0.15
 _SHARP_TOLERANCE_MM = 0.6
 _ANGLE_KEY = '_acoustic_mouth_angles'
@@ -79,8 +81,8 @@ def refine_mouth_grid(params: Mapping[str, Any], grid: dict[str, Any]):
         if len(selected) > _MAX_PROFILES:
             raise ConfigError(
                 f'rectangular morphed mouth cubic fit needs {len(selected)} profiles; '
-                f'the station limit is {_MAX_PROFILES}; use a rounded mouth corner '
-                'or reduce the morph transition')
+                f'the station limit is {_MAX_PROFILES}; coarsen throat/mouth '
+                'resolution (increase their mm values) or round the mouth corners')
         candidate = sampling.build_point_grid(working)
         points = np.asarray(candidate['inner_points']).reshape(
             candidate['grid_n_phi'], candidate['grid_n_length']+1, 3)

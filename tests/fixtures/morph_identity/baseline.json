@@ -1,0 +1,1175 @@
+{
+  "baseline_commit": "a7888d701f0c4394b555e69236f844fe2560dc6b",
+  "solve_units": "mm",
+  "step_domain": "full model rebuilt for reduced solve configs; sector refusal captured",
+  "step_normalization": "OCC FILE_NAME timestamp only",
+  "runtime": {
+    "python": "3.13.1",
+    "gmsh": "4.15.2",
+    "meshio": "5.3.5",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1"
+  },
+  "cases": [
+    {
+      "id": "OSSE-1234-unmorphed",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "b03986bf318bd9c0c787a3fd02ca1926aded6ab570f68784a34e84ca020a0b01",
+      "step_sha256": "b60132a7e355d1d1206caebace4b892b4d21c9ead93fbd6966634052f80db7c5",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "OSSE-1234-round",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "836cbe2181a3bd35597056fdff2f409ca49af17fd7da68a289f277594e5b03c6",
+      "step_sha256": "97c74ad68faa1c7a9344d1bc7864130a84252537b665b68e1bafad272e4e590d",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "OSSE-12-unmorphed",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "8bd433edf513ea8befc164d9918f07b6a894dc8142e9f3b5d124342a9262e05e",
+      "step_sha256": "b60132a7e355d1d1206caebace4b892b4d21c9ead93fbd6966634052f80db7c5",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "OSSE-12-round",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "8b838df1b3f401a24e496b07970b0c8682a0562efabc141b37f9a0e92adeaeed",
+      "step_sha256": "97c74ad68faa1c7a9344d1bc7864130a84252537b665b68e1bafad272e4e590d",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "OSSE-14-unmorphed",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "3e2907921ce5eab2785d8a1a587b540ebf170b7e12dfc29378a1f58df23fdb63",
+      "step_sha256": "b60132a7e355d1d1206caebace4b892b4d21c9ead93fbd6966634052f80db7c5",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "OSSE-14-round",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "f3065ede8cbbf1b9ae35f558a5a99eed19d803008f45e05fb1af7564fcb5acbf",
+      "step_sha256": "97c74ad68faa1c7a9344d1bc7864130a84252537b665b68e1bafad272e4e590d",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "OSSE-1-unmorphed",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "9df6bf5d850f73eaaa6ce19fb24d01eb43af8ecc9e5ba40222b92a32149d42a3",
+      "step_sha256": "b60132a7e355d1d1206caebace4b892b4d21c9ead93fbd6966634052f80db7c5",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "OSSE-1-round",
+      "config": {
+        "formula": "OSSE",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 15.5,
+          "a": 55,
+          "k": 1,
+          "q": 0.995
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "377339cfaa5054f7f6e9d00424e93bd075a0a9e2e5835c0d79434bb2be3842ba",
+      "step_sha256": "97c74ad68faa1c7a9344d1bc7864130a84252537b665b68e1bafad272e4e590d",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "R-OSSE-1234-unmorphed",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "6212d9b446280203054189013be705e5123c61cac7b1876c42a06eec175032aa",
+      "step_sha256": "d98272e862202e3a4eb2bfcaf4598157c4ee02a488553c503a0a6d8dc6c87010",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "R-OSSE-1234-round",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "5906f86d7ecbb3f4c2c5500e1db3339ebb76418f82e7447de39d243c8b93b226",
+      "step_sha256": "69b1f0108a93e7e46261ef9facdb35b85ca258d8e6c495e4fccfcadc7bccca8a",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "R-OSSE-12-unmorphed",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "d281a1cee45159174c08e79e39be125ab9d6ae84d418acc4731497fd53b26b39",
+      "step_sha256": "d98272e862202e3a4eb2bfcaf4598157c4ee02a488553c503a0a6d8dc6c87010",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "R-OSSE-12-round",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "f80cf11ecb30155c9d7a47a13634462ec97b71f6a68329100526794100eed58f",
+      "step_sha256": "69b1f0108a93e7e46261ef9facdb35b85ca258d8e6c495e4fccfcadc7bccca8a",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "R-OSSE-14-unmorphed",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "995b25050e72e1c11eb36a681299712cf7f572611f63aaefe7dab5c35a689767",
+      "step_sha256": "d98272e862202e3a4eb2bfcaf4598157c4ee02a488553c503a0a6d8dc6c87010",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "R-OSSE-14-round",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "cfffa7e299cf5f65435095d052548e363f57f168a8699e9c055f0dfc0de9711d",
+      "step_sha256": "69b1f0108a93e7e46261ef9facdb35b85ca258d8e6c495e4fccfcadc7bccca8a",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "R-OSSE-1-unmorphed",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "98037a10e4e3a72caeaeb1ee5fb12b2eb75bf510bb356ea51e2f70e7ac45ed74",
+      "step_sha256": "d98272e862202e3a4eb2bfcaf4598157c4ee02a488553c503a0a6d8dc6c87010",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "R-OSSE-1-round",
+      "config": {
+        "formula": "R-OSSE",
+        "mode": "bare",
+        "profile": {
+          "R": 110,
+          "r0": 12.7,
+          "a0": 12.7,
+          "a": 40,
+          "k": 1,
+          "r": 0.37,
+          "m": 1.2,
+          "b": 0,
+          "q": 0.995,
+          "tmax": 1
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "4d5f02c8340a75dd4cfc3a28b0a1d75a5a1ccf22a97d7bb6f89db325fd23f1cd",
+      "step_sha256": "69b1f0108a93e7e46261ef9facdb35b85ca258d8e6c495e4fccfcadc7bccca8a",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "FREEFORM-1234-unmorphed",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "aea82f4d1ff2c2486a2757e1520979f91a82e1b85478872338119af54ea99deb",
+      "step_sha256": "09d42fa932a0f38b9ed0cb469011198b675592bae69093ea74e3824a4e72d3a0",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "FREEFORM-1234-round",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "aa3a82e1f535fdcd60d2cc99d9f3ab724368fca82672a5fa64c686f1ca63aafb",
+      "step_sha256": "539056beaf8c8046af727f4d053361317c69f9f8d96057a81fafab042abbe32b",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "FREEFORM-12-unmorphed",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "771a1c3f3d00f26d48d34412f0fcae6972a0b888ad1f0c1304a4149fb43f3001",
+      "step_sha256": "09d42fa932a0f38b9ed0cb469011198b675592bae69093ea74e3824a4e72d3a0",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "FREEFORM-12-round",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "b6c5eecba43f46c919480acb9cb8728b3ac157c5309bc58f492b3b4aaa796f5a",
+      "step_sha256": "539056beaf8c8046af727f4d053361317c69f9f8d96057a81fafab042abbe32b",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "FREEFORM-14-unmorphed",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "6ba97874df2a8171d2c234581901e9cd03ea5196dd9d875bb5b66b4e8b9b9a9a",
+      "step_sha256": "09d42fa932a0f38b9ed0cb469011198b675592bae69093ea74e3824a4e72d3a0",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "FREEFORM-14-round",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "722455bf0d6547fb5c3993eec0d52f49993e23c7d7e6a7afd30c8bfd4ca81368",
+      "step_sha256": "539056beaf8c8046af727f4d053361317c69f9f8d96057a81fafab042abbe32b",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "FREEFORM-1-unmorphed",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "4ee9dc64d891d76bbb25848ca2e89e360ac0d695ba062968690dec8127cc24fb",
+      "step_sha256": "09d42fa932a0f38b9ed0cb469011198b675592bae69093ea74e3824a4e72d3a0",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "FREEFORM-1-round",
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                40
+              ],
+              [
+                80,
+                75
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 45
+          },
+          "profileV": {
+            "points": [
+              [
+                0,
+                12.7
+              ],
+              [
+                40,
+                35
+              ],
+              [
+                80,
+                60
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 35
+          }
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "b31d81c1ed34da808bac870f8d3dc9b3da5fd65950ff2e762dc911d2187e0cf7",
+      "step_sha256": "539056beaf8c8046af727f4d053361317c69f9f8d96057a81fafab042abbe32b",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "ICW-1234-unmorphed",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "f05575b1e7001c71128d4a312be7be036a8c72cd84fed9cac99b357cc91b2865",
+      "step_sha256": "b19f0bd31e77650ecd1e9f32efa06f6087c3d45e039f9c940f2e6fdecd21189d",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "ICW-1234-round",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1234",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "7575db27107a3ba4cb7c0873cc64f99fa010ec5b31c2767a744fca91a36935c1",
+      "step_sha256": "2fcb1596610b7aa13651b607cebe0c0372be3b71c6a5a9d3b2eaaffb9747c532",
+      "sector_step_refusal": null
+    },
+    {
+      "id": "ICW-12-unmorphed",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "2e094da8608c7eaf745756d48de9b96bbb34f04d6ef8656a2ecc23e2142cb188",
+      "step_sha256": "b19f0bd31e77650ecd1e9f32efa06f6087c3d45e039f9c940f2e6fdecd21189d",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "ICW-12-round",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "12",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "9ddf846ba3a2425f335346b8c2cbb0afe9a9151982bce143073eafe6cfb458f7",
+      "step_sha256": "2fcb1596610b7aa13651b607cebe0c0372be3b71c6a5a9d3b2eaaffb9747c532",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "ICW-14-unmorphed",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "4d2e88abb4d6e700c3b29783232885f05bda058340dfd9331e58c348851ef553",
+      "step_sha256": "b19f0bd31e77650ecd1e9f32efa06f6087c3d45e039f9c940f2e6fdecd21189d",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "ICW-14-round",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "14",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "88322ad89c47059be226131b44f04e82c6e141596ce5912e59752f1a29b9b9fb",
+      "step_sha256": "2fcb1596610b7aa13651b607cebe0c0372be3b71c6a5a9d3b2eaaffb9747c532",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "ICW-1-unmorphed",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        }
+      },
+      "mesh_sha256": "4ccdae4dc6c3ea00235495f9690b07c5d9d2a819a9971df0b52e4bb63fa5835e",
+      "step_sha256": "b19f0bd31e77650ecd1e9f32efa06f6087c3d45e039f9c940f2e6fdecd21189d",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    {
+      "id": "ICW-1-round",
+      "config": {
+        "formula": "ICW",
+        "mode": "bare",
+        "profile": {
+          "L": 120,
+          "r0": 12.7,
+          "a0": 18,
+          "R": 110,
+          "termination": "flat_baffle"
+        },
+        "source": {
+          "source_shape": 0
+        },
+        "mesh": {
+          "quadrants": "1",
+          "allow_large_mesh": true
+        },
+        "morph": {
+          "morphTarget": 2,
+          "morphWidth": 360,
+          "morphHeight": 360,
+          "morphAllowShrinkage": 1
+        }
+      },
+      "mesh_sha256": "a38dae4acf4e757c6123d4f6635826895747087132f149a5fbf09343a3c8fe0a",
+      "step_sha256": "2fcb1596610b7aa13651b607cebe0c0372be3b71c6a5a9d3b2eaaffb9747c532",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    }
+  ]
+}
