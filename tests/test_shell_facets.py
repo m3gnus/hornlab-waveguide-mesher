@@ -198,7 +198,8 @@ def test_prohibited_pairs_survive_contact_filter(second):
     assert CrossingIndex(b).hits(a)
 
 
-@pytest.mark.parametrize('component', ['mouth', 'rear', 'rear_cap', 'throat_disc', 'unlisted'])
+@pytest.mark.parametrize('component', ['mouth', 'mouth-bore1', 'mouth-bore2', 'mouth-bore4',
+                                        'rear', 'rear_cap', 'throat_disc', 'unlisted'])
 def test_real_emitted_joins_are_clean_but_injected_component_crossing_refuses(
         tmp_path, monkeypatch, component):
     import hornlab_mesher.shell_facets as sf
@@ -218,6 +219,10 @@ def test_real_emitted_joins_are_clean_but_injected_component_crossing_refuses(
         np.testing.assert_array_equal(t, before)
         ii = np.flatnonzero(np.isin(s, groups['inner']))
         xyz = p[t[ii]]
+        if component.startswith('mouth-bore'):
+            # Fix the bore quadrant: the global argmin can choose a different
+            # equally close axial facet on another platform/dependency build.
+            xyz = p[t[ii[s[ii] == groups['inner'][int(component[-1])-1]]]]
         a = xyz[np.argmin(np.abs(xyz.mean(1)[:,2]-60))]
         center = a.mean(0)
         normal = np.cross(a[1]-a[0], a[2]-a[0])
@@ -228,7 +233,7 @@ def test_real_emitted_joins_are_clean_but_injected_component_crossing_refuses(
         mi = np.flatnonzero(np.isin(s, groups['mouth']))[0]
         bad, tags, roles = t.copy(), s.copy(), dict(groups)
         bad[mi] = np.arange(len(p), len(p)+3)
-        if component != 'mouth':
+        if not component.startswith('mouth'):
             tags[mi] = 90000
             roles = {k:[tag for tag in v if tag != s[mi]] for k,v in groups.items()}
             if component != 'unlisted':
@@ -268,3 +273,48 @@ def test_default_thin_icw_refusal_names_region_sizes_and_finer_remedy(tmp_path):
     _, info = build_mesh_with_info(r.geometry, r.density, path)
     assert path.exists() and info.n_triangles > 0
     assert 'shellFacetValidation' not in info.metadata
+
+
+@pytest.mark.parametrize('gap,trim,reason', [
+    (2., False, 'bore/shell tessellation'),
+    (.02, False, 'CAD bore and shell'),
+    (.02, True, 'bore/shell tessellation'),
+])
+def test_global_zero_requires_local_interior_cad_evidence(monkeypatch, gap, trim, reason):
+    """Global zero and coincident edge tags cannot choose the contact remedy."""
+    import gmsh
+    import hornlab_mesher.shell_facets as sf
+    p = np.array([[0,0,0],[1,0,0],[0,1,0],
+                  [.25,.25,-1],[.25,.25,1],[1,1,0]], float)
+    t = np.array([[0,1,2],[3,4,5]])
+    before = t.copy()
+    # Deliberately give both patches the same boundary tag. Local interior
+    # contact must still be detected, rather than skipping the entire pair.
+    monkeypatch.setattr(gmsh.model, 'getBoundary', lambda *a, **kw: [(1,30)])
+    monkeypatch.setattr(gmsh.model.occ, 'getDistance', lambda *a: (0.,)*7)
+    queries = []
+    def closest(x, y, z, entities, n=1):
+        queries.append((x,y,z))
+        if entities[0][0] == 1:
+            return entities, [0. if trim else 10.], [x,y,z]
+        offset = gap/2 if entities[0][1] == 10 else -gap/2
+        return entities, [abs(offset)], [x,y,z+offset]
+    monkeypatch.setattr(gmsh.model.occ, 'getClosestEntities', closest)
+    monkeypatch.setattr(sf, 'repair_fitted_bore_facets', lambda *a, **kw: None)
+    with pytest.raises(MesherError, match=reason):
+        sf.validate_shell_facets(p,t,np.array([10,20]),np.ones(2,int),
+                                 {'inner':[10], 'outer':[20]},1)
+    assert queries
+    # Every queried witness is on the intersection, rather than a centroid
+    # or the global OCC extremum at a distant joined edge.
+    assert queries[0][2] == pytest.approx(0)
+    assert .25 <= queries[0][0] <= .5 and queries[0][0] == pytest.approx(queries[0][1])
+    np.testing.assert_array_equal(t, before)
+
+
+def test_coplanar_crossing_witness_lies_in_positive_overlap():
+    from hornlab_mesher.shell_facets import _crossing_witnesses
+    a = np.array([[0,0,0],[1,0,0],[0,1,0]], float)
+    b = np.array([[.1,.1,0],[.2,.1,0],[.1,.2,0]], float)
+    witness, = _crossing_witnesses(a,b)
+    np.testing.assert_allclose(witness,b.mean(0))

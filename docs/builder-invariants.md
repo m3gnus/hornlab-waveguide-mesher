@@ -274,8 +274,15 @@ sampling nor the user's density changes.
 Failing boundaries are checked against actual CAD patch separation. Joined
 patches have zero global CAD distance by construction; that distance cannot
 classify a crossing away from the join, which remains subject to facet
-validation and proposal guards. For other implicated patches, clearance below
-one tenth of the nominal wall (or 0.005 mm) causes a CAD near-contact refusal.
+validation and proposal guards, even if OCC represents coincident edges with
+different tags. A small global distance must be confirmed at an actual facet
+intersection witness using distances to the trimmed CAD patches. Both patches
+must approach that witness within one tenth of the nominal wall (or 0.005 mm),
+with evidence outside a geometrically coincident trim-boundary or shared-vertex
+neighbourhood. Endpoint coordinates are compared even when CAD tags differ.
+Proximity to two disjoint trims still counts as CAD approach; a joined edge
+alone selects tessellation advice. Every prohibited pair still repairs
+or refuses. Confirmed local approach causes a CAD near-contact refusal.
 This names the patch/region, current requested throat/mouth/rear mm sizes and
 wall thickness, and suggests trying a smaller `wall_thickness_mm` then
 rechecking CAD clearance. The suggestion does not guarantee a valid design;

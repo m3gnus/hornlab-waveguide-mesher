@@ -121,3 +121,74 @@ def test_occ_neighbor_contacts_and_overlap_on_proposals(gmsh_session, neighbor, 
     else:
         assert not strict_pairs(a[None],b[None])
     assert sf._proposal_guard(p,t,s,np.ones(2,int),(),set(),np.array([0]),t[:1]) == allowed
+
+
+@pytest.mark.parametrize('near', [False, True])
+def test_occ_duplicate_join_edges_require_local_crossing_clearance(gmsh_session, monkeypatch, near):
+    """Distinct CAD edge tags describe the same join; global zero is real."""
+    gmsh = gmsh_session
+    occ = gmsh.model.occ
+    bore = occ.addRectangle(0,0,0,10,10,tag=10)
+    # Build an independent rectangle with its own coincident edge at x=10.
+    # Far: a vertical mouth closure. Near: a tapered wall almost touching
+    # the bore interior, which must retain CAD-contact advice.
+    vertices = ([[10,0,0],[10,10,0],[10,10,10],[10,0,10]] if not near else
+                [[10,0,0],[10,10,0],[0,10,.05],[0,0,.05]])
+    ids = [occ.addPoint(*v) for v in vertices]
+    edges = [occ.addLine(ids[k],ids[(k+1)%4]) for k in range(4)]
+    boundary = occ.addPlaneSurface([occ.addCurveLoop(edges)],tag=20)
+    occ.synchronize()
+    ends = [set(gmsh.model.getBoundary([(2,tag)],oriented=False)) for tag in (bore,boundary)]
+    assert not ends[0].intersection(ends[1])
+    assert occ.getDistance(2,bore,2,boundary)[0] < 1e-7
+    p = np.array([[1,1,0],[4,1,0],[1,4,0],
+                  [2,2,-1],[2,2,1],[3,3,0]],float)
+    t = np.array([[0,1,2],[3,4,5]])
+    assert strict_pairs(p[t[:1]],p[t[1:]])
+    old = t.copy()
+    monkeypatch.setattr(sf,'repair_fitted_bore_facets',lambda *a,**kw: None)
+    reason = 'CAD bore and shell' if near else 'bore/shell tessellation'
+    with pytest.raises(MesherError,match=reason):
+        sf.validate_shell_facets(p,t,np.array([10,20]),np.ones(2,int),
+                                 {'inner':[10],'outer':[20]},1)
+    np.testing.assert_array_equal(t,old)
+
+
+def test_occ_near_disjoint_trim_edges_still_select_cad_contact(gmsh_session, monkeypatch):
+    occ = gmsh_session.model.occ
+    occ.addRectangle(0,0,0,10,10,tag=10)
+    occ.addRectangle(0,0,.02,10,10,tag=20)
+    occ.synchronize()
+    p = np.array([[0,4,0],[.1,4,0],[0,6,0],
+                  [.02,4.5,-1],[.02,4.5,1],[.08,5.5,0]],float)
+    t = np.array([[0,1,2],[3,4,5]])
+    assert strict_pairs(p[t[:1]],p[t[1:]])
+    old = t.copy()
+    monkeypatch.setattr(sf,'repair_fitted_bore_facets',lambda *a,**kw: None)
+    with pytest.raises(MesherError,match='CAD bore and shell'):
+        sf.validate_shell_facets(p,t,np.array([10,20]),np.ones(2,int),
+                                 {'inner':[10],'outer':[20]},1)
+    np.testing.assert_array_equal(t,old)
+
+
+def test_occ_duplicate_vertex_join_neighbourhood_is_tessellation(gmsh_session, monkeypatch):
+    """Diverging trims still have an allowed neighbourhood of their shared endpoint."""
+    gmsh = gmsh_session
+    occ = gmsh.model.occ
+    occ.addRectangle(0,0,0,10,10,tag=10)
+    occ.addRectangle(-10,-10,0,10,10,tag=20)
+    occ.synchronize()
+    ends = [set(gmsh.model.getBoundary([(2,tag)],oriented=False,recursive=True))
+            for tag in (10,20)]
+    assert not ends[0].intersection(ends[1])
+    assert occ.getDistance(2,10,2,20)[0] < 1e-7
+    p = np.array([[0,0,0],[.08,0,0],[0,.08,0],
+                  [.02,.02,-1],[.02,.02,1],[.06,.02,0]],float)
+    t = np.array([[0,1,2],[3,4,5]])
+    assert strict_pairs(p[t[:1]],p[t[1:]])
+    old = t.copy()
+    monkeypatch.setattr(sf,'repair_fitted_bore_facets',lambda *a,**kw: None)
+    with pytest.raises(MesherError,match='bore/shell tessellation'):
+        sf.validate_shell_facets(p,t,np.array([10,20]),np.ones(2,int),
+                                 {'inner':[10],'outer':[20]},1)
+    np.testing.assert_array_equal(t,old)

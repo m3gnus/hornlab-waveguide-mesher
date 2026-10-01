@@ -198,6 +198,129 @@ def _refusal_context(points, triangles, surfaces, inner_ids, boundary_ids,
     return context, advice
 
 
+def _crossing_witnesses(a, b):
+    """Sample the actual intersection, not the faces' unrelated centroids."""
+    normals = [np.cross(f[1]-f[0], f[2]-f[0]) for f in (a, b)]
+    lengths = [np.linalg.norm(n) for n in normals]
+    if min(lengths) == 0:
+        return []
+    na, nb = [n/length for n, length in zip(normals, lengths)]
+    tolerance = 64*np.finfo(float).eps*max(np.abs(a).max(), np.abs(b).max(), 1)
+    if np.linalg.norm(np.cross(na, nb)) <= 1e-12:
+        if np.max(np.abs((a-b[0]) @ nb)) > tolerance:
+            return []
+        # Clip the coplanar triangle by all three half-planes of the other.
+        polygon = list(a)
+        for start, end in zip(b, np.roll(b, -1, axis=0)):
+            inward = np.cross(nb, end-start)
+            inward /= np.linalg.norm(inward)
+            clipped = []
+            for x, y in zip(polygon, polygon[1:]+polygon[:1]):
+                dx, dy = (x-start) @ inward, (y-start) @ inward
+                if dx >= -tolerance:
+                    clipped.append(x)
+                if (dx < -tolerance) != (dy < -tolerance):
+                    clipped.append(x + dx/(dx-dy)*(y-x))
+            polygon = clipped
+            if not polygon:
+                return []
+        return [np.mean(polygon, axis=0)]
+    hits = []
+    for face, other, normal in ((a, b, nb), (b, a, na)):
+        def inside(x):
+            uv = np.linalg.lstsq((other[1:]-other[0]).T, x-other[0], rcond=None)[0]
+            return min(uv[0], uv[1], 1-uv.sum()) >= -1e-12
+        for x, y in zip(face, np.roll(face, -1, axis=0)):
+            dx, dy = (x-other[0]) @ normal, (y-other[0]) @ normal
+            if abs(dx) <= tolerance and inside(x):
+                hits.append(x)
+            if dx*dy < 0:
+                hit = x + dx/(dx-dy)*(y-x)
+                if inside(hit):
+                    hits.append(hit)
+    if not hits:
+        return []
+    direction = np.cross(na, nb)
+    ordered = sorted(hits, key=lambda x: x @ direction)
+    lo, hi = ordered[0], ordered[-1]
+    return [lo + fraction*(hi-lo) for fraction in (.5, .25, .75)]
+
+
+def _local_cad_clearance(bore, boundary, witnesses, threshold):
+    """Confirm near-contact at a facet crossing on trimmed OCC patches.
+
+    Global extrema can occur at a remote legitimate join, with shared or
+    duplicated CAD edge tags. Point-to-shape queries stay at the witness and
+    respect trimming (unlike orthogonal surface projection). Both patches
+    must be within the contact threshold of the witness. Exclude the trim
+    neighbourhood of coincident trims so a joined edge cannot supply the remedy.
+    This only selects advice: every prohibited pair still repairs or refuses.
+    """
+    import gmsh
+
+    ends = [gmsh.model.getBoundary([(2, tag)], oriented=False)
+            for tag in (bore, boundary)]
+    clearance = float('inf')
+    join_vertices = None
+    for witness in witnesses:
+        distances, closest = [], []
+        for tag in (bore, boundary):
+            entities, values, coords = gmsh.model.occ.getClosestEntities(
+                *witness, [(2, tag)])
+            if (entities != [(2, tag)] or len(values) != 1 or len(coords) != 3
+                    or not np.all(np.isfinite([*values, *coords])) or values[0] < 0):
+                raise ValueError('invalid local CAD distance')
+            xyz = np.asarray(coords)
+            # Check the returned location too: a remote extremum cannot
+            # become local evidence even if an API reports zero distance.
+            distances.append(max(float(values[0]), np.linalg.norm(xyz-witness)))
+            closest.append(xyz)
+        gap = max(sum(distances), np.linalg.norm(closest[0]-closest[1]))
+        if gap >= threshold:
+            continue
+        # Check geometric coincidence as well as proximity: separate CAD
+        # tags may describe a join, but two merely close trim edges can be
+        # genuine missing clearance and must retain CAD-contact advice.
+        on_trim, trim_points = [], []
+        for xyz, edges in zip(closest, ends):
+            if not edges:
+                on_trim.append(False)
+                trim_points.append(None)
+                continue
+            _, values, coords = gmsh.model.occ.getClosestEntities(*xyz, edges)
+            if (len(values) != 1 or len(coords) != 3
+                    or not np.all(np.isfinite([*values, *coords])) or values[0] < 0):
+                raise ValueError('invalid CAD trim distance')
+            on_trim.append(values[0] <= threshold)
+            trim_points.append(coords)
+        joined = False
+        if all(on_trim):
+            joined = True
+            for xyz, opposite_edges in zip(trim_points, reversed(ends)):
+                _, values, _ = gmsh.model.occ.getClosestEntities(*xyz, opposite_edges)
+                if len(values) != 1 or not np.isfinite(values[0]) or values[0] < 0:
+                    raise ValueError('invalid CAD join distance')
+                joined &= values[0] <= 1e-7
+            if not joined:
+                # Trims can diverge from a common endpoint. Their nearest
+                # points need not coincide even inside that join's neighbourhood.
+                # Compare coordinates, since OCC can give the endpoint distinct
+                # tags on the two patches (as at a quadrant mouth corner).
+                if join_vertices is None:
+                    vertices = []
+                    for tag in (bore, boundary):
+                        vertices.append([gmsh.model.getValue(0, vertex, [])
+                            for dim, vertex in gmsh.model.getBoundary(
+                                [(2, tag)], oriented=False, recursive=True) if dim == 0])
+                    join_vertices = [np.asarray(a) for a in vertices[0]
+                        if any(np.linalg.norm(np.asarray(a)-b) <= 1e-7 for b in vertices[1])]
+                joined = any(np.linalg.norm(witness-vertex) <= threshold
+                             for vertex in join_vertices)
+        if not joined:
+            return gap
+    return clearance
+
+
 def validate_shell_facets(points, triangles, surfaces, physical, groups,
                           wall_mm, symmetry_axes=(), *, mesh_density=None):
     """Inspect all final mm boundary components; repair or refuse publication.
@@ -227,30 +350,33 @@ def validate_shell_facets(points, triangles, surfaces, physical, groups,
     patch_pairs = sorted({(int(surfaces[inner_ids[i]]),
                            int(surfaces[boundary_ids[j]])) for i, j in pairs})
     clearance = float('inf')
+    local_clearance = float('inf')
+    threshold = max(0.005, 0.1 * wall_mm)
     for bore, boundary in patch_pairs:
         try:
-            # Joined CAD patches have zero *global* distance by construction.
-            # It cannot classify a prohibited crossing away from their join.
-            # Keep those pairs in all facet scans/guards, but skip this CAD
-            # near-contact shortcut when the patches share a CAD boundary.
-            ends = [set(gmsh.model.getBoundary([(2, tag)], oriented=False))
-                    | set(gmsh.model.getBoundary([(2, tag)], oriented=False, recursive=True))
-                    for tag in (bore, boundary)]
-            if ends[0].intersection(ends[1]):
-                continue
             distance = gmsh.model.occ.getDistance(2, bore, 2, boundary)[0]
             if not np.isfinite(distance) or distance < 0:
                 raise ValueError('invalid CAD distance')
+            # A positive global lower bound rules out CAD contact. A small
+            # global value proves nothing about the prohibited facet location.
+            if distance < threshold:
+                witnesses = []
+                for i, j in pairs:
+                    if (surfaces[inner_ids[i]], surfaces[boundary_ids[j]]) == (bore, boundary):
+                        witnesses.extend(_crossing_witnesses(
+                            points[triangles[inner_ids[i]]], points[triangles[boundary_ids[j]]]))
+                local_clearance = min(local_clearance, _local_cad_clearance(
+                    bore, boundary, witnesses, threshold))
+            clearance = min(clearance, distance)
         except Exception as exc:
             raise MesherError(f'free-standing bore/shell facets intersect ({context}); '
                               f'CAD clearance measurement failed. {advice}') from exc
-        clearance = min(clearance, distance)
     if np.isfinite(clearance):
         stats['cad_clearance_mm'] = clearance
-    if clearance < max(0.005, 0.1 * wall_mm):
+    if local_clearance < threshold:
         raise MesherError(
             f'free-standing CAD bore and shell nearly touch or cross '
-            f'(clearance {clearance:.6g} mm; {len(pairs)} prohibited emitted facet pairs; '
+            f'(local clearance {local_clearance:.6g} mm at crossing; {len(pairs)} prohibited emitted facet pairs; '
             f'{context}). Try reducing wall_thickness_mm '
             f'(suggested {wall_mm*.5:.6g} mm), then rebuild and check CAD clearance; '
             'this is not a guaranteed remedy. Mesh resolution cannot restore CAD clearance.')
@@ -281,7 +407,9 @@ def validate_shell_facets(points, triangles, surfaces, physical, groups,
         context, advice = _refusal_context(points, triangles, surfaces, inner_ids,
                                           boundary_ids, after, groups, wall_mm, mesh_density)
         triangles[:] = original
-        gap = f'{clearance:.6g} mm' if np.isfinite(clearance) else 'joined CAD patches'
+        gap = f'{clearance:.6g} mm' if np.isfinite(clearance) else 'unavailable'
+        if clearance < threshold:
+            gap += ' globally; no local interior CAD contact confirmed'
         raise MesherError(
             f'free-standing bore/shell tessellation has {len(after)} remaining '
             f'prohibited facet pairs after safe local diagonal swaps '
