@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import hashlib
+import sys
 from io import BytesIO
 
 import numpy as np
@@ -38,7 +39,7 @@ def test_ath_fixture_mutations_fail(mutation, tmp_path, monkeypatch):
     else:
         raw = b"changed header\n" + raw.split(b"\n", 1)[1]
     (tmp_path / (name + ".csv")).write_bytes(raw)
-    monkeypatch.setattr(__import__(__name__), "ROOT", tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
     with pytest.raises(AssertionError):
         _ath_points(name)
 
