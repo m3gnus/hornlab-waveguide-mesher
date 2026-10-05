@@ -630,7 +630,8 @@ silently falls back to a default changes the mesh with nothing to show for it.
   indexed `Source.Velocity.<n>` form.
 
 Text imports inject ATH's own defaults for omitted keys instead of the native
-TOML/JSON defaults: `Throat.Angle` 0, `Term.s` 0.7, `Mesh.WallThickness` 5,
+TOML/JSON defaults: `Throat.Angle` 0, `Term.s` 0.5 (measured; the 4.8.2 guide's 0.7
+is not what ATH builds), `Mesh.WallThickness` 5,
 `Mesh.ThroatResolution` 4, `Mesh.MouthResolution` 8, `Mesh.RearResolution`
 15, and `Morph.CornerRadius` 35 when a morph target is set. The default
 sampling mode is `ath-default-zmap` (for OSSE a cubic bezier with control

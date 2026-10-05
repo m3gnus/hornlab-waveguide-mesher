@@ -37,7 +37,10 @@ and 23 archive imports plus 36
 block/flat rotation/slot variants, eight zero-expression imports and 70 OSSE
 block composition imports covering numeric slots, expression slots/rotations,
 finite-sample aliases, narrow spikes and scaled zero identities. Inactive
-imports equal base except top-level Rot beside a block without its own Rot. Archive inputs are identified by content
+imports equal base except top-level Rot beside a block without its own Rot. They also differ in one
+measured default: the base imported an omitted OSSE `s` as 0.7, and ATH builds
+it as 0.5 (`../ath_import/ath-v2025-12`), so the tests expect 0.5 wherever the
+text omits `s`. The captured values themselves are unchanged. Archive inputs are identified by content
 SHA256, so no local paths or archive comments are embedded. The required
 parity gate also runs this entire corpus against the live archive.
 

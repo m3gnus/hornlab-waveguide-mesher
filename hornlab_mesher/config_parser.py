@@ -818,11 +818,14 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # stays subordinate to the block's L.
             if "Rot" not in blocks["OSSE"]:
                 profile.update(mapped(flat, (("Rot", "rot"),)))
-        # ATH defaults for keys the import may omit (Ath 4.8.2 User Guide 4.1.1).
+        # ATH defaults for keys the import may omit. a0 follows the Ath 4.8.2
+        # User Guide 4.1.1. Term.s does not: the guide says 0.7, but ATH
+        # V2025-12 and V2026-09a both build an omitted s exactly as s = 0.5
+        # (byte-identical profile exports; fixtures/ath_import/ath-v2025-12).
         # Native TOML/JSON configs keep the package defaults in config_builder.
         if imported_geometry:
             profile.setdefault("a0", 0)
-            profile.setdefault("s", 0.7)
+            profile.setdefault("s", 0.5)
 
     if "Length.Mode" in flat:
         profile["_athLengthMode"] = flat["Length.Mode"].strip()

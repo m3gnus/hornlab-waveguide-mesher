@@ -731,9 +731,10 @@ def test_ath_text_import_injects_ath_defaults(tmp_path):
 
     assert formula == "OSSE"
     assert params["a0"] == 0
-    assert params["s"] == 0.7
+    assert params["s"] == 0.5
     # ATH defaults verified against ath.exe V2025-12 (byte-identical mesh for
-    # absent vs explicit value): wall 5, throat 4, mouth 8, rear 15.
+    # absent vs explicit value): s 0.5 (not the 4.8.2 guide's 0.7), wall 5,
+    # throat 4, mouth 8, rear 15.
     assert params["wallThickness"] == 5
     assert params["throatResolution"] == 4
     assert params["mouthResolution"] == 8

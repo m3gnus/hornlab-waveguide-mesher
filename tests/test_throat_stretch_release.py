@@ -29,6 +29,21 @@ BASE = json.loads((Path(__file__).parent / 'fixtures/throat_stretch/base-compati
 CLASSES = {'OSSE': (OsseHornGeometry, _osse_params), 'R-OSSE': (RosseHornGeometry, _rosse_params)}
 DORMANT = [{}, {'s1': 0, 's2': 0.2}, {'s1': 0.5, 's2': 0}, {'s1': 0}, {'s2': 0.2}]
 
+# The base imported an omitted OSSE termination s as 0.7, the Ath 4.8.2 User
+# Guide's value. ATH V2025-12 and V2026-09a build it as 0.5
+# (fixtures/ath_import/ath-v2025-12), and the importer now does too. A text
+# import that omits s may differ from the captured base in s only.
+_SUPPLIES_S = re.compile(r'^[ \t]*(?:Term\.)?s[ \t]*=', re.M)
+
+
+def _measured_s_default(text, formula, *expected):
+    """Move captured s = 0.7 to 0.5 where the text omits s; nothing else."""
+    if formula != 'OSSE' or _SUPPLIES_S.search(text):
+        return
+    for mapping in expected:
+        if mapping.get('s') == 0.7:
+            mapping['s'] = 0.5
+
 
 def _assert_base_equal(actual, expected):
     """Keep captured structure exact; allow only cross-platform float drift."""
@@ -183,8 +198,9 @@ def test_native_and_text_normalization_equal_captured_base(family, dormant):
     text = captured['text'].replace('\n}', ''.join(f'\n{k} = {v}' for k, v in dormant.items()) + '\n}')
     parsed = parse_text_config(text)
     assert parsed == parse_text_config(captured['text'])
-    _assert_base_equal(cb.build_geometry_params(parsed)[0],
-                       {**captured['text_params'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION})
+    expected_params = {**captured['text_params'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    _measured_s_default(text, parsed['formula'], expected_params)
+    _assert_base_equal(cb.build_geometry_params(parsed)[0], expected_params)
 
 
 @pytest.mark.parametrize('dormant', DORMANT)
@@ -237,6 +253,7 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
     if approved_rot:
         expected_parsed['profile']['rot'] = 10
         expected_params['rot'] = 10
+    _measured_s_default(text, parsed['formula'], expected_parsed['profile'], expected_params)
     _assert_base_equal(parsed, expected_parsed)
     _assert_base_equal(params, expected_params)
 
@@ -419,8 +436,10 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
 
 @pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
 def test_evaluated_zero_import_result_equals_captured_base(case):
-    _assert_base_equal(parse_text_config(case['text']),
-                       {**case['parsed'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION})
+    parsed = parse_text_config(case['text'])
+    expected = {**copy.deepcopy(case['parsed']), TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    _measured_s_default(case['text'], parsed['formula'], expected['profile'])
+    _assert_base_equal(parsed, expected)
 
 
 @pytest.mark.parametrize('case', BASE['composition_imports'])
@@ -431,7 +450,9 @@ def test_inactive_composition_imports_equal_true_base(case, dormant):
     expected[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
     if 'top_level_rot' in case:
         expected['profile']['rot'] = case['top_level_rot']
-    _assert_base_equal(parse_text_config(text), expected)
+    parsed = parse_text_config(text)
+    _measured_s_default(text, parsed['formula'], expected['profile'])
+    _assert_base_equal(parsed, expected)
 
 
 @pytest.mark.parametrize('key', ['s1', 's2'])
