@@ -376,6 +376,9 @@ def build_preview_geometry(
     if "sourceBody" in params:
         from .source_body import build
         return build(params, options)
+    if "adapterAxialScale" in params:
+        from .adapter_axial import build
+        return build(params, options)
     if "absoluteAxialScale" in params:
         from .axial_scale import build
         return build(params, options)

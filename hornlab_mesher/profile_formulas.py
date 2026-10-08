@@ -365,6 +365,8 @@ def calculate_osse(
 ) -> tuple[float, float]:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "adapterAxialScale" in params:
+        raise ValueError("adapter axial scale requires its canonical physical meridian")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
     if "mouthRoundoverRadiusMm" in params:
@@ -461,6 +463,8 @@ def calculate_osse_curve(
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
 
+    if "adapterAxialScale" in params:
+        raise ValueError("adapter axial scale requires its canonical physical meridian")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
     if "mouthRoundoverRadiusMm" in params:
@@ -580,6 +584,8 @@ def osse_length_config(
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "adapterAxialScale" in params:
+        raise ValueError("adapter axial scale requires its canonical physical meridian")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical length")
     if "mouthRoundoverRadiusMm" in params:

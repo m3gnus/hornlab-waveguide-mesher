@@ -23,12 +23,12 @@ Unsupported extensions fail before any geometry is built.
 
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `OSSE-ADAPTER`, `OSSE-ROUNDOVER`, `OSSE-AXIAL`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. `OSSE-ADAPTER` requires an active authored `throat_adapter`. |
+| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `OSSE-ADAPTER`, `OSSE-ROUNDOVER`, `OSSE-AXIAL`, `OSSE-ADAPTER-AXIAL`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. `OSSE-ADAPTER` requires an active authored `throat_adapter`. |
 | `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
 | `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
 | `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
 | `throat_adapter` | `profile.throat_adapter` | absent | Native authored circular adapter; see [Throat Adapter](#throat-adapter). Supply it in only one location. |
-| `axial_scale` | none | required for `OSSE-AXIAL` | Absolute Z factor, replacing the Z component of root `scale`; `scale` retains X/Y scaling. Refused with ordinary formulas. See [absolute axial scale](absolute-axial-scale.md) for scope, domain and fidelity. |
+| `axial_scale` | none | required for `OSSE-AXIAL` and `OSSE-ADAPTER-AXIAL` | Absolute Z factor, replacing the Z component of root `scale`; `scale` retains X/Y scaling. Refused with ordinary formulas. See [absolute axial scale](absolute-axial-scale.md) for scope, domain and fidelity. |
 | `output.path` | top-level `path`, `output_path`, CLI `-o` | none | Required by the CLI unless `-o/--output` is passed. |
 
 If enclosure depth is positive, mode becomes `enclosure` even when `mode` is
@@ -739,3 +739,11 @@ then the item is refused.
 ## Standalone source body
 
 `formula = "SOURCE-DISK"` selects a dedicated closed exterior circular source body. It requires root `source_body` controls `radius_mm`, `outer_radius_mm` and `depth_mm`, with optional `mode = "standalone-source"`. Its mesh uses uniform `size_mm`, final `vertical_offset_mm`, full coverage, unit and triangle-budget controls. Horn coefficients and unsupported supplied controls are refused. See [standalone-source-body.md](standalone-source-body.md) for the bounded domain, CLI/Python examples, preview, tags and STEP transport contract.
+
+## Authored adapter with absolute axial scaling
+
+`OSSE-ADAPTER-AXIAL` requires an active root `throat_adapter` and root
+`axial_scale`. It applies the absolute Z factor to the complete authored
+adapter/body construction, with root `scale` retaining X/Y scaling and
+finished-mm vertical placement. See the [bounded native composition contract](native-adapter-axial-scale.md)
+for its strict canonical inputs, physical domain, preview certificates and export support.

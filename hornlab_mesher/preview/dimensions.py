@@ -50,6 +50,9 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
         from ..source_body import StandaloneSourceGeometry
         model=StandaloneSourceGeometry(**native_params[0]["sourceBody"])
         return {"source_diameter":[2*model.radius_mm]*2,"body_overall":[2*model.outer_radius_mm,2*model.outer_radius_mm,model.depth_mm]}
+    if native == "OSSE-ADAPTER-AXIAL":
+        from ..adapter_axial import PhysicalAdapter
+        return PhysicalAdapter.from_params(native_params[0]).dimensions
     axial = native_params if native == "OSSE-AXIAL" else configuration(full, build_geometry_params)
     if axial is not None:
         from ..axial_scale import AxialModel

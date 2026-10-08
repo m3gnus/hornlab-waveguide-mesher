@@ -95,6 +95,21 @@ def derive_datums(
 
     if type(geometry) is StandaloneSourceGeometry:
         return geometry.datums()
+    from .adapter_axial import PhysicalAdapter
+    adapter = getattr(geometry, "adapter_meridian", None)
+    if isinstance(adapter, PhysicalAdapter):
+        az = np.arange(64)*2*np.pi/64
+        offset = adapter.offset
+        mouth_z = float(adapter.body_poles[-1,0])
+        radius = float(adapter.body_poles[-1,1])
+        mouth = np.column_stack((radius*np.cos(az),radius*np.sin(az)+offset,np.full(64,mouth_z)))
+        def plane(z):
+            return {**_axis_plane("z",z),"origin_mm":[0.,offset,z],"nominal":False}
+        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,offset,0.],"direction":[0.,0.,1.]},
+            "WG_THROAT_PLANE":plane(0.),"WG_ADAPTER_JOIN_PLANE":plane(float(adapter.cubic[-1,0])),
+            "WG_MOUTH_PLANE":plane(mouth_z),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
+            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",offset),"WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),
+            "WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
     axial = getattr(geometry, "axial_model", None)
     if axial is not None:
         az = np.linspace(0,2*np.pi,64,endpoint=False)

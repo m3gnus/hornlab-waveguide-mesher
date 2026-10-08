@@ -806,6 +806,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     standalone = source_configuration(config)
     if standalone is not None:
         return standalone
+    from .adapter_axial import configuration as adapter_axial_configuration
+    composed = adapter_axial_configuration(config, build_geometry_params)
+    if composed is not None:
+        return composed
     from .axial_scale import configuration as axial_configuration
     axial = axial_configuration(config, build_geometry_params)
     if axial is not None:
@@ -2183,6 +2187,9 @@ def resolve_geometry(
     params, formula, mode = build_geometry_params(config)
     if "sourceBody" in params:
         from .source_body import resolve
+        return resolve(config, params, allow_large_mesh)
+    if "adapterAxialScale" in params:
+        from .adapter_axial import resolve
         return resolve(config, params, allow_large_mesh)
     if "absoluteAxialScale" in params:
         from .axial_scale import resolve

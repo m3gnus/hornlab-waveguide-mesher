@@ -582,6 +582,9 @@ def write_step(
                                if adapter is not None else {})
             if roundover is not None:
                 box = (*roundover.bounds[0], *roundover.bounds[1])
+            from .adapter_axial import PhysicalAdapter
+            if isinstance(adapter, PhysicalAdapter):
+                box = (*adapter.bounds[0], *adapter.bounds[1])
             if axial is not None:
                 box = (*axial.bounds[0], *axial.bounds[1])
             return out_path, info_cls(
@@ -1143,6 +1146,9 @@ def write_wglink(
         raise MesherError("wglink export refuses standalone source bodies until a source-only bundle transport is supported")
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    from .adapter_axial import PhysicalAdapter
+    if isinstance(getattr(geometry, "adapter_meridian", None), PhysicalAdapter):
+        raise MesherError("wglink export refuses adapter axial scaling until its analytic recipe has a qualified bundle transport")
     if getattr(geometry, "roundover", None) is not None:
         raise MesherError("wglink export refuses mouth roundovers until the analytic recipe has a qualified bundle transport")
     if getattr(geometry, "axial_model", None) is not None:
