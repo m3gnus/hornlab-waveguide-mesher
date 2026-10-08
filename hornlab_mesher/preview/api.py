@@ -363,6 +363,10 @@ def build_preview_geometry(
         raise TypeError("config must be a mapping")
     if not isinstance(options, PreviewOptionsV1):
         raise TypeError("options must be PreviewOptionsV1")
+    params, _, _ = build_geometry_params(config)
+    if "mouthRoundoverRadiusMm" in params:
+        from .mouth_roundover import build
+        return build(params, options)
     # Render and measure one owned design throughout this call. If ownership
     # fails, retain the renderer's existing handling of the caller's config.
     try:

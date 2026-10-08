@@ -60,6 +60,11 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _geometry_dimensions(geometry) -> dict[str, Any]:
+    if getattr(geometry, "roundover", None) is not None:
+        model = geometry.roundover
+        box = np.asarray(model.bounds)
+        return {"mouth_opening":[2*float(model.body(model.length)[0][1])]*2,
+                "horn_overall":(box[1]-box[0]).tolist()}
     inner = geometry.inner_points
     points = [inner.reshape(-1, 3)]
     if geometry.outer_points is not None:

@@ -1,5 +1,9 @@
 # Mouth roundover: geometry and import contract
 
+The bounded native implementation and its currently qualified combinations
+are described in [Native circular mouth roundover](native-mouth-roundover.md).
+The broader support and import table below remains a target contract.
+
 **Status: contract for Program C6, reviewed by the owner on 2026-09-30 (decisions below).**
 This document adds no executable behaviour. The ATH text importer refuses
 `Mesh.Roundover` until an implementation satisfies this contract.
@@ -70,7 +74,8 @@ n = 4, q = 0.995 }`, free standing, `Mesh.WallThickness = 5`,
    the base case, 8.64 degrees at `s = 0.3`.
 3. **The arc ends early.** The last point is at `90 deg - 2 a_hat`, so the lip
    does not turn fully back. For an unterminated horn (`s = 0`, wall at 45
-   degrees) the arc has no sweep at all: the five points collapse onto M.
+   degrees), the archived added points turn inward instead of forming a usable
+   outward lip.
 4. **`a_hat` depends on the sampling grid.** It is an estimate from grid
    points, not the analytic angle (4.076 degrees in the base case):
 
@@ -127,8 +132,9 @@ arc(phi) = C + R (sin(beta + phi), -cos(beta + phi)),   0 <= phi <= 180 deg - be
 - `beta` comes from the analytic profile derivative at the mouth, never from
   grid points. The construction is independent of `length_segments`,
   `angular_segments`, the z-map and the preview level of detail.
-- The mouth plane `z = z_M` stays the front-most plane. Overall depth is
-  unchanged; overall width grows to `2 (C_r + R)`.
+- The original mouth datum stays at `z = z_M`. For `0 < beta < 90 deg`,
+  the complete forward bound is `z_M + R (1 - sin beta)`. Overall depth includes
+  that forward extent; overall width grows to `2 (C_r + R)`.
 
 Worked example, base case with `R = 25`: analytic `beta = 85.924143`,
 `a = 4.075857`.
@@ -143,7 +149,7 @@ E = ( 95.063229, 202.387639)        device width 404.775 mm
 ATH's polyline for the same config ends at (99.045, 200.281) and its device
 width is 400.56 mm. At `s = 0` (wall at 44.851 degrees) this construction
 gives `C = (102.368370, 140.600498)`, a sweep of 135.149 degrees and
-`E = (102.368370, 165.600498)`, where ATH produces no arc.
+`E = (102.368370, 165.600498)`. This is an outward lip even at zero termination.
 
 ### Outer wall and closure
 
@@ -280,7 +286,7 @@ All six questions below are decided as recommended:
 
 1. **Tangent-continuous lip, or ATH's circle?** Recommended: the construction
    above. ATH's circle centred behind the mouth point leaves a corner at the
-   mouth, gives no roundover at all on an unterminated horn, and ends at a
+   mouth, turns inward on an unterminated horn, and ends at a
    grid-dependent angle. The alternative is to copy ATH's circle with the
    analytic angle, which keeps the corner.
 2. **Where does the lip end?** Recommended: where the tangent points straight

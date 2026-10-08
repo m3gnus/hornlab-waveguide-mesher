@@ -798,6 +798,10 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
 
 @stretch_config_errors
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
+    from .mouth_roundover import configuration
+    roundover = configuration(config, build_geometry_params)
+    if roundover is not None:
+        return roundover
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
@@ -2117,6 +2121,9 @@ def resolve_geometry(
     """Build the point-grid geometry a config describes, without meshing it."""
 
     params, formula, mode = build_geometry_params(config)
+    if "mouthRoundoverRadiusMm" in params:
+        from .mouth_roundover import resolve
+        return resolve(config, params, allow_large_mesh)
     _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
@@ -2279,6 +2286,8 @@ def build_from_config(
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
     geometry = resolved.geometry
     chose_automatically = (
+        getattr(geometry, "roundover", None) is None
+        and
         _mesh_surface_fit(_section(config, "mesh")) == "auto"
         and getattr(geometry, "surface_fit", None) == "interpolate"
     )

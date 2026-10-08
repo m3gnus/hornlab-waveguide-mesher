@@ -345,6 +345,13 @@ class _StretchedPointGridHornGeometry(PointGridHornGeometry):
     quadrant_patch_fit: bool = True
 
 
+@dataclass(frozen=True)
+class _RoundoverPointGridHornGeometry(PointGridHornGeometry):
+    """Active circular lip keeps its analytic meridian through every export."""
+
+    roundover: object | None = None
+
+
 def _validate_outer_clearance_probe(geometry):
     probe = np.asarray(geometry.outer_clearance_points_mm, dtype=np.float64)
     if (geometry.outer_points is None or probe.ndim != 3

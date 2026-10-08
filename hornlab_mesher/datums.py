@@ -106,6 +106,12 @@ def derive_datums(
     offset = float(geometry.vertical_offset_mm)
     throat = _placed(points[:, 0, :], offset)
     mouth = _placed(points[:, -1, :], offset)
+    roundover = getattr(geometry, "roundover", None)
+    if roundover is not None:
+        azimuth = np.arctan2(points[:,0,1],points[:,0,0])
+        radius = float(roundover.body(roundover.length)[0][1])
+        mouth = np.column_stack((radius*np.cos(azimuth),radius*np.sin(azimuth)+offset,
+                                 np.full(len(azimuth),roundover.length)))
     throat_planar, throat_plane = _fit_plane(
         throat, tolerance_mm=plane_tolerance_mm
     )
@@ -136,7 +142,10 @@ def derive_datums(
             raise ValueError("freestanding datums require outer_points")
         outer = np.asarray(geometry.outer_points, dtype=np.float64)
         datums["WG_MOUTH_OUTLINE_OUTER"] = _polyline(
-            _placed(outer[:, -1, :], offset)
+            _placed(outer[:, -1, :], offset) if roundover is None else
+            np.column_stack((float(roundover.body(roundover.length,True)[0][1])*np.cos(azimuth),
+                             float(roundover.body(roundover.length,True)[0][1])*np.sin(azimuth)+offset,
+                             np.full(len(azimuth),float(roundover.body(roundover.length,True)[0][0]))))
         )
         return datums
 

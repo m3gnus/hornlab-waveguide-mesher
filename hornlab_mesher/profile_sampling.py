@@ -1584,6 +1584,8 @@ def build_point_grid_arrays(
     the preview path takes ``inner_grid``/``outer_grid`` and never spells them.
     """
 
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires resolve_geometry or the complete preview API; a body-only grid would omit the lip")
     _validate_static_morph_target(params)
     formula = _normalise_formula(params.get("type", "OSSE"))
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))

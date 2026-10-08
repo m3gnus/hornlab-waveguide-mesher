@@ -457,6 +457,7 @@ def _generic_triangle_regions(
     interface_res: float,
     aperture_res: float,
     group_size_fields: dict[str, Any] | None = None,
+    lip_size: float | None = None,
 ) -> list[tuple[float, float, str]]:
     """Area/size regions for non-enclosure pre-mesh cost prediction.
 
@@ -499,6 +500,7 @@ def _generic_triangle_regions(
     add(mesh_groups.get("mouth_aperture", []), aperture_res, "mouth aperture")
     add(mesh_groups.get("interface", []), interface_res, "interface")
     add(mesh_groups.get("rear", []), rear_res, "rear")
+    add(mesh_groups.get("lip", []), lip_size, "circular mouth lip")
     add(mesh_groups.get("outer", []), rear_res, "outer wall", "outer")
     add(mesh_groups.get("mouth", []), mouth_res, "mouth", "mouth")
     add(
@@ -1185,6 +1187,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                 interface_res=interface_res,
                 aperture_res=aperture_res,
                 group_size_fields=size_fields,
+                lip_size=(min(float(geometry.metadata["mouthRoundoverMeshSizeMm"]), mouth_res)
+                          if "mouthRoundoverMeshSizeMm" in geometry.metadata else None),
             ),
         )
     add_field(
@@ -1403,12 +1407,18 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                 )
             fields.append(restrict)
 
+    lip_size = geometry.metadata.get("mouthRoundoverMeshSizeMm")
+    if lip_size is not None:
+        add_field(f"{min(float(lip_size), mouth_res):.12g}", mesh_groups.get("lip", []), curve_groups.get("lip", []))
+
     if fields:
         minimum = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
     sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
+    if lip_size is not None:
+        sizes.append(float(lip_size))
     # The clearance cap is a size this build genuinely asks for, so it belongs
     # in the floor calculation. Left out, Mesh.MeshSizeMin -- derived from the
     # user's resolutions alone -- can clamp the field back above the cap and

@@ -110,6 +110,11 @@ class CadInfo:
 
 
 @dataclass(frozen=True)
+class _RoundoverCadInfo(CadInfo):
+    mouth_roundover: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class WgLinkIdentity:
     """Caller-owned identity/provenance sections emitted without augmentation."""
 
@@ -518,12 +523,20 @@ def write_step(
             text = normalise_step_header(
                 staged_path.read_text(encoding="utf-8", errors="replace")
             )
+            roundover = getattr(geometry, "roundover", None)
+            if roundover is not None:
+                recipe = {"contractRevision":1, "formula":"OSSE-ROUNDOVER", "controls":roundover.__dict__,
+                          **roundover.metadata()}
+                text = text.replace("END-ISO-10303-21;", "/* hornlab-mouth-roundover " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
             _assert_step(text, body=body)
             staged_path.write_text(text, encoding="utf-8")
             staged_path.replace(out_path)
             staged_path = None
             wrote = True
-            return out_path, CadInfo(
+            info_cls = CadInfo if roundover is None else _RoundoverCadInfo
+            if roundover is not None:
+                box = (*roundover.bounds[0], *roundover.bounds[1])
+            return out_path, info_cls(
                 path=out_path,
                 body=body,
                 n_faces=int(n_faces),
@@ -533,6 +546,7 @@ def write_step(
                     (float(box[3]), float(box[4]), float(box[5])),
                 ),
                 throat_opened=throat_opened,
+                **({} if roundover is None else {"mouth_roundover":roundover.metadata()["mouthRoundover"]}),
             )
         except MesherError:
             raise
@@ -1073,6 +1087,8 @@ def write_wglink(
 
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    if getattr(geometry, "roundover", None) is not None:
+        raise MesherError("wglink export refuses mouth roundovers until the analytic recipe has a qualified bundle transport")
     mode = geometry.build_mode
     if mode not in _SOLID_BUILD_MODES:
         raise MesherError(

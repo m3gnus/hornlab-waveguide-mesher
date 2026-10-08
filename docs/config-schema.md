@@ -1,5 +1,11 @@
 # Config Schema
 
+Native circular lips use the fail-closed `OSSE-ROUNDOVER` formula marker and
+`mesh.mouth_roundover_radius_mm` (zero or absent is off for ordinary formulas).
+See [the native roundover contract](native-mouth-roundover.md) for its bounded
+profile domain, required wall and source settings, full envelope metadata and
+unsupported combinations. The marker requires a positive active radius.
+
 This package accepts TOML, JSON, and imported ATH-style text configs. TOML and
 JSON use the same section names. Text configs are parsed by
 `hornlab_mesher.config_parser` into the same internal shape, then normalized by

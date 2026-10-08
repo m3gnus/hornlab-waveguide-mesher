@@ -363,6 +363,8 @@ def calculate_osse(
     *,
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires the canonical composite meridian, not the body-only formula")
     validate_stretch_composition(params, "OSSE")
     L, _, ext_len, slot_len = osse_length_config(params, p)
     s1, s2 = stretch_coefficients(params)
@@ -443,6 +445,8 @@ def calculate_osse_curve(
     terminating-arc solve are each paid once per meridian.
     """
 
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires the canonical composite meridian, not the body-only formula")
     validate_stretch_composition(params, "OSSE")
     z = np.asarray(z_values, dtype=np.float64)
     L, _total, ext_len, slot_len = osse_length_config(params, p)
@@ -545,6 +549,8 @@ def osse_length_config(
 
 
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires its full analytic envelope, not the body-only length")
     return osse_length_config(params, p)[1]
 
 
