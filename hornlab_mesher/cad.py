@@ -50,6 +50,7 @@ from .geometry import (
     OsseHornGeometry,
     PointGridBuildMode,
     PointGridHornGeometry,
+    StandaloneSourceGeometry,
 )
 from .mesher import _GMSH_LOCK, MesherError, _dispatch_builder
 from .native_env import preserve_native_windows_path
@@ -107,6 +108,11 @@ class CadInfo:
     ]
     throat_opened: bool
     units: Literal["mm"] = "mm"
+
+
+@dataclass(frozen=True)
+class _SourceBodyCadInfo(CadInfo):
+    source_body: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +194,8 @@ def _role_tags(built: BuiltGeometry, *roles: str) -> set[int]:
 
 
 def _solid_capable(geometry: HornGeometry) -> bool:
+    if type(geometry) is StandaloneSourceGeometry:
+        return True
     if isinstance(geometry, OsseHornGeometry):
         # The OSSE builder emits an inner wall and a throat cap only.
         return False
@@ -553,12 +561,20 @@ def write_step(
             if axial is not None:
                 recipe = {"contractRevision":1,"formula":"OSSE-AXIAL","controls":axial.__dict__,**axial.metadata()}
                 text = text.replace("END-ISO-10303-21;", "/* hornlab-absolute-axial-scale " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
+            source_body = geometry if type(geometry) is StandaloneSourceGeometry else None
+            if source_body is not None:
+                recipe = source_body.metadata()["sourceBody"]
+                text = text.replace("END-ISO-10303-21;", "/* hornlab-source-body " + json.dumps(recipe,sort_keys=True,separators=(",", ":"),allow_nan=False) + " */\nEND-ISO-10303-21;")
+                if n_faces != 4 or volume_mm3 is None or abs(volume_mm3-source_body.volume_mm3)>1e-7*source_body.volume_mm3:
+                    raise MesherError("standalone source STEP requires one four-face closed cylinder")
+                box = (*source_body.bounds[0],*source_body.bounds[1])
             _assert_step(text, body=body)
             staged_path.write_text(text, encoding="utf-8")
             staged_path.replace(out_path)
             staged_path = None
             wrote = True
-            info_cls = (_AdapterCadInfo if adapter is not None else
+            info_cls = (_SourceBodyCadInfo if source_body is not None else
+                        _AdapterCadInfo if adapter is not None else
                         _RoundoverCadInfo if roundover is not None else
                         _AxialCadInfo if axial is not None else CadInfo)
             identity_fields = ({"construction_fingerprint": adapter.fingerprint,
@@ -579,6 +595,7 @@ def write_step(
                 ),
                 throat_opened=throat_opened,
                 **identity_fields,
+                **({} if source_body is None else {"source_body":source_body.metadata()["sourceBody"]}),
                 **({} if roundover is None else {"mouth_roundover":roundover.metadata()["mouthRoundover"]}),
                 **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
             )
@@ -1122,6 +1139,8 @@ def write_wglink(
     partial bundle; an existing bundle is refused, never replaced.
     """
 
+    if type(geometry) is StandaloneSourceGeometry:
+        raise MesherError("wglink export refuses standalone source bodies until a source-only bundle transport is supported")
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
     if getattr(geometry, "roundover", None) is not None:

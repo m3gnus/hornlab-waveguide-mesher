@@ -195,6 +195,8 @@ def _run(args: argparse.Namespace) -> dict | None:
                 "throat_opened": cad.throat_opened,
                 "units": cad.units,
             }
+            if getattr(cad,"source_body",None) is not None:
+                step_summary["source_body"] = cad.source_body
             if args.summary:
                 Path(args.summary).parent.mkdir(parents=True, exist_ok=True)
                 Path(args.summary).write_text(

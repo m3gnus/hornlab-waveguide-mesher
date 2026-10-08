@@ -31,6 +31,7 @@ from .geometry import (
     MeshInfo,
     OsseHornGeometry,
     PointGridHornGeometry,
+    StandaloneSourceGeometry,
     validate_mesh_density,
 )
 from .native_env import preserve_native_windows_path
@@ -149,6 +150,9 @@ def _acoustic_geometry(
 
 
 def _dispatch_builder(geometry: HornGeometry) -> BuiltGeometry:
+    if type(geometry) is StandaloneSourceGeometry:
+        from .builders.source_body import build
+        return build(geometry)
     if isinstance(geometry, OsseHornGeometry):
         return build_osse_waveguide(geometry)
     if isinstance(geometry, PointGridHornGeometry):
@@ -230,7 +234,16 @@ def build_mesh_with_info(
     if isinstance(density, (str, Path)) and output_path is None:
         output_path = density
         density = None
-    mesh_density = density if isinstance(density, MeshDensity) else MeshDensity()
+    if isinstance(geometry,StandaloneSourceGeometry):
+        from .source_body import default_density, validate_density
+        if density is not None and type(density) is not MeshDensity:
+            raise MesherError("standalone source density must be MeshDensity")
+        mesh_density = default_density() if density is None else density
+        validate_density(geometry,mesh_density)
+        if type(scale_to_metres) is not bool:
+            raise MesherError("standalone source scale_to_metres must be a boolean")
+    else:
+        mesh_density = density if isinstance(density, MeshDensity) else MeshDensity()
     validate_mesh_density(mesh_density)
 
     import gmsh
@@ -375,9 +388,12 @@ def build_mesh_with_info(
                 # Native bodies share their OCC wall/source edges; the exact
                 # duplicate-node removal above is sufficient. Approximate
                 # welding would collapse valid nearby dense-mesh vertices.
-                weld_near_duplicates=all(getattr(geometry, name, None) is None
+                weld_near_duplicates=not isinstance(geometry,StandaloneSourceGeometry) and all(getattr(geometry, name, None) is None
                     for name in ("adapter_meridian", "roundover", "axial_model")),
             )
+            if isinstance(geometry,StandaloneSourceGeometry):
+                from .source_body import certify_mesh
+                built.metadata["sourceBody"].update(certify_mesh(geometry,staged_path,info.units))
             limit = effective_triangle_limit(built, mesh_density)
             if limit is not None:
                 built.metadata["meshTriangleCount"] = int(info.n_triangles)

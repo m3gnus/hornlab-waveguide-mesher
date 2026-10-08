@@ -23,6 +23,7 @@ from .geometry import (
     OsseHornGeometry,
     RosseHornGeometry,
 )
+from .source_body import StandaloneSourceGeometry
 from .cost import (
     SolveCostEstimate,
     estimate_solve_cost,
@@ -133,6 +134,7 @@ __all__ = [
     "WgLinkIdentity",
     "WgLinkInfo",
     "WgLinkSourceInterface",
+    "StandaloneSourceGeometry",
     "CrossSection",
     "Enclosure",
     "HornEnclosure",

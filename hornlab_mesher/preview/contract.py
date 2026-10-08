@@ -34,6 +34,10 @@ _ORIENTATION_SINGULAR_AREA_FRACTION = 0.005
 # builder checked; see _OrientationCheckProof.
 _ORIENTATION_PROOF_KEY = object()
 _ORIENTATION_BY_ROLE = {
+    "source_body.disk": "exterior",
+    "source_body.annulus": "exterior",
+    "source_body.side": "exterior",
+    "source_body.rear": "exterior",
     "horn.inner": "air-side",
     "horn.outer": "exterior",
     "wall.throat_band": "exterior",

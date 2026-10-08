@@ -13,7 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .builders.enclosure import sample_enclosure_plan
-from .geometry import BuiltGeometry, PointGridBuildMode, PointGridHornGeometry
+from .geometry import BuiltGeometry, PointGridBuildMode, PointGridHornGeometry, StandaloneSourceGeometry
 
 
 DEFAULT_PLANE_TOLERANCE_MM = 1.0e-6
@@ -80,8 +80,8 @@ def _axis_plane(axis: str, value: float) -> dict[str, Any]:
 
 
 def derive_datums(
-    geometry: PointGridHornGeometry,
-    built: BuiltGeometry,
+    geometry: PointGridHornGeometry | StandaloneSourceGeometry,
+    built: BuiltGeometry | None,
     *,
     plane_tolerance_mm: float = DEFAULT_PLANE_TOLERANCE_MM,
 ) -> dict[str, Any]:
@@ -93,6 +93,8 @@ def derive_datums(
     already placed so every artifact in a bundle shares one link-local frame.
     """
 
+    if type(geometry) is StandaloneSourceGeometry:
+        return geometry.datums()
     axial = getattr(geometry, "axial_model", None)
     if axial is not None:
         az = np.linspace(0,2*np.pi,64,endpoint=False)

@@ -817,6 +817,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
 
     import gmsh
 
+    if "sourceBody" in geometry.metadata:
+        from .source_body import configure_density as configure_source_density
+        configure_source_density(geometry,density)
+        return
     mesh_groups = geometry.mesh_surface_groups
     curve_groups = {
         name: _collect_boundary_curves(surfaces)

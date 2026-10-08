@@ -735,3 +735,7 @@ The text parser is an import adapter only. It does not build geometry, infer
 unsupported ATH objects, or preserve unknown sections for later use. New ATH
 behaviour is added only after it has been confirmed against ATH output; until
 then the item is refused.
+
+## Standalone source body
+
+`formula = "SOURCE-DISK"` selects a dedicated closed exterior circular source body. It requires root `source_body` controls `radius_mm`, `outer_radius_mm` and `depth_mm`, with optional `mode = "standalone-source"`. Its mesh uses uniform `size_mm`, final `vertical_offset_mm`, full coverage, unit and triangle-budget controls. Horn coefficients and unsupported supplied controls are refused. See [standalone-source-body.md](standalone-source-body.md) for the bounded domain, CLI/Python examples, preview, tags and STEP transport contract.

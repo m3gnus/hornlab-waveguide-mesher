@@ -20,6 +20,7 @@ from . import cost
 from .config_parser import ConfigError
 from .freeform import build_freeform_geometry, _validate_freeform_config
 from .geometry import (
+    HornGeometry,
     HornEnclosure,
     HornInterface,
     MeshDensity,
@@ -801,6 +802,10 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
+    from .source_body import configuration as source_configuration
+    standalone = source_configuration(config)
+    if standalone is not None:
+        return standalone
     from .axial_scale import configuration as axial_configuration
     axial = axial_configuration(config, build_geometry_params)
     if axial is not None:
@@ -2154,7 +2159,7 @@ class ResolvedGeometry:
     waveguide by construction rather than by two implementations agreeing.
     """
 
-    geometry: PointGridHornGeometry
+    geometry: HornGeometry
     density: MeshDensity
     formula: str
     mode: str
@@ -2171,11 +2176,14 @@ def resolve_geometry(
     *,
     allow_large_mesh: bool | None = None,
 ) -> ResolvedGeometry:
-    """Build the point-grid geometry a config describes, without meshing it."""
+    """Resolve the buildable geometry a config describes, without meshing it."""
 
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config, allow_large_mesh=allow_large_mesh)
     params, formula, mode = build_geometry_params(config)
+    if "sourceBody" in params:
+        from .source_body import resolve
+        return resolve(config, params, allow_large_mesh)
     if "absoluteAxialScale" in params:
         from .axial_scale import resolve
         return resolve(config, params, allow_large_mesh)

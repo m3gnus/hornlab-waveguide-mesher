@@ -6,7 +6,7 @@ from typing import Mapping
 
 from .config_parser import ConfigError
 
-NATIVE_MARKERS = frozenset({"OSSE-AXIAL", "OSSE-ADAPTER", "OSSE-ROUNDOVER"})
+NATIVE_MARKERS = frozenset({"OSSE-AXIAL", "OSSE-ADAPTER", "OSSE-ROUNDOVER", "SOURCE-DISK"})
 
 
 def _fail(message):
@@ -33,6 +33,23 @@ def validate_native_boundary(config, *, allow_large_mesh=None):
     formulas = [section[key] for section in sections for key in ("formula", "type") if key in section]
     normalized = [str(value).strip().upper() for value in formulas]
     markers = set(normalized).intersection(NATIVE_MARKERS)
+    # Inspect source-body intent before the ordinary parser's early return.
+    # No spelling or location may quietly turn an exterior body into a horn.
+    payloads = []
+    pending = [config]
+    seen = set()
+    while pending:
+        section = pending.pop()
+        if not isinstance(section,Mapping) or id(section) in seen:
+            continue
+        seen.add(id(section))
+        for key,value in section.items():
+            if str(key).replace("_","").lower()=="sourcebody":
+                payloads.append((section,key))
+            if isinstance(value,Mapping):
+                pending.append(value)
+    if payloads and (markers != {"SOURCE-DISK"} or any(section is not config or key!="source_body" for section,key in payloads)):
+        _fail("source_body requires a root SOURCE-DISK formula and the exact root source_body key.")
     if not markers:
         return None
     if len(markers) != 1:

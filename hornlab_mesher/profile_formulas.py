@@ -363,6 +363,8 @@ def calculate_osse(
     *,
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
     if "mouthRoundoverRadiusMm" in params:
@@ -456,6 +458,8 @@ def calculate_osse_curve(
     builders call this so the parameter set, the coverage inversion and the
     terminating-arc solve are each paid once per meridian.
     """
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
 
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
@@ -539,6 +543,8 @@ def calculate_osse_curve(
 def osse_length_config(
     params: Mapping[str, Any], p: float = 0.0
 ) -> tuple[float, float, float, float]:
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     raw_L = eval_param(params.get("L"), p, 120.0)
     if not raw_L > 0.0:
         # A zero or negative length used to clamp to 0 and build a plain r0
@@ -572,6 +578,8 @@ def osse_length_config(
 
 
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical length")
     if "mouthRoundoverRadiusMm" in params:
@@ -623,6 +631,8 @@ def _throat_extension_start_radius(r0_base: float, ext_len: float, ext_angle: fl
 
 
 def rosse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     # Like ATH, the extension adds to the total length; the main R-OSSE curve
@@ -926,6 +936,8 @@ class RosseAxialLayout(NamedTuple):
 
 
 def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialLayout:
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     main_length = _rosse_length(params, p)
@@ -946,6 +958,8 @@ def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialL
 def calculate_rosse(
     t: float, p: float, params: Mapping[str, Any]
 ) -> tuple[float, float]:
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     validate_stretch_composition(params, "R-OSSE")
     s1, s2 = stretch_coefficients(params)  # validate even prefix stations
     r0_base = eval_param(params.get("r0"), p, 12.7)
@@ -992,6 +1006,8 @@ def calculate_rosse_curve(
     builders call this because resolving the parameter set once per meridian
     rather than once per grid point is the whole cost of an R-OSSE preview.
     """
+    if "sourceBody" in params:
+        raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
 
     validate_stretch_composition(params, "R-OSSE")
     s1, s2 = stretch_coefficients(params)

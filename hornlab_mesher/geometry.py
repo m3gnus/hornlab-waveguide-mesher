@@ -330,7 +330,9 @@ class PointGridHornGeometry:
         return PointGridBuildMode.BARE
 
 
-HornGeometry = OsseHornGeometry | PointGridHornGeometry
+from .source_body import StandaloneSourceGeometry
+
+HornGeometry = OsseHornGeometry | PointGridHornGeometry | StandaloneSourceGeometry
 # Note: RosseHornGeometry is intentionally NOT in the buildable union - the
 # ROSSE curve is non-monotonic in z for typical parameter ranges, so
 # the internal axial loft helper cannot consume it. Use compute_rosse_profile_points

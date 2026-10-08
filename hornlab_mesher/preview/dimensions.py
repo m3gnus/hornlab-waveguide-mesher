@@ -46,6 +46,10 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     native = validate_native_boundary(full)
     # Check each native feature's original physical domain before zeroing placement.
     native_params = build_geometry_params(full) if native is not None else None
+    if native == "SOURCE-DISK":
+        from ..source_body import StandaloneSourceGeometry
+        model=StandaloneSourceGeometry(**native_params[0]["sourceBody"])
+        return {"source_diameter":[2*model.radius_mm]*2,"body_overall":[2*model.outer_radius_mm,2*model.outer_radius_mm,model.depth_mm]}
     axial = native_params if native == "OSSE-AXIAL" else configuration(full, build_geometry_params)
     if axial is not None:
         from ..axial_scale import AxialModel
