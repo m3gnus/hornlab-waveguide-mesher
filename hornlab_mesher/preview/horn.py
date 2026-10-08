@@ -265,6 +265,10 @@ def _semantic_t_stations(
     inserted = ["throat", "mouth"]
     unavailable = ["OSSE extension/slot boundaries when expression-valued"]
     params = output["params"]
+    if params.get("throat_adapter"):
+        targets.append(.5)
+        inserted.append("adapter join")
+        unavailable.remove("OSSE extension/slot boundaries when expression-valued")
 
     morph_start = params.get("morphFixed")
     if isinstance(morph_start, (int, float)) and 0.0 < float(morph_start) < 1.0:

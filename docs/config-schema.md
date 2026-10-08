@@ -17,10 +17,11 @@ Unsupported extensions fail before any geometry is built.
 
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. |
+| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `OSSE-ADAPTER`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. `OSSE-ADAPTER` requires an active authored `throat_adapter`. |
 | `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
 | `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
 | `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
+| `throat_adapter` | `profile.throat_adapter` | absent | Native authored circular adapter; see [Throat Adapter](#throat-adapter). Supply it in only one location. |
 | `output.path` | top-level `path`, `output_path`, CLI `-o` | none | Required by the CLI unless `-o/--output` is passed. |
 
 If enclosure depth is positive, mode becomes `enclosure` even when `mode` is
@@ -42,6 +43,7 @@ via `aperture_res_scale = 1.0`; larger values coarsen its interior.
 Accepted TOML/JSON sections:
 
 - `profile` or `parameters`
+- `throat_adapter` (also accepted inside `profile`)
 - `mesh`
 - `enclosure`
 - `cross_section` or `crossSection`
@@ -304,6 +306,37 @@ you want ICW to fit an existing OSSE/R-OSSE meridian.
 
 Numeric profile keys may be numbers or expression strings. Expression strings
 are evaluated later by the profile layer where supported.
+
+## Throat Adapter
+
+Native JSON and TOML accept `throat_adapter` at the top level or inside
+`profile`, but refuse duplicate locations. Active mode requires
+`formula = "OSSE-ADAPTER"`, `mode = "bare"`, and an explicit flat source
+(`source.source_shape = 0`). The initial construction supports circular
+scalar OSSE profile 1 with zero termination strength.
+
+| Key | Required value or meaning |
+| --- | --- |
+| `mode` | `authored` activates the adapter; `off` retains ordinary `OSSE` geometry. |
+| `contract_revision` | Integer `1`; defaults to `1` when omitted. |
+| `driver_exit_diameter_mm` | Positive driver opening diameter. |
+| `exit_half_angle_deg` | Driver tangent angle from the forward axis. |
+| `length_mm` | Positive axial distance from the driver plane to the body join. |
+| `join_t` | Original-body join station, `0 <= join_t < 1`, leaving a resolvable retained body. |
+| `driver_handle_mm` | Positive driver tangent handle length. |
+| `body_handle_mm` | Positive body tangent handle length. |
+
+All six controls are required finite numbers in authored mode. Unknown
+fields, modes and contract revisions refuse. Ordinary `OSSE` with an active
+payload, or `OSSE-ADAPTER` without an active payload, also refuses. To disable
+the adapter, select ordinary `OSSE` and omit the object or use `mode = "off"`.
+Inactive controls do not affect geometry or construction identity.
+
+Unsupported compositions and controls that cannot satisfy the numeric or
+geometric validity bounds refuse before construction. See the
+[native adapter contract and example](native-throat-adapter.md) for exact
+scope, numeric bounds, tangent handles, shared preview/mesh/STEP construction,
+and export limitations.
 
 ## Cross Section
 

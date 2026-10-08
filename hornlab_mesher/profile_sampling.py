@@ -1584,6 +1584,9 @@ def build_point_grid_arrays(
     the preview path takes ``inner_grid``/``outer_grid`` and never spells them.
     """
 
+    from .throat_adapter import resolve_adapter
+
+    adapter = resolve_adapter(params)
     _validate_static_morph_target(params)
     formula = _normalise_formula(params.get("type", "OSSE"))
     quadrants = _normalise_quadrants(params.get("quadrants", "1234"))
@@ -1604,7 +1607,21 @@ def build_point_grid_arrays(
     ):
         raise ValueError(GCURVE_CROSS_SECTION_CONFLICT)
     phi_grid: np.ndarray | None = None
-    if formula == "FREEFORM":
+    if adapter is not None:
+        angles, full_circle = _angle_list(params)
+        t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+        t_unit_values = _pin_axial_stations(
+            t_unit_values, [0.5, *(params.get(ACOUSTIC_AXIAL_STATIONS_KEY) or ())]
+        )
+        t_unit_values = np.sort(np.append(t_unit_values[np.abs(t_unit_values-.5) > 1e-9], .5))
+        t_values = t_unit_values
+        n_length = len(t_values)-1
+        t_max = 1.0
+        z, r = adapter.evaluate(t_values)
+        raw_radials = np.broadcast_to(r, (len(angles), len(t_values))).copy()
+        z_values = np.broadcast_to(z, raw_radials.shape).copy()
+        throat_prefix = _ThroatPrefix(.5, .5)
+    elif formula == "FREEFORM":
         (
             raw_radials,
             z_values,
@@ -1851,6 +1868,9 @@ def build_point_grid_arrays(
                     )
 
     return {
+        **({"construction_fingerprint": adapter.fingerprint,
+            "semantic_stations": {"driver": 0.0, "adapter_join": .5, "mouth": 1.0}}
+           if adapter is not None else {}),
         "inner_grid": inner,
         "outer_grid": outer,
         "outer_offset_fold": outer_fold,

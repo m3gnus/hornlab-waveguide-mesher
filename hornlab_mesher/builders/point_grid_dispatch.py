@@ -293,7 +293,11 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     if build_mode is PointGridBuildMode.INFINITE_BAFFLE:
         return _build_coupled_baffle_point_grid(geometry, inner_points, source_shape)
 
-    if build_mode is PointGridBuildMode.ENCLOSURE:
+    if getattr(geometry, "adapter_meridian", None) is not None:
+        from .throat_adapter import build_adapter_surfaces
+
+        wall, throat = build_adapter_surfaces(geometry)
+    elif build_mode is PointGridBuildMode.ENCLOSURE:
         inner_points = _snap_open_symmetry_grid(
             inner_points,
             closed=geometry.closed,
@@ -492,6 +496,8 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             )
         )
     return BuiltGeometry(
+        metadata=({"construction_fingerprint": geometry.adapter_meridian.fingerprint}
+                  if getattr(geometry, "adapter_meridian", None) is not None else {}),
         surface_groups=surface_groups,
         axial_bounds_mm=(z0, z1),
         source_axis="z",

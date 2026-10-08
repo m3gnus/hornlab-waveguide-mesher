@@ -55,6 +55,7 @@ from .builders.point_grid_freestanding import (
 from .builders.point_grid_surfaces import _rear_rim_points
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
+from .throat_adapter import normalize_adapter, resolve_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -805,10 +806,41 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     morph = _section(config, "morph", "MORPH")
     gcurve = _section(config, "gcurve", "GCurve", "GCURVE")
     source = _section(config, "source", "Source")
+    if "throat_adapter" in config and "throat_adapter" in profile:
+        raise ConfigError("Curved adapter refused: supply throat_adapter in one location only.")
+    try:
+        adapter = normalize_adapter(_pick(config, profile, names=("throat_adapter",), default=None))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    if adapter is not None:
+        straight_aliases = (
+            "driver_throat_diameter_mm", "driver_throat_diameter", "driverThroatDiameterMm",
+            "driverThroatDiameter", "driver_throat_diameter_in", "driverThroatDiameterIn",
+            "waveguide_throat_diameter_mm", "waveguide_throat_diameter", "waveguideThroatDiameterMm",
+            "waveguideThroatDiameter", "waveguide_throat_diameter_in", "waveguideThroatDiameterIn",
+        )
+        if _has_any(config, profile, names=straight_aliases):
+            raise ConfigError("Curved adapter refused: clear the straight adapter diameter aliases before enabling authored mode.")
+        supplied_wall = _pick(mesh, config, names=("wall_thickness_mm", "wall_thickness", "wallThickness"), default=0)
+        if _numeric_param(supplied_wall, name="wall thickness") != 0:
+            raise ConfigError("Curved adapter refused: positive walls are not supported in authored mode.")
+        if _mesh_topology_mode(mesh) != "acoustic":
+            raise ConfigError("Curved adapter refused: authored mode requires acoustic topology.")
+        if _mesh_surface_fit(mesh) == "approximate":
+            raise ConfigError("Curved adapter refused: approximate surface fitting is not supported.")
 
-    formula = _normalise_formula(
-        _pick(config, profile, names=("formula", "type"), default="OSSE")
-    )
+    requested_formula = _pick(config, profile, names=("formula", "type"), default="OSSE")
+    adapter_marker = str(requested_formula).strip().upper() == "OSSE-ADAPTER"
+    if adapter is not None and not adapter_marker:
+        raise ConfigError("Curved adapter refused: active designs require formula='OSSE-ADAPTER' so older readers fail closed.")
+    if adapter_marker and adapter is None:
+        raise ConfigError("Curved adapter refused: formula='OSSE-ADAPTER' requires an active authored throat_adapter.")
+    formula = _normalise_formula("OSSE" if adapter_marker else requested_formula)
+    if adapter is not None:
+        for key in ("s1", "s2"):
+            supplied = _pick(profile, config, names=(key,), default=0)
+            if _numeric_param(supplied, name=key) != 0:
+                raise ConfigError(f"Curved adapter refused: {key} has no qualified construction in authored mode.")
     validate_supplied_stretch(config, formula)
     if formula in {"OSSE", "R-OSSE"}:
         composition = {key: _pick(profile, config, names=(key,), default=0.0)
@@ -827,6 +859,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, profile, cross, morph, gcurve, config)
     mode = _normalise_mode(config, mesh, enclosure, formula)
+    if adapter is not None and mode != "bare":
+        raise ConfigError("Curved adapter refused: authored mode currently requires bare mode.")
     enc_depth = 0.0
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
     if enclosure_obj is not None:
@@ -1206,6 +1240,15 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             formula,
             length_supplied=_has_any(profile, config, names=("L_mm", "L", "Length")),
         )
+    if adapter is not None:
+        common["throat_adapter"] = adapter
+        # Keep raw profile selection visible to the bounded adapter validator.
+        common["throatProfile"] = _pick(profile, config, names=("throatProfile", "throat_profile"), default=1)
+        try:
+            construction = resolve_adapter(common)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        common["construction_fingerprint"] = construction.fingerprint
     return common, formula, mode
 
 
@@ -1547,6 +1590,10 @@ def _freeform_source_auto_angle_deg(report: Mapping[str, Any]) -> float:
 
 def _source_auto_angle_deg(params: Mapping[str, Any], formula: str) -> float:
     """Throat opening angle used for automatic source cap construction."""
+    if params.get("throat_adapter"):
+        adapter = resolve_adapter(params)
+        if adapter is not None:
+            return adapter.payload["exit_half_angle_deg"]
     if formula == "FREEFORM":
         return _freeform_source_auto_angle_deg(build_freeform_geometry(params).report())
     return azimuthal_mean(params.get("a0"), 15.5)
@@ -1828,7 +1875,7 @@ def _build_acoustic_sampling_grid(
             working[ACOUSTIC_AXIAL_STATIONS_KEY] = stations
     if formula == "FREEFORM":
         working[FREEFORM_CONTINUOUS_COLLAPSE_KEY] = True
-    if not working.get("zMapPoints") and formula != "FREEFORM":
+    if not working.get("zMapPoints") and formula != "FREEFORM" and not working.get("throat_adapter"):
         working["samplingMode"] = "ath-default-zmap"
 
     def finish_grid(grid, fitted_params):
@@ -2195,6 +2242,9 @@ def resolve_geometry(
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_quadrants(quadrants)
     source_auto_angle_deg = azimuthal_mean(params.get("a0"), 15.5)
+    adapter = resolve_adapter(params)
+    if adapter is not None:
+        source_auto_angle_deg = adapter.payload["exit_half_angle_deg"]
     freeform_axis_samples_mm: np.ndarray | None = None
     freeform_report: dict[str, Any] | None = None
     if formula == "FREEFORM":
@@ -2217,6 +2267,16 @@ def resolve_geometry(
         freeform_axis_samples_mm = scale * np.vstack((h_samples, v_samples))
     geometry_cls = PointGridHornGeometry if stretch_is_inactive(params) else _StretchedPointGridHornGeometry
     probe_kwargs = {}
+    if adapter is not None:
+        from .geometry import _AdapterPointGridHornGeometry
+
+        if topology_mode != "acoustic":
+            raise ConfigError("Curved adapter refused: authored mode requires acoustic topology.")
+        if _mesh_surface_fit(mesh) == "approximate":
+            raise ConfigError("Curved adapter refused: approximate surface fitting is not supported.")
+        geometry_cls = _AdapterPointGridHornGeometry
+        probe_kwargs["adapter_meridian"] = adapter
+        probe_kwargs["adapter_scale"] = float(params["scale"])
     if outer_points is not None and "outer_clearance_points" in grid:
         from .geometry import (
             _MouthFittedPointGridHornGeometry, _MouthFittedStretchedPointGridHornGeometry,
@@ -2264,7 +2324,9 @@ def resolve_geometry(
         quadrants=quadrants,
         native_symmetry_plane=native_plane,
         scale_to_metres=scale_to_metres,
-        sampling_metadata=geometry_sampling_metadata,
+        sampling_metadata={**geometry_sampling_metadata,
+                           **({"construction_fingerprint": adapter.fingerprint,
+                               "throat_adapter": dict(adapter.payload)} if adapter is not None else {})},
         freeform_report=freeform_report,
     )
 
@@ -2281,6 +2343,7 @@ def build_from_config(
     chose_automatically = (
         _mesh_surface_fit(_section(config, "mesh")) == "auto"
         and getattr(geometry, "surface_fit", None) == "interpolate"
+        and getattr(geometry, "adapter_meridian", None) is None
     )
     try:
         mesh_path, info = build_mesh_with_info(

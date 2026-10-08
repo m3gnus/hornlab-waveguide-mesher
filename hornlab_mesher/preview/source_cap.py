@@ -60,6 +60,8 @@ def _source_cap(
     geometry = _source_geometry(params, formula, inner)
     cap_height = _source_cap_height(throat_radius, geometry)
     radius = _source_cap_radius(throat_radius, geometry)
+    if params.get("throat_adapter") and int(geometry.source_shape) == 0:
+        radius = float(params["throat_adapter"]["driver_exit_diameter_mm"])*float(params.get("scale", 1))/2
     details: dict[str, float | None] = {
         "source_cap_height_mm": float(cap_height),
         "source_cap_radius_mm": float(radius) if math.isfinite(radius) else None,

@@ -363,6 +363,16 @@ def calculate_osse(
     *,
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
+    if "throat_adapter" in params:
+        from .throat_adapter import resolve_adapter
+
+        adapter = resolve_adapter(params)
+        if adapter is not None:
+            if coverage_angle is not None:
+                raise ValueError("Curved adapter refused: coverage overrides are not supported.")
+            depth = adapter.payload["length_mm"] + adapter.length*(1-adapter.payload["join_t"])
+            x, radius = adapter.evaluate(float(z)/depth)
+            return float(x), float(radius)
     validate_stretch_composition(params, "OSSE")
     L, _, ext_len, slot_len = osse_length_config(params, p)
     s1, s2 = stretch_coefficients(params)
@@ -443,6 +453,15 @@ def calculate_osse_curve(
     terminating-arc solve are each paid once per meridian.
     """
 
+    if "throat_adapter" in params:
+        from .throat_adapter import resolve_adapter
+
+        adapter = resolve_adapter(params)
+        if adapter is not None:
+            if coverage_angle is not None:
+                raise ValueError("Curved adapter refused: coverage overrides are not supported.")
+            depth = adapter.payload["length_mm"] + adapter.length*(1-adapter.payload["join_t"])
+            return adapter.evaluate(np.asarray(z_values, dtype=np.float64)/depth)
     validate_stretch_composition(params, "OSSE")
     z = np.asarray(z_values, dtype=np.float64)
     L, _total, ext_len, slot_len = osse_length_config(params, p)
@@ -545,6 +564,12 @@ def osse_length_config(
 
 
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
+    if "throat_adapter" in params:
+        from .throat_adapter import resolve_adapter
+
+        adapter = resolve_adapter(params)
+        if adapter is not None:
+            return adapter.payload["length_mm"] + adapter.length*(1-adapter.payload["join_t"])
     return osse_length_config(params, p)[1]
 
 

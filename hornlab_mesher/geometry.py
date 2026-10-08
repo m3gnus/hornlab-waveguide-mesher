@@ -339,6 +339,14 @@ HornGeometry = OsseHornGeometry | PointGridHornGeometry
 
 
 @dataclass(frozen=True)
+class _AdapterPointGridHornGeometry(PointGridHornGeometry):
+    """Circular native construction shared by sampled and exact CAD terminals."""
+
+    adapter_meridian: Any = None
+    adapter_scale: float = 1.0
+
+
+@dataclass(frozen=True)
 class _StretchedPointGridHornGeometry(PointGridHornGeometry):
     """Active stretch fits identical quadrant patches in reduced/full builds."""
 

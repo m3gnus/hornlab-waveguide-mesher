@@ -439,6 +439,16 @@ def build_preview_geometry(
     # spellings, which injected a z-map into ICW and skipped FREEFORM's corner
     # sampling.
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
+    adapter_construction = None
+    if parsed_params.get("throat_adapter"):
+        from ..throat_adapter import resolve_adapter
+
+        adapter_construction = resolve_adapter(parsed_params)
+    if parsed_params.get("throat_adapter") and options.max_chord_error_mm is None:
+        adapter = parsed_params["throat_adapter"]
+        feature_mm = min(adapter["driver_exit_diameter_mm"]/2, adapter["length_mm"],
+                         adapter["driver_handle_mm"], adapter["body_handle_mm"])*float(parsed_params["scale"])
+        chord_target = min(.008, .001*feature_mm)
     formula_name = str(_parsed_formula)
     has_corners = _configuration_has_corners(parsed_params, formula_name)
     corner_intervals = _intervals_for_arc(
@@ -464,6 +474,10 @@ def build_preview_geometry(
         angular_master = max(
             4 * silhouette_target, 4 * int(math.ceil(360.0 / normal_target))
         )
+    if adapter_construction is not None:
+        radius_bound = max(float(np.max(adapter_construction.cubic[:, 1])),
+                           float(adapter_construction.body_poles[-1, 1]))*float(parsed_params["scale"])
+        angular_master = max(angular_master, 4*int(math.ceil(math.pi*math.sqrt(radius_bound/chord_target))))
     if angular_master > _MAX_ANGULAR_SAMPLES:
         angular_master = _MAX_ANGULAR_SAMPLES
         preflight_limited = True
@@ -543,7 +557,7 @@ def build_preview_geometry(
             axial_power=axial_power,
             axial_seed=int(preset["axial"]),
             silhouette_target=silhouette_target,
-            chord_target=chord_target,
+            chord_target=chord_target/2 if adapter_construction is not None else chord_target,
             normal_target=normal_target,
             vertex_cap=vertex_cap,
             has_corners=has_corners,
@@ -583,6 +597,15 @@ def build_preview_geometry(
     t_indices = level.t_indices
     phi_indices = level.phi_indices
     horn_achieved = level.achieved
+    if adapter_construction is not None:
+        analytic_bound = adapter_construction.preview_chord_bound(
+            master_t[t_indices], master_phi[0, phi_indices], float(parsed_params["scale"])
+        )
+        horn_achieved = {**horn_achieved, "max_chord_error_mm": analytic_bound,
+                         "measurement_complete": True, "unmeasured_intervals": 0,
+                         "vertex_cap_limited": analytic_bound > chord_target
+                         or horn_achieved.get("max_normal_step_deg", 0) > normal_target,
+                         "error_bound_method": "circular-meridian-second-derivative"}
     refinement_time_limited = bool(horn_achieved.get("refinement_time_limited"))
     inner_canonical = grid_data["inner_grid"]
 
@@ -1066,6 +1089,9 @@ def build_preview_geometry(
     }
     total_ms = (time.perf_counter() - start) * 1000.0
     metadata: dict[str, Any] = {
+        **({"construction_fingerprint": parsed_params["construction_fingerprint"],
+            "throat_adapter": copy.deepcopy(parsed_params["throat_adapter"])}
+           if parsed_params.get("throat_adapter") else {}),
         "api_version": _API_VERSION,
         "metadata_version": _METADATA_VERSION,
         "units": "mm",
@@ -1184,6 +1210,12 @@ def build_preview_geometry(
             "exhausted": refinement_time_limited,
         }
     _validate_finite_metadata(metadata)
+    if parsed_params.get("throat_adapter") and options.max_chord_error_mm is None:
+        horn_fidelity = fidelity.get("inner", fidelity.get("horn.inner", {}))
+        if horn_fidelity and (horn_fidelity.get("vertex_cap_limited")
+                or not horn_fidelity.get("measurement_complete", True)
+                or (horn_fidelity.get("max_chord_error_mm") or 0) > chord_target):
+            raise ValueError("Curved adapter refused: default preview fidelity could not be certified within its sampling limits.")
     return PreviewGeometryV1(surfaces=surfaces, metadata=metadata)
 
 

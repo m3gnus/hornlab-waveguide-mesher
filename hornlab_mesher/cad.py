@@ -110,6 +110,14 @@ class CadInfo:
 
 
 @dataclass(frozen=True)
+class _AdapterCadInfo(CadInfo):
+    """Active native recipe identity, without changing ordinary CAD metadata."""
+
+    construction_fingerprint: str = ""
+    construction: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class WgLinkIdentity:
     """Caller-owned identity/provenance sections emitted without augmentation."""
 
@@ -518,12 +526,21 @@ def write_step(
             text = normalise_step_header(
                 staged_path.read_text(encoding="utf-8", errors="replace")
             )
+            adapter = getattr(geometry, "adapter_meridian", None)
+            if adapter is not None:
+                recipe = {"construction_fingerprint": adapter.fingerprint, **adapter.identity}
+                comment = "/* native-construction " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
+                text = text.replace("HEADER;", "HEADER;\n" + comment, 1)
             _assert_step(text, body=body)
             staged_path.write_text(text, encoding="utf-8")
             staged_path.replace(out_path)
             staged_path = None
             wrote = True
-            return out_path, CadInfo(
+            info_cls = _AdapterCadInfo if adapter is not None else CadInfo
+            identity_fields = ({"construction_fingerprint": adapter.fingerprint,
+                                "construction": deepcopy(dict(adapter.identity))}
+                               if adapter is not None else {})
+            return out_path, info_cls(
                 path=out_path,
                 body=body,
                 n_faces=int(n_faces),
@@ -533,6 +550,7 @@ def write_step(
                     (float(box[3]), float(box[4]), float(box[5])),
                 ),
                 throat_opened=throat_opened,
+                **identity_fields,
             )
         except MesherError:
             raise
