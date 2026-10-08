@@ -116,6 +116,15 @@ class _AdapterCadInfo(CadInfo):
     construction_fingerprint: str = ""
     construction: Mapping[str, Any] | None = None
 
+@dataclass(frozen=True)
+class _RoundoverCadInfo(CadInfo):
+    mouth_roundover: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _AxialCadInfo(CadInfo):
+    absolute_axial_scale: Mapping[str, Any] | None = None
+
 
 @dataclass(frozen=True)
 class WgLinkIdentity:
@@ -391,6 +400,10 @@ def write_step(
     Turning it off keeps the sewn acoustic boundary, throat plug and all.
     """
 
+    if sum(getattr(geometry, name, None) is not None
+           for name in ("adapter_meridian", "roundover", "axial_model")) > 1:
+        raise MesherError("combined active native geometry features are not supported")
+
     import gmsh
 
     if isinstance(geometry, PointGridHornGeometry) and not geometry.closed:
@@ -527,19 +540,34 @@ def write_step(
                 staged_path.read_text(encoding="utf-8", errors="replace")
             )
             adapter = getattr(geometry, "adapter_meridian", None)
+            roundover = getattr(geometry, "roundover", None)
             if adapter is not None:
                 recipe = {"construction_fingerprint": adapter.fingerprint, **adapter.identity}
                 comment = "/* native-construction " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
                 text = text.replace("HEADER;", "HEADER;\n" + comment, 1)
+            if roundover is not None:
+                recipe = {"contractRevision":1, "formula":"OSSE-ROUNDOVER", "controls":roundover.__dict__,
+                          **roundover.metadata()}
+                text = text.replace("END-ISO-10303-21;", "/* hornlab-mouth-roundover " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
+            axial = getattr(geometry, "axial_model", None)
+            if axial is not None:
+                recipe = {"contractRevision":1,"formula":"OSSE-AXIAL","controls":axial.__dict__,**axial.metadata()}
+                text = text.replace("END-ISO-10303-21;", "/* hornlab-absolute-axial-scale " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
             _assert_step(text, body=body)
             staged_path.write_text(text, encoding="utf-8")
             staged_path.replace(out_path)
             staged_path = None
             wrote = True
-            info_cls = _AdapterCadInfo if adapter is not None else CadInfo
+            info_cls = (_AdapterCadInfo if adapter is not None else
+                        _RoundoverCadInfo if roundover is not None else
+                        _AxialCadInfo if axial is not None else CadInfo)
             identity_fields = ({"construction_fingerprint": adapter.fingerprint,
                                 "construction": deepcopy(dict(adapter.identity))}
                                if adapter is not None else {})
+            if roundover is not None:
+                box = (*roundover.bounds[0], *roundover.bounds[1])
+            if axial is not None:
+                box = (*axial.bounds[0], *axial.bounds[1])
             return out_path, info_cls(
                 path=out_path,
                 body=body,
@@ -551,6 +579,8 @@ def write_step(
                 ),
                 throat_opened=throat_opened,
                 **identity_fields,
+                **({} if roundover is None else {"mouth_roundover":roundover.metadata()["mouthRoundover"]}),
+                **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
             )
         except MesherError:
             raise
@@ -584,10 +614,13 @@ def write_step_from_config(
     of itself, so CAD export closes it back up by default.
     """
 
-    from .config_builder import resolve_geometry
+    from .config_builder import build_geometry_params, resolve_geometry
+    from .native_boundary import validate_native_boundary
 
     if not isinstance(config, Mapping):
         raise MesherError("config must be a mapping")
+    if validate_native_boundary(config) is not None:
+        build_geometry_params(config)
     working = deepcopy(dict(config))
     if full_model:
         mesh = working.get("mesh")
@@ -1091,6 +1124,10 @@ def write_wglink(
 
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    if getattr(geometry, "roundover", None) is not None:
+        raise MesherError("wglink export refuses mouth roundovers until the analytic recipe has a qualified bundle transport")
+    if getattr(geometry, "axial_model", None) is not None:
+        raise MesherError("wglink export refuses absolute axial scaling until the analytic recipe has a qualified bundle transport")
     mode = geometry.build_mode
     if mode not in _SOLID_BUILD_MODES:
         raise MesherError(

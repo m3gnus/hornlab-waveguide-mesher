@@ -324,6 +324,9 @@ def build_mesh_with_info(
             else:
                 gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
+            if getattr(acoustic_geometry, "roundover", None) is not None:
+                from .builders.mouth_roundover import certify_lip_mesh
+                certify_lip_mesh(acoustic_geometry.roundover, built)
             if (getattr(acoustic_geometry, 'outer_clearance_points_mm', None) is not None
                     and np.all(np.diff(acoustic_geometry.inner_points[..., 2], axis=1) >= -1e-6)):
                 from .facet_fit import repair_fitted_wall_mesh
@@ -369,10 +372,11 @@ def build_mesh_with_info(
                     and geometry.build_mode.value == 'freestanding' else None),
                 wall_thickness_mm=float(getattr(geometry, 'wall_thickness_mm', 0)),
                 shell_mesh_density=mesh_density,
-                # Native adapters fragment the wall and source into shared
-                # OCC edges; Gmsh already removes duplicate nodes above.
-                # Approximate welding would collapse valid small/dense edges.
-                weld_near_duplicates=getattr(geometry, "adapter_meridian", None) is None,
+                # Native bodies share their OCC wall/source edges; the exact
+                # duplicate-node removal above is sufficient. Approximate
+                # welding would collapse valid nearby dense-mesh vertices.
+                weld_near_duplicates=all(getattr(geometry, name, None) is None
+                    for name in ("adapter_meridian", "roundover", "axial_model")),
             )
             limit = effective_triangle_limit(built, mesh_density)
             if limit is not None:

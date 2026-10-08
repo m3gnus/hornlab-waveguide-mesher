@@ -372,6 +372,13 @@ def build_preview_geometry(
     except Exception as exc:
         dimensions_config = None
         dimensions_snapshot_error = str(exc) or type(exc).__name__
+    params, _, _ = build_geometry_params(config)
+    if "absoluteAxialScale" in params:
+        from .axial_scale import build
+        return build(params, options)
+    if "mouthRoundoverRadiusMm" in params:
+        from .mouth_roundover import build
+        return build(params, options)
     lod = str(options.lod).strip().lower()
     if lod not in _LOD_PRESETS:
         raise ValueError("lod must be 'coarse', 'fine', or 'inspection'")

@@ -347,10 +347,24 @@ class _AdapterPointGridHornGeometry(PointGridHornGeometry):
 
 
 @dataclass(frozen=True)
+class _AxialPointGridHornGeometry(PointGridHornGeometry):
+    """An immutable canonical model accompanies its compatibility sample grid."""
+
+    axial_model: object | None = None
+
+
+@dataclass(frozen=True)
 class _StretchedPointGridHornGeometry(PointGridHornGeometry):
     """Active stretch fits identical quadrant patches in reduced/full builds."""
 
     quadrant_patch_fit: bool = True
+
+
+@dataclass(frozen=True)
+class _RoundoverPointGridHornGeometry(PointGridHornGeometry):
+    """Active circular lip keeps its analytic meridian through every export."""
+
+    roundover: object | None = None
 
 
 def _validate_outer_clearance_probe(geometry):

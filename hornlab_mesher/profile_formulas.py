@@ -363,6 +363,10 @@ def calculate_osse(
     *,
     coverage_angle: float | None = None,
 ) -> tuple[float, float]:
+    if "absoluteAxialScale" in params:
+        raise ValueError("absolute axial scale requires its canonical physical meridian")
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires the canonical composite meridian, not the body-only formula")
     if "throat_adapter" in params:
         from .throat_adapter import resolve_adapter
 
@@ -453,6 +457,10 @@ def calculate_osse_curve(
     terminating-arc solve are each paid once per meridian.
     """
 
+    if "absoluteAxialScale" in params:
+        raise ValueError("absolute axial scale requires its canonical physical meridian")
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires the canonical composite meridian, not the body-only formula")
     if "throat_adapter" in params:
         from .throat_adapter import resolve_adapter
 
@@ -564,6 +572,10 @@ def osse_length_config(
 
 
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
+    if "absoluteAxialScale" in params:
+        raise ValueError("absolute axial scale requires its canonical physical length")
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires its full analytic envelope, not the body-only length")
     if "throat_adapter" in params:
         from .throat_adapter import resolve_adapter
 

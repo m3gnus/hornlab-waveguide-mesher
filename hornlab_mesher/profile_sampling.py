@@ -1584,6 +1584,10 @@ def build_point_grid_arrays(
     the preview path takes ``inner_grid``/``outer_grid`` and never spells them.
     """
 
+    if "absoluteAxialScale" in params:
+        raise ValueError("absolute axial scale requires resolve_geometry or the complete preview API")
+    if "mouthRoundoverRadiusMm" in params:
+        raise ValueError("mouth roundover requires resolve_geometry or the complete preview API; a body-only grid would omit the lip")
     from .throat_adapter import resolve_adapter
 
     adapter = resolve_adapter(params)

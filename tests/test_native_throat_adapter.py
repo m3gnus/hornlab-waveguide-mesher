@@ -152,7 +152,8 @@ def test_invalid_payload_refuses(change):
 def test_unsupported_composition_refuses_before_sampling(section, key, value):
     cfg = config()
     cfg.setdefault(section, {})[key] = value
-    with pytest.raises(ConfigError, match="Curved adapter refused"):
+    message = "Native geometry refused: quadrants" if key == "quadrants" else "Curved adapter refused"
+    with pytest.raises(ConfigError, match=message):
         build_geometry_params(cfg)
 
 

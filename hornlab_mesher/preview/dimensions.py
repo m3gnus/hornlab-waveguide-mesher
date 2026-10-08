@@ -40,10 +40,24 @@ class _MeasurementWarnings(logging.Filter):
 
 def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     """Bound the full design's resolved controls, before CAD surface fitting."""
+    from ..native_boundary import validate_native_boundary
+    from ..axial_scale import configuration
     full = copy.deepcopy(dict(config))
+    native = validate_native_boundary(full)
+    # Check each native feature's original physical domain before zeroing placement.
+    native_params = build_geometry_params(full) if native is not None else None
+    axial = native_params if native == "OSSE-AXIAL" else configuration(full, build_geometry_params)
+    if axial is not None:
+        from ..axial_scale import AxialModel
+        model = AxialModel.from_params(axial[0])
+        diameter = 2*float(model.body(model.length)[0][1])
+        return {"mouth_opening":[diameter]*2,"horn_overall":[diameter,diameter,model.length]}
     mesh = full.get("mesh", {})
     if not isinstance(mesh, Mapping):
         raise TypeError("dimension measurement requires mesh to be a mapping")
+    # Measurement removes rigid placement at both supported locations.
+    full.pop("vertical_offset_mm", None)
+    full.pop("verticalOffset", None)
     full["mesh"] = dict(mesh, quadrants="1234", vertical_offset_mm=0.0)
     full["mesh"].pop("verticalOffset", None)
     loggers = [logging.getLogger(name) for name in (
@@ -60,6 +74,11 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _geometry_dimensions(geometry) -> dict[str, Any]:
+    if getattr(geometry, "roundover", None) is not None:
+        model = geometry.roundover
+        box = np.asarray(model.bounds)
+        return {"mouth_opening":[2*float(model.body(model.length)[0][1])]*2,
+                "horn_overall":(box[1]-box[0]).tolist()}
     inner = geometry.inner_points
     points = [inner.reshape(-1, 3)]
     if geometry.outer_points is not None:

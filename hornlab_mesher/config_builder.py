@@ -799,6 +799,16 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
 
 @stretch_config_errors
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
+    from .native_boundary import validate_native_boundary
+    validate_native_boundary(config)
+    from .axial_scale import configuration as axial_configuration
+    axial = axial_configuration(config, build_geometry_params)
+    if axial is not None:
+        return axial
+    from .mouth_roundover import configuration
+    roundover = configuration(config, build_geometry_params)
+    if roundover is not None:
+        return roundover
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
@@ -2163,7 +2173,15 @@ def resolve_geometry(
 ) -> ResolvedGeometry:
     """Build the point-grid geometry a config describes, without meshing it."""
 
+    from .native_boundary import validate_native_boundary
+    validate_native_boundary(config, allow_large_mesh=allow_large_mesh)
     params, formula, mode = build_geometry_params(config)
+    if "absoluteAxialScale" in params:
+        from .axial_scale import resolve
+        return resolve(config, params, allow_large_mesh)
+    if "mouthRoundoverRadiusMm" in params:
+        from .mouth_roundover import resolve
+        return resolve(config, params, allow_large_mesh)
     _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
@@ -2341,7 +2359,9 @@ def build_from_config(
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
     geometry = resolved.geometry
     chose_automatically = (
-        _mesh_surface_fit(_section(config, "mesh")) == "auto"
+        getattr(geometry, "roundover", None) is None
+        and getattr(geometry, "axial_model", None) is None
+        and _mesh_surface_fit(_section(config, "mesh")) == "auto"
         and getattr(geometry, "surface_fit", None) == "interpolate"
         and getattr(geometry, "adapter_meridian", None) is None
     )
