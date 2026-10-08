@@ -372,6 +372,13 @@ def build_preview_geometry(
     except Exception as exc:
         dimensions_config = None
         dimensions_snapshot_error = str(exc) or type(exc).__name__
+    from ..native_boundary import validate_native_boundary
+    from ..axial_scale import configuration
+    validate_native_boundary(config)
+    axial = configuration(config, build_geometry_params)
+    if axial is not None:
+        from .axial_scale import build
+        return build(axial[0], options)
     lod = str(options.lod).strip().lower()
     if lod not in _LOD_PRESETS:
         raise ValueError("lod must be 'coarse', 'fine', or 'inspection'")

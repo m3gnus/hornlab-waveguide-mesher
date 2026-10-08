@@ -110,6 +110,11 @@ class CadInfo:
 
 
 @dataclass(frozen=True)
+class _AxialCadInfo(CadInfo):
+    absolute_axial_scale: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class WgLinkIdentity:
     """Caller-owned identity/provenance sections emitted without augmentation."""
 
@@ -518,12 +523,19 @@ def write_step(
             text = normalise_step_header(
                 staged_path.read_text(encoding="utf-8", errors="replace")
             )
+            axial = getattr(geometry, "axial_model", None)
+            if axial is not None:
+                recipe = {"contractRevision":1,"formula":"OSSE-AXIAL","controls":axial.__dict__,**axial.metadata()}
+                text = text.replace("END-ISO-10303-21;", "/* hornlab-absolute-axial-scale " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
             _assert_step(text, body=body)
             staged_path.write_text(text, encoding="utf-8")
             staged_path.replace(out_path)
             staged_path = None
             wrote = True
-            return out_path, CadInfo(
+            info_class = CadInfo if axial is None else _AxialCadInfo
+            if axial is not None:
+                box = (*axial.bounds[0], *axial.bounds[1])
+            return out_path, info_class(
                 path=out_path,
                 body=body,
                 n_faces=int(n_faces),
@@ -533,6 +545,7 @@ def write_step(
                     (float(box[3]), float(box[4]), float(box[5])),
                 ),
                 throat_opened=throat_opened,
+                **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
             )
         except MesherError:
             raise
@@ -566,10 +579,13 @@ def write_step_from_config(
     of itself, so CAD export closes it back up by default.
     """
 
-    from .config_builder import resolve_geometry
+    from .config_builder import build_geometry_params, resolve_geometry
+    from .native_boundary import validate_native_boundary
 
     if not isinstance(config, Mapping):
         raise MesherError("config must be a mapping")
+    if validate_native_boundary(config) is not None:
+        build_geometry_params(config)
     working = deepcopy(dict(config))
     if full_model:
         mesh = working.get("mesh")
@@ -1073,6 +1089,8 @@ def write_wglink(
 
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    if getattr(geometry, "axial_model", None) is not None:
+        raise MesherError("wglink export refuses absolute axial scaling until the analytic recipe has a qualified bundle transport")
     mode = geometry.build_mode
     if mode not in _SOLID_BUILD_MODES:
         raise MesherError(

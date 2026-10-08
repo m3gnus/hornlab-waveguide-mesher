@@ -93,6 +93,17 @@ def derive_datums(
     already placed so every artifact in a bundle shares one link-local frame.
     """
 
+    axial = getattr(geometry, "axial_model", None)
+    if axial is not None:
+        az = np.linspace(0,2*np.pi,64,endpoint=False)
+        radius = float(axial.body(axial.length)[0][1])
+        mouth = np.column_stack((radius*np.cos(az),radius*np.sin(az)+axial.offset,np.full(64,axial.length)))
+        throat_plane = {**_axis_plane("z",0),"origin_mm":[0.0,axial.offset,0.0],"nominal":False}
+        mouth_plane = {**_axis_plane("z",axial.length),"origin_mm":[0.0,axial.offset,axial.length]}
+        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.0,axial.offset,0.0],"direction":[0.0,0.0,1.0]},
+            "WG_THROAT_PLANE":throat_plane,"WG_MOUTH_PLANE":mouth_plane,
+            "WG_MOUTH_OUTLINE_INNER":_polyline(mouth),"WG_GEOM_MIDPLANE_Y":_axis_plane("y",axial.offset),
+            "WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.0),"WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.0)}
     mode = geometry.build_mode
     if mode not in {PointGridBuildMode.FREESTANDING, PointGridBuildMode.ENCLOSURE}:
         raise ValueError(

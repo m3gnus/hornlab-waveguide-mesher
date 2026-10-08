@@ -339,6 +339,13 @@ HornGeometry = OsseHornGeometry | PointGridHornGeometry
 
 
 @dataclass(frozen=True)
+class _AxialPointGridHornGeometry(PointGridHornGeometry):
+    """An immutable canonical model accompanies its compatibility sample grid."""
+
+    axial_model: object | None = None
+
+
+@dataclass(frozen=True)
 class _StretchedPointGridHornGeometry(PointGridHornGeometry):
     """Active stretch fits identical quadrant patches in reduced/full builds."""
 

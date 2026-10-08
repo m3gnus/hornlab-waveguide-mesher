@@ -40,12 +40,26 @@ class _MeasurementWarnings(logging.Filter):
 
 def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     """Bound the full design's resolved controls, before CAD surface fitting."""
+    from ..native_boundary import validate_native_boundary
+    from ..axial_scale import configuration
+    native = validate_native_boundary(config)
+    # Check each native feature's original physical domain before zeroing placement.
+    native_params = build_geometry_params(config) if native is not None else None
+    axial = native_params if native == "OSSE-AXIAL" else configuration(config, build_geometry_params)
+    if axial is not None:
+        from ..axial_scale import AxialModel
+        model = AxialModel.from_params(axial[0])
+        diameter = 2*float(model.body(model.length)[0][1])
+        return {"mouth_opening":[diameter]*2,"horn_overall":[diameter,diameter,model.length]}
     full = copy.deepcopy(dict(config))
     mesh = full.get("mesh", {})
     if not isinstance(mesh, Mapping):
         raise TypeError("dimension measurement requires mesh to be a mapping")
     full["mesh"] = dict(mesh, quadrants="1234", vertical_offset_mm=0.0)
     full["mesh"].pop("verticalOffset", None)
+    if native is not None:
+        full.pop("vertical_offset_mm", None)
+        full.pop("verticalOffset", None)
     loggers = [logging.getLogger(name) for name in (
         "hornlab_mesher.profile_sampling", "hornlab_mesher.builders.enclosure")]
     warning_filter = _MeasurementWarnings()

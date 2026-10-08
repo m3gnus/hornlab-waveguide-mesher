@@ -283,6 +283,9 @@ def _build_coupled_baffle_point_grid(
 
 
 def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
+    if getattr(geometry, "axial_model", None) is not None:
+        from .axial_scale import build_axial
+        return build_axial(geometry)
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")
     source_shape = _validate_source_shape(geometry)
     build_mode = geometry.build_mode
