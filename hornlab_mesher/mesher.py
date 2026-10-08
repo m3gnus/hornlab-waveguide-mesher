@@ -369,6 +369,10 @@ def build_mesh_with_info(
                     and geometry.build_mode.value == 'freestanding' else None),
                 wall_thickness_mm=float(getattr(geometry, 'wall_thickness_mm', 0)),
                 shell_mesh_density=mesh_density,
+                # Native adapters fragment the wall and source into shared
+                # OCC edges; Gmsh already removes duplicate nodes above.
+                # Approximate welding would collapse valid small/dense edges.
+                weld_near_duplicates=getattr(geometry, "adapter_meridian", None) is None,
             )
             limit = effective_triangle_limit(built, mesh_density)
             if limit is not None:
@@ -465,6 +469,7 @@ def _postprocess_mesh(
     shell_surface_groups: dict[str, list[int]] | None = None,
     wall_thickness_mm: float = 0.0,
     shell_mesh_density: MeshDensity | None = None,
+    weld_near_duplicates: bool = True,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -489,7 +494,8 @@ def _postprocess_mesh(
     # Gmsh stitches adjacent OCC patch boundaries with near-duplicate nodes
     # (micrometres apart on fine grids); welding them prevents overlapping
     # elements whose near-identical rows make dense BEM solves singular.
-    triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
+    if weld_near_duplicates:
+        triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
     triangles, phys = _remove_symmetry_plane_slivers(
         points, triangles, phys, symmetry_snap_axes
     )

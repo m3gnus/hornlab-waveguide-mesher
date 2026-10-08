@@ -67,3 +67,6 @@ The conic domain requires `0 <= a0 < a < 80` degrees, `a >= 1` degree, positive
 feature clearances exceed .0001 mm. These bounds are validity limits, not
 silent corrections of user controls. Mesh triangles still approximate the
 exact surfaces according to the requested mesh resolution.
+The native mesh uses shared OCC edges and Gmsh duplicate-node removal at the
+source and adapter join. It skips the legacy approximate distance weld, which
+would collapse certified small source disks or densely sampled source edges.

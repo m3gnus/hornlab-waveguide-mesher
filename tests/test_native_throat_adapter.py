@@ -245,6 +245,63 @@ def test_adapter_preview_default_budget_and_identity():
     assert explicit.metadata["requested_fidelity"]["max_chord_error_mm"] == .02
 
 
+@pytest.mark.parametrize("diameter_mm,throat_resolution_mm", [(1., .0002), (25.4, .002)])
+def test_scaled_adapter_mesh_preserves_small_and_dense_source_topology(
+    tmp_path, diameter_mm, throat_resolution_mm,
+):
+    import meshio
+    from hornlab_mesher.edges import build_edge_table
+    from hornlab_mesher.geometry import MeshDensity
+    from hornlab_mesher.mesher import build_mesh_with_info
+    from hornlab_mesher.tags import PhysicalGroup
+
+    cfg = config()
+    cfg["scale"] = .001
+    cfg["throat_adapter"].update(driver_exit_diameter_mm=diameter_mm, exit_half_angle_deg=0.)
+    resolved = resolve_geometry(cfg)
+    path, _ = build_mesh_with_info(
+        resolved.geometry,
+        MeshDensity(throat_res_mm=throat_resolution_mm, mouth_res_mm=.02),
+        tmp_path/"small-adapter.msh", scale_to_metres=False,
+    )
+    mesh = meshio.read(path)
+    points = np.asarray(mesh.points)
+    triangles = mesh.get_cells_type("triangle")
+    tags = mesh.get_cell_data("gmsh:physical", "triangle")
+    source = triangles[tags == int(PhysicalGroup.PRIMARY_SOURCE)]
+    assert len(source) > 0
+    cross = np.cross(points[source[:, 1]]-points[source[:, 0]],
+                     points[source[:, 2]]-points[source[:, 0]])
+    radius = .5*diameter_mm*cfg["scale"]
+    assert np.all(cross[:, 2] > 0)
+    np.testing.assert_allclose(points[np.unique(source), 2], 0., atol=1e-12, rtol=0)
+    assert .5*np.linalg.norm(cross, axis=1).sum() == pytest.approx(math.pi*radius**2, rel=.03)
+
+    source_edges = build_edge_table(source)
+    rim = source_edges.count == 1
+    np.testing.assert_allclose(np.linalg.norm(points[source_edges.lo[rim], :2], axis=1),
+                               radius, atol=1e-10, rtol=0)
+    # A disk has Euler characteristic one, and every rim edge must also be
+    # owned by a wall triangle. No cap tears or unwelded throat edges survive.
+    assert len(np.unique(source))-source_edges.n_edges+len(source) == 1
+    all_edges = build_edge_table(triangles)
+    incidence = dict(zip(zip(all_edges.lo, all_edges.hi), all_edges.count))
+    assert all(incidence[(lo, hi)] == 2 for lo, hi in
+               zip(source_edges.lo[rim], source_edges.hi[rim]))
+    assert np.all(all_edges.count <= 2)
+    join_z = cfg["throat_adapter"]["length_mm"]*cfg["scale"]
+    join = (np.isclose(points[all_edges.lo, 2], join_z, atol=1e-10, rtol=0)
+            & np.isclose(points[all_edges.hi, 2], join_z, atol=1e-10, rtol=0))
+    assert np.count_nonzero(join) >= 4
+    assert np.all(all_edges.count[join] == 2)
+    # The only free boundary is the mouth, never the source or adapter join.
+    free = all_edges.count == 1
+    assert np.any(free)
+    mouth_z = resolved.geometry.adapter_meridian.evaluate(1.)[0]*cfg["scale"]
+    np.testing.assert_allclose(points[all_edges.lo[free], 2], mouth_z, atol=1e-10, rtol=0)
+    np.testing.assert_allclose(points[all_edges.hi[free], 2], mouth_z, atol=1e-10, rtol=0)
+
+
 @pytest.mark.parametrize("entry", [calculate_osse, calculate_osse_curve, osse_total_length])
 def test_direct_formula_entries_refuse_empty_unknown_adapter(entry):
     params = {"throat_adapter": {}}
