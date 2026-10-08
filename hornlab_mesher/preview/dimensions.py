@@ -46,6 +46,11 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     native = validate_native_boundary(full)
     # Check each native feature's original physical domain before zeroing placement.
     native_params = build_geometry_params(full) if native is not None else None
+    if native == "OSSE-ARC":
+        from ..terminating_arc import ArcMeridian
+        model=ArcMeridian.from_params(native_params[0])
+        box=np.asarray(model.bounds)
+        return {"mouth_opening":[2*model.reach]*2,"horn_overall":(box[1]-box[0]).tolist()}
     if native == "SOURCE-DISK":
         from ..source_body import StandaloneSourceGeometry
         model=StandaloneSourceGeometry(**native_params[0]["sourceBody"])

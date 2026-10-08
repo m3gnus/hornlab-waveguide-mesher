@@ -349,6 +349,19 @@ class _AdapterPointGridHornGeometry(PointGridHornGeometry):
 
 
 @dataclass(frozen=True)
+class _ArcPointGridHornGeometry(PointGridHornGeometry):
+    """An exact retained conic and its curvature-matched circular suffix."""
+
+    arc_meridian: object | None = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        from .terminating_arc import ArcMeridian
+        if type(self.arc_meridian) is not ArcMeridian:
+            raise ValueError("terminating arc geometry requires its immutable exact meridian")
+
+
+@dataclass(frozen=True)
 class _AxialPointGridHornGeometry(PointGridHornGeometry):
     """An immutable canonical model accompanies its compatibility sample grid."""
 
@@ -491,6 +504,9 @@ class BuiltGeometry:
     open_shell_wall_points_mm: NDArray[np.float64] | None = None
     open_shell_wall_normals: NDArray[np.float64] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Optional exact face ancestry limits a native source collar to its
+    # retained prefix when a returning suffix re-enters the same axial band.
+    open_shell_bore_surface_tags: tuple[int,...] | None = None
 
 
 @dataclass(frozen=True)

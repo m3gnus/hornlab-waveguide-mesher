@@ -142,6 +142,7 @@ def open_shell_bore_alignment(
     band_fraction: float = 0.2,
     source_tags: set[int] | None = None,
     wall_tags: set[int] | None = None,
+    wall_triangle_mask: NDArray[np.bool_] | None = None,
 ) -> float | None:
     """Return the near-throat wall area fraction whose normal faces the bore.
 
@@ -172,6 +173,11 @@ def open_shell_bore_alignment(
     imported source by the caller, so ``PRIMARY_SOURCE`` names nothing there
     and a multi-source import carries tags 3 and up that the canonical mask
     would drop silently.
+
+    An optional triangle-aligned boolean mask restricts wall ancestry before
+    choosing the collar. A native returning suffix may re-enter the throat's
+    axial band; its exact retained-body faces provide this selector. With no
+    selector the historical collar and threshold are unchanged.
     """
 
     resolved_sources = (
@@ -183,6 +189,11 @@ def open_shell_bore_alignment(
     if not resolved_sources or not resolved_walls:
         return None
     wall_mask = np.isin(tags, tuple(resolved_walls))
+    if wall_triangle_mask is not None:
+        selected=np.asarray(wall_triangle_mask)
+        if selected.dtype != np.bool_ or selected.shape != wall_mask.shape:
+            raise MeshOrientationError("open-shell wall selector must be a triangle-aligned boolean mask")
+        wall_mask &= selected
     source_mask = np.isin(tags, tuple(resolved_sources))
     if not np.any(wall_mask) or not np.any(source_mask):
         return None
@@ -250,6 +261,7 @@ def validate_orientation(
     require_source_normal: bool = True,
     require_open_shell_bore_normal: bool = False,
     open_shell_bore_tolerance: float = 0.9,
+    open_shell_bore_wall_mask: NDArray[np.bool_] | None = None,
     eps: float = 1e-12,
 ) -> MeshOrientationReport:
     """Validate triangle winding without mutating the mesh.
@@ -302,7 +314,8 @@ def validate_orientation(
         signed_volume=signed_volume,
         source_normal_projection=source_projection,
         open_shell_bore_alignment=open_shell_bore_alignment(
-            points, triangles, tags
+            points, triangles, tags,
+            **({} if open_shell_bore_wall_mask is None else {"wall_triangle_mask":open_shell_bore_wall_mask})
         ),
     )
 

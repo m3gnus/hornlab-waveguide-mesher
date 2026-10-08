@@ -133,6 +133,12 @@ class _AxialCadInfo(CadInfo):
 
 
 @dataclass(frozen=True)
+class _ArcCadInfo(CadInfo):
+    terminating_arc: Mapping[str, Any] | None = None
+    datums: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class WgLinkIdentity:
     """Caller-owned identity/provenance sections emitted without augmentation."""
 
@@ -392,6 +398,73 @@ def _assert_step(text: str, *, body: CadBody) -> None:
         )
 
 
+def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) -> str:
+    """Transport one OCC-sewn shell as a truthful STEP surface body.
+
+    OCC exposes sewing to its writer through a temporary volume carrier.
+    Only the representation, carrier and shell wrappers change here. Every
+    face, surface, curve, edge identity and orientation remains byte-identical.
+    Unexpected carrier shapes or disconnected/nonmanifold shells refuse.
+    """
+    from collections import Counter,defaultdict
+    records=list(re.finditer(r"#(\d+)\s*=\s*(\w+)\s*\((.*?)\)\s*;",text,re.S))
+    entities={int(m[1]):(m[2],m[3]) for m in records}
+    def one(kind):
+        matches=[m for m in records if m[2]==kind]
+        if len(matches)!=1:
+            raise MesherError(f"terminating arc STEP needs exactly one {kind} wrapper")
+        return matches[0]
+    representation=one("ADVANCED_BREP_SHAPE_REPRESENTATION")
+    solid=one("MANIFOLD_SOLID_BREP")
+    shell=one("CLOSED_SHELL")
+    if any(kind in text for kind in ("BREP_WITH_VOIDS(","FACETED_BREP(","OPEN_SHELL(","SHELL_BASED_SURFACE_MODEL(")):
+        raise MesherError("terminating arc STEP contains an unexpected shape carrier")
+    carrier=re.fullmatch(r"\s*''\s*,\s*#(\d+)\s*",solid[3])
+    shape=re.fullmatch(r"\s*''\s*,\s*\(\s*#(\d+)\s*,\s*#(\d+)\s*\)\s*,\s*#(\d+)\s*",representation[3])
+    shell_shape=re.fullmatch(r"\s*''\s*,\s*\(\s*(#\d+(?:\s*,\s*#\d+)*)\s*\)\s*",shell[3])
+    if (carrier is None or shape is None or shell_shape is None or int(carrier[1])!=int(shell[1])
+            or int(shape[2])!=int(solid[1]) or entities.get(int(shape[1]),(None,))[0]!="AXIS2_PLACEMENT_3D"):
+        raise MesherError("terminating arc STEP carrier references do not match its single sewn shell")
+    refs=lambda value:[int(x) for x in re.findall(r"#(\d+)",value)]
+    faces=refs(shell_shape[1])
+    all_faces={i for i,(kind,_) in entities.items() if kind=="ADVANCED_FACE"}
+    if len(faces)!=n_faces or len(set(faces))!=n_faces or set(faces)!=all_faces:
+        raise MesherError("terminating arc STEP shell must contain every exact face once")
+    edge_faces=defaultdict(set)
+    for face in faces:
+        for bound in refs(entities[face][1]):
+            if entities.get(bound,(None,))[0] not in {"FACE_BOUND","FACE_OUTER_BOUND"}:
+                continue
+            loops=refs(entities[bound][1])
+            if len(loops)!=1 or entities[loops[0]][0]!="EDGE_LOOP":
+                raise MesherError("terminating arc STEP has an unexpected face boundary")
+            for oriented in refs(entities[loops[0]][1]):
+                if entities[oriented][0]!="ORIENTED_EDGE":
+                    raise MesherError("terminating arc STEP has a non-edge loop member")
+                edges=refs(entities[oriented][1])
+                if len(edges)!=1 or entities[edges[0]][0]!="EDGE_CURVE":
+                    raise MesherError("terminating arc STEP has an invalid shared edge")
+                edge_faces[edges[0]].add(face)
+    counts=Counter(len(owners) for owners in edge_faces.values())
+    if set(counts)-{1,2} or counts[1]!=(8 if open_throat else 4) or counts[2]==0:
+        raise MesherError("terminating arc STEP shell has disconnected or nonmanifold edge topology")
+    reached={faces[0]}
+    while True:
+        expanded=reached|set().union(*(owners for owners in edge_faces.values() if owners&reached))
+        if expanded==reached:
+            break
+        reached=expanded
+    if reached!=set(faces):
+        raise MesherError("terminating arc STEP contains disconnected shell components")
+    replacements={int(representation[1]):representation[0].replace("ADVANCED_BREP_SHAPE_REPRESENTATION","MANIFOLD_SURFACE_SHAPE_REPRESENTATION",1),
+        int(solid[1]):f"#{solid[1]} = SHELL_BASED_SURFACE_MODEL('',(#{shell[1]}));",
+        int(shell[1]):shell[0].replace("CLOSED_SHELL","OPEN_SHELL",1)}
+    for record in reversed(records):
+        if int(record[1]) in replacements:
+            text=text[:record.start()]+replacements[int(record[1])]+text[record.end():]
+    return text
+
+
 def write_step(
     geometry: HornGeometry,
     output_path: str | Path | None = None,
@@ -409,8 +482,10 @@ def write_step(
     """
 
     if sum(getattr(geometry, name, None) is not None
-           for name in ("adapter_meridian", "roundover", "axial_model")) > 1:
+           for name in ("adapter_meridian", "roundover", "axial_model", "arc_meridian")) > 1:
         raise MesherError("combined active native geometry features are not supported")
+    if getattr(geometry,"arc_meridian",None) is not None and type(open_throat) is not bool:
+        raise MesherError("terminating arc open_throat must be a boolean")
 
     import gmsh
 
@@ -495,6 +570,7 @@ def write_step(
                 raise MesherError("geometry build produced no surfaces to export")
 
             volume: int | None = None
+            arc_surface=getattr(geometry,"arc_meridian",None) is not None
             if body == "solid":
                 shell = gmsh.model.occ.addSurfaceLoop(faces, sewing=True)
                 volume = int(gmsh.model.occ.addVolume([shell]))
@@ -508,6 +584,14 @@ def write_step(
                 if throat_opened:
                     volume = _open_throat(gmsh, volume, built, cap_tags)
                 keep = _entity_closure(gmsh, [(3, volume)])
+            elif arc_surface:
+                # Retaining the sewn carrier is necessary for OCC to serialize
+                # shared shell edges. Its three STEP wrappers are validated
+                # and converted to a surface representation before publishing.
+                shell=gmsh.model.occ.addSurfaceLoop(faces,sewing=True)
+                volume=int(gmsh.model.occ.addVolume([shell]))
+                gmsh.model.occ.synchronize()
+                keep=_entity_closure(gmsh,[(3,volume)])
             else:
                 keep = _entity_closure(gmsh, [(2, tag) for tag in faces])
             _prune_to(gmsh, keep)
@@ -526,7 +610,7 @@ def write_step(
                 gmsh.model.occ.synchronize()
 
             if volume is not None:
-                volume_mm3 = float(gmsh.model.occ.getMass(3, volume))
+                volume_mm3 = None if arc_surface else float(gmsh.model.occ.getMass(3, volume))
                 box = gmsh.model.getBoundingBox(3, volume)
                 n_faces = len(
                     gmsh.model.getBoundary(
@@ -547,6 +631,8 @@ def write_step(
             text = normalise_step_header(
                 staged_path.read_text(encoding="utf-8", errors="replace")
             )
+            if arc_surface:
+                text=_arc_surface_shell_transport(text,n_faces=n_faces,open_throat=open_throat)
             adapter = getattr(geometry, "adapter_meridian", None)
             roundover = getattr(geometry, "roundover", None)
             if adapter is not None:
@@ -561,6 +647,10 @@ def write_step(
             if axial is not None:
                 recipe = {"contractRevision":1,"formula":"OSSE-AXIAL","controls":axial.__dict__,**axial.metadata()}
                 text = text.replace("END-ISO-10303-21;", "/* hornlab-absolute-axial-scale " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
+            arc=getattr(geometry,"arc_meridian",None)
+            if arc is not None:
+                recipe=arc.metadata()["terminatingArc"]
+                text=text.replace("END-ISO-10303-21;","/* hornlab-terminating-arc "+json.dumps(recipe,sort_keys=True,separators=(",",":"),allow_nan=False)+" */\nEND-ISO-10303-21;")
             source_body = geometry if type(geometry) is StandaloneSourceGeometry else None
             if source_body is not None:
                 recipe = source_body.metadata()["sourceBody"]
@@ -574,6 +664,7 @@ def write_step(
             staged_path = None
             wrote = True
             info_cls = (_SourceBodyCadInfo if source_body is not None else
+                        _ArcCadInfo if arc is not None else
                         _AdapterCadInfo if adapter is not None else
                         _RoundoverCadInfo if roundover is not None else
                         _AxialCadInfo if axial is not None else CadInfo)
@@ -584,6 +675,8 @@ def write_step(
                 box = (*roundover.bounds[0], *roundover.bounds[1])
             if axial is not None:
                 box = (*axial.bounds[0], *axial.bounds[1])
+            if arc is not None:
+                box=(*arc.bounds[0],*arc.bounds[1])
             return out_path, info_cls(
                 path=out_path,
                 body=body,
@@ -598,6 +691,7 @@ def write_step(
                 **({} if source_body is None else {"source_body":source_body.metadata()["sourceBody"]}),
                 **({} if roundover is None else {"mouth_roundover":roundover.metadata()["mouthRoundover"]}),
                 **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
+                **({} if arc is None else {"terminating_arc":arc.metadata()["terminatingArc"],"datums":derive_datums(geometry,built)}),
             )
         except MesherError:
             raise
@@ -1143,6 +1237,8 @@ def write_wglink(
         raise MesherError("wglink export refuses standalone source bodies until a source-only bundle transport is supported")
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    if getattr(geometry,"arc_meridian",None) is not None:
+        raise MesherError("wglink export refuses terminating arcs until the analytic recipe has a qualified bundle transport")
     if getattr(geometry, "roundover", None) is not None:
         raise MesherError("wglink export refuses mouth roundovers until the analytic recipe has a qualified bundle transport")
     if getattr(geometry, "axial_model", None) is not None:

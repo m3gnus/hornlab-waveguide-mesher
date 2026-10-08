@@ -373,6 +373,9 @@ def build_preview_geometry(
         dimensions_config = None
         dimensions_snapshot_error = str(exc) or type(exc).__name__
     params, _, _ = build_geometry_params(config)
+    if "terminatingArc" in params:
+        from .terminating_arc import build
+        return build(params, options)
     if "sourceBody" in params:
         from .source_body import build
         return build(params, options)

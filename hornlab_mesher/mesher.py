@@ -234,7 +234,15 @@ def build_mesh_with_info(
     if isinstance(density, (str, Path)) and output_path is None:
         output_path = density
         density = None
-    if isinstance(geometry,StandaloneSourceGeometry):
+    if getattr(geometry,"arc_meridian",None) is not None and type(scale_to_metres) is not bool:
+        raise MesherError("terminating arc scale_to_metres must be a boolean")
+    if getattr(geometry,"arc_meridian",None) is not None:
+        from .terminating_arc import validate_density as validate_arc_density
+        if density is not None and type(density) is not MeshDensity:
+            raise MesherError("terminating arc direct density must be MeshDensity or None")
+        mesh_density=MeshDensity() if density is None else density
+        validate_arc_density(mesh_density)
+    elif isinstance(geometry,StandaloneSourceGeometry):
         from .source_body import default_density, validate_density
         if density is not None and type(density) is not MeshDensity:
             raise MesherError("standalone source density must be MeshDensity")
@@ -308,6 +316,11 @@ def build_mesh_with_info(
                     built.metadata["freeformReport"] = acoustic_geometry.freeform_report
 
             configure_density(built, mesh_density)
+            if getattr(acoustic_geometry, "arc_meridian", None) is not None:
+                # Keep the shared source circle resolved even when its radius
+                # is much smaller than the requested throat size. This floor
+                # leaves finer field-driven curve sampling in effect.
+                gmsh.option.setNumber("Mesh.MinimumCirclePoints", 16)
             add_physical_groups(built.surface_groups)
 
             # A builder that leaves ``mesh_algorithm`` unset asks for gmsh's own
@@ -337,6 +350,9 @@ def build_mesh_with_info(
             else:
                 gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
+            if getattr(acoustic_geometry,"arc_meridian",None) is not None:
+                from .builders.terminating_arc import certify_arc_mesh
+                certify_arc_mesh(acoustic_geometry.arc_meridian,built)
             if getattr(acoustic_geometry, "roundover", None) is not None:
                 from .builders.mouth_roundover import certify_lip_mesh
                 certify_lip_mesh(acoustic_geometry.roundover, built)
@@ -373,6 +389,8 @@ def build_mesh_with_info(
                 ),
                 open_shell_wall_points_mm=built.open_shell_wall_points_mm,
                 open_shell_wall_normals=built.open_shell_wall_normals,
+                **({} if built.open_shell_bore_surface_tags is None else
+                   {"open_shell_bore_surface_tags":built.open_shell_bore_surface_tags}),
                 # Coupled infinite-baffle meshes are interior-domain BIE
                 # surfaces. Keep one consistent negative-volume winding:
                 # source/wall normals point into the cavity and aperture
@@ -389,7 +407,7 @@ def build_mesh_with_info(
                 # duplicate-node removal above is sufficient. Approximate
                 # welding would collapse valid nearby dense-mesh vertices.
                 weld_near_duplicates=not isinstance(geometry,StandaloneSourceGeometry) and all(getattr(geometry, name, None) is None
-                    for name in ("adapter_meridian", "roundover", "axial_model")),
+                    for name in ("adapter_meridian", "roundover", "axial_model", "arc_meridian")),
             )
             if isinstance(geometry,StandaloneSourceGeometry):
                 from .source_body import certify_mesh
@@ -484,6 +502,7 @@ def _postprocess_mesh(
     vertical_offset_mm: float = 0.0,
     open_shell_wall_points_mm: np.ndarray | None = None,
     open_shell_wall_normals: np.ndarray | None = None,
+    open_shell_bore_surface_tags: tuple[int,...] | None = None,
     require_positive_volume: bool = True,
     infinite_baffle: bool = False,
     shell_surface_groups: dict[str, list[int]] | None = None,
@@ -500,7 +519,7 @@ def _postprocess_mesh(
     # Keep OCC patch identity through both removal passes. Physical tags alone
     # deliberately combine bore, shell and caps and cannot identify a repair.
     surfaces = None
-    if shell_surface_groups is not None:
+    if shell_surface_groups is not None or open_shell_bore_surface_tags is not None:
         surfaces = np.concatenate([
             mesh.cell_data['gmsh:geometrical'][i]
             for i, block in enumerate(mesh.cells)
@@ -525,8 +544,9 @@ def _postprocess_mesh(
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
     shell_stats = None
-    if shell_surface_groups is not None:
+    if shell_surface_groups is not None or open_shell_bore_surface_tags is not None:
         phys, surfaces = phys[:, 0], phys[:, 1]
+    if shell_surface_groups is not None:
         from .shell_facets import validate_shell_facets
 
         shell_stats = validate_shell_facets(
@@ -559,6 +579,8 @@ def _postprocess_mesh(
         # triangles alone so a lost or wrong reference fails the build instead
         # of shipping a horn that solves as an acoustically invisible sheet.
         require_open_shell_bore_normal=open_shell_wall_points_mm is not None,
+        **({} if open_shell_bore_surface_tags is None else
+           {"open_shell_bore_wall_mask":np.isin(surfaces,open_shell_bore_surface_tags)}),
     )
     if infinite_baffle:
         _validate_infinite_baffle_contract(
@@ -600,7 +622,7 @@ def _postprocess_mesh(
         cells=[("triangle", triangles.astype(np.int64))],
         cell_data={
             "gmsh:physical": [phys.astype(np.int32)],
-            "gmsh:geometrical": [phys.astype(np.int32)],
+            "gmsh:geometrical": [(phys if open_shell_bore_surface_tags is None else surfaces).astype(np.int32)],
         },
         field_data={
             name: np.array([tag, 2], dtype=np.int32)

@@ -1586,6 +1586,8 @@ def build_point_grid_arrays(
 
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not a horn point grid")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require resolve_geometry or the complete preview API")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires resolve_geometry or the complete preview API")
     if "mouthRoundoverRadiusMm" in params:

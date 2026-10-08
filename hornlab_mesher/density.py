@@ -458,6 +458,7 @@ def _generic_triangle_regions(
     aperture_res: float,
     group_size_fields: dict[str, Any] | None = None,
     lip_size: float | None = None,
+    arc_size: float | None = None,
 ) -> list[tuple[float, float, str]]:
     """Area/size regions for non-enclosure pre-mesh cost prediction.
 
@@ -501,6 +502,7 @@ def _generic_triangle_regions(
     add(mesh_groups.get("interface", []), interface_res, "interface")
     add(mesh_groups.get("rear", []), rear_res, "rear")
     add(mesh_groups.get("lip", []), lip_size, "circular mouth lip")
+    add(mesh_groups.get("arc", []), arc_size, "circular terminating arc")
     add(mesh_groups.get("outer", []), rear_res, "outer wall", "outer")
     add(mesh_groups.get("mouth", []), mouth_res, "mouth", "mouth")
     add(
@@ -850,6 +852,33 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     aperture_res_scale = validate_aperture_res_scale(density.aperture_res_scale)
     aperture_res = mouth_res * aperture_res_scale
 
+    arc_sizing=geometry.metadata.get("terminatingArcSizing")
+    arc_effective_size=None
+    arc_formula=None
+    if arc_sizing is not None:
+        radius=float(arc_sizing["circleRadiusMm"])
+        join_radius=float(arc_sizing["joinRadiusMm"])
+        span_cap=float(arc_sizing["spanCapMm"])
+        safety=float(arc_sizing["safetyFactor"])
+        budget=float(arc_sizing["sizingBudgetMm"])
+        def arc_target(radial):
+            return np.minimum(min(mouth_res,span_cap),safety*np.sqrt(8*budget/(1/radius+3/np.maximum(radial,join_radius))))
+        # Circle area element is 2*pi*R*r(phi) dphi. Weight the inverse
+        # squared target by that area; this remains a triangle-count estimate.
+        nodes,weights=np.polynomial.legendre.leggauss(64)
+        lo,hi=float(arc_sizing["startAngleRad"]),float(arc_sizing["endAngleRad"])
+        phi=(lo+hi)/2+(hi-lo)*nodes/2
+        radial=float(arc_sizing["centerRadiusMm"])-radius*np.cos(phi)
+        sizes_at=arc_target(radial)
+        arc_effective_size=math.sqrt(float(np.dot(weights,radial)/np.dot(weights,radial/sizes_at**2)))
+        axis,_=_axis_coordinate_expression(geometry.source_axis)
+        radial_expression=_cross_section_radius_expression(axis)
+        arc_formula=(f"min({min(mouth_res,span_cap):.12g},{safety:.12g}*sqrt({8*budget:.12g}/"
+                     f"({1/radius:.12g}+3/max({radial_expression},{join_radius:.12g}))))")
+        geometry.metadata["terminatingArcSizing"].update({"requestedMouthResolutionMm":mouth_res,
+            "effectiveAreaSizeMm":arc_effective_size,"estimateMethod":"circle-area-weighted-64-point-quadrature",
+            "targetMethod":"local-radius-heuristic-with-independent-actual-facet-certificate"})
+
     enclosure_resolution_values: list[float] = []
     front_panels: list[int] = []
     back_panels: list[int] = []
@@ -1193,6 +1222,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                 group_size_fields=size_fields,
                 lip_size=(min(float(geometry.metadata["mouthRoundoverMeshSizeMm"]), mouth_res)
                           if "mouthRoundoverMeshSizeMm" in geometry.metadata else None),
+                arc_size=arc_effective_size,
             ),
         )
     add_field(
@@ -1414,6 +1444,9 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     lip_size = geometry.metadata.get("mouthRoundoverMeshSizeMm")
     if lip_size is not None:
         add_field(f"{min(float(lip_size), mouth_res):.12g}", mesh_groups.get("lip", []), curve_groups.get("lip", []))
+    arc_size=geometry.metadata.get("terminatingArcMeshSizeMm")
+    if arc_size is not None:
+        add_field(arc_formula,mesh_groups.get("arc",[]),curve_groups.get("arc",[]))
 
     if fields:
         minimum = gmsh.model.mesh.field.add("Min")
@@ -1421,6 +1454,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
     sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
+    if arc_size is not None:
+        sizes.append(float(arc_size))
     if lip_size is not None:
         sizes.append(float(lip_size))
     # The clearance cap is a size this build genuinely asks for, so it belongs

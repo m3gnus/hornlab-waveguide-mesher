@@ -365,6 +365,8 @@ def calculate_osse(
 ) -> tuple[float, float]:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require the complete canonical meridian API")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
     if "mouthRoundoverRadiusMm" in params:
@@ -460,6 +462,8 @@ def calculate_osse_curve(
     """
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require the complete canonical meridian API")
 
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
@@ -545,6 +549,8 @@ def osse_length_config(
 ) -> tuple[float, float, float, float]:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require their complete analytic envelope")
     raw_L = eval_param(params.get("L"), p, 120.0)
     if not raw_L > 0.0:
         # A zero or negative length used to clamp to 0 and build a plain r0

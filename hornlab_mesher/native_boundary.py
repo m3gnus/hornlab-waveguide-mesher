@@ -6,7 +6,7 @@ from typing import Mapping
 
 from .config_parser import ConfigError
 
-NATIVE_MARKERS = frozenset({"OSSE-AXIAL", "OSSE-ADAPTER", "OSSE-ROUNDOVER", "SOURCE-DISK"})
+NATIVE_MARKERS = frozenset({"OSSE-AXIAL", "OSSE-ADAPTER", "OSSE-ROUNDOVER", "SOURCE-DISK", "OSSE-ARC"})
 
 
 def _fail(message):
@@ -36,6 +36,7 @@ def validate_native_boundary(config, *, allow_large_mesh=None):
     # Inspect source-body intent before the ordinary parser's early return.
     # No spelling or location may quietly turn an exterior body into a horn.
     payloads = []
+    arc_payloads = []
     pending = [config]
     seen = set()
     while pending:
@@ -46,10 +47,14 @@ def validate_native_boundary(config, *, allow_large_mesh=None):
         for key,value in section.items():
             if str(key).replace("_","").lower()=="sourcebody":
                 payloads.append((section,key))
+            if str(key).replace("_","").lower()=="terminatingarc":
+                arc_payloads.append((section,key))
             if isinstance(value,Mapping):
                 pending.append(value)
     if payloads and (markers != {"SOURCE-DISK"} or any(section is not config or key!="source_body" for section,key in payloads)):
         _fail("source_body requires a root SOURCE-DISK formula and the exact root source_body key.")
+    if arc_payloads and (markers != {"OSSE-ARC"} or any(section is not config or key!="terminating_arc" for section,key in arc_payloads)):
+        _fail("terminating_arc requires OSSE-ARC and the exact root terminating_arc key.")
     if not markers:
         return None
     if len(markers) != 1:

@@ -1,5 +1,10 @@
 # Config Schema
 
+Native circular terminating arcs use `OSSE-ARC` and the required root
+`terminating_arc` object. See [the terminating arc contract](native-terminating-arc.md)
+for the explicit attachment, tangent and curvature match, supported domain,
+complete bounds and terminal fidelity.
+
 Native circular lips use the fail-closed `OSSE-ROUNDOVER` formula marker and
 `mesh.mouth_roundover_radius_mm` (zero or absent is off for ordinary formulas).
 See [the native roundover contract](native-mouth-roundover.md) for its bounded
@@ -23,12 +28,13 @@ Unsupported extensions fail before any geometry is built.
 
 | Key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
-| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `OSSE-ADAPTER`, `OSSE-ROUNDOVER`, `OSSE-AXIAL`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. `OSSE-ADAPTER` requires an active authored `throat_adapter`. |
+| `formula` | `profile.formula`, `profile.type` | `OSSE` | Accepted values are `OSSE`, `OSSE-ADAPTER`, `OSSE-ROUNDOVER`, `OSSE-AXIAL`, `OSSE-ARC`, `R-OSSE`, `ROSSE`, `ICW`, `FREEFORM`, and experimental `LOOKUP`. `ROSSE` normalizes to `R-OSSE`. `OSSE-ADAPTER` requires an active authored `throat_adapter`. |
 | `mode` | `mesh.mode` | `freestanding` | Accepted values are `freestanding`, `free-standing`, `free`, `bare`, `inner`, `open`, `infinite-baffle`, `ib`, `baffle`, `enclosure`, and `enclosed`. |
 | `simType` | imported `ABEC.SimType` | none | When `mode` is omitted: `1` selects `infinite-baffle`, `2` selects `freestanding`. Text imports default it to `1` (`2` when an enclosure is present), matching ATH. |
 | `scale` | imported `Scale` | `1.0` | Multiplies every linear geometry dimension after profile evaluation; resolutions stay in raw millimetres. |
 | `throat_adapter` | `profile.throat_adapter` | absent | Native authored circular adapter; see [Throat Adapter](#throat-adapter). Supply it in only one location. |
 | `axial_scale` | none | required for `OSSE-AXIAL` | Absolute Z factor, replacing the Z component of root `scale`; `scale` retains X/Y scaling. Refused with ordinary formulas. See [absolute axial scale](absolute-axial-scale.md) for scope, domain and fidelity. |
+| `terminating_arc` | none | required for `OSSE-ARC` | Exact curvature-matched circular suffix after an explicit retained-body fraction; see [terminating arc](native-terminating-arc.md). |
 | `output.path` | top-level `path`, `output_path`, CLI `-o` | none | Required by the CLI unless `-o/--output` is passed. |
 
 If enclosure depth is positive, mode becomes `enclosure` even when `mode` is
