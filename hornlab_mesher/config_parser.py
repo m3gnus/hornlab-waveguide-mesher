@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
@@ -91,13 +92,18 @@ def _parse_ath_blocks(
             stack.pop()
             continue
         if "=" not in line:
-            # Script blocks (``Source.Contours``, enclosure plans) hold bare
-            # command lines. Outside a block a line without ``=`` sets nothing,
-            # and skipping it would hide, for instance, a block opened without
-            # its ``=`` whose members would then be read as top-level keys.
+            # Supported blocks contain key/value members. Refuse malformed
+            # openers here before their members can leak into the parent.
+            # Ignored subtrees and unsupported script blocks keep their own
+            # handling, including the named refusal for an unsupported block.
             if not stack:
                 raise ConfigError(
                     f"line {lineno}: cannot read {line!r}; expected 'key = value' or 'name = {{'"
+                )
+            if len(stack) == 1 and stack[0] in (*_PROFILE_BLOCKS, *_KNOWN_BLOCKS):
+                raise ConfigError(
+                    f"line {lineno}: block {stack[0]!r} cannot read {line!r}; "
+                    "expected 'key = value' or 'name = {'"
                 )
             continue
         key, value = (part.strip() for part in line.split("=", 1))
@@ -220,6 +226,8 @@ def _ath_ignore_reason(name: str, *, block: bool) -> str | None:
     base = _ath_base_name(name)
     if _ath_item_disabled(base):
         return "underscore-prefixed ATH item is disabled"
+    if block and base.startswith("Source.") and _ath_item_disabled(base[len("Source."):]):
+        return _ath_ignore_reason(base[len("Source."):], block=True)
     if not (base.startswith(_IGNORED_ATH_PREFIXES) or base in (_IGNORED_ATH_BLOCKS if block else _IGNORED_ATH_KEYS)):
         return None
     if base.startswith(("ABEC.", "Simulation.")):
@@ -376,7 +384,8 @@ def _reject_unrecognised_ath_items(
         elif key.startswith(_SELF_CHECKED_PREFIXES):
             continue
         if key.startswith("Source."):
-            if key[len("Source.") :] in _SOURCE_KEYS:
+            member = key[len("Source.") :]
+            if member in _SOURCE_KEYS or _ath_item_disabled(member):
                 continue
         elif _ath_item_ignored(key, block=False):
             continue
@@ -613,10 +622,9 @@ def _warn_ignored_ath_keys(
 def parse_text_config(content: str) -> dict[str, Any]:
     """Parse the text `.cfg` shape used by imported waveguide configs."""
     blocks, flat, nested = _parse_ath_blocks(content)
-    # Validate supplied coefficients even in a section ATH would otherwise
-    # ignore, except underscore-parked blocks. Field precedence must not
-    # conceal an unsupported expression in an enabled section.
-    for items in (flat, *(items for name, items in blocks.items() if not _ath_item_disabled(name))):
+    # Field precedence must not conceal an unsupported coefficient in an
+    # enabled section. Wholly ignored subtrees have unrelated member names.
+    for items in (flat, *(items for name, items in blocks.items() if not _ath_item_ignored(name, block=True))):
         stretch_coefficients({key: _maybe_number(items[key]) for key in ("s1", "s2") if key in items})
     formula = None
     profile_block: str | None = None
@@ -814,7 +822,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     # ATH SubdomainSlices index the segments 0..LengthSegments-1, where the
     # last slice is the mouth; internal indices address grid rings, so shift
     # by one (Ath 4.8.2 User Guide 6.7). An explicit empty value stays empty.
-    raw_slices = mesh.get("subdomainSlices")
+    raw_slices = mesh_items.get("SubdomainSlices")
     if raw_slices is not None and str(raw_slices).strip():
         shifted: list[str] = []
         for part in str(raw_slices).split(","):
@@ -822,9 +830,14 @@ def parse_text_config(content: str) -> dict[str, Any]:
             if not part:
                 continue
             try:
-                shifted.append(str(int(float(part)) + 1))
-            except ValueError as exc:
-                raise ConfigError(f"Mesh.SubdomainSlices must be integers, got {part!r}") from exc
+                number = Decimal(part)
+                # Bound magnitude before integer conversion, and retain the
+                # original token so float rounding cannot erase a fraction.
+                if not np.isfinite(float(part)) or not number.is_finite() or number != number.to_integral_value():
+                    raise ValueError("expected a finite integral value")
+                shifted.append(str(int(number) + 1))
+            except (InvalidOperation, ValueError, OverflowError) as exc:
+                raise ConfigError(f"Mesh.SubdomainSlices must be finite integers, got {part!r}") from exc
         mesh["subdomainSlices"] = ",".join(shifted)
 
     zmap_points = mesh_items.get("ZMapPoints", mesh_items.get("ZMap"))

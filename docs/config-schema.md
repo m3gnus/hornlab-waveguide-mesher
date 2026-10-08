@@ -620,6 +620,9 @@ and states that its whole subtree is ignored. This list lives in
 
 Disabled members inside supported blocks are also ignored and reported,
 including `Mesh = { _ThroatSegments = 4 }` (with members on separate lines).
+Flattened members such as `Source._Shape` follow the same rule.
+Wholly ignored output/report/export subtrees do not validate member names as
+profile coefficients.
 All descendants of a parked block are ignored, including nested blocks whose
 own names have no underscore; the warning names their parked ancestor.
 
@@ -678,8 +681,12 @@ Refused with their own messages: `Throat.Profile` other than 1 (OS-SE),
 
 The structure of the file is checked as well: a `}` that closes no block, a
 block that is never closed, and a top-level line that is neither `key = value`
-nor `name = {` are errors. Blocks nest; members written after a nested block
-still belong to the outer block.
+nor `name = {` are errors. Bare malformed lines in supported enabled
+key/value blocks are errors that name their line and block. Ignored subtrees
+may contain script lines; unsupported script blocks retain their named refusal.
+Blocks nest; members written after a nested block still belong to the outer block.
+Interface slice tokens must be finite integers before the index shift; integer
+decimal and exponent spellings are accepted, and an explicit empty list stays empty.
 
 The one namespace pair that warns instead of refusing is `Morph.*` and
 `GCurve.*`, described above.
