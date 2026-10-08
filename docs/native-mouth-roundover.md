@@ -62,6 +62,11 @@ is `zM + R*(1-sin(beta))`. Overall width is `2*(Cr+R)` and overall depth also
 includes the rear plate. The preview reports both the original opening and the
 complete envelope, independently of sampling counts.
 
+Preview curvature is signed relative to each emitted surface normal. Mean
+curvature averages the two signed principal curvatures, and the principal
+readout retains the sign of the curvature with the greatest magnitude. Equal
+opposite magnitudes select the positive principal curvature.
+
 Preview, mesh and STEP use this same canonical meridian. OCC keeps the lip
 arcs exact. The body and its analytic normal offset use cubic Hermite spans
 with matching endpoint tangents and a whole-interval fourth-derivative error

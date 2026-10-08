@@ -9,6 +9,15 @@ from .contract import PreviewGeometryV1, PreviewSurfaceV1
 from .primitives import _grid_indices, _orient_indices_to_normals, _flat_cap, _flat_strip
 
 
+def _signed_curvatures(meridian_curvature, radial_normal, radius, *, inward):
+    """Signed fundamental-form curvatures for the emitted surface normal."""
+    meridian = np.asarray(meridian_curvature)*(-1 if inward else 1)
+    angular = -np.asarray(radial_normal)/np.asarray(radius)
+    principal = np.where(np.abs(meridian) > np.abs(angular), meridian,
+        np.where(np.abs(angular) > np.abs(meridian), angular, np.maximum(meridian,angular)))
+    return (meridian+angular)/2, principal
+
+
 def build(params, options):
     model = Roundover.from_params(params)
     if options.lod not in {"coarse", "fine", "inspection"}:
@@ -57,11 +66,10 @@ def build(params, options):
         oriented = _orient_indices_to_normals(role, positions, indices, flat_normals)
         mean = principal = None
         if options.include_curvature and curvature is not None:
-            kmer = np.broadcast_to(curvature[:,None], (len(meridian),nphi))
-            kaz = nr[:,None]/radial
-            kaz = np.broadcast_to(kaz, kmer.shape)
-            mean = ((kmer+kaz)/2).reshape(-1)
-            principal = np.maximum(np.abs(kmer), np.abs(kaz)).reshape(-1)
+            signed_mean, signed_principal = _signed_curvatures(
+                curvature[:,None], nr[:,None], radial, inward=inward)
+            mean = np.broadcast_to(signed_mean, (len(meridian),nphi)).reshape(-1)
+            principal = np.broadcast_to(signed_principal, (len(meridian),nphi)).reshape(-1)
         surfaces.append(PreviewSurfaceV1(role, positions, oriented.indices, flat_normals,
                          "smooth", "analytic-parametric", True, mean, principal))
         return points
