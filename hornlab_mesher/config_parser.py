@@ -718,11 +718,20 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("Slot.Length", "slotLength"),
         ),
     )
-    if "throat_diameter" in common_profile and "r0" not in common_profile:
+    if "throat_diameter" in common_profile:
+        diameter = common_profile.pop("throat_diameter")
         try:
-            common_profile["r0"] = float(common_profile.pop("throat_diameter")) / 2.0
-        except (TypeError, ValueError):
-            common_profile.pop("throat_diameter", None)
+            radius = float(diameter) / 2.0
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ConfigError(
+                f"Throat.Diameter must be a positive finite number; got {diameter!r}. "
+                "Use a numeric value in millimetres; diameter expressions are not supported."
+            ) from exc
+        if not np.isfinite(radius) or radius <= 0:
+            raise ConfigError(
+                f"Throat.Diameter must be a positive finite number that yields a positive radius; got {diameter!r}"
+            )
+        common_profile.setdefault("r0", radius)
 
     if formula == "OSSE":
         profile = {

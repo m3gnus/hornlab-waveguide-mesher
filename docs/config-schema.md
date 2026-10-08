@@ -122,6 +122,13 @@ extension is derived from either `throatExtAngle` or `throatExtLength`. If both
 extension length and angle are provided, they must reach the requested
 waveguide throat diameter.
 
+In text imports, `Throat.Diameter` supplies half its value as the throat radius
+when `r0` is omitted. It must be a positive finite numeric value in millimetres
+whose halved value remains positive. Blank, malformed, expression-valued and
+nonpositive diameters raise `ConfigError` instead of using the default radius,
+including when `r0` is supplied. An explicit `r0` keeps precedence over a valid
+`Throat.Diameter`.
+
 OSSE-only keys:
 
 | Canonical TOML/JSON key | Aliases | Default |
