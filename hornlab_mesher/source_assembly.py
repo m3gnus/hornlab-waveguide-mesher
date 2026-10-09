@@ -28,6 +28,7 @@ class SourceAssembly:
     mouth_radius_mm: float
     woofer_xy_mm: tuple[float, float]
     aperture_radius_mm: float
+    phase_plugs: tuple = ()
 
     def __post_init__(self):
         for name in (
@@ -96,6 +97,9 @@ class SourceAssembly:
             raise ValueError(
                 "horn and woofer apertures must be separated by more than 0.1 mm"
             )
+        from .phase_plug import validate_passages
+
+        validate_passages(self)
 
     @property
     def baffle(self):
@@ -136,8 +140,13 @@ class SourceAssembly:
             **{
                 name: getattr(self, name)
                 for name in self.__dataclass_fields__
-                if name not in ("horn", "woofer")
+                if name not in ("horn", "woofer", "phase_plugs")
             },
+            **(
+                {"phase_plugs": [p.to_dict() for p in self.phase_plugs]}
+                if self.phase_plugs
+                else {}
+            ),
         }
 
     @classmethod
@@ -146,6 +155,10 @@ class SourceAssembly:
         version, frame = value.pop("version", None), value.pop("frame", None)
         if type(version) is not int or version != 1 or frame != "aligned-z-mm-v1":
             raise ValueError("unsupported native assembly version or frame")
+        from .phase_plug import PhasePlug
+
+        if "phase_plugs" in value:
+            value["phase_plugs"] = tuple(PhasePlug(**p) for p in value["phase_plugs"])
         return cls(
             **{
                 **value,
@@ -161,35 +174,49 @@ class SourceAssembly:
     def preview(self, **sizes):
         import numpy as np
 
-        return {
+        result = {
             patch_id(c, s): np.asarray(c.preview(**sizes)[s.id]) + origin
             for c, origin, _ in self.parts
             for s in c.segments
         }
+        from .phase_plug import rigid_edges
+
+        angles = np.linspace(0, 2 * math.pi, sizes.get("azimuth_steps", 64) + 1)
+        for key, (a, b) in rigid_edges(self).items() if self.phase_plugs else []:
+            rz = np.linspace(a, b, sizes.get("radial_steps", 32) + 1)
+            result[key] = (
+                np.stack(
+                    np.broadcast_arrays(
+                        rz[:, 0, None] * np.cos(angles),
+                        rz[:, 0, None] * np.sin(angles),
+                        rz[:, 1, None],
+                    ),
+                    axis=-1,
+                )
+                + self.parts[0][1]
+            )
+        return result
 
     def rigid_areas(self):
         result = {
             role: spec[-1] for role, spec in self.baffle.surfaces(self.woofer).items()
         }
         result["front"] -= math.pi * self.mouth_radius_mm**2
-        r = self.horn.points[-1].r_mm
-        result["horn-wall"] = (
-            math.pi
-            * (r + self.mouth_radius_mm)
-            * math.hypot(self.horn_length_mm, self.mouth_radius_mm - r)
+        from .phase_plug import line_area, rigid_edges
+
+        result.update(
+            {key: line_area(a, b) for key, (a, b) in rigid_edges(self).items()}
         )
         return result
 
     def rigid_distance(self, role, xyz):
         import numpy as np
 
-        if role == "horn-wall":
-            local = xyz - np.asarray(self.parts[0][1])
-            r, z = np.linalg.norm(local[..., :2], axis=-1), local[..., 2]
-            a = self.horn.points[-1].r_mm
-            dr, dz = self.mouth_radius_mm - a, self.horn_length_mm
-            t = np.clip(((r - a) * dr + z * dz) / (dr * dr + dz * dz), 0, 1)
-            return np.hypot(r - a - t * dr, z - t * dz)
+        from .phase_plug import line_distance, rigid_edges
+
+        edges = rigid_edges(self)
+        if role in edges:
+            return line_distance(*edges[role], xyz, self.parts[0][1])
         result = self.baffle.distance(self.woofer, role, xyz)
         if role == "front":
             r = np.linalg.norm(xyz[..., :2] - self.horn_xy_mm, axis=-1)

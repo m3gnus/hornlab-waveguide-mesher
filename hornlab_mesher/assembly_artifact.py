@@ -11,13 +11,21 @@ from dataclasses import asdict
 from itertools import pairwise
 from pathlib import Path
 
+from .phase_plug import FEATURE as PLUG_FEATURE
+from .phase_plug import passage_contract, rigid_edges, surface_targets, wall_edges
 from .source_assembly import FEATURE, SourceAssembly, assembly_channels
 from .source_contour import FEATURE as CONTOUR_FEATURE
 from .source_contour import ContourDrive, canonical, digest
 
 
 def export_assembly(
-    assembly, drives, destination, *, mesh_size_mm=2.0, triangle_limit=250000
+    assembly,
+    drives,
+    destination,
+    *,
+    mesh_size_mm=2.0,
+    triangle_limit=250000,
+    passage_refinement=1,
 ):
     channels = assembly_channels(assembly, drives)
     if (
@@ -29,11 +37,12 @@ def export_assembly(
     if type(triangle_limit) is not int or not 1 <= triangle_limit <= 250000:
         raise ValueError("triangle budget must be between 1 and 250000")
     estimate = 4 * sum(assembly.rigid_areas().values()) / mesh_size_mm**2
-    wall_target = min(mesh_size_mm, math.sqrt(8 * 0.1 * assembly.horn.points[-1].r_mm))
-    estimate += (
-        4
-        * assembly.rigid_areas()["horn-wall"]
-        * (1 / wall_target**2 - 1 / mesh_size_mm**2)
+    if type(passage_refinement) is not int or passage_refinement not in (1, 2, 4):
+        raise ValueError("passage refinement must be 1, 2 or 4")
+    targets = surface_targets(assembly, mesh_size_mm, passage_refinement)
+    estimate += sum(
+        4 * assembly.rigid_areas()[role] * (1 / target**2 - 1 / mesh_size_mm**2)
+        for role, target in targets.items()
     )
     for _, c, i, _, _ in assembly.patches:
         a, b = c.points[i : i + 2]
@@ -56,6 +65,7 @@ def export_assembly(
         "channels": channels,
         "mesh_size_mm": float(mesh_size_mm),
         "triangle_limit": triangle_limit,
+        "passage_refinement": passage_refinement,
     }
     with tempfile.TemporaryDirectory(
         dir=destination.parent, prefix=".assembly-"
@@ -93,6 +103,7 @@ def _worker(stage):
         gmsh.model.add("native-shared-source-assembly")
         occ = gmsh.model.occ
         patch_faces, rigid_roles, chains, apertures = {}, {}, [], []
+        plug_faces = []
         for contour, origin, band in assembly.parts:
             cx, cy, cz = origin
             points = {
@@ -126,7 +137,21 @@ def _worker(stage):
                 role, r, z = "horn-wall", assembly.mouth_radius_mm, assembly.front_z_mm
             else:
                 role, r, z = "collar", assembly.aperture_radius_mm, assembly.front_z_mm
-            if band == "HF" or r > contour.points[-1].r_mm:
+            if band == "HF":
+                start = points[contour.points[-1].id]
+                for role, (_, b) in wall_edges(assembly).items():
+                    end = occ.addPoint(cx + b[0], cy, cz + b[1])
+                    edge = occ.addLine(start, end)
+                    rigid_roles[role] = next(
+                        t
+                        for dim, t in occ.revolve(
+                            [(1, edge)], cx, cy, cz, 0, 0, 1, 2 * math.pi
+                        )
+                        if dim == 2
+                    )
+                    chain.append(rigid_roles[role])
+                    start = end
+            elif r > contour.points[-1].r_mm:
                 end = occ.addPoint(cx + r, cy, z)
                 edge = occ.addLine(points[contour.points[-1].id], end)
                 rigid_roles[role] = next(
@@ -165,6 +190,24 @@ def _worker(stage):
             rigid_roles[role] = occ.addPlaneSurface(
                 [occ.addCurveLoop([fe[i], ve[(i + 1) % 4], -be[i], -ve[i]])]
             )
+        cx, cy, cz = assembly.parts[0][1]
+        for plug in assembly.phase_plugs:
+            body = []
+            for role, (a, b) in plug.edges.items():
+                edge = occ.addLine(
+                    occ.addPoint(cx + a[0], cy, cz + a[1]),
+                    occ.addPoint(cx + b[0], cy, cz + b[1]),
+                )
+                face = next(
+                    t
+                    for dim, t in occ.revolve(
+                        [(1, edge)], cx, cy, cz, 0, 0, 1, 2 * math.pi
+                    )
+                    if dim == 2
+                )
+                rigid_roles[role] = face
+                body.append(face)
+            plug_faces.append(body)
         occ.synchronize()
         faces = list(patch_faces.values()) + list(rigid_roles.values())
         _prune_to(gmsh, _entity_closure(gmsh, [(2, t) for t in faces]))
@@ -179,9 +222,13 @@ def _worker(stage):
                 **{("rigid", k): t for k, t in rigid_roles.items()},
             }.items()
         }
-        handle = occ.addVolume([occ.addSurfaceLoop(faces, sewing=True)])
+        plug_face_set = {t for body in plug_faces for t in body}
+        bodies = [[t for t in faces if t not in plug_face_set], *plug_faces]
+        handles = [
+            occ.addVolume([occ.addSurfaceLoop(body, sewing=True)]) for body in bodies
+        ]
         occ.synchronize()
-        _prune_to(gmsh, _entity_closure(gmsh, [(3, handle)]))
+        _prune_to(gmsh, _entity_closure(gmsh, [(3, handle) for handle in handles]))
         faces = [t for _, t in gmsh.model.getEntities(2)]
         remapped = {}
         for key, (area, center, bounds) in original.items():
@@ -226,15 +273,15 @@ def _worker(stage):
             r"SHELL_BASED_SURFACE_MODEL('\1',(\2))",
             step.read_text(),
         )
-        if count != 1:
-            raise ValueError("assembly must export exactly one sewn shell")
+        if count != len(handles):
+            raise ValueError("assembly must export its exact sewn shell inventory")
         step.write_text(
             step_text.replace(
                 "ADVANCED_BREP_SHAPE_REPRESENTATION(",
                 "MANIFOLD_SURFACE_SHAPE_REPRESENTATION(",
             )
         )
-        occ.remove([(3, handle)], recursive=False)
+        occ.remove([(3, handle) for handle in handles], recursive=False)
         occ.synchronize()
         order = advanced_face_order_for_surfaces(step, faces)
         selectors = dict(zip(faces, order))
@@ -264,18 +311,18 @@ def _worker(stage):
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
         gmsh.option.setNumber("Mesh.Binary", 0)
         fields, targets = [], [request["mesh_size_mm"]]
-        wall_target = min(
-            request["mesh_size_mm"], math.sqrt(8 * 0.1 * assembly.horn.points[-1].r_mm)
-        )
-        targets.append(wall_target)
-        constant = gmsh.model.mesh.field.add("MathEval")
-        gmsh.model.mesh.field.setString(constant, "F", str(wall_target))
-        restricted = gmsh.model.mesh.field.add("Restrict")
-        gmsh.model.mesh.field.setNumber(restricted, "InField", constant)
-        gmsh.model.mesh.field.setNumbers(
-            restricted, "SurfacesList", [rigid_roles["horn-wall"]]
-        )
-        fields.append(restricted)
+        for role, target in surface_targets(
+            assembly, request["mesh_size_mm"], request["passage_refinement"]
+        ).items():
+            targets.append(target)
+            constant = gmsh.model.mesh.field.add("MathEval")
+            gmsh.model.mesh.field.setString(constant, "F", str(target))
+            restricted = gmsh.model.mesh.field.add("Restrict")
+            gmsh.model.mesh.field.setNumber(restricted, "InField", constant)
+            gmsh.model.mesh.field.setNumbers(
+                restricted, "SurfacesList", [rigid_roles[role]]
+            )
+            fields.append(restricted)
         for identifier, c, i, _, _ in assembly.patches:
             if c.segments[i].kind != "arc":
                 continue
@@ -303,17 +350,14 @@ def _worker(stage):
                 reverse = normal[2] < 0
             else:
                 role = next(k for k, t in rigid_roles.items() if t == face)
-                if role == "horn-wall":
+                if role in rigid_edges(assembly):
                     point = np.asarray(gmsh.model.getValue(2, face, uv))
                     local = point - np.asarray(assembly.parts[0][1])
                     radial = local[:2] / np.linalg.norm(local[:2])
-                    expected = np.array(
-                        [
-                            -radial[0] * assembly.horn_length_mm,
-                            -radial[1] * assembly.horn_length_mm,
-                            assembly.mouth_radius_mm - assembly.horn.points[-1].r_mm,
-                        ]
-                    )
+                    a, b = rigid_edges(assembly)[role]
+                    dr, dz = b[0] - a[0], b[1] - a[1]
+                    sign = -1 if role.startswith("horn-wall") else 1
+                    expected = sign * np.array([radial[0] * dz, radial[1] * dz, -dr])
                     reverse = normal @ expected < 0
                 else:
                     axis, _, _, _, sign, _ = assembly.baffle.surfaces(assembly.woofer)[
@@ -326,6 +370,19 @@ def _worker(stage):
         if triangle_count > request["triangle_limit"]:
             raise ValueError("assembly actual triangle budget exceeded")
         gmsh.write(str(stage / "preview.msh"))
+        passage_quality = None
+        if assembly.phase_plugs:
+            import meshio
+
+            from .passage_mesh import certify_passage_mesh
+
+            mesh = meshio.read(stage / "preview.msh")
+            tri = mesh.get_cells_type("triangle")
+            tags = mesh.get_cell_data("gmsh:physical", "triangle")
+            active = np.isin(
+                tags, [p["mesh_tag"] for p in patches if p["role"] == "moving"]
+            )
+            passage_quality = certify_passage_mesh(assembly, mesh.points, tri, active)
         rigid_faces = [selectors[t] for t in rigid_roles.values()] + [
             p["advanced_face_indices"][0] for p in patches if p["role"] == "rigid"
         ]
@@ -333,12 +390,23 @@ def _worker(stage):
             "mesh_size_mm": request["mesh_size_mm"],
             "triangle_limit": request["triangle_limit"],
             "triangle_count": triangle_count,
+            **(
+                {
+                    "rigid_role_sizes_mm": surface_targets(
+                        assembly, request["mesh_size_mm"], request["passage_refinement"]
+                    ),
+                    "passage_refinement": request["passage_refinement"],
+                }
+                if assembly.phase_plugs
+                else {}
+            ),
         }
         manifest = {
             "version": 1,
             "producer": "native",
             "units": "mm",
-            "required_features": [CONTOUR_FEATURE, FEATURE],
+            "required_features": [CONTOUR_FEATURE, FEATURE]
+            + ([PLUG_FEATURE] if assembly.phase_plugs else []),
             "recipe": assembly.to_dict(),
             "geometry_sha256": assembly.geometry_sha256,
             "channels": channels,
@@ -355,6 +423,14 @@ def _worker(stage):
             "rigid_face_indices": sorted(rigid_faces),
             "all_face_indices": sorted(order),
             "shared_join_edge_counts": joins,
+            **(
+                {
+                    "passage_contract": passage_contract(assembly),
+                    "passage_quality": passage_quality,
+                }
+                if assembly.phase_plugs
+                else {}
+            ),
             "density": density,
             "mesh_density_sha256": digest(density),
             "members": {

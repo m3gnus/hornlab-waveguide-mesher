@@ -5,11 +5,13 @@ rectangular enclosure. A straight circular conical horn joins its throat source
 to a front opening; the woofer joins an independent front aperture, with a rigid
 collar where needed. Placement, cone/cap/surround dimensions and box dimensions
 remain independent. Both axes point+Z; the common observation origin is the
-front plane's centre. Arbitrary axes and phase plugs need separate contracts.
+front plane's centre. Passive bodies use the additive
+[phase-plug passage contract](phase-plug-passages.md); arbitrary axes remain
+outside these contracts.
 
 `export_assembly(model, [horn_drive, woofer_drive], new_directory)` publishes
 geometry.step, preview.msh and source.json atomically in an isolated process.
-One sewn shell contains every scattering face. Sources and successive segments
+Without passive bodies, one sewn shell contains every scattering face. Sources and successive segments
 share actual OCC edges. STEP is a zero-volume surface representation. Output
 budgets remain250000 triangles, checked before and after meshing.
 
