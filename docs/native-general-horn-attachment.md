@@ -14,8 +14,12 @@ normal/axial motion retain their authored values.
 The wall is an exact circular revolution of that nonlinear axial spline. This
 removes the existing tensor surface's approximate angular circle fit. Transport
 records a conservative `circle_correction_bound_mm`, with a fixed 0.15 mm
-admission limit. A design exceeding this limit must increase its angular
-sampling before attachment. Axial spline fitting is unchanged; the wall is not
+admission limit. A design exceeding this limit must refine its resolved angular
+sampling before attachment. For an acoustic fit, use finer `Mesh.ThroatResolution`
+and `Mesh.MouthResolution` values in millimetres: the fit allocates its actual
+angular stations from those resolutions and can override `Mesh.AngularSegments`.
+Check the resulting `circle_correction_bound_mm` against the unchanged limit.
+Axial spline fitting is unchanged; the wall is not
 refitted to a cone. Representative original tensor surface differences were
 0.000088 mm (OSSE), 0.000056 mm (R-OSSE), 0.000085 mm (ICW), and 0.055935 mm
 (approximating FREEFORM). These are measured examples, not universal bounds.
