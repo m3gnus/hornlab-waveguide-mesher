@@ -370,7 +370,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `sampling_mode` | `samplingMode` | `uniform` or `zmap` | Defaults to `zmap` when `z_map_points` is set. Text imports default to `ath-default-zmap`. |
 | `vertical_offset_mm` | `verticalOffset` | `0.0` | Rigid +y translation applied after `scale`. |
 | `ath_parity_sampling` | `athParitySampling` | `false` | Forces `ath-default-zmap`. |
-| `z_map_points` | `zMapPoints`, `zmapPoints`, `ZMapPoints` | none | Full sample map or x,y control pairs in `[0, 1]`. Control pairs may include `(0,0)` and `(1,1)` explicitly; omitted endpoints are added. Endpoint coordinates must agree, x must strictly increase and y must not decrease. |
+| `z_map_points` | `zMapPoints`, `zmapPoints`, `ZMapPoints` | none | Full sample map or x,y control pairs in `[0, 1]`. Control pairs may include `(0,0)` and `(1,1)` explicitly; omitted endpoints are added. Endpoint coordinates must agree, x must strictly increase and y must not decrease. Both explicit endpoint pairs select controls even when the value count equals n+1; use `zMapKind = "samples"` to explicitly select a full sample map with repeated endpoint samples. |
 | `wall_thickness_mm` | `wall_thickness`, `wallThickness` | `6.0` freestanding (`5.0` for text imports), `0.0` otherwise | Forced to `0.0` for `bare`, `enclosure`, and `infinite-baffle`. |
 | `quadrants` | none | `1234` | `1`, `12`, `14`, and `1234` are supported by the sampler. |
 | `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |

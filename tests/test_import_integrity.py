@@ -77,6 +77,22 @@ def test_full_zmap_sample_map_unchanged():
     np.testing.assert_allclose(grid['slice_map'], [0,0.1,0.3,0.7,1], atol=1e-12)
 
 
+@pytest.mark.parametrize('steps,controls', [(3, '0,0,1,1'), (5, '0,0,0.5,0.2,1,1')])
+def test_endpoint_controls_take_precedence_over_coincidental_sample_count(steps, controls):
+    from hornlab_mesher.profile_sampling import _custom_zmap
+
+    actual = _custom_zmap(steps, controls)
+    expected = _custom_zmap(steps, controls, 'controls')
+    np.testing.assert_array_equal(actual, expected)
+    assert np.all(np.diff(actual) > 0)
+
+
+def test_explicit_legacy_full_samples_keep_repeated_station_behavior():
+    from hornlab_mesher.profile_sampling import _custom_zmap
+
+    np.testing.assert_array_equal(_custom_zmap(3, [0,0,1,1], 'samples'), [0,0,1,1])
+
+
 @pytest.mark.parametrize('offsets,expected,slices', [
     ('0', [0], '9'), ('0', [0], '19'),
     ('0,5', [0,5], '9,19'), ('', [5], '9'),

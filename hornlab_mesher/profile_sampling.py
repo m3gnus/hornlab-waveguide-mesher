@@ -356,6 +356,13 @@ def _classify_zmap_kind(n_length: int, z_map_points: Any) -> str:
     values = _zmap_number_list(z_map_points)
     if not values:
         raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
+    # Explicit endpoint pairs are controls even when their value count happens
+    # to equal n+1. A caller intending repeated full samples can select samples
+    # explicitly through zMapKind rather than relying on this ambiguous count.
+    if (len(values) >= 4 and len(values) % 2 == 0
+            and all(math.isclose(value, endpoint, rel_tol=0.0, abs_tol=1e-12)
+                    for value, endpoint in zip(values[:2] + values[-2:], (0, 0, 1, 1)))):
+        return "controls"
     if (
         len(values) == steps + 1
         and math.isclose(values[0], 0.0, abs_tol=1.0e-12)

@@ -36,7 +36,8 @@ from hornlab_mesher.cli import (
     build_geometry_params,
     parse_ath_config,
 )
-from hornlab_mesher.config_builder import _number_list
+from hornlab_mesher.config_builder import _number_list, resolve_geometry
+from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.density import _parse_quadrant_resolutions
 from hornlab_mesher.geometry import (
     MESH_ALGORITHM_DELAUNAY,
@@ -697,8 +698,17 @@ Source = {{
 """
 
 
+def _native_projection_after_imported_warp_refusal(cfg):
+    # This anisotropic fixture has a warped ATH rear ring. Preserve the original
+    # tessellation/topology checks using deliberately selected native projection,
+    # and separately require the versioned importer to refuse its unqualified cap.
+    with pytest.raises(ConfigError, match="nonplanar rear ring"):
+        resolve_geometry(cfg)
+    return {**cfg, "_textImportVersion": None}
+
+
 def test_ath_config_build_uses_common_resolution_tessellation(tmp_path):
-    cfg = parse_ath_config(_asro2_ath_cfg_text())
+    cfg = _native_projection_after_imported_warp_refusal(parse_ath_config(_asro2_ath_cfg_text()))
 
     assert cfg["mesh"]["samplingMode"] == "ath-default-zmap"
     result = build_from_config(cfg, tmp_path / "asro2-ath.msh")
@@ -712,12 +722,12 @@ def test_ath_config_build_uses_common_resolution_tessellation(tmp_path):
 
 def test_ath_config_tessellation_follows_resolution_inputs(tmp_path):
     coarse = build_from_config(
-        parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0)),
+        _native_projection_after_imported_warp_refusal(parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0))),
         tmp_path / "coarse.msh",
         allow_large_mesh=True,
     )
     fine = build_from_config(
-        parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0)),
+        _native_projection_after_imported_warp_refusal(parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0))),
         tmp_path / "fine.msh",
         allow_large_mesh=True,
     )
@@ -757,6 +767,7 @@ Source.Curv = 0
     assert cfg["mesh"]["lengthSegments"] == 20
     assert cfg["mesh"]["quadrants"] == 1
     assert cfg["source"]["sourceShape"] == 1
+    cfg = _native_projection_after_imported_warp_refusal(cfg)
     result = build_from_config(cfg, tmp_path / "flat-asro2-ath.msh")
     mesh = meshio.read(result.mesh_path)
     _, tags = _triangles_and_tags(mesh)
