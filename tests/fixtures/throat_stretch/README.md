@@ -54,3 +54,10 @@ shape, dtype and SHA-256 exactly. Captured-base comparisons use `rtol=1e-12`
 for floats, with `atol=1e-12` only for expected zeros (in the field's unit).
 Structure and non-float fields remain exact; same-platform inactive geometry
 and identity comparisons remain byte-exact.
+
+Text normalization assertions explicitly add the later versioned
+`_textImportVersion = "ath-2026-08c-v1"` provenance field to their expected
+config/parameter dictionaries. Every captured value remains checked; these
+fixtures have not been regenerated. Native dictionaries and dataclass identity
+checks remain unchanged. Corrected imported slot and circle geometry have
+separate physical-profile witnesses in `text_import_geometry.json`.

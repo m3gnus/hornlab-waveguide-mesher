@@ -967,7 +967,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     _report_ignored_ath_items(flat, blocks, nested, profile_block=profile_block)
 
-    config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type}
+    from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
+
+    config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type,
+                              TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
     # Global Scale multiplies every linear geometry dimension after profile
     # evaluation (resolutions and mesh sizes stay in raw millimetres).
     scale = _maybe_number(flat.get("Scale"))
