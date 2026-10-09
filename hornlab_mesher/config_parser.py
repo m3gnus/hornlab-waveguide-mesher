@@ -637,6 +637,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     formula = None
     profile_block: str | None = None
     profile_items: Mapping[str, str] = {}
+    saved_profile_layers = saved_geometry_version is not None or not imported_geometry
     if "R-OSSE" in blocks:
         formula = "R-OSSE"
         profile_block = "R-OSSE"
@@ -650,7 +651,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         # The application writer emits an empty OSSE selector beside its flat
         # controls. Only a populated block owns the formula parameters, as in
         # the application's text reader.
-        profile_items = blocks[profile_block] or flat
+        profile_items = ({**flat, **blocks[profile_block]} if saved_profile_layers
+                         else blocks[profile_block] or flat)
     elif any(key in flat for key in ("Coverage.Angle", "Length", "Term.n")):
         formula = "OSSE"
         profile_items = flat
@@ -669,7 +671,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     # and merge the top-level values into the profile mapping instead.
     if profile_items is not flat:
         extension_keys = ("Throat.Ext.Length", "Throat.Ext.Angle", "Slot.Length")
-        in_block = [key for key in extension_keys if key in profile_items]
+        in_block = [key for key in extension_keys if key in blocks[profile_block]]
         if in_block:
             raise ConfigError(
                 f"{', '.join(in_block)} must be top-level keys — ATH ignores them inside "
@@ -703,10 +705,21 @@ def parse_text_config(content: str) -> dict[str, Any]:
             known_flat.update(src for src, _dst in pairs)
         elif items is profile_items:
             known_profile.update(src for src, _dst in pairs)
+            if saved_profile_layers and profile_block is not None:
+                known_flat.update(src for src, _dst in pairs)
         out: dict[str, Any] = {}
-        for src, dst in pairs:
-            if src in items:
-                out[dst] = _maybe_number(items[src])
+        layers = (items,)
+        blocked: set[str] = set()
+        if items is profile_items and saved_profile_layers and profile_block is not None:
+            block_items = blocks[profile_block]
+            layers = (flat, block_items)
+            blocked = {dst for src, dst in pairs if src in block_items}
+            if any(key in block_items for key in ("r0", "Throat.Diameter")):
+                blocked.update(("r0", "throat_diameter"))
+        for layer in layers:
+            for src, dst in pairs:
+                if src in layer and not (layer is flat and dst in blocked):
+                    out[dst] = _maybe_number(layer[src])
         return out
 
     def prefixed(prefix: str) -> dict[str, str]:
@@ -987,7 +1000,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         known_profile=known_profile,
     )
 
-    _report_ignored_ath_items(flat, blocks, nested, profile_block=profile_block)
+    _report_ignored_ath_items(flat, blocks, nested,
+                              profile_block=None if saved_profile_layers else profile_block)
 
     config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type}
     if imported_geometry:

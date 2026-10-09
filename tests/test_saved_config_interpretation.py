@@ -271,3 +271,43 @@ Morph.TargetShape = 2
     assert expected.density.mouth_res_mm == actual.density.mouth_res_mm == 8
     assert np.array_equal(expected.geometry.inner_points, actual.geometry.inner_points)
     assert np.array_equal(expected.geometry.outer_points, actual.geometry.outer_points)
+
+
+STRETCHED_SAVED = """OSSE = {
+L = 30
+a = 32
+a0 = 6
+r0 = 4
+s = .7
+s1 = .3
+s2 = .01
+}
+Coverage.Angle = 32
+Length = 30
+Term.s = .7
+Throat.Angle = 6
+Throat.Diameter = 2*(4)
+Throat.Profile = 1
+Simulation.SimType = 1
+"""
+
+
+@pytest.mark.parametrize("header", [stamp(TEXT_IMPORT_VERSION), stamp("native-v1"), "; Parameter config\n"])
+def test_saved_stretch_profile_admits_canonical_flat_aliases_with_block_authority(header):
+    config = parse_text_config(header + STRETCHED_SAVED)
+    p = build_geometry_params(config)[0]
+    assert (p["L"], p["a"], p["a0"], p["r0"], p["s"], p["s1"], p["s2"]) == (30, 32, 6, 4, .7, .3, .01)
+    changed_flat = STRETCHED_SAVED.replace("Coverage.Angle = 32", "Coverage.Angle = 50").replace("Length = 30", "Length = 80").replace("Term.s = .7", "Term.s = .2").replace("Throat.Angle = 6", "Throat.Angle = 20").replace("Throat.Diameter = 2*(4)", "Throat.Diameter = 2*(p)")
+    overridden = build_geometry_params(parse_text_config(header + changed_flat))[0]
+    for key in ("L", "a", "a0", "r0", "s", "s1", "s2"):
+        assert overridden[key] == p[key]
+
+
+def test_stamped_partial_profile_reads_flat_controls_but_raw_ath_populated_block_is_strict():
+    text = "OSSE = {\ns1=.3\ns2=.01\n}\nCoverage.Angle=32\nLength=30\nThroat.Diameter=2*(4)\nThroat.Angle=6\nTerm.s=.7\nSimulation.SimType=1\n"
+    p = build_geometry_params(parse_text_config(stamp(TEXT_IMPORT_VERSION) + text))[0]
+    assert (p["L"], p["a"], p["a0"], p["r0"], p["s"]) == (30, 32, 6, 4, .7)
+    with pytest.raises(ConfigError, match="must set Length"):
+        parse_text_config(text)
+    with pytest.raises(ConfigError, match="unsupported item.*Coverage.Angle"):
+        parse_text_config(STRETCHED_SAVED)

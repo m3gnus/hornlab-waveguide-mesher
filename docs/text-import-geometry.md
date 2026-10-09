@@ -21,6 +21,10 @@ select native interpretation, consistently with the application reader. An
 explicit stamp takes precedence over the historical header. Native saved CFGs
 retain native profile/morph defaults and additive slot length; explicit
 `Length.Mode` retains its authored override.
+Saved stamped files and historical native files can combine a profile block
+with the writer's flat formula aliases. Block fields take precedence across
+aliases; missing block controls are read from the flat controls. Unstamped
+external ATH retains its strict populated-block interpretation and refusals.
 
 Stamps are read from top-level semicolon comments, including an inline comment
 on a top-level control or block opener. Comments inside blocks, including a
