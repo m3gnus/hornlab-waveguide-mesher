@@ -365,8 +365,14 @@ def calculate_osse(
 ) -> tuple[float, float]:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require the complete canonical meridian API")
+    if "adapterAxialScale" in params:
+        raise ValueError("adapter axial scale requires its canonical physical meridian")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
+    if "controlsAdapter" in params or str(params.get("type", "")).upper()=="OSSE-ADAPTER-CONTROLS":
+        raise ValueError("exact controls require their complete native analytic authority")
     if "mouthRoundoverRadiusMm" in params:
         raise ValueError("mouth roundover requires the canonical composite meridian, not the body-only formula")
     if "throat_adapter" in params:
@@ -460,9 +466,15 @@ def calculate_osse_curve(
     """
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require the complete canonical meridian API")
 
+    if "adapterAxialScale" in params:
+        raise ValueError("adapter axial scale requires its canonical physical meridian")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical meridian")
+    if "controlsAdapter" in params or str(params.get("type", "")).upper()=="OSSE-ADAPTER-CONTROLS":
+        raise ValueError("exact controls require their complete native analytic authority")
     if "mouthRoundoverRadiusMm" in params:
         raise ValueError("mouth roundover requires the canonical composite meridian, not the body-only formula")
     if "throat_adapter" in params:
@@ -545,6 +557,8 @@ def osse_length_config(
 ) -> tuple[float, float, float, float]:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "terminatingArc" in params:
+        raise ValueError("terminating arcs require their complete analytic envelope")
     raw_L = eval_param(params.get("L"), p, 120.0)
     if not raw_L > 0.0:
         # A zero or negative length used to clamp to 0 and build a plain r0
@@ -580,8 +594,12 @@ def osse_length_config(
 def osse_total_length(params: Mapping[str, Any], p: float = 0.0) -> float:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if "adapterAxialScale" in params:
+        raise ValueError("adapter axial scale requires its canonical physical meridian")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires its canonical physical length")
+    if "controlsAdapter" in params or str(params.get("type", "")).upper()=="OSSE-ADAPTER-CONTROLS":
+        raise ValueError("exact controls require their complete native analytic authority")
     if "mouthRoundoverRadiusMm" in params:
         raise ValueError("mouth roundover requires its full analytic envelope, not the body-only length")
     if "throat_adapter" in params:

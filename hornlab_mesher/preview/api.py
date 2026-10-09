@@ -373,8 +373,17 @@ def build_preview_geometry(
         dimensions_config = None
         dimensions_snapshot_error = str(exc) or type(exc).__name__
     params, _, _ = build_geometry_params(config)
+    if "controlsAdapter" in params:
+        from .adapter_controls import build
+        return build(params, options)
+    if "terminatingArc" in params:
+        from .terminating_arc import build
+        return build(params, options)
     if "sourceBody" in params:
         from .source_body import build
+        return build(params, options)
+    if "adapterAxialScale" in params:
+        from .adapter_axial import build
         return build(params, options)
     if "absoluteAxialScale" in params:
         from .axial_scale import build

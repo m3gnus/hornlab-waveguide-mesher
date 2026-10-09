@@ -95,6 +95,46 @@ def derive_datums(
 
     if type(geometry) is StandaloneSourceGeometry:
         return geometry.datums()
+    controls = getattr(geometry, "controls_meridian", None)
+    if controls is not None:
+        az=np.linspace(0,2*np.pi,64,endpoint=False)
+        radius=float(controls.body(1)[0][1])
+        mouth=np.column_stack((radius*np.cos(az),radius*np.sin(az)+controls.offset,np.full(64,controls.depth)))
+        plane=lambda z:{**_axis_plane("z",z),"origin_mm":[0.,controls.offset,z],"nominal":False}
+        return {"rim_planar":True,"construction_fingerprint":controls.fingerprint,
+            "WG_AXIS":{"type":"axis","origin_mm":[0.,controls.offset,0.],"direction":[0.,0.,1.]},
+            "WG_THROAT_PLANE":plane(0.),"WG_ADAPTER_JOIN_PLANE":plane(controls.adapter_length),
+            "WG_MOUTH_PLANE":plane(controls.depth),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
+            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",controls.offset),
+            "WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),"WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
+    arc=getattr(geometry,"arc_meridian",None)
+    if arc is not None:
+        az=np.arange(64)*2*np.pi/64
+        z,r=arc.opening
+        mouth=np.column_stack((r*np.cos(az),r*np.sin(az)+arc.offset,np.full(64,z)))
+        def plane(z):
+            return {**_axis_plane("z",z),"origin_mm":[0.,arc.offset,float(z)]}
+        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,arc.offset,0.],"direction":[0.,0.,1.]},
+            "WG_THROAT_PLANE":{**plane(0),"nominal":False},"WG_ARC_JOIN_PLANE":plane(arc.join_z),
+            "WG_MOUTH_PLANE":plane(z),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
+            "WG_BODY_MOUTH_REFERENCE_PLANE":{**plane(arc.length),"nominal":True,"reference":True},
+            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",arc.offset),"WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),
+            "WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
+    from .adapter_axial import PhysicalAdapter
+    adapter = getattr(geometry, "adapter_meridian", None)
+    if isinstance(adapter, PhysicalAdapter):
+        az = np.arange(64)*2*np.pi/64
+        offset = adapter.offset
+        mouth_z = float(adapter.body_poles[-1,0])
+        radius = float(adapter.body_poles[-1,1])
+        mouth = np.column_stack((radius*np.cos(az),radius*np.sin(az)+offset,np.full(64,mouth_z)))
+        def plane(z):
+            return {**_axis_plane("z",z),"origin_mm":[0.,offset,z],"nominal":False}
+        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,offset,0.],"direction":[0.,0.,1.]},
+            "WG_THROAT_PLANE":plane(0.),"WG_ADAPTER_JOIN_PLANE":plane(float(adapter.cubic[-1,0])),
+            "WG_MOUTH_PLANE":plane(mouth_z),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
+            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",offset),"WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),
+            "WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
     axial = getattr(geometry, "axial_model", None)
     if axial is not None:
         az = np.linspace(0,2*np.pi,64,endpoint=False)
