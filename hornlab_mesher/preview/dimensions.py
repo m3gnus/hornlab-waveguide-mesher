@@ -46,6 +46,11 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     native = validate_native_boundary(full)
     # Check each native feature's original physical domain before zeroing placement.
     native_params = build_geometry_params(full) if native is not None else None
+    if native == "OSSE-ADAPTER-CONTROLS":
+        from ..adapter_controls import ControlsMeridian
+        model=ControlsMeridian.from_params(native_params[0])
+        return {"source_diameter":[2*model.source_radius]*2,"join_diameter":[2*model.r0]*2,
+                "mouth_opening":[2*float(model.body(1)[0][1])]*2,"horn_overall":[2*model.reach,2*model.reach,model.depth]}
     if native == "SOURCE-DISK":
         from ..source_body import StandaloneSourceGeometry
         model=StandaloneSourceGeometry(**native_params[0]["sourceBody"])

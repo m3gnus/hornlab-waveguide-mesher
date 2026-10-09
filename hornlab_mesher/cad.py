@@ -123,6 +123,11 @@ class _AdapterCadInfo(CadInfo):
     construction: Mapping[str, Any] | None = None
 
 @dataclass(frozen=True)
+class _ControlsCadInfo(_AdapterCadInfo):
+    datums: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class _RoundoverCadInfo(CadInfo):
     mouth_roundover: Mapping[str, Any] | None = None
 
@@ -392,6 +397,56 @@ def _assert_step(text: str, *, body: CadBody) -> None:
         )
 
 
+def _controls_surface_shell_transport(text, *, n_faces, open_throat):
+    """Validate one connected sewn shell and change only its three carriers."""
+    from collections import Counter,defaultdict
+    records=list(re.finditer(r"#(\d+)\s*=\s*(\w+)\s*\((.*?)\)\s*;",text,re.S))
+    entities={int(m[1]):(m[2],m[3]) for m in records}
+    def one(kind):
+        matches=[m for m in records if m[2]==kind]
+        if len(matches)!=1:raise MesherError(f"exact controls STEP requires exactly one {kind}")
+        return matches[0]
+    representation=one("ADVANCED_BREP_SHAPE_REPRESENTATION");solid=one("MANIFOLD_SOLID_BREP");shell=one("CLOSED_SHELL")
+    if any(kind in text for kind in ("BREP_WITH_VOIDS(","FACETED_BREP(","OPEN_SHELL(","SHELL_BASED_SURFACE_MODEL(")):
+        raise MesherError("exact controls STEP contains an unexpected carrier")
+    carrier=re.fullmatch(r"\s*''\s*,\s*#(\d+)\s*",solid[3])
+    shape=re.fullmatch(r"\s*''\s*,\s*\(\s*#(\d+)\s*,\s*#(\d+)\s*\)\s*,\s*#(\d+)\s*",representation[3])
+    shell_shape=re.fullmatch(r"\s*''\s*,\s*\(\s*(#\d+(?:\s*,\s*#\d+)*)\s*\)\s*",shell[3])
+    if (carrier is None or shape is None or shell_shape is None or int(carrier[1])!=int(shell[1])
+        or int(shape[2])!=int(solid[1]) or entities.get(int(shape[1]),(None,))[0]!="AXIS2_PLACEMENT_3D"):
+        raise MesherError("exact controls STEP has inconsistent carrier references")
+    refs=lambda value:[int(v) for v in re.findall(r"#(\d+)",value)]
+    faces=refs(shell_shape[1]);all_faces={i for i,(kind,_) in entities.items() if kind=="ADVANCED_FACE"}
+    if n_faces!=(8 if open_throat else 9) or len(faces)!=n_faces or len(set(faces))!=n_faces or set(faces)!=all_faces:
+        raise MesherError("exact controls STEP must retain every exact quadrant face once")
+    edge_faces=defaultdict(set)
+    for face in faces:
+        for bound in refs(entities[face][1]):
+            if entities.get(bound,(None,))[0] not in {"FACE_BOUND","FACE_OUTER_BOUND"}:continue
+            loops=refs(entities[bound][1])
+            if len(loops)!=1 or entities.get(loops[0],(None,))[0]!="EDGE_LOOP":raise MesherError("invalid controls STEP face boundary")
+            for oriented in refs(entities[loops[0]][1]):
+                if entities.get(oriented,(None,))[0]!="ORIENTED_EDGE":raise MesherError("invalid controls STEP oriented edge")
+                edges=refs(entities[oriented][1])
+                if len(edges)!=1 or entities.get(edges[0],(None,))[0]!="EDGE_CURVE":raise MesherError("invalid controls STEP shared edge")
+                if face in edge_faces[edges[0]]:raise MesherError("duplicate controls STEP face edge")
+                edge_faces[edges[0]].add(face)
+    if Counter(len(owners) for owners in edge_faces.values())!=({1:8,2:12} if open_throat else {1:4,2:16}):
+        raise MesherError("exact controls STEP has disconnected or nonmanifold quadrant edges")
+    reached={faces[0]}
+    while True:
+        expanded=reached|set().union(*(owners for owners in edge_faces.values() if owners&reached))
+        if expanded==reached:break
+        reached=expanded
+    if reached!=set(faces):raise MesherError("exact controls STEP contains disconnected shell components")
+    replacements={int(representation[1]):representation[0].replace("ADVANCED_BREP_SHAPE_REPRESENTATION","MANIFOLD_SURFACE_SHAPE_REPRESENTATION",1),
+        int(solid[1]):f"#{solid[1]} = SHELL_BASED_SURFACE_MODEL('',(#{shell[1]}));",
+        int(shell[1]):shell[0].replace("CLOSED_SHELL","OPEN_SHELL",1)}
+    for record in reversed(records):
+        if int(record[1]) in replacements:text=text[:record.start()]+replacements[int(record[1])]+text[record.end():]
+    return text
+
+
 def write_step(
     geometry: HornGeometry,
     output_path: str | Path | None = None,
@@ -409,8 +464,13 @@ def write_step(
     """
 
     if sum(getattr(geometry, name, None) is not None
-           for name in ("adapter_meridian", "roundover", "axial_model")) > 1:
+           for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian")) > 1:
         raise MesherError("combined active native geometry features are not supported")
+    controls=getattr(geometry,"controls_meridian",None)
+    if controls is not None:
+        from .adapter_controls import validate_geometry
+        validate_geometry(geometry)
+        if type(open_throat) is not bool:raise MesherError("native controls open_throat must be a boolean")
 
     import gmsh
 
@@ -441,6 +501,8 @@ def write_step(
         wrote = False
         staged_path: Path | None = None
         saved_options: dict[str, float] = {}
+        previous_model=None
+        owned_model=None
         try:
             if not gmsh.isInitialized():
                 # On Windows the open can truncate the native PATH, so it runs
@@ -467,8 +529,13 @@ def write_step(
             gmsh.option.setNumber("General.Verbosity", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
-            gmsh.clear()
-            gmsh.model.add("HornLabCad")
+            if controls is not None and not initialized_here:
+                previous_model=gmsh.model.getCurrent()
+                owned_model="HornLabControlsCad-"+__import__("uuid").uuid4().hex
+                gmsh.model.add(owned_model)
+            else:
+                gmsh.clear()
+                gmsh.model.add("HornLabCad")
 
             # Deliberately not _acoustic_geometry(): CAD keeps the geometry as
             # designed, including fillets too small for the mesh to resolve.
@@ -508,6 +575,13 @@ def write_step(
                 if throat_opened:
                     volume = _open_throat(gmsh, volume, built, cap_tags)
                 keep = _entity_closure(gmsh, [(3, volume)])
+            elif controls is not None:
+                # OCC serializes shared shell edge identities through a sewn
+                # temporary carrier. Publication changes only its wrappers.
+                shell=gmsh.model.occ.addSurfaceLoop(faces,sewing=True)
+                volume=int(gmsh.model.occ.addVolume([shell]))
+                gmsh.model.occ.synchronize()
+                keep=_entity_closure(gmsh,[(3,volume)])
             else:
                 keep = _entity_closure(gmsh, [(2, tag) for tag in faces])
             _prune_to(gmsh, keep)
@@ -526,7 +600,7 @@ def write_step(
                 gmsh.model.occ.synchronize()
 
             if volume is not None:
-                volume_mm3 = float(gmsh.model.occ.getMass(3, volume))
+                volume_mm3 = None if controls is not None else float(gmsh.model.occ.getMass(3, volume))
                 box = gmsh.model.getBoundingBox(3, volume)
                 n_faces = len(
                     gmsh.model.getBoundary(
@@ -547,6 +621,10 @@ def write_step(
             text = normalise_step_header(
                 staged_path.read_text(encoding="utf-8", errors="replace")
             )
+            if controls is not None:
+                text=_controls_surface_shell_transport(text,n_faces=n_faces,open_throat=open_throat)
+                recipe={"construction_fingerprint":controls.fingerprint,**controls.identity}
+                text=text.replace("HEADER;","HEADER;\n/* native-construction "+json.dumps(recipe,sort_keys=True,separators=(",",":"),allow_nan=False)+" */\n",1)
             adapter = getattr(geometry, "adapter_meridian", None)
             roundover = getattr(geometry, "roundover", None)
             if adapter is not None:
@@ -574,12 +652,17 @@ def write_step(
             staged_path = None
             wrote = True
             info_cls = (_SourceBodyCadInfo if source_body is not None else
+                        _ControlsCadInfo if controls is not None else
                         _AdapterCadInfo if adapter is not None else
                         _RoundoverCadInfo if roundover is not None else
                         _AxialCadInfo if axial is not None else CadInfo)
             identity_fields = ({"construction_fingerprint": adapter.fingerprint,
                                 "construction": deepcopy(dict(adapter.identity))}
                                if adapter is not None else {})
+            if controls is not None:
+                from .datums import derive_datums
+                identity_fields={"construction_fingerprint":controls.fingerprint,"construction":controls.identity,"datums":derive_datums(geometry,built)}
+                box=(*controls.bounds[0],*controls.bounds[1])
             if roundover is not None:
                 box = (*roundover.bounds[0], *roundover.bounds[1])
             if axial is not None:
@@ -614,6 +697,9 @@ def write_step(
             if initialized_here and gmsh.isInitialized():
                 with preserve_native_windows_path():
                     gmsh.finalize()
+            if owned_model is not None and gmsh.isInitialized():
+                gmsh.model.setCurrent(owned_model);gmsh.model.remove()
+                if previous_model in gmsh.model.list():gmsh.model.setCurrent(previous_model)
 
 
 @stretch_config_errors
@@ -636,7 +722,10 @@ def write_step_from_config(
 
     if not isinstance(config, Mapping):
         raise MesherError("config must be a mapping")
-    if validate_native_boundary(config) is not None:
+    native=validate_native_boundary(config)
+    if native == "OSSE-ADAPTER-CONTROLS" and type(full_model) is not bool:
+        raise MesherError("native controls full_model must be a boolean")
+    if native is not None:
         build_geometry_params(config)
     working = deepcopy(dict(config))
     if full_model:
@@ -1143,6 +1232,8 @@ def write_wglink(
         raise MesherError("wglink export refuses standalone source bodies until a source-only bundle transport is supported")
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    if getattr(geometry,"controls_meridian",None) is not None:
+        raise MesherError("wglink export refuses exact controls until a complete analytic bundle transport is qualified")
     if getattr(geometry, "roundover", None) is not None:
         raise MesherError("wglink export refuses mouth roundovers until the analytic recipe has a qualified bundle transport")
     if getattr(geometry, "axial_model", None) is not None:

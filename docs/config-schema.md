@@ -739,3 +739,13 @@ then the item is refused.
 ## Standalone source body
 
 `formula = "SOURCE-DISK"` selects a dedicated closed exterior circular source body. It requires root `source_body` controls `radius_mm`, `outer_radius_mm` and `depth_mm`, with optional `mode = "standalone-source"`. Its mesh uses uniform `size_mm`, final `vertical_offset_mm`, full coverage, unit and triangle-budget controls. Horn coefficients and unsupported supplied controls are refused. See [standalone-source-body.md](standalone-source-body.md) for the bounded domain, CLI/Python examples, preview, tags and STEP transport contract.
+
+## Exact native adapter controls
+
+`formula = "OSSE-ADAPTER-CONTROLS"` requires an exact root `throat_adapter`
+object with `mode = "controls"`, integer `contract_revision = 1`, numeric
+`join_t = 0`, and three literal `control_points_mm` pairs. It preserves each
+independent cubic point and the complete circular OSSE body, including a
+deliberate tangent corner. See [native-adapter-controls.md](native-adapter-controls.md)
+for the strict supported fields, immutable authority, branch preview bounds,
+actual facet certificates, shared topology and zero-volume STEP contract.

@@ -349,6 +349,18 @@ class _AdapterPointGridHornGeometry(PointGridHornGeometry):
 
 
 @dataclass(frozen=True)
+class _ControlsPointGridHornGeometry(PointGridHornGeometry):
+    """A diagnostic sample accompanies the sole exact controls authority."""
+
+    controls_meridian: object | None = None
+
+    def __post_init__(self):
+        from .adapter_controls import validate_geometry
+        validate_geometry(self)
+        super().__post_init__()
+
+
+@dataclass(frozen=True)
 class _AxialPointGridHornGeometry(PointGridHornGeometry):
     """An immutable canonical model accompanies its compatibility sample grid."""
 
@@ -491,6 +503,9 @@ class BuiltGeometry:
     open_shell_wall_points_mm: NDArray[np.float64] | None = None
     open_shell_wall_normals: NDArray[np.float64] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # Dedicated exact controls builds retain their immutable analytic authority.
+    controls_meridian: object | None = None
 
 
 @dataclass(frozen=True)

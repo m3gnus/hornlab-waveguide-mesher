@@ -6,7 +6,7 @@ from typing import Mapping
 
 from .config_parser import ConfigError
 
-NATIVE_MARKERS = frozenset({"OSSE-AXIAL", "OSSE-ADAPTER", "OSSE-ROUNDOVER", "SOURCE-DISK"})
+NATIVE_MARKERS = frozenset({"OSSE-AXIAL", "OSSE-ADAPTER", "OSSE-ADAPTER-CONTROLS", "OSSE-ROUNDOVER", "SOURCE-DISK"})
 
 
 def _fail(message):

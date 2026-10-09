@@ -1588,6 +1588,8 @@ def build_point_grid_arrays(
         raise ValueError("standalone source bodies require their dedicated geometry API, not a horn point grid")
     if "absoluteAxialScale" in params:
         raise ValueError("absolute axial scale requires resolve_geometry or the complete preview API")
+    if "controlsAdapter" in params or str(params.get("type", "")).upper()=="OSSE-ADAPTER-CONTROLS":
+        raise ValueError("exact controls require resolve_geometry or the complete preview API")
     if "mouthRoundoverRadiusMm" in params:
         raise ValueError("mouth roundover requires resolve_geometry or the complete preview API; a body-only grid would omit the lip")
     from .throat_adapter import resolve_adapter

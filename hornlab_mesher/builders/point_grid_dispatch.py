@@ -284,8 +284,11 @@ def _build_coupled_baffle_point_grid(
 
 def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     if sum(getattr(geometry, name, None) is not None
-           for name in ("adapter_meridian", "roundover", "axial_model")) > 1:
+           for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian")) > 1:
         raise ValueError("combined active native geometry features are not supported")
+    if getattr(geometry, "controls_meridian", None) is not None:
+        from .adapter_controls import build_controls
+        return build_controls(geometry)
     if getattr(geometry, "axial_model", None) is not None:
         from .axial_scale import build_axial
         return build_axial(geometry)

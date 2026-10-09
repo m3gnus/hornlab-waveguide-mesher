@@ -817,6 +817,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
 
     import gmsh
 
+    if geometry.controls_meridian is not None:
+        from .builders.adapter_controls import configure_density as configure_controls_density
+        configure_controls_density(geometry,density)
+        return
     if "sourceBody" in geometry.metadata:
         from .source_body import configure_density as configure_source_density
         configure_source_density(geometry,density)

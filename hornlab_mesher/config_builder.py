@@ -802,6 +802,10 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
+    from .adapter_controls import configuration as controls_configuration
+    controls = controls_configuration(config, build_geometry_params)
+    if controls is not None:
+        return controls
     from .source_body import configuration as source_configuration
     standalone = source_configuration(config)
     if standalone is not None:
@@ -1604,6 +1608,9 @@ def _freeform_source_auto_angle_deg(report: Mapping[str, Any]) -> float:
 
 
 def _source_auto_angle_deg(params: Mapping[str, Any], formula: str) -> float:
+    if "controlsAdapter" in params:
+        from .adapter_controls import ControlsMeridian
+        return ControlsMeridian.from_params(params).source_angle_deg
     """Throat opening angle used for automatic source cap construction."""
     if params.get("throat_adapter"):
         adapter = resolve_adapter(params)
@@ -2181,6 +2188,9 @@ def resolve_geometry(
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config, allow_large_mesh=allow_large_mesh)
     params, formula, mode = build_geometry_params(config)
+    if "controlsAdapter" in params:
+        from .adapter_controls import resolve
+        return resolve(config, params, allow_large_mesh)
     if "sourceBody" in params:
         from .source_body import resolve
         return resolve(config, params, allow_large_mesh)
@@ -2367,6 +2377,8 @@ def build_from_config(
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
     geometry = resolved.geometry
     chose_automatically = (
+        getattr(geometry, "controls_meridian", None) is None
+        and
         getattr(geometry, "roundover", None) is None
         and getattr(geometry, "axial_model", None) is None
         and _mesh_surface_fit(_section(config, "mesh")) == "auto"

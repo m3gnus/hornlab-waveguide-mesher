@@ -231,6 +231,13 @@ def build_mesh_with_info(
     would reject a large part of the existing library on the day it landed.
     """
 
+    controls=getattr(geometry,"controls_meridian",None)
+    if controls is not None:
+        from .adapter_controls import validate_density as validate_controls_density,validate_geometry
+        validate_geometry(geometry)
+        density=validate_controls_density(density)
+        if type(scale_to_metres) is not bool:
+            raise MesherError("native controls scale_to_metres must be a boolean")
     if isinstance(density, (str, Path)) and output_path is None:
         output_path = density
         density = None
@@ -265,6 +272,8 @@ def build_mesh_with_info(
         build_succeeded = False
         raw_path: Path | None = None
         staged_path: Path | None = None
+        previous_model = None
+        owned_model = None
         try:
             if not gmsh.isInitialized():
                 # interruptible=False skips gmsh's SIGINT handler, which only
@@ -291,8 +300,13 @@ def build_mesh_with_info(
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
-            gmsh.clear()
-            gmsh.model.add("HornLabMesher")
+            if controls is not None and not initialized_here:
+                previous_model=gmsh.model.getCurrent()
+                owned_model="HornLabControlsMesh-"+__import__("uuid").uuid4().hex
+                gmsh.model.add(owned_model)
+            else:
+                gmsh.clear()
+                gmsh.model.add("HornLabMesher")
 
             acoustic_geometry, acoustic_metadata = _acoustic_geometry(
                 geometry, mesh_density
@@ -308,6 +322,8 @@ def build_mesh_with_info(
                     built.metadata["freeformReport"] = acoustic_geometry.freeform_report
 
             configure_density(built, mesh_density)
+            if controls is not None:
+                gmsh.option.setNumber("Mesh.MinimumCirclePoints",16)
             add_physical_groups(built.surface_groups)
 
             # A builder that leaves ``mesh_algorithm`` unset asks for gmsh's own
@@ -337,6 +353,9 @@ def build_mesh_with_info(
             else:
                 gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
+            if controls is not None:
+                from .builders.adapter_controls import certify_occ_mesh
+                certify_occ_mesh(controls,built)
             if getattr(acoustic_geometry, "roundover", None) is not None:
                 from .builders.mouth_roundover import certify_lip_mesh
                 certify_lip_mesh(acoustic_geometry.roundover, built)
@@ -389,7 +408,9 @@ def build_mesh_with_info(
                 # duplicate-node removal above is sufficient. Approximate
                 # welding would collapse valid nearby dense-mesh vertices.
                 weld_near_duplicates=not isinstance(geometry,StandaloneSourceGeometry) and all(getattr(geometry, name, None) is None
-                    for name in ("adapter_meridian", "roundover", "axial_model")),
+                    for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian")),
+                controls_meridian=controls,
+                controls_branch_tags=built.metadata.get("controlsBranchSurfaceTags"),
             )
             if isinstance(geometry,StandaloneSourceGeometry):
                 from .source_body import certify_mesh
@@ -452,6 +473,9 @@ def build_mesh_with_info(
             elif saved_options and gmsh.isInitialized():
                 for name, value in saved_options.items():
                     gmsh.option.setNumber(name, value)
+            if owned_model is not None and gmsh.isInitialized():
+                gmsh.model.setCurrent(owned_model);gmsh.model.remove()
+                if previous_model in gmsh.model.list():gmsh.model.setCurrent(previous_model)
 
 
 def load_mesh(path: str | Path) -> MeshInfo:
@@ -490,6 +514,8 @@ def _postprocess_mesh(
     wall_thickness_mm: float = 0.0,
     shell_mesh_density: MeshDensity | None = None,
     weld_near_duplicates: bool = True,
+    controls_meridian=None,
+    controls_branch_tags=None,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -500,7 +526,7 @@ def _postprocess_mesh(
     # Keep OCC patch identity through both removal passes. Physical tags alone
     # deliberately combine bore, shell and caps and cannot identify a repair.
     surfaces = None
-    if shell_surface_groups is not None:
+    if shell_surface_groups is not None or controls_meridian is not None:
         surfaces = np.concatenate([
             mesh.cell_data['gmsh:geometrical'][i]
             for i, block in enumerate(mesh.cells)
@@ -525,8 +551,9 @@ def _postprocess_mesh(
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
     shell_stats = None
-    if shell_surface_groups is not None:
+    if shell_surface_groups is not None or controls_meridian is not None:
         phys, surfaces = phys[:, 0], phys[:, 1]
+    if shell_surface_groups is not None:
         from .shell_facets import validate_shell_facets
 
         shell_stats = validate_shell_facets(
@@ -560,6 +587,9 @@ def _postprocess_mesh(
         # of shipping a horn that solves as an acoustically invisible sheet.
         require_open_shell_bore_normal=open_shell_wall_points_mm is not None,
     )
+    if controls_meridian is not None:
+        from .builders.adapter_controls import certify_arrays
+        certify_arrays(controls_meridian,points,triangles,surfaces,controls_branch_tags,check_normals=True)
     if infinite_baffle:
         _validate_infinite_baffle_contract(
             points,
@@ -600,7 +630,7 @@ def _postprocess_mesh(
         cells=[("triangle", triangles.astype(np.int64))],
         cell_data={
             "gmsh:physical": [phys.astype(np.int32)],
-            "gmsh:geometrical": [phys.astype(np.int32)],
+            "gmsh:geometrical": [(surfaces if controls_meridian is not None else phys).astype(np.int32)],
         },
         field_data={
             name: np.array([tag, 2], dtype=np.int32)
