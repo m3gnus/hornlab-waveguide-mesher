@@ -7,6 +7,7 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
 from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_coefficients
+from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, text_uses_import_geometry
 
 import numpy as np
 
@@ -161,7 +162,7 @@ _IGNORED_ATH_KEYS = frozenset(
 _IGNORED_ATH_BLOCKS = frozenset({"Report", "GridExport", "FRDExport", "RespExport"})
 
 # Top-level keys read directly rather than through a mapping table.
-_KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Scale", "Throat.Profile"})
+_KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Scale", "Throat.Profile", "Length.Mode"})
 _KNOWN_BLOCKS = frozenset({"Mesh", "Morph", "MORPH", "GCurve", "GCURVE", "Mesh.Enclosure", "Source"})
 _PROFILE_BLOCKS = ("R-OSSE", "ROSSE", "OSSE")
 # Namespaces with their own, older handling: unknown ``Mesh.*`` keys are refused
@@ -280,7 +281,7 @@ def _report_ignored_ath_items(
         for prefix in (*_SELF_CHECKED_PREFIXES, "Mesh.Enclosure.", "Source."):
             if key.startswith(prefix) and _ath_item_disabled(key[len(prefix):]):
                 reason = _ath_ignore_reason(key[len(prefix):], block=False)
-        if profile_block == "OSSE":
+        if profile_block == "OSSE" and blocks.get("OSSE"):
             if key == "Length":
                 reason = "ATH uses the OSSE block's L and ignores top-level Length"
             elif key == "Rot" and "Rot" in blocks["OSSE"]:
@@ -621,6 +622,10 @@ def _warn_ignored_ath_keys(
 
 def parse_text_config(content: str) -> dict[str, Any]:
     """Parse the text `.cfg` shape used by imported waveguide configs."""
+    try:
+        imported_geometry = text_uses_import_geometry(content)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     blocks, flat, nested = _parse_ath_blocks(content)
     # Field precedence must not conceal an unsupported coefficient in an
     # enabled section. Wholly ignored subtrees have unrelated member names.
@@ -639,7 +644,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
         formula = "OSSE"
         profile_block = "OSSE"
     if profile_block is not None:
-        profile_items = blocks[profile_block]
+        # The application writer emits an empty OSSE selector beside its flat
+        # controls. Only a populated block owns the formula parameters, as in
+        # the application's text reader.
+        profile_items = blocks[profile_block] or flat
     elif any(key in flat for key in ("Coverage.Angle", "Length", "Term.n")):
         formula = "OSSE"
         profile_items = flat
@@ -744,7 +752,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if formula == "OSSE":
         profile = {
             **common_profile,
-            "_athLengthMode": "total",
+            **({"_athLengthMode": "total"} if imported_geometry else {}),
             **mapped(
                 profile_items,
                 (
@@ -768,7 +776,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     else:
         profile = {
             **common_profile,
-            "_athLengthMode": "total",
+            **({"_athLengthMode": "total"} if imported_geometry else {}),
             **mapped(
                 profile_items,
                 (
@@ -791,8 +799,12 @@ def parse_text_config(content: str) -> dict[str, Any]:
                 profile.update(mapped(flat, (("Rot", "rot"),)))
         # ATH defaults for keys the import may omit (Ath 4.8.2 User Guide 4.1.1).
         # Native TOML/JSON configs keep the package defaults in config_builder.
-        profile.setdefault("a0", 0)
-        profile.setdefault("s", 0.7)
+        if imported_geometry:
+            profile.setdefault("a0", 0)
+            profile.setdefault("s", 0.7)
+
+    if "Length.Mode" in flat:
+        profile["_athLengthMode"] = flat["Length.Mode"].strip()
 
     mesh_items = {**prefixed("Mesh."), **blocks.get("Mesh", {})}
     mesh = mapped(
@@ -843,7 +855,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
     zmap_points = mesh_items.get("ZMapPoints", mesh_items.get("ZMap"))
     if zmap_points is not None:
         mesh["zMapPoints"] = zmap_points
-    mesh.setdefault("samplingMode", "zmap" if zmap_points is not None else "ath-default-zmap")
+    if imported_geometry:
+        mesh.setdefault("samplingMode", "zmap" if zmap_points is not None else "ath-default-zmap")
     # ATH defaults for keys the import may omit, verified against ath.exe
     # V2025-12 by byte-identical mesh probes (absent vs explicit value):
     # WallThickness 5, ThroatResolution 4, MouthResolution 8, RearResolution 15.
@@ -858,7 +871,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("MORPH", {}),
     }
     morph = mapped(morph_items, _MORPH_KEY_MAP)
-    if "morphTarget" in morph:
+    if "morphTarget" in morph and imported_geometry:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
         morph.setdefault("morphCorner", 35)
         # ATH's effective Morph.FixedPart default is 0.2, not the 0 its user
@@ -967,10 +980,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     _report_ignored_ath_items(flat, blocks, nested, profile_block=profile_block)
 
-    from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
-
-    config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type,
-                              TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type}
+    if imported_geometry:
+        config[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
     # Global Scale multiplies every linear geometry dimension after profile
     # evaluation (resolutions and mesh sizes stay in raw millimetres).
     scale = _maybe_number(flat.get("Scale"))

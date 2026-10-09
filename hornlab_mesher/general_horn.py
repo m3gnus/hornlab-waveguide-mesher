@@ -28,7 +28,7 @@ class GeneralHornWall:
         if (type(self.circle_correction_bound_mm) not in (int, float)
                 or not math.isfinite(self.circle_correction_bound_mm)
                 or not 0 <= self.circle_correction_bound_mm <= .15):
-            raise ValueError("original angular circle fit correction exceeds 0.15 mm; increase the design angular sampling before attachment")
+            raise ValueError("original angular circle fit correction exceeds 0.15 mm; refine the design angular sampling before attachment; for acoustic fits use finer throat/mouth resolutions in millimetres (AngularSegments may be overridden)")
         if type(self.degree) is not int or not 1 <= self.degree <= 3:
             raise ValueError("general horn spline degree must be 1, 2 or 3")
         if (not isinstance(self.knots, (tuple, list)) or not isinstance(self.poles_mm, (tuple, list))
@@ -319,7 +319,7 @@ def _angular_correction_bound(xyz, surface_fit, maximum_radius):
                 raise ValueError("general horn angular correction certificate budget exceeded")
             a, b = controls[0], controls[-1]
             if max(abs(np.linalg.norm(a) - 1), abs(np.linalg.norm(b) - 1)) * maximum_radius > .15:
-                raise ValueError("original angular circle fit correction exceeds 0.15 mm; increase the design angular sampling before attachment")
+                raise ValueError("original angular circle fit correction exceeds 0.15 mm; refine the design angular sampling before attachment; for acoustic fits use finer throat/mouth resolutions in millimetres (AngularSegments may be overridden)")
             direction = b - a
             t = np.clip((controls - a) @ direction / (direction @ direction), 0, 1)
             error = np.linalg.norm(controls - a - t[:, None] * direction, axis=1).max()

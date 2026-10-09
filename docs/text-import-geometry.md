@@ -12,6 +12,16 @@ Native configurations without the field keep their established dimensions
 and no-shrink behavior. Adding the field deliberately selects the import
 contract and its bounded refusals.
 
+The direct CFG/CLI reader honors saved application comment stamps before
+discarding comments: `; Waveguide Generator geometry-interpretation: native-v1`
+selects native interpretation and `ath-2026-08c-v1` selects imported geometry.
+Unknown or conflicting stamps are refused. Unstamped external CFGs select the
+import contract; historical `; Parameter config` or `; MWG config` headers
+select native interpretation, consistently with the application reader. An
+explicit stamp takes precedence over the historical header. Native saved CFGs
+retain native profile/morph defaults and additive slot length; explicit
+`Length.Mode` retains its authored override.
+
 | Control | Imported text interpretation | Native authoring |
 | --- | --- | --- |
 | OSSE `Slot.Length` | A conical prefix at slope `tan(a0)`. `r0` is its starting radius; the main profile starts at `r0 + slot*tan(a0)`. The slot is included in `Length`; the main termination uses `Length - slot`. | A cylindrical prefix at `r0`, added to the body length unless an explicit total-length mode is selected. |
