@@ -53,7 +53,8 @@ from .builders.point_grid_freestanding import (
     _outer_wall_axial_ring_indices,
     _restored_outer_throat_points,
 )
-from .builders.point_grid_surfaces import _rear_rim_points
+from .rear_compatibility import freestanding_rear_ring, text_import_geometry_class
+from .text_import import uses_text_import_geometry
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
@@ -875,6 +876,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         )
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, profile, cross, morph, gcurve, config)
+    if uses_text_import_geometry(config):
+        depth_names = ("depth_mm", "encDepth") if formula == "ICW" else ("depth_mm", "depth", "encDepth")
+        explicit_depth = (_has_any(enclosure, mesh, names=("depth_mm", "depth", "encDepth"))
+                          or _has_any(config, names=depth_names))
+        if explicit_depth and _enc_depth_mm(config, mesh, enclosure, formula) <= 0.0:
+            raise ConfigError(
+                "ATH enclosure depth <= 0 is unsupported: zero-thickness enclosure sheets are not implemented"
+            )
     mode = _normalise_mode(config, mesh, enclosure, formula)
     if adapter is not None and mode != "bare":
         raise ConfigError("Curved adapter refused: authored mode currently requires bare mode.")
@@ -2322,6 +2331,16 @@ def resolve_geometry(
                         else _MouthFittedStretchedPointGridHornGeometry)
         probe_kwargs["outer_clearance_points_mm"] = np.asarray(
             grid["outer_clearance_points"], dtype=np.float64)
+    if mode == "freestanding" and outer_points is not None and uses_text_import_geometry(config):
+        geometry_cls = text_import_geometry_class(geometry_cls)
+        restored_outer = _restored_outer_throat_points(
+            inner_points, outer_points, wall_thickness_mm=float(params["wallThickness"] or 0.0)
+        )
+        try:
+            freestanding_rear_ring(inner_points, restored_outer,
+                                   float(params["wallThickness"] or 0.0), text_import=True)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     geometry = geometry_cls(
         inner_points=inner_points,
         outer_points=outer_points,

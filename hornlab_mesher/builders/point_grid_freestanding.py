@@ -11,6 +11,7 @@ from ..geometry import (
     PointGridHornGeometry,
 )
 from ..tags import PhysicalGroup
+from ..rear_compatibility import freestanding_rear_ring
 from ._occ import (
     SURFACE_FIT_INTERPOLATE,
     make_planar_fill_from_boundary,
@@ -31,7 +32,6 @@ from .point_grid_surfaces import (
     _add_mouth_rim_surfaces,
     _add_rear_cap,
     _add_spline_span_wall_surfaces,
-    _rear_rim_points,
     _bspline_patch_phi_groups,
     _snap_open_symmetry_grid,
     _validated_grid,
@@ -302,8 +302,10 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         )
 
     n_phi, n_len, _ = inner_points.shape
-    rear_z = float(np.mean(inner_points[:, 0, 2]) - float(geometry.wall_thickness_mm))
-    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+    rear_points = freestanding_rear_ring(
+        inner_points, outer_points, geometry.wall_thickness_mm,
+        text_import=getattr(geometry, "ath_text_import_rear", False),
+    )
     outer_topology = np.empty((n_phi, n_len + 1, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1:, :] = outer_points
@@ -400,8 +402,10 @@ def _build_acoustic_freestanding_point_grid(
     )
     n_phi = inner_points.shape[0]
     outer_indices = _outer_wall_axial_ring_indices(inner_points)
-    rear_z = float(np.mean(inner_points[:, 0, 2]) - float(geometry.wall_thickness_mm))
-    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+    rear_points = freestanding_rear_ring(
+        inner_points, outer_points, geometry.wall_thickness_mm,
+        text_import=getattr(geometry, "ath_text_import_rear", False),
+    )
     outer_topology = np.empty((n_phi, len(outer_indices) + 2, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1, :] = outer_points[:, 0, :]
@@ -569,8 +573,10 @@ def _build_wg_freestanding_point_grid(
 
     n_phi, inner_len, _ = inner_points.shape
     outer_indices = _outer_wall_axial_ring_indices(inner_points)
-    rear_z = float(np.mean(inner_points[:, 0, 2]) - float(geometry.wall_thickness_mm))
-    rear_points = _rear_rim_points(outer_points, rear_z=rear_z)
+    rear_points = freestanding_rear_ring(
+        inner_points, outer_points, geometry.wall_thickness_mm,
+        text_import=getattr(geometry, "ath_text_import_rear", False),
+    )
     outer_topology = np.empty((n_phi, len(outer_indices) + 2, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1, :] = outer_points[:, 0, :]
