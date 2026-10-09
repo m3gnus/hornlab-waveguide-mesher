@@ -53,10 +53,10 @@ def enclosure_planar_facets(assembly, facets):
                     facets[..., k].max(axis=1) <= high + 1e-9
                 )
         if axis == 2 and plane == z:
-            for center, radius in (
-                (assembly.horn_xy_mm, assembly.mouth_radius_mm),
-                (assembly.woofer_xy_mm, assembly.aperture_radius_mm),
-            ):
+            holes = [(assembly.horn_xy_mm, assembly.mouth_radius_mm)]
+            if assembly.woofer is not None:
+                holes.append((assembly.woofer_xy_mm, assembly.aperture_radius_mm))
+            for center, radius in holes:
                 covered &= annulus_bounds(facets, center, z, radius, math.inf) <= 1e-9
         mask |= covered
     return mask
