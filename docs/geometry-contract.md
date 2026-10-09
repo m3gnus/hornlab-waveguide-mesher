@@ -617,6 +617,11 @@ Canonical rule:
 
 - Interfaces are optional.
 - Multiple interfaces are representable.
+- Explicit zero offsets retain a planar interface at the selected axial ring,
+  with no degenerate skirt. Negative or non-finite offsets are refused.
+- Interfaces retain the independently authored virtual-partition rim used by
+  positive protrusions. They are not a conforming three-face wall junction;
+  the closed acoustic shell is validated independently of tag `4`.
 - If an imported ATH config omits `Mesh.SubdomainSlices`, the compatibility
   default is the last slice before the mouth.
 - If an imported ATH config sets `Mesh.SubdomainSlices` but omits

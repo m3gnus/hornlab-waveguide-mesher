@@ -364,7 +364,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `sampling_mode` | `samplingMode` | `uniform` or `zmap` | Defaults to `zmap` when `z_map_points` is set. Text imports default to `ath-default-zmap`. |
 | `vertical_offset_mm` | `verticalOffset` | `0.0` | Rigid +y translation applied after `scale`. |
 | `ath_parity_sampling` | `athParitySampling` | `false` | Forces `ath-default-zmap`. |
-| `z_map_points` | `zMapPoints`, `zmapPoints`, `ZMapPoints` | none | Full sample map or x,y control pairs in `[0, 1]`. |
+| `z_map_points` | `zMapPoints`, `zmapPoints`, `ZMapPoints` | none | Full sample map or x,y control pairs in `[0, 1]`. Control pairs may include `(0,0)` and `(1,1)` explicitly; omitted endpoints are added. Endpoint coordinates must agree, x must strictly increase and y must not decrease. |
 | `wall_thickness_mm` | `wall_thickness`, `wallThickness` | `6.0` freestanding (`5.0` for text imports), `0.0` otherwise | Forced to `0.0` for `bare`, `enclosure`, and `infinite-baffle`. |
 | `quadrants` | none | `1234` | `1`, `12`, `14`, and `1234` are supported by the sampler. |
 | `throat_res_mm` | `throat_res`, `throatResolution` | `4.0` (`5.0` for text imports) | Mesh density, not grid shape. |
@@ -372,7 +372,7 @@ Use `[cross_section]` or `[crossSection]`.
 | `rear_res_mm` | `rear_res`, `rearResolution` | `15.0` | Mesh density, not grid shape. |
 | `aperture_res_scale` | `apertureResolutionScale`, `aperture_cap_coarsening`, `apertureCapCoarsening` | `1.0` | Infinite-baffle aperture-cap interior size multiplier relative to `mouth_res_mm`; the welded rim keeps mouth density. |
 | `subdomain_slices` | `subdomainSlices` | empty | Comma/list of requested point-grid ring indices for interfaces. If the acoustic fit changes the axial grid density, indices are relocated to preserve their normalized axial positions. Imported ATH `Mesh.SubdomainSlices` are shifted by one (ATH slice `k` is grid ring `k + 1`; the last slice is the mouth). |
-| `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of interface protrusion depths. A single offset without slices places the interface at the mouth ring. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |
+| `interface_offset_mm` | `interfaceOffset` | `0.0` | Comma/list of finite non-negative interface protrusion depths. With slices, zero builds a planar partition on the requested ring. A positive single offset without slices places the interface at the mouth ring; zero without slices leaves interfaces disabled. Imported ATH configs that set slices but omit the offset use ATH's 5 mm default. |
 | `interface_res_mm` | `interface_res`, `interfaceResolution` | falls back to `mouth_res_mm` | Mesh density for interface surfaces; ATH treats `Mesh.InterfaceResolution` as obsolete. |
 | `topology` | `topology_mode`, `topologyMode` | `acoustic` | `acoustic` separates geometry samples from BEM topology. `legacy` retains ATH/parity patch and grid semantics. |
 | `surface_fit` | `surfaceFit` | `auto` | B-spline fitting mode for the acoustic wall patches. `auto` is `interpolate` everywhere it is meshable and `approximate` on FREEFORM. `approximate` hands the sampled grid to OCC as control points; `interpolate` solves for poles whose surface passes through the grid. An explicit `interpolate` is refused on FREEFORM profiles. See below. |

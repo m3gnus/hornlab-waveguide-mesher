@@ -408,7 +408,20 @@ def _custom_zmap(
         if len(values) % 2 != 0:
             raise ValueError("zMapPoints must be x,y control-point pairs or a full n+1 sample map")
         controls = [(float(values[i]), float(values[i + 1])) for i in range(0, len(values), 2)]
-        controls = [(0.0, 0.0), *controls, (1.0, 1.0)]
+        # ATH lists may include either endpoint. Interior-only native lists
+        # retain their implicit endpoints, but explicit ones must not be
+        # inserted twice (which would fail the strict x ordering below).
+        for x, y in controls:
+            if math.isclose(x, 0.0, rel_tol=0.0, abs_tol=1.0e-12):
+                if not math.isclose(y, 0.0, rel_tol=0.0, abs_tol=1.0e-12):
+                    raise ValueError("zMapPoints endpoint at x=0 must be (0,0)")
+            if math.isclose(x, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+                if not math.isclose(y, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+                    raise ValueError("zMapPoints endpoint at x=1 must be (1,1)")
+        if not math.isclose(controls[0][0], 0.0, rel_tol=0.0, abs_tol=1.0e-12):
+            controls.insert(0, (0.0, 0.0))
+        if not math.isclose(controls[-1][0], 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+            controls.append((1.0, 1.0))
         xs = np.asarray([item[0] for item in controls], dtype=np.float64)
         ys = np.asarray([item[1] for item in controls], dtype=np.float64)
         if not np.all(np.isfinite(xs)) or not np.all(np.isfinite(ys)):

@@ -2221,7 +2221,7 @@ def test_explicit_interface_can_still_target_mouth_slice():
             HornInterface(slice_index=11, offset_mm=8.0),
             "outside the valid grid ring range",
         ),
-        (HornInterface(slice_index=4, offset_mm=0.0), "offset_mm must be positive"),
+        (HornInterface(slice_index=4, offset_mm=-1.0), "offset_mm must be finite and non-negative"),
     ],
 )
 def test_invalid_explicit_interface_specs_fail_instead_of_being_dropped(

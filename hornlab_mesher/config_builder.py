@@ -1062,7 +1062,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""
         ),
         # None (not 0.0) when omitted: an omitted offset with SubdomainSlices
-        # set takes ATH's 5 mm default, while an explicit 0 disables interfaces.
+        # set takes ATH's 5 mm default; explicit 0 places a planar interface
+        # directly on the requested ring.
         "interfaceOffset": _scalar_or_expr(
             mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=None
         ),
@@ -1498,10 +1499,17 @@ def _interfaces_from_params(
     slices = [
         int(round(value)) for value in _number_list(params.get("subdomainSlices"))
     ]
+    try:
+        offsets = _parse_number_list(
+            params.get("interfaceOffset"), allow_scalar=True, evaluate=False
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConfigError("Mesh.InterfaceOffset must contain finite non-negative offsets") from exc
+    if any(not math.isfinite(offset) or offset < 0.0 for offset in offsets):
+        raise ConfigError("Mesh.InterfaceOffset must contain finite non-negative offsets")
     if not slices:
         return ()
 
-    offsets = _number_list(params.get("interfaceOffset"))
     if not offsets:
         # ATH defaults Mesh.InterfaceOffset to 5 mm when SubdomainSlices are
         # set; an omitted offset used to silently drop the interfaces entirely.
@@ -1539,8 +1547,6 @@ def _interfaces_from_params(
             1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
         )
     for slice_index, offset in zip(slices, offsets):
-        if offset <= 0.0:
-            continue
         # Imported text configs address grid slices; keep valid indices and ignore
         # out-of-range declarations rather than guessing a different topology.
         if 0 <= int(slice_index) <= requested_last_ring:
