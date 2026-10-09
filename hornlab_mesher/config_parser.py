@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from decimal import Decimal, InvalidOperation
@@ -7,7 +8,8 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
 from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_coefficients
-from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, text_uses_import_geometry
+from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, text_uses_import_geometry, text_geometry_version
+from .profile_common import eval_param
 
 import numpy as np
 
@@ -162,7 +164,7 @@ _IGNORED_ATH_KEYS = frozenset(
 _IGNORED_ATH_BLOCKS = frozenset({"Report", "GridExport", "FRDExport", "RespExport"})
 
 # Top-level keys read directly rather than through a mapping table.
-_KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Scale", "Throat.Profile", "Length.Mode"})
+_KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Simulation.SimType", "Scale", "Throat.Profile", "Length.Mode"})
 _KNOWN_BLOCKS = frozenset({"Mesh", "Morph", "MORPH", "GCurve", "GCURVE", "Mesh.Enclosure", "Source"})
 _PROFILE_BLOCKS = ("R-OSSE", "ROSSE", "OSSE")
 # Namespaces with their own, older handling: unknown ``Mesh.*`` keys are refused
@@ -275,7 +277,7 @@ def _report_ignored_ath_items(
 ) -> None:
     """Report skipped parents once; their descendants need no separate warning."""
     for key, value in flat.items():
-        if key == "ABEC.SimType":  # This scalar selects geometry topology.
+        if key in {"ABEC.SimType", "Simulation.SimType"}:  # These select geometry topology.
             continue
         reason = _ath_ignore_reason(key, block=False)
         for prefix in (*_SELF_CHECKED_PREFIXES, "Mesh.Enclosure.", "Source."):
@@ -624,6 +626,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     """Parse the text `.cfg` shape used by imported waveguide configs."""
     try:
         imported_geometry = text_uses_import_geometry(content)
+        saved_geometry_version = text_geometry_version(content)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     blocks, flat, nested = _parse_ath_blocks(content)
@@ -737,11 +740,16 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if "throat_diameter" in common_profile:
         diameter = common_profile.pop("throat_diameter")
         try:
-            radius = float(diameter) / 2.0
-        except (TypeError, ValueError, OverflowError) as exc:
+            if isinstance(diameter, str):
+                tree = ast.parse(diameter.replace("^", "**"), mode="eval")
+                if any(isinstance(node, ast.Name) and node.id == "p" for node in ast.walk(tree)):
+                    raise ValueError("azimuth-varying diameter is unsupported")
+            radius = eval_param(diameter) / 2.0
+        except (SyntaxError, TypeError, ValueError, OverflowError) as exc:
             raise ConfigError(
                 f"Throat.Diameter must be a positive finite number; got {diameter!r}. "
-                "Use a numeric value in millimetres; diameter expressions are not supported."
+                "Use a numeric value or constant numeric expression in millimetres; "
+                "azimuth-varying diameter expressions are not supported."
             ) from exc
         if not np.isfinite(radius) or radius <= 0:
             raise ConfigError(
@@ -862,7 +870,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
     # WallThickness 5, ThroatResolution 4, MouthResolution 8, RearResolution 15.
     mesh.setdefault("wallThickness", 5)
     mesh.setdefault("throatResolution", 4)
-    mesh.setdefault("mouthResolution", 8)
+    if imported_geometry:
+        mesh.setdefault("mouthResolution", 8)
     mesh.setdefault("rearResolution", 15)
     morph_items = {
         **prefixed("Morph."),
@@ -958,9 +967,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     # ABEC.SimType selects the mesh topology: 1 = infinite baffle (the ATH
     # default), 2 = free standing. An enclosure implies a free-standing sim.
-    sim_type = _maybe_number(flat.get("ABEC.SimType"))
+    sim_type = _maybe_number(flat.get("ABEC.SimType", flat.get("Simulation.SimType")))
     if sim_type is None:
-        sim_type = 2 if enclosure else 1
+        sim_type = 2 if enclosure or not imported_geometry or saved_geometry_version is not None else 1
     if sim_type not in (1, 2):
         raise ConfigError(
             f"ABEC.SimType = {sim_type!r} is not supported; use 1 (infinite baffle) or 2 (free standing)"

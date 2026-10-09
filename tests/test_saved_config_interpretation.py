@@ -9,11 +9,11 @@ import pytest
 import meshio
 
 from hornlab_mesher import cli
-from hornlab_mesher.config_builder import build_geometry_params
+from hornlab_mesher.config_builder import build_geometry_params, resolve_geometry
 from hornlab_mesher.config_parser import ConfigError, load_config, parse_text_config
 from hornlab_mesher.profile_formulas import calculate_osse, calculate_osse_curve
 from hornlab_mesher.profile_sampling import build_point_grid_arrays
-from hornlab_mesher.text_import import TEXT_IMPORT_VERSION, TEXT_IMPORT_VERSION_KEY
+from hornlab_mesher.text_import import TEXT_IMPORT_VERSION, TEXT_IMPORT_VERSION_KEY, text_geometry_version
 
 BASE = """OSSE = {
 L = 30
@@ -107,7 +107,7 @@ Mesh.AngularSegments = 32
 Mesh.LengthSegments = 24
 Mesh.SamplingMode = uniform
 Mesh.WallThickness = 0
-ABEC.SimType = 2
+Simulation.SimType = 2
 """
     if length_mode is not None:
         text += f"Length.Mode = {length_mode}\n"
@@ -138,7 +138,9 @@ def test_direct_cli_builds_saved_cfg_physical_dimensions(tmp_path, capfd, versio
     extra = ("Morph.TargetShape = 2\nMorph.TargetWidth = 60\nMorph.TargetHeight = 60\n"
              if control == "circle" else "Slot.Length = 5\n")
     cfg, output = tmp_path / "saved.cfg", tmp_path / "saved.msh"
-    cfg.write_text(stamp(version) + BASE.replace("Mesh.WallThickness = 0", "Mesh.WallThickness = 2") + extra, encoding="utf-8")
+    saved = BASE.replace("Mesh.WallThickness = 0", "Mesh.WallThickness = 2")
+    saved = saved.replace("r0 = 4", "Throat.Diameter = 2*(4)").replace("ABEC.SimType = 2", "Simulation.SimType = 2")
+    cfg.write_text(stamp(version) + saved + extra, encoding="utf-8")
     assert cli.main([str(cfg), "-o", str(output)]) == 0
     _out, err = capfd.readouterr()
     assert "error:" not in err
@@ -167,3 +169,105 @@ def test_invalid_stamps_fail_load_and_cli_before_publication(tmp_path, capfd, he
     assert message in err
     assert "Traceback" not in err
     assert not output.exists()
+
+
+@pytest.mark.parametrize("location,imported", [("inline", False), ("opener", False), ("inside", True), ("closer", True)])
+def test_stamp_scope_matches_application_top_level_comment_lexing(location, imported):
+    marker = stamp("native-v1").strip()
+    text = BASE
+    if location == "inline":
+        text += "Slot.Length = 5 " + marker + "\n"
+    elif location == "opener":
+        text = text.replace("OSSE = {", "OSSE = { " + marker)
+    elif location == "inside":
+        text = text.replace("L = 30", marker + "\nL = 30")
+    else:
+        text = text.replace("}\n", "} " + marker + "\n", 1)
+    assert parse_text_config(text).get(TEXT_IMPORT_VERSION_KEY) == (TEXT_IMPORT_VERSION if imported else None)
+
+
+def test_unknown_inline_stamp_refuses_and_unknown_block_stamp_does_not_select_policy():
+    with pytest.raises(ConfigError, match="unsupported geometry interpretation"):
+        parse_text_config(BASE + "Slot.Length = 5 " + stamp("future-v99"))
+    nested = BASE.replace("L = 30", stamp("future-v99") + "L = 30")
+    assert parse_text_config(nested)[TEXT_IMPORT_VERSION_KEY] == TEXT_IMPORT_VERSION
+
+
+@pytest.mark.parametrize("version", ["future-v99", "native-v1"])
+def test_legacy_function_body_comment_cannot_select_saved_geometry(version):
+    text = BASE + "Coverage.Angle = function anonymous(p\n) {\n" + stamp(version) + "return 32;\n}\n"
+    assert text_geometry_version(text) is None
+    assert text_geometry_version(text + stamp(TEXT_IMPORT_VERSION)) == TEXT_IMPORT_VERSION
+    with pytest.raises(ConfigError) as error:
+        parse_text_config(text)
+    assert "geometry interpretation" not in str(error.value)
+
+
+@pytest.mark.parametrize("header,sim_type", [("", 1), (stamp(TEXT_IMPORT_VERSION), 2),
+                                            (stamp("native-v1"), 2), ("; Parameter config\n", 2)])
+def test_sparse_saved_topology_and_raw_ath_topology_keep_their_defaults(header, sim_type):
+    text = BASE.replace("ABEC.SimType = 2\n", "")
+    loaded = parse_text_config(header + text)
+    assert loaded["simType"] == sim_type
+    assert build_geometry_params(loaded)[2] == ("infinite-baffle" if sim_type == 1 else "freestanding")
+
+
+@pytest.mark.parametrize("header", ["", stamp(TEXT_IMPORT_VERSION), stamp("native-v1")])
+def test_simulation_alias_preserves_explicit_topology_and_abec_precedence(header):
+    text = BASE.replace("ABEC.SimType = 2", "Simulation.SimType = 2")
+    assert parse_text_config(header + text)["simType"] == 2
+    assert parse_text_config(header + text + "ABEC.SimType = 1\n")["simType"] == 1
+    assert parse_text_config(header + text.replace("SimType = 2", "SimType = 1"))["simType"] == 1
+
+
+@pytest.mark.parametrize("diameter", ["2*(4)", "2*(2 + 2)", "sqrt(64)"])
+def test_constant_generated_diameter_expression_keeps_physical_throat(diameter):
+    text = BASE.replace("r0 = 4", f"Throat.Diameter = {diameter}")
+    assert build_geometry_params(parse_text_config(stamp("native-v1") + text))[0]["r0"] == 4
+
+
+@pytest.mark.parametrize("diameter", ["2*(p+4)", "2*(", "-8", "1/0", "2*unknown", "__import__('os')"])
+def test_invalid_or_azimuth_varying_diameter_has_named_refusal(diameter):
+    text = BASE.replace("r0 = 4", f"Throat.Diameter = {diameter}")
+    with pytest.raises(ConfigError, match="Throat.Diameter must be a positive finite number"):
+        parse_text_config(stamp("native-v1") + text)
+
+
+def test_import_defaults_are_shared_by_direct_and_sparse_transport_and_preserve_explicit_values():
+    direct = parse_text_config("OSSE = {\nL = 30\nr0 = 4\na = 32\n}\nMorph.TargetShape = 2\n")
+    sparse = {"formula": "OSSE", "profile": {"L": 30, "r0": 4, "a": 32, "a0": 0, "s": .7,
+              "_athLengthMode": "total"}, "morph": {"morphTarget": 2},
+              TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    expected, actual = (build_geometry_params(config)[0] for config in (direct, sparse))
+    for key in ("samplingMode", "mouthResolution", "morphCorner", "morphFixed", "_morphKeepsSlot"):
+        assert actual[key] == expected[key]
+    assert (actual["samplingMode"], actual["mouthResolution"], actual["morphCorner"], actual["morphFixed"], actual["_morphKeepsSlot"]) == ("ath-default-zmap", 8, 35, .2, False)
+    sparse["mesh"] = {"samplingMode": "uniform", "mouthResolution": 3}
+    sparse["morph"].update(morphCorner=0, morphFixed=0, _morphKeepsSlot=True)
+    p = build_geometry_params(sparse)[0]
+    assert (p["samplingMode"], p["mouthResolution"], p["morphCorner"], p["morphFixed"], p["_morphKeepsSlot"]) == ("uniform", 3, 0, 0, True)
+
+
+def test_sparse_import_transport_and_saved_cfg_have_identical_resolved_fits():
+    # Sparse config is the preview translation of a parsed imported document;
+    # its mode/wall are resolved by that consumer, not imposed by this test.
+    sparse = {"formula": "OSSE", "mode": "freestanding",
+              "profile": {"L": "30", "r0": "4", "a": "32", "a0": 0, "s": .7, "_athLengthMode": "total"},
+              "mesh": {"wallThickness": 5, "surfaceFit": "interpolate"},
+              "morph": {"morphTarget": "2"}, TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    saved = parse_text_config(stamp(TEXT_IMPORT_VERSION) + """; Parameter config
+OSSE = {
+}
+Coverage.Angle = 32
+Length = 30
+Throat.Diameter = 2*(4)
+Throat.Angle = 0
+Term.s = .7
+Length.Mode = total
+Morph.TargetShape = 2
+""")
+    expected, actual = (resolve_geometry(config) for config in (sparse, saved))
+    assert expected.mode == actual.mode == "freestanding"
+    assert expected.density.mouth_res_mm == actual.density.mouth_res_mm == 8
+    assert np.array_equal(expected.geometry.inner_points, actual.geometry.inner_points)
+    assert np.array_equal(expected.geometry.outer_points, actual.geometry.outer_points)

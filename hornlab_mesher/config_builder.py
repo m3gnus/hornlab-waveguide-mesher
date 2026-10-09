@@ -800,9 +800,19 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
         raise ConfigError(f"formula ICW does not support throat extension ({joined})")
 
 
+def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
+    """Text defaults belong to its profile families, not native authored types."""
+    if not uses_text_import_geometry(config):
+        return False
+    raw_formula = _pick(config, _section(config, "profile", "parameters"),
+                        names=("formula", "type"), default="OSSE")
+    return str(raw_formula).strip().upper() in {"OSSE", "R-OSSE", "ROSSE"}
+
+
 @stretch_config_errors
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     imported_geometry = uses_text_import_geometry(config)
+    imported_defaults = _uses_import_geometry_defaults(config)
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
     from .source_body import configuration as source_configuration
@@ -926,7 +936,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             z_map_kind = _classify_zmap_kind(length_segments, z_map_points)
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
-    default_sampling_mode = "zmap" if z_map_points is not None else "uniform"
+    default_sampling_mode = "zmap" if z_map_points is not None else "ath-default-zmap" if imported_defaults else "uniform"
+    imported_morph = imported_defaults and _pick(
+        morph, config, names=("morph_target", "morphTarget"), default=None
+    ) is not None
 
     common: dict[str, Any] = {
         "type": formula,
@@ -988,7 +1001,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             morph, config, names=("morph_height_mm", "morphHeight"), default=0
         ),
         "morphCorner": _scalar_or_expr(
-            morph, config, names=("morph_corner_mm", "morphCorner"), default=0
+            morph, config, names=("morph_corner_mm", "morphCorner"), default=35 if imported_morph else 0
         ),
         "morphExponent": _scalar_or_expr(
             morph, config, names=("morph_exponent", "morphExponent"), default=2.0
@@ -997,7 +1010,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             morph, config, names=("morph_rate", "morphRate"), default=3.0
         ),
         "morphFixed": _scalar_or_expr(
-            morph, config, names=("morph_fixed", "morphFixed"), default=0
+            morph, config, names=("morph_fixed", "morphFixed"), default=.2 if imported_morph else 0
         ),
         "morphAllowShrinkage": _scalar_or_expr(
             morph,
@@ -1064,7 +1077,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0
         ),
         "mouthResolution": _float(
-            mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0
+            mesh, config, names=("mouth_res_mm", "mouthResolution"), default=8.0 if imported_defaults else 26.0
         ),
         "rearResolution": _float(
             mesh, config, names=("rear_res_mm", "rearResolution"), default=15.0
@@ -1111,7 +1124,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             },
         },
     }
-    keeps_slot = _pick(morph, config, names=(MORPH_KEEPS_SLOT_KEY,), default=None)
+    keeps_slot = _pick(morph, config, names=(MORPH_KEEPS_SLOT_KEY,), default=False if imported_morph else None)
     if keeps_slot is not None:
         common[MORPH_KEEPS_SLOT_KEY] = bool(keeps_slot)
     length_mode = _pick(
@@ -1420,6 +1433,7 @@ def _mesh_density_from_config(
     allow_large_mesh: bool | None = None,
 ) -> MeshDensity:
     mesh = _section(config, "mesh")
+    imported_defaults = _uses_import_geometry_defaults(config)
     enclosure = _section(config, "enclosure")
     _reject_removed_mesh_keys(config, mesh)
     configured_allow_large = _bool(
@@ -1438,7 +1452,7 @@ def _mesh_density_from_config(
             mesh,
             config,
             names=("mouth_res_mm", "mouth_res", "mouthResolution"),
-            default=26.0,
+            default=8.0 if imported_defaults else 26.0,
         ),
         rear_res_mm=_float(
             mesh,
