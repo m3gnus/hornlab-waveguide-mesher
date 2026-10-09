@@ -18,7 +18,7 @@ def patch_id(contour, segment):
 @dataclass(frozen=True)
 class SourceAssembly:
     horn: SourceContour
-    woofer: SourceContour
+    woofer: SourceContour | None
     width_mm: float
     height_mm: float
     depth_mm: float
@@ -29,6 +29,7 @@ class SourceAssembly:
     woofer_xy_mm: tuple[float, float]
     aperture_radius_mm: float
     phase_plugs: tuple = ()
+    horn_wall: object | None = None
 
     def __post_init__(self):
         for name in (
@@ -43,7 +44,10 @@ class SourceAssembly:
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError("assembly dimensions must be finite numbers")
-            if name != "front_z_mm" and value <= 0:
+            if name == "aperture_radius_mm" and self.woofer is None:
+                if value != 0:
+                    raise ValueError("horn-only assembly requires zero unused woofer aperture")
+            elif name != "front_z_mm" and value <= 0:
                 raise ValueError("assembly dimensions must be positive")
             object.__setattr__(self, name, float(value) if value else 0.0)
         for name in ("horn_xy_mm", "woofer_xy_mm"):
@@ -53,18 +57,43 @@ class SourceAssembly:
             ):
                 raise ValueError("assembly placement must be a finite XY pair")
             object.__setattr__(self, name, tuple(float(x) if x else 0.0 for x in value))
-        if not isinstance(self.horn, SourceContour) or not isinstance(
+        if not isinstance(self.horn, SourceContour) or (self.woofer is not None and not isinstance(
             self.woofer, SourceContour
-        ):
+        )):
             raise TypeError("assembly sources must use canonical contours")
-        if (
+        if self.woofer is not None and (
             self.horn.physical_source_id == self.woofer.physical_source_id
             or self.horn.rim_id == self.woofer.rim_id
         ):
             raise ValueError(
                 "assembly physical source and rim identities must be distinct"
             )
-        self.baffle.validate(self.woofer)
+        self.baffle.validate(self.woofer or self.horn)
+        if self.woofer is None and self.woofer_xy_mm != (0, 0):
+            raise ValueError("horn-only assembly requires zero unused woofer placement")
+        if self.horn_wall is not None:
+            from .general_horn import GeneralHornWall
+            if not isinstance(self.horn_wall, GeneralHornWall):
+                raise TypeError("horn wall must use canonical general horn authority")
+            if (abs(self.horn_wall.throat_radius_mm - self.horn.points[-1].r_mm) > 1e-8
+                    or self.horn_wall.length_mm != self.horn_length_mm
+                    or self.horn_wall.mouth_radius_mm != self.mouth_radius_mm):
+                raise ValueError("source rim or assembly datums contradict resolved general horn wall")
+            # Positive convex-hull margins certify the complete wall envelope,
+            # including R-OSSE rollback outside the front aperture plane.
+            radial_poles = [p[0] for p in self.horn_wall.poles_mm]
+            if min(radial_poles) < self.horn.points[-1].r_mm - 1e-8:
+                raise ValueError("general horn wall cannot constrict inside the source footprint")
+            radial_envelope = max(radial_poles)
+            if (min(self.width_mm / 2 - abs(self.horn_xy_mm[0]),
+                    self.height_mm / 2 - abs(self.horn_xy_mm[1])) - radial_envelope <= .1):
+                raise ValueError("general horn wall must clear every enclosure side by more than 0.1 mm")
+            if max(self.horn_wall.radii_at_z(self.horn_length_mm)) > self.mouth_radius_mm + 1e-8:
+                raise ValueError("general horn wall intersects the front baffle outside its aperture")
+            if min(p[1] for p in self.horn_wall.poles_mm) + self.depth_mm - self.horn_length_mm <= .1:
+                raise ValueError("general horn wall must clear the enclosure back by more than 0.1 mm")
+            if self.woofer is not None and math.dist(self.horn_xy_mm, self.woofer_xy_mm) - radial_envelope - self.aperture_radius_mm <= .1:
+                raise ValueError("general horn wall must clear the woofer aperture by more than 0.1 mm")
         rim = self.horn.points[-1].r_mm
         if self.mouth_radius_mm - rim <= 0.1:
             raise ValueError("horn mouth must exceed throat radius by more than 0.1 mm")
@@ -88,7 +117,7 @@ class SourceAssembly:
             raise ValueError(
                 "horn aperture must clear every baffle edge by more than 0.1 mm"
             )
-        if (
+        if self.woofer is not None and (
             math.dist(self.horn_xy_mm, self.woofer_xy_mm)
             - self.mouth_radius_mm
             - self.aperture_radius_mm
@@ -107,9 +136,9 @@ class SourceAssembly:
             self.width_mm,
             self.height_mm,
             self.depth_mm,
-            self.aperture_radius_mm,
-            (*self.woofer_xy_mm, self.front_z_mm),
-            self.woofer.rim_id,
+            self.aperture_radius_mm if self.woofer else self.mouth_radius_mm,
+            (*(self.woofer_xy_mm if self.woofer else self.horn_xy_mm), self.front_z_mm),
+            (self.woofer or self.horn).rim_id,
         )
 
     @property
@@ -120,8 +149,7 @@ class SourceAssembly:
                 (*self.horn_xy_mm, self.front_z_mm - self.horn_length_mm),
                 "HF",
             ),
-            (self.woofer, (*self.woofer_xy_mm, self.front_z_mm), "LF"),
-        ]
+        ] + ([(self.woofer, (*self.woofer_xy_mm, self.front_z_mm), "LF")] if self.woofer else [])
 
     @property
     def patches(self):
@@ -133,15 +161,16 @@ class SourceAssembly:
 
     def to_dict(self):
         return {
-            "version": 1,
+            "version": 2 if self.horn_wall is not None or self.woofer is None else 1,
             "frame": "aligned-z-mm-v1",
             "horn": self.horn.to_dict(),
-            "woofer": self.woofer.to_dict(),
+            "woofer": self.woofer.to_dict() if self.woofer else None,
             **{
                 name: getattr(self, name)
                 for name in self.__dataclass_fields__
-                if name not in ("horn", "woofer", "phase_plugs")
+                if name not in ("horn", "woofer", "phase_plugs", "horn_wall")
             },
+            **({"horn_wall": self.horn_wall.to_dict()} if self.horn_wall is not None else {}),
             **(
                 {"phase_plugs": [p.to_dict() for p in self.phase_plugs]}
                 if self.phase_plugs
@@ -153,9 +182,14 @@ class SourceAssembly:
     def from_dict(cls, value):
         value = dict(value)
         version, frame = value.pop("version", None), value.pop("frame", None)
-        if type(version) is not int or version != 1 or frame != "aligned-z-mm-v1":
+        if type(version) is not int or version not in (1, 2) or frame != "aligned-z-mm-v1":
             raise ValueError("unsupported native assembly version or frame")
         from .phase_plug import PhasePlug
+        if version == 1 and ("horn_wall" in value or value.get("woofer") is None):
+            raise ValueError("general horn or horn-only assembly requires version 2")
+        if "horn_wall" in value:
+            from .general_horn import GeneralHornWall
+            value["horn_wall"] = GeneralHornWall.from_dict(value["horn_wall"])
 
         if "phase_plugs" in value:
             value["phase_plugs"] = tuple(PhasePlug(**p) for p in value["phase_plugs"])
@@ -163,7 +197,7 @@ class SourceAssembly:
             **{
                 **value,
                 "horn": SourceContour.from_dict(value["horn"]),
-                "woofer": SourceContour.from_dict(value["woofer"]),
+                "woofer": SourceContour.from_dict(value["woofer"]) if value["woofer"] is not None else None,
             }
         )
 
@@ -195,13 +229,36 @@ class SourceAssembly:
                 )
                 + self.parts[0][1]
             )
+        if self.horn_wall is not None:
+            rz = self.horn_wall.evaluate(np.linspace(0, 1, sizes.get("radial_steps", 32) + 1))
+            result["horn-wall"] = np.stack(np.broadcast_arrays(
+                rz[:, 0, None] * np.cos(angles), rz[:, 0, None] * np.sin(angles),
+                rz[:, 1, None]), axis=-1) + self.parts[0][1]
         return result
+
+    @classmethod
+    def attach(cls, horn, horn_config, *, width_mm, height_mm, depth_mm,
+               front_z_mm=0, horn_xy_mm=(0, 0), woofer=None,
+               woofer_xy_mm=(0, 0), aperture_radius_mm=0, phase_plugs=()):
+        from .general_horn import GeneralHornWall
+        wall = GeneralHornWall.from_config(horn_config)
+        return cls(horn, woofer, width_mm, height_mm, depth_mm, front_z_mm,
+                   horn_xy_mm, wall.length_mm, wall.mouth_radius_mm,
+                   woofer_xy_mm, aperture_radius_mm, phase_plugs, wall)
+
+    @property
+    def box_surfaces(self):
+        return {k: v for k, v in self.baffle.surfaces(self.woofer or self.horn).items()
+                if self.woofer is not None or k != "collar"}
 
     def rigid_areas(self):
         result = {
-            role: spec[-1] for role, spec in self.baffle.surfaces(self.woofer).items()
+            role: spec[-1] for role, spec in self.box_surfaces.items()
         }
-        result["front"] -= math.pi * self.mouth_radius_mm**2
+        if self.woofer is not None:
+            result["front"] -= math.pi * self.mouth_radius_mm**2
+        if self.horn_wall is not None:
+            result["horn-wall"] = self.horn_wall.area_mm2
         from .phase_plug import line_area, rigid_edges
 
         result.update(
@@ -215,9 +272,11 @@ class SourceAssembly:
         from .phase_plug import line_distance, rigid_edges
 
         edges = rigid_edges(self)
+        if role == "horn-wall" and self.horn_wall is not None:
+            return self.horn_wall.distance(xyz, self.parts[0][1])
         if role in edges:
             return line_distance(*edges[role], xyz, self.parts[0][1])
-        result = self.baffle.distance(self.woofer, role, xyz)
+        result = self.baffle.distance(self.woofer or self.horn, role, xyz)
         if role == "front":
             r = np.linalg.norm(xyz[..., :2] - self.horn_xy_mm, axis=-1)
             result = np.where(
@@ -256,8 +315,8 @@ class SourceAssembly:
 
 
 def assembly_channels(assembly, drives):
-    if len(drives) != 2 or drives[0].channel_id == drives[1].channel_id:
-        raise ValueError("assembly requires two distinct drive channels")
+    if len(drives) != len(assembly.parts) or len({d.channel_id for d in drives}) != len(drives):
+        raise ValueError("assembly requires one distinct drive channel per physical source")
     channels = []
     for (c, _, _), drive in zip(assembly.parts, drives):
         drive.validate(c)
