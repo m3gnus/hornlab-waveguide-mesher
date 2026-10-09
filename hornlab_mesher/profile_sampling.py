@@ -22,6 +22,7 @@ from .profile_common import (
     eval_param,
 )
 from .offset_envelope import regularize_outer_offset
+from .text_import import uses_text_import_geometry
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -1693,6 +1694,8 @@ def build_point_grid_arrays(
     resolved_half_width: float | None = None
     resolved_half_height: float | None = None
     if morph_target in {1, 2, 3}:
+        if morph_target == 2 and uses_text_import_geometry(params):
+            raw_half_width = raw_half_height = float(np.max(raw_radials[:, -1]))
         # A shape-only superellipse morph (3) preserves the exact raw mouth
         # extents; ATH rounds the implicit rectangle/circle extents up to whole
         # millimetres per half-dimension.

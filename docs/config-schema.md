@@ -11,6 +11,12 @@ JSON use the same section names. Text configs are parsed by
 `hornlab_mesher.config_parser` into the same internal shape, then normalized by
 `hornlab_mesher.config_builder.build_geometry_params`.
 
+Text imports retain `_textImportVersion = "ath-2026-08c-v1"` at the config
+root and in resolved profile parameters. Preserve this field when copying,
+serializing or reopening imported configurations. It selects the bounded
+geometry interpretation described in [text import geometry](text-import-geometry.md);
+an unknown version is refused. Native authored configurations omit the field.
+
 ## File Types
 
 - `.toml` and `.tml`: parsed as TOML.

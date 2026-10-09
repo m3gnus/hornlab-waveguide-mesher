@@ -56,6 +56,7 @@ from .builders.point_grid_freestanding import (
 from .builders.point_grid_surfaces import _rear_rim_points
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
+from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
 from .throat_adapter import normalize_adapter, resolve_adapter
 
 logger = logging.getLogger(__name__)
@@ -800,6 +801,7 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
 
 @stretch_config_errors
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
+    imported_geometry = uses_text_import_geometry(config)
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
     from .source_body import configuration as source_configuration
@@ -1110,6 +1112,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     )
     if length_mode is not None:
         common["_athLengthMode"] = length_mode
+    if imported_geometry:
+        common[TEXT_IMPORT_VERSION_KEY] = config[TEXT_IMPORT_VERSION_KEY]
     _apply_driver_adapter(common, profile, config)
     if formula in {"OSSE", "R-OSSE"}:
         for name in ("s1", "s2"):
