@@ -78,6 +78,71 @@ def test_native_rear_and_inner_geometry_remain_unchanged():
     assert build_geometry_params(zero)[2]=='freestanding'
 
 
+def corner_import_config():
+    # Public authored corner morph forces the preview's lazy offset wall path.
+    return marked(BASE + '''Morph.TargetShape = 1
+Morph.TargetWidth = 150
+Morph.TargetHeight = 120
+Morph.CornerRadius = 12
+Morph.FixedPart = 0
+Morph.Rate = 3
+''')
+
+
+@pytest.mark.parametrize('lod', ['coarse', 'fine'])
+def test_deferred_corner_preview_uses_production_rear_and_preserves_native(lod, monkeypatch):
+    import hornlab_mesher.preview.api as api
+    from hornlab_mesher.builders.point_grid_freestanding import _restored_outer_throat_points
+    cfg = corner_import_config()
+    geom = resolve_geometry(cfg).geometry
+    outer = _restored_outer_throat_points(
+        geom.inner_points, geom.outer_points, wall_thickness_mm=geom.wall_thickness_mm)
+    target = outer[:, 0, 2] - geom.wall_thickness_mm
+    expected = float(target.min() + (target.max() - target.min()) / 2)
+    assert np.max(np.abs(target - expected)) <= min(1e-4, 1e-4 * geom.wall_thickness_mm)
+    original_offset, original_resolve = api._outer_offset_shell, api.resolve_geometry
+    offsets, resolutions = [], []
+    def capture_offset(*args, **kwargs):
+        offsets.append(True)
+        return original_offset(*args, **kwargs)
+    def capture_resolve(*args, **kwargs):
+        resolutions.append(True)
+        return original_resolve(*args, **kwargs)
+    monkeypatch.setattr(api, '_outer_offset_shell', capture_offset)
+    monkeypatch.setattr(api, 'resolve_geometry', capture_resolve)
+    preview = build_preview_geometry(cfg, PreviewOptionsV1(lod=lod))
+    assert offsets  # Actual deferred path, not an eager-wall stand-in.
+    assert len(resolutions) == 1
+    roles = {s.role: s for s in preview.surfaces}
+    cap = roles['wall.rear_cap']
+    np.testing.assert_allclose(cap.positions[:, 2], expected, rtol=0, atol=1e-12)
+    rear = roles['wall.rear_return'].positions
+    rim = rear[rear[:, 2] == expected]
+    assert len(rim) > 2
+    for point in rim:
+        assert np.any(np.all(cap.positions == point, axis=1))
+    native = copy.deepcopy(cfg)
+    native.pop(TEXT_IMPORT_VERSION_KEY)
+    resolutions.clear()
+    ordinary = build_preview_geometry(native, PreviewOptionsV1(lod=lod))
+    assert not resolutions  # No new production resolution for native rendering.
+    native_cap = next(s for s in ordinary.surfaces if s.role == 'wall.rear_cap')
+    np.testing.assert_allclose(native_cap.positions[:, 2], -5, rtol=0, atol=1e-9)
+    for role in ('horn.inner', 'horn.outer', 'mouth_rim', 'source_cap'):
+        surface = next(s for s in ordinary.surfaces if s.role == role)
+        np.testing.assert_array_equal(roles[role].positions, surface.positions)
+        np.testing.assert_array_equal(roles[role].indices, surface.indices)
+
+
+@pytest.mark.parametrize('lod', ['coarse', 'fine'])
+@pytest.mark.parametrize('include_cap', [True, False])
+def test_deferred_corner_import_refuses_warp_even_with_hidden_rear(lod, include_cap):
+    cfg = corner_import_config()
+    cfg['profile']['throatExtAngle'] = '5+3*cos(p)^2'
+    with pytest.raises(ValueError, match='ATH.*nonplanar rear'):
+        build_preview_geometry(cfg, PreviewOptionsV1(lod=lod, include_rear_cap=include_cap))
+
+
 @pytest.mark.parametrize('include_cap',[True,False])
 def test_preview_refuses_warped_import_even_when_rear_cap_hidden(include_cap):
     cfg=marked(BASE.replace('Throat.Ext.Angle = 5.25','Throat.Ext.Angle = 5+3*cos(p)^2'))

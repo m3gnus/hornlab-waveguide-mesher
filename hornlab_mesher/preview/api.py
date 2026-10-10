@@ -691,24 +691,24 @@ def build_preview_geometry(
     selected_inner = inner_canonical[np.ix_(phi_indices, t_indices)]
     outer_canonical = None
     selected_outer = None
-    imported_rear_canonical = None
+    imported_rear_plane = None
+    if (uses_text_import_geometry(config) and _parsed_mode == "freestanding"
+            and wall_mm > 0.0):
+        # Production owns the rear plane for both eager and deferred walls.
+        # Certify it even when the optional rear cap is hidden. Corner previews
+        # construct their selected wall later and have no canonical outer grid.
+        production = resolve_geometry(config).geometry
+        production_outer = _restored_outer_throat_points(
+            production.inner_points, production.outer_points,
+            wall_thickness_mm=production.wall_thickness_mm,
+        )
+        production_rear = freestanding_rear_ring(
+            production.inner_points, production_outer,
+            production.wall_thickness_mm, text_import=True,
+        )
+        imported_rear_plane = production_rear[0, 2]
     if grid_data.get("outer_grid") is not None:
         outer_canonical = grid_data["outer_grid"]
-        if uses_text_import_geometry(config) and _parsed_mode == "freestanding":
-            # Production resolution, not independently resampled viewport
-            # normals, owns the rear boundary. Certify it before LOD selection
-            # or optional rear-cap omission can hide an unsupported import.
-            production = resolve_geometry(config).geometry
-            production_outer = _restored_outer_throat_points(
-                production.inner_points, production.outer_points,
-                wall_thickness_mm=production.wall_thickness_mm,
-            )
-            production_rear = freestanding_rear_ring(
-                production.inner_points, production_outer,
-                production.wall_thickness_mm, text_import=True,
-            )
-            imported_rear_canonical = np.array(outer_canonical[:, 0, :], copy=True)
-            imported_rear_canonical[:, 2] = production_rear[0, 2]
         selected_outer = outer_canonical[np.ix_(phi_indices, t_indices)]
         if options.include_outer:
             outer_master = _surface_grid(outer_canonical)
@@ -989,11 +989,11 @@ def build_preview_geometry(
                 cap_limited=enclosure_cap_limited,
             )
     elif selected_outer is not None and options.include_rear_cap:
-        if imported_rear_canonical is not None:
-            # Keep the certified full-ring plane at every preview LOD. A
-            # selected subset can have different extrema and hence a different
-            # minimax plane, despite belonging to the same imported geometry.
-            rear_ring = imported_rear_canonical[phi_indices]
+        if imported_rear_plane is not None:
+            # Preserve the displayed wall's selected XY boundary on either
+            # wall path; only Z comes from the certified production plane.
+            rear_ring = np.array(selected_outer[:, 0, :], copy=True)
+            rear_ring[:, 2] = imported_rear_plane
         else:
             rear_ring = freestanding_rear_ring(
                 selected_inner, selected_outer, wall_mm,
