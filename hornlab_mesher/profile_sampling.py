@@ -22,6 +22,7 @@ from .profile_common import (
     eval_param,
 )
 from .offset_envelope import regularize_outer_offset
+from .text_import import uses_text_import_geometry
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -348,13 +349,22 @@ def _zmap_number_list(value: Any) -> list[float]:
     return _parse_number_list(value, separators=",;", flatten=True)
 
 
-def _classify_zmap_kind(n_length: int, z_map_points: Any) -> str:
+def _classify_zmap_kind(
+    n_length: int, z_map_points: Any, *, prefer_endpoint_controls: bool = False
+) -> str:
     """Classify a z-map once, before acoustic refinement changes its length."""
 
     steps = max(1, int(n_length))
     values = _zmap_number_list(z_map_points)
     if not values:
         raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
+    # Versioned ATH imports interpret explicit endpoint pairs as controls.
+    # Native maps retain the historical n+1 full-sample precedence. An
+    # explicit zMapKind overrides either automatic interpretation.
+    if (prefer_endpoint_controls and len(values) >= 4 and len(values) % 2 == 0
+            and all(math.isclose(value, endpoint, rel_tol=0.0, abs_tol=1e-12)
+                    for value, endpoint in zip(values[:2] + values[-2:], (0, 0, 1, 1)))):
+        return "controls"
     if (
         len(values) == steps + 1
         and math.isclose(values[0], 0.0, abs_tol=1.0e-12)
@@ -365,7 +375,8 @@ def _classify_zmap_kind(n_length: int, z_map_points: Any) -> str:
 
 
 def _custom_zmap(
-    n_length: int, z_map_points: Any, z_map_kind: Any = None
+    n_length: int, z_map_points: Any, z_map_kind: Any = None,
+    *, prefer_endpoint_controls: bool = False,
 ) -> np.ndarray:
     steps = max(1, int(n_length))
     values = _zmap_number_list(z_map_points)
@@ -373,7 +384,7 @@ def _custom_zmap(
         raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
 
     kind = (
-        _classify_zmap_kind(steps, values)
+        _classify_zmap_kind(steps, values, prefer_endpoint_controls=prefer_endpoint_controls)
         if z_map_kind is None
         else str(z_map_kind).strip().lower().replace("_", "-")
     )
@@ -408,7 +419,20 @@ def _custom_zmap(
         if len(values) % 2 != 0:
             raise ValueError("zMapPoints must be x,y control-point pairs or a full n+1 sample map")
         controls = [(float(values[i]), float(values[i + 1])) for i in range(0, len(values), 2)]
-        controls = [(0.0, 0.0), *controls, (1.0, 1.0)]
+        # ATH lists may include either endpoint. Interior-only native lists
+        # retain their implicit endpoints, but explicit ones must not be
+        # inserted twice (which would fail the strict x ordering below).
+        for x, y in controls:
+            if math.isclose(x, 0.0, rel_tol=0.0, abs_tol=1.0e-12):
+                if not math.isclose(y, 0.0, rel_tol=0.0, abs_tol=1.0e-12):
+                    raise ValueError("zMapPoints endpoint at x=0 must be (0,0)")
+            if math.isclose(x, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+                if not math.isclose(y, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+                    raise ValueError("zMapPoints endpoint at x=1 must be (1,1)")
+        if not math.isclose(controls[0][0], 0.0, rel_tol=0.0, abs_tol=1.0e-12):
+            controls.insert(0, (0.0, 0.0))
+        if not math.isclose(controls[-1][0], 1.0, rel_tol=0.0, abs_tol=1.0e-12):
+            controls.append((1.0, 1.0))
         xs = np.asarray([item[0] for item in controls], dtype=np.float64)
         ys = np.asarray([item[1] for item in controls], dtype=np.float64)
         if not np.all(np.isfinite(xs)) or not np.all(np.isfinite(ys)):
@@ -450,6 +474,7 @@ def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndar
             n_length,
             z_map_points,
             params.get("zMapKind", params.get("z_map_kind")),
+            prefer_endpoint_controls=uses_text_import_geometry(params),
         ), mode
     raise AssertionError(f"unhandled sampling mode {mode!r}")
 
@@ -1699,6 +1724,8 @@ def build_point_grid_arrays(
     resolved_half_width: float | None = None
     resolved_half_height: float | None = None
     if morph_target in {1, 2, 3}:
+        if morph_target == 2 and uses_text_import_geometry(params):
+            raw_half_width = raw_half_height = float(np.max(raw_radials[:, -1]))
         # A shape-only superellipse morph (3) preserves the exact raw mouth
         # extents; ATH rounds the implicit rectangle/circle extents up to whole
         # millimetres per half-dimension.

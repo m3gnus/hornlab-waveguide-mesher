@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from hornlab_mesher.cad import write_step_from_config
 from hornlab_mesher.config_builder import build_from_config, build_geometry_params, resolve_geometry
 from hornlab_mesher.config_parser import ConfigError, load_config, parse_text_config
 from hornlab_mesher.geometry import OsseHornGeometry, RosseHornGeometry
+from hornlab_mesher.mesher import MesherError
 from hornlab_mesher.preview import build_preview_geometry
 from hornlab_mesher.preview.contract import PreviewOptionsV1
 from hornlab_mesher.profile_formulas import _verify_meridian_self_contact
@@ -98,22 +100,58 @@ def test_explicit_zero_previews_a_half14_offset_model_like_absent_stretch(family
 
 @pytest.mark.parametrize('family', ['OSSE', 'R-OSSE'])
 @pytest.mark.parametrize('path', PUBLIC)
-def test_inactive_raw_ath_sampling_error_equals_absent_stretch(family, path, tmp_path):
+def test_inactive_raw_ath_output_equals_absent_stretch(family, path, tmp_path, empty_dimension_cache):
     cases = json.loads((Path(__file__).parent / 'fixtures/throat_stretch/ath-v2025-12/cases.json').read_text())['cases']
     name = 'osse-desmos-plain-zero' if family == 'OSSE' else 'rosse-published-plain-zero'
     config = parse_text_config(cases[name]['config'])
     config['profile'].pop('s1', None)
     config['profile'].pop('s2', None)
-    with pytest.raises(ValueError) as base:
-        consume(path, config, tmp_path)
-    assert type(base.value) is ValueError
+    # Explicit endpoint ZMapPoints (0,0,1,1) now resolve normally. The published
+    # R-OSSE contour turns behind its mouth, so its infinite-baffle mesh/STEP
+    # still has a specific geometry refusal rather than a sampling error.
+    if family == 'R-OSSE' and path in ('mesh', 'step'):
+        prefix = 'mesh build failed' if path == 'mesh' else 'STEP export failed'
+        expected = (
+            f'{prefix}: infinite-baffle coupled aperture mesh requires the mouth '
+            'ring to be the front-most z station so the interior cavity lies in '
+            'z <= 0; the translated point grid protrudes through the baffle plane '
+            'to z=21.5373 mm'
+        )
+        for pair in [{}, {'s1': 0, 's2': .2}, {'s1': .5, 's2': 0}]:
+            disabled = copy.deepcopy(config)
+            disabled['profile'].update(pair)
+            with pytest.raises(MesherError) as refusal:
+                consume(path, disabled, tmp_path)
+            assert type(refusal.value) is MesherError
+            assert str(refusal.value) == expected
+            assert not list(tmp_path.iterdir())
+        return
+
+    def artifact_payload(result):
+        if path == 'mesh':
+            # Includes coordinates, vertex numbering, triangles and tags.
+            return result.mesh_path.read_bytes()
+        if path == 'step':
+            # Exclude the export header and OCC's per-export PRODUCT counter;
+            # retain every geometric/topological entity in the DATA section.
+            _, marker, data = result[0].read_text(encoding='utf-8').partition('DATA;')
+            assert marker and data.strip()
+            data, count = re.subn(
+                r"('Open CASCADE STEP translator \d+(?:\.\d+)+ )\d+(')",
+                r'\1<export>\2', data,
+            )
+            assert count == 2
+            return data
+        return None
+
+    base = consume(path, config, tmp_path)
+    base_payload = artifact_payload(base)
     for pair in [{'s1': 0, 's2': .2}, {'s1': .5, 's2': 0}]:
         disabled = copy.deepcopy(config)
         disabled['profile'].update(pair)
-        with pytest.raises(type(base.value)) as inactive:
-            consume(path, disabled, tmp_path)
-        assert type(inactive.value) is type(base.value)
-        assert str(inactive.value) == str(base.value)
+        inactive = consume(path, disabled, tmp_path)
+        _same_preview(inactive, base, path)
+        assert artifact_payload(inactive) == base_payload
 
 
 @pytest.mark.parametrize('path', PUBLIC)

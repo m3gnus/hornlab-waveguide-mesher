@@ -142,15 +142,17 @@ def validate_passages(assembly):
     )
     # Both slopes count: a tapered outer body can reach an adjacent horn point.
     outer_slope = (outer.outer1_mm - outer.outer0_mm) / (z1 - z0)
-    clearances["horn-wall"] = gap / math.sqrt(
-        1 + max(abs(slope), abs(outer_slope)) ** 2
-    )
+    clearances["horn-wall"] = (assembly.horn_wall.minimum_body_clearance(outer)
+        if assembly.horn_wall is not None else gap / math.sqrt(
+            1 + max(abs(slope), abs(outer_slope)) ** 2))
     if min(clearances.values()) <= 0.1:
         raise ValueError("every phase-plug passage must clear by more than 0.1 mm")
     return clearances
 
 
 def wall_edges(assembly):
+    if assembly.horn_wall is not None:
+        return {}
     r = assembly.horn.points[-1].r_mm
     slope = (assembly.mouth_radius_mm - r) / assembly.horn_length_mm
     if not assembly.phase_plugs:
@@ -183,6 +185,10 @@ def surface_targets(assembly, mesh_size_mm, refinement=1):
         )
         for role, (a, b) in wall_edges(assembly).items()
     }
+    if assembly.horn_wall is not None:
+        targets["horn-wall"] = min(mesh_size_mm,
+            math.sqrt(8 * (tolerance / 4 if gap else 0.1)
+                      * min(p[0] for p in assembly.horn_wall.poles_mm)))
     if not assembly.phase_plugs:
         return targets
     if type(refinement) is not int or refinement not in (1, 2, 4):
@@ -191,8 +197,9 @@ def surface_targets(assembly, mesh_size_mm, refinement=1):
         targets["collar"] = min(
             mesh_size_mm, math.sqrt(8 * tolerance / 4 * assembly.woofer.points[-1].r_mm)
         )
-    targets["horn-wall/passage"] = min(
-        targets["horn-wall/passage"],
+    wall_role = "horn-wall" if assembly.horn_wall is not None else "horn-wall/passage"
+    targets[wall_role] = min(
+        targets[wall_role],
         validate_passages(assembly)["horn-wall"] / 3,
         math.sqrt(8 * tolerance / 4 * assembly.horn.points[-1].r_mm),
     )
@@ -208,7 +215,7 @@ def surface_targets(assembly, mesh_size_mm, refinement=1):
             )
     return {
         role: target / refinement
-        if role.startswith("plug/") or role == "horn-wall/passage"
+        if role.startswith("plug/") or role == wall_role
         else target
         for role, target in targets.items()
     }
@@ -238,11 +245,13 @@ def passage_contract(assembly):
                 }
             )
         previous = plug
+    wall0, wall1 = ((assembly.horn_wall.radius_at_z(z0), assembly.horn_wall.radius_at_z(z1))
+                    if assembly.horn_wall is not None else (throat + slope * z0, throat + slope * z1))
     passages.append(
         {
             "id": "passage/" + quote(plugs[-1].id, safe="") + "/horn-wall",
-            "inlet_radii_mm": [plugs[-1].outer0_mm, throat + slope * z0],
-            "outlet_radii_mm": [plugs[-1].outer1_mm, throat + slope * z1],
+            "inlet_radii_mm": [plugs[-1].outer0_mm, wall0],
+            "outlet_radii_mm": [plugs[-1].outer1_mm, wall1],
         }
     )
     return {

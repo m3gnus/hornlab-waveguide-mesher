@@ -78,6 +78,12 @@ meridian span.
 Enclosure mode builds the inner horn, source cap, optional interfaces, and
 enclosure surfaces around the mouth.
 
+An explicit zero-offset interface builds only the planar cap on its requested
+ring, keeping physical tag `4` and density role `interface`. Its independent
+partition rim follows the positive-offset interface contract. The rigid/source/
+enclosure shell must remain closed, and each partition cap must remain a disk.
+Negative offsets and zero offsets on non-planar axial rings are refused.
+
 Bare-shell winding is an acoustic-boundary contract, not a closed-solid
 contract: source normals point from the throat into the horn, and inner-wall
 normals point out of the wall material into the acoustic bore. Because the

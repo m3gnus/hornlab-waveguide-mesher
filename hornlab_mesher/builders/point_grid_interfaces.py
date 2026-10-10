@@ -36,9 +36,9 @@ def _normalise_interface_specs(geometry: PointGridHornGeometry, n_rings: int) ->
         for spec in geometry.interfaces:
             slice_index = int(spec.slice_index)
             offset_mm = float(spec.offset_mm)
-            if offset_mm <= 0.0:
+            if not np.isfinite(offset_mm) or offset_mm < 0.0:
                 raise ValueError(
-                    f"HornInterface offset_mm must be positive, got {offset_mm:g} "
+                    f"HornInterface offset_mm must be finite and non-negative, got {offset_mm:g} "
                     f"at slice_index {slice_index}"
                 )
             if not 0 <= slice_index < n_rings:
@@ -48,7 +48,9 @@ def _normalise_interface_specs(geometry: PointGridHornGeometry, n_rings: int) ->
                 )
             specs.append(HornInterface(slice_index=slice_index, offset_mm=offset_mm))
         return tuple(specs)
-    if geometry.interface_offset_mm <= 0.0:
+    if not np.isfinite(geometry.interface_offset_mm) or geometry.interface_offset_mm < 0.0:
+        raise ValueError("interface_offset_mm must be finite and non-negative")
+    if geometry.interface_offset_mm == 0.0:
         return ()
     # Legacy single-offset interfaces sit at the mouth ring, matching ATH's
     # default subdomain interface at the end of the profile.
@@ -62,11 +64,13 @@ def _add_offset_interface_surfaces(
     closed: bool,
     offset_mm: float,
 ) -> list[tuple[int, int]]:
-    if offset_mm <= 0.0:
-        return []
+    if not np.isfinite(offset_mm) or offset_mm < 0.0:
+        raise ValueError("HornInterface offset_mm must be finite and non-negative")
 
     gmsh = require_gmsh()
     base = np.asarray(inner_points[:, int(slice_index), :], dtype=np.float64)
+    if offset_mm == 0.0 and float(np.ptp(base[:, 2])) > 1.0e-7:
+        raise ValueError("zero-offset HornInterface requires a planar axial ring")
     offset = np.array(base, dtype=np.float64, copy=True)
     offset[:, 2] += float(offset_mm)
     center = np.asarray(
@@ -81,7 +85,7 @@ def _add_offset_interface_surfaces(
     base_tags = [
         int(gmsh.model.occ.addPoint(float(p[0]), float(p[1]), float(p[2])))
         for p in base
-    ]
+    ] if offset_mm > 0.0 else []
     offset_tags = [
         int(gmsh.model.occ.addPoint(float(p[0]), float(p[1]), float(p[2])))
         for p in offset
@@ -122,14 +126,19 @@ def _add_offset_interface_surfaces(
         return (2, int(gmsh.model.occ.addSurfaceFilling(loop)))
 
     surfaces: list[tuple[int, int]] = []
-    for group in _interface_phi_groups(len(base_tags), closed=closed):
+    for group in _interface_phi_groups(len(offset_tags), closed=closed):
         offset_curves: list[int] = []
         for span in _split_interface_group(group):
-            base_curve = spline([base_tags[i] for i in span])
+            if offset_mm > 0.0:
+                base_curve = spline([base_tags[i] for i in span])
             offset_curve = spline([offset_tags[i] for i in span])
-            left = line(base_tags[span[0]], offset_tags[span[0]])
-            right = line(base_tags[span[-1]], offset_tags[span[-1]])
-            surfaces.append(surface([base_curve, right, -offset_curve, -left]))
+            # A zero protrusion is the cap alone; zero-length skirt edges
+            # would create degenerate OCC surfaces. Keep the same independent
+            # partition rim as positive-offset interfaces.
+            if offset_mm > 0.0:
+                left = line(base_tags[span[0]], offset_tags[span[0]])
+                right = line(base_tags[span[-1]], offset_tags[span[-1]])
+                surfaces.append(surface([base_curve, right, -offset_curve, -left]))
             offset_curves.append(offset_curve)
         surfaces.append(surface([radial_lines[group[0]], *offset_curves, -radial_lines[group[-1]]], plane=True))
     return surfaces

@@ -139,6 +139,10 @@ def _worker(stage):
                 role, r, z = "collar", assembly.aperture_radius_mm, assembly.front_z_mm
             if band == "HF":
                 start = points[contour.points[-1].id]
+                if assembly.horn_wall is not None:
+                    face = assembly.horn_wall.add_occ_face(occ, origin)
+                    rigid_roles["horn-wall"] = face
+                    chain.append(face)
                 for role, (_, b) in wall_edges(assembly).items():
                     end = occ.addPoint(cx + b[0], cy, cz + b[1])
                     edge = occ.addLine(start, end)
@@ -350,7 +354,14 @@ def _worker(stage):
                 reverse = normal[2] < 0
             else:
                 role = next(k for k, t in rigid_roles.items() if t == face)
-                if role in rigid_edges(assembly):
+                if role == "horn-wall" and assembly.horn_wall is not None:
+                    point = np.asarray(gmsh.model.getValue(2, face, uv))
+                    radial = point[:2] - np.asarray(assembly.horn_xy_mm)
+                    radial /= np.linalg.norm(radial)
+                    dr, dz = assembly.horn_wall.spline(uv[1], 1)
+                    expected = np.r_[-dz * radial, dr]
+                    reverse = normal @ expected < 0
+                elif role in rigid_edges(assembly):
                     point = np.asarray(gmsh.model.getValue(2, face, uv))
                     local = point - np.asarray(assembly.parts[0][1])
                     radial = local[:2] / np.linalg.norm(local[:2])
@@ -360,9 +371,7 @@ def _worker(stage):
                     expected = sign * np.array([radial[0] * dz, radial[1] * dz, -dr])
                     reverse = normal @ expected < 0
                 else:
-                    axis, _, _, _, sign, _ = assembly.baffle.surfaces(assembly.woofer)[
-                        role
-                    ]
+                    axis, _, _, _, sign, _ = assembly.box_surfaces[role]
                     reverse = normal[axis] * sign < 0
             if reverse:
                 gmsh.model.mesh.reverse([(2, face)])
@@ -401,12 +410,19 @@ def _worker(stage):
                 else {}
             ),
         }
+        from .general_horn import wall_face_area
+        if assembly.horn_wall is not None:
+            actual_area = wall_face_area(gmsh, rigid_roles["horn-wall"], assembly.horn_wall)
+            if abs(actual_area - assembly.horn_wall.area_mm2) > 1e-7 * max(1, actual_area):
+                raise ValueError("general horn CAD area contradicts the canonical axial fit")
         manifest = {
             "version": 1,
             "producer": "native",
             "units": "mm",
             "required_features": [CONTOUR_FEATURE, FEATURE]
-            + ([PLUG_FEATURE] if assembly.phase_plugs else []),
+            + ([PLUG_FEATURE] if assembly.phase_plugs else [])
+            + (["native-general-horn-attachment-v1"]
+               if assembly.horn_wall is not None or assembly.woofer is None else []),
             "recipe": assembly.to_dict(),
             "geometry_sha256": assembly.geometry_sha256,
             "channels": channels,
@@ -416,7 +432,8 @@ def _worker(stage):
                 {
                     "role": k,
                     "advanced_face_indices": [selectors[t]],
-                    "area_mm2": occ.getMass(2, t),
+                    "area_mm2": (actual_area if k == "horn-wall" and assembly.horn_wall is not None
+                                 else occ.getMass(2, t)),
                 }
                 for k, t in rigid_roles.items()
             ],

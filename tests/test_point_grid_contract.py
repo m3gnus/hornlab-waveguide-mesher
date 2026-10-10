@@ -36,7 +36,8 @@ from hornlab_mesher.cli import (
     build_geometry_params,
     parse_ath_config,
 )
-from hornlab_mesher.config_builder import _number_list
+from hornlab_mesher.config_builder import _number_list, resolve_geometry
+from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.density import _parse_quadrant_resolutions
 from hornlab_mesher.geometry import (
     MESH_ALGORITHM_DELAUNAY,
@@ -697,8 +698,16 @@ Source = {{
 """
 
 
+def _supported_near_planar_import(cfg):
+    # Restore the original imported source/tessellation positives: their tiny
+    # grid-normal rear variations now fit the explicit bounded representation.
+    # Deliberately warped imports remain independently covered by rear tests.
+    resolve_geometry(cfg)
+    return cfg
+
+
 def test_ath_config_build_uses_common_resolution_tessellation(tmp_path):
-    cfg = parse_ath_config(_asro2_ath_cfg_text())
+    cfg = _supported_near_planar_import(parse_ath_config(_asro2_ath_cfg_text()))
 
     assert cfg["mesh"]["samplingMode"] == "ath-default-zmap"
     result = build_from_config(cfg, tmp_path / "asro2-ath.msh")
@@ -710,19 +719,61 @@ def test_ath_config_build_uses_common_resolution_tessellation(tmp_path):
     assert len(_tag_components(triangles, tags, 1)) == 1
 
 
-def test_ath_config_tessellation_follows_resolution_inputs(tmp_path):
+def test_native_projection_tessellation_follows_resolution_inputs(tmp_path):
+    # The coarse imported ring exceeds the bounded planar representation.
+    # Compare tessellation on one explicitly selected native interpretation;
+    # imported acceptance/refusal is exercised independently below.
+    def native_config(throat, mouth, rear):
+        cfg = parse_ath_config(_asro2_ath_cfg_text(throat=throat, mouth=mouth, rear=rear))
+        return {**cfg, "_textImportVersion": None}
     coarse = build_from_config(
-        parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0)),
+        native_config(10.0, 16.0, 50.0),
         tmp_path / "coarse.msh",
         allow_large_mesh=True,
     )
     fine = build_from_config(
-        parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0)),
+        native_config(3.0, 5.0, 12.0),
         tmp_path / "fine.msh",
         allow_large_mesh=True,
     )
 
     assert fine.n_triangles > coarse.n_triangles
+
+
+@pytest.mark.parametrize("quadrants", [1, 1234])
+def test_imported_rear_resolution_budget_refuses_coarse_and_builds_fine(tmp_path, quadrants):
+    coarse = parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0))
+    # The measured minimum planar displacement is ~0.0001905mm, above the
+    # unchanged 0.0001 mm allowance. No mesh may substitute native projection.
+    with pytest.raises(ConfigError, match="nonplanar rear ring"):
+        resolve_geometry(coarse)
+    fine = _supported_near_planar_import(
+        parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0))
+    )
+    fine["mesh"]["quadrants"] = quadrants
+    result = build_from_config(fine, tmp_path / "fine-imported.msh", allow_large_mesh=True)
+    mesh = meshio.read(result.mesh_path)
+    triangles, tags = _triangles_and_tags(mesh)
+    assert result.n_vertices > 0 and result.n_triangles > 0
+    assert int(np.count_nonzero(tags == 1)) > 0
+    assert int(np.count_nonzero(tags == 2)) > 0
+    assert len(_tag_components(triangles, tags, 1)) == 1
+    from hornlab_mesher.edges import build_edge_table
+    edges = build_edge_table(triangles)
+    assert np.all((edges.count == 1) | (edges.count == 2))
+    # Every interior edge has two opposite traversals: no inconsistent seam.
+    traversal = np.bincount(edges.edge, weights=edges.direction, minlength=edges.n_edges)
+    assert np.all(traversal[edges.count == 2] == 0)
+    if quadrants == 1234:
+        assert np.all(edges.count == 2)
+    else:
+        boundary = edges.count == 1
+        assert np.any(boundary)
+        points_mm = mesh.points * (1000 if result.units == "m" else 1)
+        ends = points_mm[np.stack((edges.lo[boundary], edges.hi[boundary]), axis=1)]
+        on_x = np.all(np.abs(ends[:, :, 0]) <= 1e-8, axis=1)
+        on_y = np.all(np.abs(ends[:, :, 1]) <= 1e-8, axis=1)
+        assert np.all(on_x | on_y)
 
 
 def test_flat_ath_config_keys_build_partial_source_group(tmp_path):
@@ -757,6 +808,7 @@ Source.Curv = 0
     assert cfg["mesh"]["lengthSegments"] == 20
     assert cfg["mesh"]["quadrants"] == 1
     assert cfg["source"]["sourceShape"] == 1
+    cfg = _supported_near_planar_import(cfg)
     result = build_from_config(cfg, tmp_path / "flat-asro2-ath.msh")
     mesh = meshio.read(result.mesh_path)
     _, tags = _triangles_and_tags(mesh)
@@ -2221,7 +2273,7 @@ def test_explicit_interface_can_still_target_mouth_slice():
             HornInterface(slice_index=11, offset_mm=8.0),
             "outside the valid grid ring range",
         ),
-        (HornInterface(slice_index=4, offset_mm=0.0), "offset_mm must be positive"),
+        (HornInterface(slice_index=4, offset_mm=-1.0), "offset_mm must be finite and non-negative"),
     ],
 )
 def test_invalid_explicit_interface_specs_fail_instead_of_being_dropped(

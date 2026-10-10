@@ -32,7 +32,10 @@ import numpy as np
 from ..throat_stretch import stretch_config_errors
 from numpy.typing import NDArray
 
-from ..config_builder import build_geometry_params
+from ..config_builder import build_geometry_params, resolve_geometry
+from ..builders.point_grid_freestanding import _restored_outer_throat_points
+from ..rear_compatibility import freestanding_rear_ring
+from ..text_import import uses_text_import_geometry
 from ..profile_sampling import _outer_offset_shell
 from ..profiles import eval_param
 from ..viewport import build_viewport_geometry_from_config
@@ -688,8 +691,24 @@ def build_preview_geometry(
     selected_inner = inner_canonical[np.ix_(phi_indices, t_indices)]
     outer_canonical = None
     selected_outer = None
+    imported_rear_canonical = None
     if grid_data.get("outer_grid") is not None:
         outer_canonical = grid_data["outer_grid"]
+        if uses_text_import_geometry(config) and _parsed_mode == "freestanding":
+            # Production resolution, not independently resampled viewport
+            # normals, owns the rear boundary. Certify it before LOD selection
+            # or optional rear-cap omission can hide an unsupported import.
+            production = resolve_geometry(config).geometry
+            production_outer = _restored_outer_throat_points(
+                production.inner_points, production.outer_points,
+                wall_thickness_mm=production.wall_thickness_mm,
+            )
+            production_rear = freestanding_rear_ring(
+                production.inner_points, production_outer,
+                production.wall_thickness_mm, text_import=True,
+            )
+            imported_rear_canonical = np.array(outer_canonical[:, 0, :], copy=True)
+            imported_rear_canonical[:, 2] = production_rear[0, 2]
         selected_outer = outer_canonical[np.ix_(phi_indices, t_indices)]
         if options.include_outer:
             outer_master = _surface_grid(outer_canonical)
@@ -970,20 +989,15 @@ def build_preview_geometry(
                 cap_limited=enclosure_cap_limited,
             )
     elif selected_outer is not None and options.include_rear_cap:
-        # The rear plate sits on the plane the MESH puts it on, which is not a
-        # property of the outer ring at all:
-        #     rear_z = mean(inner throat z) - wall
-        # See ``point_grid_freestanding.py`` (rear_z) and ``_rear_rim_points``,
-        # which keeps x/y and moves only z.
-        #
-        # Under the old throat clamp the outer throat ring happened to sit on
-        # that same plane, so capping straight off it matched the mesh BY
-        # ACCIDENT. Now that row 0 lies on the offset surface it does not, and
-        # deriving the plane from the ring put the previewed rear face ~4.4 mm
-        # forward of the real one and silently dropped the whole rear return.
-        rear_z = float(np.mean(selected_inner[:, 0, 2]) - wall_mm)
-        rear_ring = np.array(selected_outer[:, 0, :], dtype=np.float64, copy=True)
-        rear_ring[:, 2] = rear_z
+        if imported_rear_canonical is not None:
+            # Keep the certified full-ring plane at every preview LOD. A
+            # selected subset can have different extrema and hence a different
+            # minimax plane, despite belonging to the same imported geometry.
+            rear_ring = imported_rear_canonical[phi_indices]
+        else:
+            rear_ring = freestanding_rear_ring(
+                selected_inner, selected_outer, wall_mm,
+            )
 
         # The band between the outer throat ring and the rear rim IS the rear
         # return. The mesh builds it by prepending this ring to the outer shell;

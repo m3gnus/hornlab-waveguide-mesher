@@ -53,9 +53,11 @@ from .builders.point_grid_freestanding import (
     _outer_wall_axial_ring_indices,
     _restored_outer_throat_points,
 )
-from .builders.point_grid_surfaces import _rear_rim_points
+from .rear_compatibility import freestanding_rear_ring, text_import_geometry_class
+from .text_import import uses_text_import_geometry
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
+from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
 from .throat_adapter import normalize_adapter, resolve_adapter
 
 logger = logging.getLogger(__name__)
@@ -798,8 +800,19 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
         raise ConfigError(f"formula ICW does not support throat extension ({joined})")
 
 
+def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
+    """Text defaults belong to its profile families, not native authored types."""
+    if not uses_text_import_geometry(config):
+        return False
+    raw_formula = _pick(config, _section(config, "profile", "parameters"),
+                        names=("formula", "type"), default="OSSE")
+    return str(raw_formula).strip().upper() in {"OSSE", "R-OSSE", "ROSSE"}
+
+
 @stretch_config_errors
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
+    imported_geometry = uses_text_import_geometry(config)
+    imported_defaults = _uses_import_geometry_defaults(config)
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
     from .adapter_controls import configuration as controls_configuration
@@ -885,6 +898,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         )
     _validate_formula_specific_keys(formula, profile, config)
     _validate_formula_features(formula, profile, cross, morph, gcurve, config)
+    if uses_text_import_geometry(config):
+        depth_names = ("depth_mm", "encDepth") if formula == "ICW" else ("depth_mm", "depth", "encDepth")
+        explicit_depth = (_has_any(enclosure, mesh, names=("depth_mm", "depth", "encDepth"))
+                          or _has_any(config, names=depth_names))
+        if explicit_depth and _enc_depth_mm(config, mesh, enclosure, formula) <= 0.0:
+            raise ConfigError(
+                "ATH enclosure depth <= 0 is unsupported: zero-thickness enclosure sheets are not implemented"
+            )
     mode = _normalise_mode(config, mesh, enclosure, formula)
     if adapter is not None and mode != "bare":
         raise ConfigError("Curved adapter refused: authored mode currently requires bare mode.")
@@ -924,10 +945,15 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     )
     if z_map_kind is None and z_map_points is not None:
         try:
-            z_map_kind = _classify_zmap_kind(length_segments, z_map_points)
+            z_map_kind = _classify_zmap_kind(
+                length_segments, z_map_points, prefer_endpoint_controls=imported_geometry
+            )
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
-    default_sampling_mode = "zmap" if z_map_points is not None else "uniform"
+    default_sampling_mode = "zmap" if z_map_points is not None else "ath-default-zmap" if imported_defaults else "uniform"
+    imported_morph = imported_defaults and _pick(
+        morph, config, names=("morph_target", "morphTarget"), default=None
+    ) is not None
 
     common: dict[str, Any] = {
         "type": formula,
@@ -989,7 +1015,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             morph, config, names=("morph_height_mm", "morphHeight"), default=0
         ),
         "morphCorner": _scalar_or_expr(
-            morph, config, names=("morph_corner_mm", "morphCorner"), default=0
+            morph, config, names=("morph_corner_mm", "morphCorner"), default=35 if imported_morph else 0
         ),
         "morphExponent": _scalar_or_expr(
             morph, config, names=("morph_exponent", "morphExponent"), default=2.0
@@ -998,7 +1024,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             morph, config, names=("morph_rate", "morphRate"), default=3.0
         ),
         "morphFixed": _scalar_or_expr(
-            morph, config, names=("morph_fixed", "morphFixed"), default=0
+            morph, config, names=("morph_fixed", "morphFixed"), default=.2 if imported_morph else 0
         ),
         "morphAllowShrinkage": _scalar_or_expr(
             morph,
@@ -1065,7 +1091,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             mesh, config, names=("throat_res_mm", "throatResolution"), default=4.0
         ),
         "mouthResolution": _float(
-            mesh, config, names=("mouth_res_mm", "mouthResolution"), default=26.0
+            mesh, config, names=("mouth_res_mm", "mouthResolution"), default=8.0 if imported_defaults else 26.0
         ),
         "rearResolution": _float(
             mesh, config, names=("rear_res_mm", "rearResolution"), default=15.0
@@ -1074,7 +1100,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             mesh, config, names=("subdomain_slices", "subdomainSlices"), default=""
         ),
         # None (not 0.0) when omitted: an omitted offset with SubdomainSlices
-        # set takes ATH's 5 mm default, while an explicit 0 disables interfaces.
+        # set takes ATH's 5 mm default; explicit 0 places a planar interface
+        # directly on the requested ring.
         "interfaceOffset": _scalar_or_expr(
             mesh, config, names=("interface_offset_mm", "interfaceOffset"), default=None
         ),
@@ -1111,7 +1138,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             },
         },
     }
-    keeps_slot = _pick(morph, config, names=(MORPH_KEEPS_SLOT_KEY,), default=None)
+    keeps_slot = _pick(morph, config, names=(MORPH_KEEPS_SLOT_KEY,), default=False if imported_morph else None)
     if keeps_slot is not None:
         common[MORPH_KEEPS_SLOT_KEY] = bool(keeps_slot)
     length_mode = _pick(
@@ -1122,6 +1149,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     )
     if length_mode is not None:
         common["_athLengthMode"] = length_mode
+    if imported_geometry:
+        common[TEXT_IMPORT_VERSION_KEY] = config[TEXT_IMPORT_VERSION_KEY]
     _apply_driver_adapter(common, profile, config)
     if formula in {"OSSE", "R-OSSE"}:
         for name in ("s1", "s2"):
@@ -1418,6 +1447,7 @@ def _mesh_density_from_config(
     allow_large_mesh: bool | None = None,
 ) -> MeshDensity:
     mesh = _section(config, "mesh")
+    imported_defaults = _uses_import_geometry_defaults(config)
     enclosure = _section(config, "enclosure")
     _reject_removed_mesh_keys(config, mesh)
     configured_allow_large = _bool(
@@ -1436,7 +1466,7 @@ def _mesh_density_from_config(
             mesh,
             config,
             names=("mouth_res_mm", "mouth_res", "mouthResolution"),
-            default=26.0,
+            default=8.0 if imported_defaults else 26.0,
         ),
         rear_res_mm=_float(
             mesh,
@@ -1510,10 +1540,17 @@ def _interfaces_from_params(
     slices = [
         int(round(value)) for value in _number_list(params.get("subdomainSlices"))
     ]
+    try:
+        offsets = _parse_number_list(
+            params.get("interfaceOffset"), allow_scalar=True, evaluate=False
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConfigError("Mesh.InterfaceOffset must contain finite non-negative offsets") from exc
+    if any(not math.isfinite(offset) or offset < 0.0 for offset in offsets):
+        raise ConfigError("Mesh.InterfaceOffset must contain finite non-negative offsets")
     if not slices:
         return ()
 
-    offsets = _number_list(params.get("interfaceOffset"))
     if not offsets:
         # ATH defaults Mesh.InterfaceOffset to 5 mm when SubdomainSlices are
         # set; an omitted offset used to silently drop the interfaces entirely.
@@ -1551,8 +1588,6 @@ def _interfaces_from_params(
             1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
         )
     for slice_index, offset in zip(slices, offsets):
-        if offset <= 0.0:
-            continue
         # Imported text configs address grid slices; keep valid indices and ignore
         # out-of-range declarations rather than guessing a different topology.
         if 0 <= int(slice_index) <= requested_last_ring:
@@ -2185,6 +2220,48 @@ class ResolvedGeometry:
     freeform_report: dict[str, Any] | None = None
 
 
+def _certify_imported_rear_route_agreement(
+    params, density, mesh, topology_mode, inner_points, restored_outer, rear,
+):
+    """Refuse newly supported rings when two supported routes disagree.
+
+    Previously accepted planar rings keep their existing resolution path.
+    An opposite route that is itself nonplanar remains unsupported; it cannot
+    supply a competing qualified rear authority.
+    """
+    wall = float(params["wallThickness"] or 0.0)
+    if float(np.ptp(restored_outer[:, 0, 2] - wall)) <= 1e-7:
+        return
+    other_mode = "legacy" if topology_mode == "acoustic" else "acoustic"
+    other_grid, _ = _build_acoustic_sampling_grid(
+        params, density, topology_mode=other_mode,
+        interpolate_mouth=_mesh_surface_fit(mesh) != "approximate",
+    )
+    n_phi, n_length = int(other_grid["grid_n_phi"]), int(other_grid["grid_n_length"])
+    other_inner = _reshape_grid(other_grid["inner_points"], n_phi, n_length, "inner_points")
+    if other_grid.get("outer_points") is None:
+        raise ValueError("ATH text import competing sampling route has no outer shell")
+    other_outer = _reshape_grid(other_grid["outer_points"], n_phi, n_length, "outer_points")
+    other_outer = _restored_outer_throat_points(
+        other_inner, other_outer, wall_thickness_mm=wall,
+    )
+    try:
+        other_rear = freestanding_rear_ring(other_inner, other_outer, wall, text_import=True)
+    except ValueError as exc:
+        if "nonplanar rear ring" in str(exc):
+            return  # This route is already explicitly unsupported.
+        raise
+    # This is a consistency check, not extra geometric projection allowance.
+    # 1e-9 mm is 100,000 times below the absolute boundary-displacement budget;
+    # it permits independently sampled floating calculations of the same plane.
+    consistency_budget = min(1e-9, 1e-4, 1e-4 * wall)
+    if abs(float(rear[0, 2]) - float(other_rear[0, 2])) > consistency_budget:
+        raise ValueError(
+            "ATH text import rear plane disagrees across supported sampling routes; "
+            "a common bounded rear representation is unsupported"
+        )
+
+
 @stretch_config_errors
 def resolve_geometry(
     config: Mapping[str, Any],
@@ -2336,6 +2413,21 @@ def resolve_geometry(
                         else _MouthFittedStretchedPointGridHornGeometry)
         probe_kwargs["outer_clearance_points_mm"] = np.asarray(
             grid["outer_clearance_points"], dtype=np.float64)
+    if mode == "freestanding" and outer_points is not None and uses_text_import_geometry(config):
+        geometry_cls = text_import_geometry_class(geometry_cls)
+        restored_outer = _restored_outer_throat_points(
+            inner_points, outer_points, wall_thickness_mm=float(params["wallThickness"] or 0.0)
+        )
+        try:
+            rear = freestanding_rear_ring(
+                inner_points, restored_outer,
+                float(params["wallThickness"] or 0.0), text_import=True,
+            )
+            _certify_imported_rear_route_agreement(
+                params, density, mesh, topology_mode, inner_points, restored_outer, rear,
+            )
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     geometry = geometry_cls(
         inner_points=inner_points,
         outer_points=outer_points,

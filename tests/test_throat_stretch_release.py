@@ -16,6 +16,7 @@ from hornlab_mesher import config_builder as cb
 from hornlab_mesher.builders.osse_waveguide import _osse_params
 from hornlab_mesher.builders.rosse_waveguide import _rosse_params
 from hornlab_mesher.config_parser import ConfigError, parse_text_config
+from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
 from hornlab_mesher.geometry import OsseHornGeometry, RosseHornGeometry
 from hornlab_mesher.profile_formulas import (
     _icw_cache_key, _stretch_x, _stretch_x_curve,
@@ -182,7 +183,8 @@ def test_native_and_text_normalization_equal_captured_base(family, dormant):
     text = captured['text'].replace('\n}', ''.join(f'\n{k} = {v}' for k, v in dormant.items()) + '\n}')
     parsed = parse_text_config(text)
     assert parsed == parse_text_config(captured['text'])
-    _assert_base_equal(cb.build_geometry_params(parsed)[0], captured['text_params'])
+    _assert_base_equal(cb.build_geometry_params(parsed)[0],
+                       {**captured['text_params'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION})
 
 
 @pytest.mark.parametrize('dormant', DORMANT)
@@ -228,6 +230,10 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
     parsed = parse_text_config(text)
     params = cb.build_geometry_params(parsed)[0]
     expected_parsed, expected_params = copy.deepcopy(case['parsed']), dict(case['params'])
+    # Retain every captured numeric/structural expectation and explicitly
+    # account for the persisted import interpretation introduced afterward.
+    expected_parsed[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
+    expected_params[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
     if approved_rot:
         expected_parsed['profile']['rot'] = 10
         expected_params['rot'] = 10
@@ -413,7 +419,8 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
 
 @pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
 def test_evaluated_zero_import_result_equals_captured_base(case):
-    _assert_base_equal(parse_text_config(case['text']), case['parsed'])
+    _assert_base_equal(parse_text_config(case['text']),
+                       {**case['parsed'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION})
 
 
 @pytest.mark.parametrize('case', BASE['composition_imports'])
@@ -421,6 +428,7 @@ def test_evaluated_zero_import_result_equals_captured_base(case):
 def test_inactive_composition_imports_equal_true_base(case, dormant):
     text = case['text'].replace('\n}', ''.join(f'\n{k} = {v}' for k, v in dormant.items()) + '\n}')
     expected = copy.deepcopy(case['parsed'])
+    expected[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
     if 'top_level_rot' in case:
         expected['profile']['rot'] = case['top_level_rot']
     _assert_base_equal(parse_text_config(text), expected)

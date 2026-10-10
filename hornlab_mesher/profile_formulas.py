@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from .freeform import build_freeform_geometry
 from .config_parser import ConfigError
 from .throat_stretch import canonical_stretch_params, stretch_coefficients, validate_stretch_composition
+from .text_import import uses_text_import_geometry
 from .profile_common import (
     _DEFAULTS,
     _lossless_key_value,
@@ -152,6 +153,22 @@ class _CoverageProblem(NamedTuple):
     radius_offset: Any
 
 
+def _osse_slot_radii(params: Mapping[str, Any], p: float, slot_len: float) -> tuple[float, float]:
+    """Body throat and prefix slope for native cylinders or imported tapers."""
+    r0 = eval_param(params.get("r0"), p, 12.7)
+    imported = uses_text_import_geometry(params)
+    if imported and slot_len > 0.0 and (
+        int(round(eval_param(params.get("gcurveType"), p, 0.0))) in {1, 2}
+        and eval_param(params.get("gcurveWidth"), p, 0.0) > 0.0
+    ):
+        raise ValueError("Imported Slot.Length with an active guiding curve has no qualified construction")
+    slope = math.tan(_deg(params.get("a0"), p, 15.5)) if imported else 0.0
+    main_radius = r0 + slot_len * slope
+    if slot_len > 0.0 and (not math.isfinite(main_radius) or min(r0, main_radius) <= 0.0):
+        raise ValueError("Slot.Length taper reaches a non-positive throat radius")
+    return main_radius, slope
+
+
 def _coverage_problem(params: Mapping[str, Any], p: float) -> _CoverageProblem:
     L, total, ext_len, slot_len = osse_length_config(params, p)
     h_bulge = eval_param(params.get("h"), p, 0.0)
@@ -167,7 +184,7 @@ def _coverage_problem(params: Mapping[str, Any], p: float) -> _CoverageProblem:
         main_params={**params, "L": L},
         main_length=L,
         a0_deg=eval_param(params.get("a0"), p, 15.5),
-        r0_main=eval_param(params.get("r0"), p, 12.7),
+        r0_main=_osse_slot_radii(params, p, slot_len)[0],
         radius_offset=radius_offset,
     )
 
@@ -392,11 +409,10 @@ def calculate_osse(
     _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
-    # ATH anchors Throat.Diameter (r0) at the MAIN horn throat and tapers the throat
-    # extension BACK from r0 to the driver end (r0 - ext*tan(angle)); it does not
-    # enlarge the main throat. For a straight extension (angle 0) this is a plain r0
-    # tube, identical to before.
-    r0_main = r0_base
+    # The extension tapers back from the nominal throat radius to the driver.
+    # Native slots keep that radius; imported OSSE slots taper forward from it
+    # at a0 and move the main profile's throat to the prefix endpoint.
+    r0_main, slot_slope = _osse_slot_radii(params, p, slot_len)
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
     a_deg = eval_param(params.get("a"), p, 60.0)
     a0_deg = eval_param(params.get("a0"), p, 15.5)
@@ -404,7 +420,7 @@ def calculate_osse(
     if z <= ext_len:
         radius = r0_throat + z * math.tan(ext_angle)
     elif z <= ext_len + slot_len:
-        radius = r0_main
+        radius = r0_base + (z - ext_len) * slot_slope
     else:
         main_z = z - ext_len - slot_len
         main_params = {**params, "L": L}
@@ -494,7 +510,7 @@ def calculate_osse_curve(
     _validate_osse_termination(params, p)
     r0_base = eval_param(params.get("r0"), p, 12.7)
     ext_angle = _deg(params.get("throatExtAngle"), p, 0.0)
-    r0_main = r0_base
+    r0_main, slot_slope = _osse_slot_radii(params, p, slot_len)
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
     a_deg = eval_param(params.get("a"), p, 60.0)
     a0_deg = eval_param(params.get("a0"), p, 15.5)
@@ -504,7 +520,7 @@ def calculate_osse_curve(
     in_slot = ~in_ext & (z <= ext_len + slot_len)
     in_main = ~(in_ext | in_slot)
     radius[in_ext] = r0_throat + z[in_ext] * math.tan(ext_angle)
-    radius[in_slot] = r0_main
+    radius[in_slot] = r0_base + (z[in_slot] - ext_len) * slot_slope
     if in_main.any():
         main_z = z[in_main] - ext_len - slot_len
         main_params = {**params, "L": L}

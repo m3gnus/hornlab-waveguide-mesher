@@ -6,6 +6,7 @@ from typing import Any, Callable, Literal, Mapping, NamedTuple
 import numpy as np
 
 from .profile_common import _is_true, _osse_radius, _parse_number_list, eval_param
+from .text_import import uses_text_import_geometry
 
 def _guiding_curve_type(params: Mapping[str, Any], p: float) -> int:
     return int(round(eval_param(params.get("gcurveType"), p, 0.0)))
@@ -477,11 +478,17 @@ def _resolve_morph_half_dimensions(
     The one rule the OSSE-family grid and both FREEFORM morph paths share.
     ``Morph.TargetWidth/Height`` are full widths; a zero width takes the raw
     mouth extent, rounded up to whole millimetres when ``round_implicit_up``
-    (ATH's implicit targets for the rectangle and circle shapes). Unless
-    shrinkage is allowed the targets are floored at the raw extents; the mouth
-    still becomes the exact (enlarged) target curve.
+    (implicit native rectangle/circle targets). Native no-shrink targets are
+    floored at the raw extents. The versioned text import uses exact raw mouth
+    radius for circles and refuses the unqualified inward no-shrink case.
     """
 
+    imported = uses_text_import_geometry(params)
+    if imported and _morph_target_shape(params, phi) == 2:
+        # The sampler supplies the largest raw mouth radius for both values.
+        # Imported circles ignore TargetWidth/Height and do not round it up.
+        radius = max(raw_half_width, raw_half_height)
+        return radius, radius
     width = eval_param(params.get("morphWidth"), phi, 0.0)
     height = eval_param(params.get("morphHeight"), phi, 0.0)
     if round_implicit_up:
@@ -492,7 +499,14 @@ def _resolve_morph_half_dimensions(
         implicit_height = raw_half_height
     half_width = width / 2.0 if width > 0.0 else implicit_width
     half_height = height / 2.0 if height > 0.0 else implicit_height
-    if not _is_true(params.get("morphAllowShrinkage")):
+    if imported and not _is_true(params.get("morphAllowShrinkage")) and (
+        half_width < raw_half_width - 1.0e-9 or half_height < raw_half_height - 1.0e-9
+    ):
+        raise ValueError(
+            "Imported Morph.AllowShrinkage=0 with smaller target dimensions has no qualified construction; "
+            "use Morph.AllowShrinkage=1 for the specified target or author a native no-shrink configuration"
+        )
+    if not imported and not _is_true(params.get("morphAllowShrinkage")):
         half_width = max(half_width, raw_half_width)
         half_height = max(half_height, raw_half_height)
     return half_width, half_height
@@ -551,6 +565,8 @@ def _morph_target_radius_at_angle(
     if target == 0:
         return current_radius
     if target == 2:
+        if uses_text_import_geometry(params):
+            return max(current_radius, implicit_half_width or 0.0, implicit_half_height or 0.0)
         return _circle_morph_target_radius(
             current_radius,
             phi,
