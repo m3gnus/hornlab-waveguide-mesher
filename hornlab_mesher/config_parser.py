@@ -158,8 +158,11 @@ _IGNORED_ATH_KEYS = frozenset(
         # ATH User Guide 4.1.1: only active for Throat.Profile = 3, which
         # this importer refuses in _reject_unsupported_ath_keys.
         "CircArc.TermAngle",
+        # Mesh output switches: the file format and the mesher run, not the horn.
+        *(f"Mesh.{name}" for name in ("Algorithm", "Binary", "MshFileVersion")),
     }
 )
+_IGNORED_ATH_MESH_OUTPUT_KEYS = frozenset(f"Mesh.{name}" for name in ("Algorithm", "Binary", "MshFileVersion"))
 # Block names are compared without their ``:<tag>`` suffix (``GridExport:f360``).
 _IGNORED_ATH_BLOCKS = frozenset({"Report", "GridExport", "FRDExport", "RespExport"})
 
@@ -243,6 +246,8 @@ def _ath_ignore_reason(name: str, *, block: bool) -> str | None:
         return "this mesher owns its meshing instead of ATH's external mesh command"
     if not block and base == "GnuplotPath":
         return "ATH's plotting executable does not change geometry or the source"
+    if not block and base in _IGNORED_ATH_MESH_OUTPUT_KEYS:
+        return "ATH mesh-output setting: this mesher owns its meshing and writes its own mesh files"
     if not block and base == "CircArc.TermAngle":
         return "ATH applies it only to Throat.Profile = 3; this importer supports only the OS-SE profile (1)"
     if block and base in _IGNORED_ATH_BLOCKS:
@@ -573,6 +578,7 @@ def _reject_unsupported_ath_keys(
         key
         for key in mesh_items
         if key not in _KNOWN_MESH_KEYS and not key.startswith("Enclosure.") and not _ath_item_disabled(key)
+        and f"Mesh.{key}" not in _IGNORED_ATH_MESH_OUTPUT_KEYS
     )
     if unknown:
         details = []

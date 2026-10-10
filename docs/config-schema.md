@@ -668,6 +668,7 @@ and states that its whole subtree is ignored. This list lives in
 | `GridExport:<tag> = {}`, `FRDExport = {}`, `RespExport = {}` | Coordinate and response export |
 | `LE`, `LE.*` | Lumped-element driver model coupled in the solver project |
 | `Gmsh.*` | Settings for ATH's external Gmsh run; this mesher owns its own meshing |
+| `Mesh.Algorithm`, `Mesh.Binary`, `Mesh.MshFileVersion` | ATH mesh-output switches (file format and mesher run); ignored with a warning, as `Gmsh.*` is |
 | `OutputRootDir`, `MeshCmd`, `GnuplotPath` | Items of ATH's global `ath.cfg` |
 | Any item or block whose name starts with `_` | The ATH convention for parking an item: `_OSSE = {`, `_Source.Contours = {` |
 
