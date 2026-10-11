@@ -81,7 +81,7 @@ def freestanding_rear_ring(inner_points, outer_points, wall_mm, *, text_import=F
                 raise ValueError(
                     "ATH text import has a nonplanar rear ring; warped rear caps are unsupported"
                 )
-            # Measured ATH V2026-08c RearShape 1 throat construction.
+            # Measured ATH V2026-09a RearShape 1 throat construction.
             # The resolver supplies authored-grid normals to all consumers;
             # this fallback also permits direct grid callers to build a fan.
             from .ath_import_surfaces import meridional_normals

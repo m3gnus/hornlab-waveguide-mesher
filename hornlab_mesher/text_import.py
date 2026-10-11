@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 TEXT_IMPORT_VERSION_KEY = "_textImportVersion"
 TEXT_IMPORT_V1 = "ath-2026-08c-v1"
-TEXT_IMPORT_VERSION = "ath-2026-08c-v2"
+TEXT_IMPORT_VERSION = "ath-2026-09a-v2"
 NATIVE_GEOMETRY_VERSION = "native-v1"
 GEOMETRY_STAMP_LABEL = "Waveguide Generator geometry-interpretation:"
 ATH_AXIAL_RULE_KEY = "_athAxialSamplingRule"

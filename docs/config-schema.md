@@ -16,7 +16,7 @@ JSON use the same section names. Text configs are parsed by
 `hornlab_mesher.config_parser` into the same internal shape, then normalized by
 `hornlab_mesher.config_builder.build_geometry_params`.
 
-Fresh text imports retain `_textImportVersion = "ath-2026-08c-v2"` at the config
+Fresh text imports retain `_textImportVersion = "ath-2026-09a-v2"` at the config
 root and in resolved profile parameters. Preserve this field when copying,
 serializing or reopening imported configurations. It selects the bounded
 geometry interpretation described in [text import geometry](text-import-geometry.md);
@@ -44,7 +44,7 @@ nextafter pow rad remainder round scalbn sf sin sinh sqrt tan tanh trunc`.
 `nearbyint` uses ties to even (the default C rounding mode).
 `sf(m,n1,n2,n3,a,b,p)` evaluates
 `(|cos(m*p/4)/a|^n2 + |sin(m*p/4)/b|^n3)^(-1/n1)`.
-ATH V2026-08c exports verify the `sf` argument order, non-unit axes and odd
+ATH V2026-09a exports verify the `sf` argument order, non-unit axes and odd
 symmetries, plus natural `log` and `round(2.5) = 3`.
 `frexp` and `modf` are refused by name because they return two values.
 Only direct whitelisted function calls are allowed; attributes, builtins and
@@ -149,7 +149,7 @@ See [the geometry contract](geometry-contract.md#r-osse-s--os-se-s-throat-stretc
 for the measured ATH evidence and finite meridian-validation tolerance. With
 stretch inactive, v2 imported OSSE honors only top-level `Rot`; an in-block
 `Rot` is ignored with a named warning, as measured on ATH V2025-12 and
-V2026-08c. Numeric and expression-valued top-level rotations remain supported. The existing inactive OSSE-block slot discrepancy against
+V2026-09a. Numeric and expression-valued top-level rotations remain supported. The existing inactive OSSE-block slot discrepancy against
 ATH V2025-12 is recorded in the geometry contract. Supplied s1/s2 entries,
 including null, are scanned at top level and in every native mapping section
 before precedence; FREEFORM and ICW refuse every such entry. An ICW seed may
@@ -598,7 +598,7 @@ velocity direction.
 
 ## ATH Text Import Boundary
 
-V2 ATH V2026-08c import defaults differ from native authoring: OSSE `a=45`,
+V2 ATH V2026-09a import defaults differ from native authoring: OSSE `a=45`,
 `a0=0`, `s=0.5`; R-OSSE `R=200`, `a=40`, `a0=0`, `r=0.25`, `m=0.9`,
 `b=0.4`, `q=3.5`. OSSE-block `r0` must be a literal signed decimal number,
 optionally with an exponent. Non-literal values are refused by name because
@@ -747,7 +747,7 @@ Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
 of the other formula. V2 OSSE honours top-level `Rot` beside a profile block;
 ATH ignores in-block `Rot`, including an explicit zero, and the importer
-reports `OSSE.Rot` as unused. This rule is measured on V2025-12 and V2026-08c;
+reports `OSSE.Rot` as unused. This rule is measured on V2025-12 and V2026-09a;
 saved v1/native text retains its authoring precedence. Top-level
 `Rot = 0` beside `R-OSSE` is accepted as inactive rotation. Nonzero or
 expression-valued top-level `Rot` beside `R-OSSE` is refused, as is any other
@@ -795,7 +795,7 @@ For imported geometry without `NAC`, the sampling budget includes
 `Mesh.CornerSegments`, rounded up to four segments, for plain profiles as
 well as rectangular morphs (`100 + 4` becomes `104`). Earlier mesher versions
 applied this addition only to rectangular morphs. Native geometry keeps its
-existing budget rule. V2026-08c OSSE imports also use the measured default
+existing budget rule. V2026-09a OSSE imports also use the measured default
 axial map described in [text import geometry](text-import-geometry.md).
 
 ## Standalone source body
@@ -831,7 +831,7 @@ for its strict canonical inputs, physical domain, preview certificates and expor
 | `Mesh.RearShape.FrontOffset` | Finite nonnegative millimetres, default 40; requires RearShape 3. Stored as `mesh.athRearFrontOffset`. |
 | `Mesh.RearShape.Step` | Finite positive millimetres, default 25; requires RearShape 3. Stored as `mesh.athRearStep`. |
 
-Active lip/Opus data require the retained `ath-2026-08c-v2` import marker. They do not
+Active lip/Opus data require the retained `ath-2026-09a-v2` import marker. They do not
 map onto native `mesh.mouth_roundover_radius_mm`. Unknown Roundover members,
 R-OSSE lip, enclosure/infinite-baffle/CircSym compositions, and free-standing
 subdomain interfaces and `Mesh.SurfaceFit = approximate` are named refusals. RearShape 2/5, RearCubic, OpusRear,

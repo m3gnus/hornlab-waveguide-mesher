@@ -24,7 +24,7 @@ def fixture_text():
     ("V2024-12a", ATH_AXIAL_LEGACY), ("V2025-06", ATH_AXIAL_LEGACY),
     ("V2025-06c", ATH_AXIAL_LEGACY), (None, ATH_AXIAL_CURRENT),
     ("V2025-07", ATH_AXIAL_CURRENT), ("V2025-11b", ATH_AXIAL_CURRENT),
-    ("V2025-12", ATH_AXIAL_CURRENT), ("V2026-08c", ATH_AXIAL_CURRENT),
+    ("V2025-12", ATH_AXIAL_CURRENT), ("V2026-09a", ATH_AXIAL_CURRENT),
 ])
 def test_echo_selects_imported_axial_grid(stamp, rule, caplog):
     header = f"; Ath version {stamp}\n" if stamp else ""
@@ -41,7 +41,7 @@ def test_echo_selects_imported_axial_grid(stamp, rule, caplog):
     assert grid[0, 1, 2] == pytest.approx(expected_z, abs=1e-6)
 
 
-@pytest.mark.parametrize("stamp,legacy", [("V2025-06", True), ("V2026-08c", False), (None, False)])
+@pytest.mark.parametrize("stamp,legacy", [("V2025-06", True), ("V2026-09a", False), (None, False)])
 def test_zero_fixed_part_morph_start_follows_echo(stamp, legacy):
     header = f"; Ath version {stamp}\n" if stamp else ""
     config = parse_text_config(header + fixture_text())
@@ -72,17 +72,17 @@ def test_only_leading_comment_header_selects_rule():
 
 def test_conflicting_echoes_refused():
     with pytest.raises(ConfigError, match="conflicting ATH version echoes"):
-        parse_text_config("; Ath version V2025-06\n; Ath version V2026-08c\n" + fixture_text())
+        parse_text_config("; Ath version V2025-06\n; Ath version V2026-09a\n" + fixture_text())
 
 
-@pytest.mark.parametrize("stamp", ["V2025-06", "V2026-08c"])
+@pytest.mark.parametrize("stamp", ["V2025-06", "V2026-09a"])
 def test_explicit_axial_map_overrides_echo(stamp):
     config = parse_text_config(f"; Ath version {stamp}\n" + FIXTURE.read_text())
     grid = build_point_grid_arrays(build_geometry_params(config)[0])["inner_grid"]
     np.testing.assert_allclose(grid[0, :, 2], np.linspace(0, 160, 21), rtol=0, atol=1e-10)
 
 
-@pytest.mark.parametrize("stamp,half_width", [("V2025-06", 132), ("V2026-08c", 131)])
+@pytest.mark.parametrize("stamp,half_width", [("V2025-06", 132), ("V2026-09a", 131)])
 def test_implicit_rectangle_uses_versioned_raw_ring(stamp, half_width):
     text = FIXTURE.read_text().replace("Mesh.AngularSegments = 8", "Mesh.AngularSegments = 80")
     text += ("Mesh.CornerSegments = 4\nMorph.TargetShape = 1\nMorph.AllowShrinkage = 1\n"
@@ -98,13 +98,13 @@ def test_implicit_rectangle_uses_versioned_raw_ring(stamp, half_width):
                                [half_width, 113], rtol=0, atol=1e-10)
 
 
-@pytest.mark.parametrize('stamp', ['V2025-06', 'V2026-08c'])
+@pytest.mark.parametrize('stamp', ['V2025-06', 'V2026-09a'])
 def test_utf8_bom_does_not_hide_version_echo(stamp):
     text = f'; Ath version {stamp}\n' + fixture_text()
     assert parse_text_config('\ufeff' + text) == parse_text_config(text)
 
 
-@pytest.mark.parametrize('stamp,segments', [('V2025-06', 8), ('V2026-08c', 12)])
+@pytest.mark.parametrize('stamp,segments', [('V2025-06', 8), ('V2026-09a', 12)])
 def test_plain_profile_corner_budget_follows_sampling_rule(stamp, segments):
     cfg = parse_text_config(f'; Ath version {stamp}\n' + FIXTURE.read_text() + 'Mesh.CornerSegments = 4\n')
     assert build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid'].shape[0] == segments
@@ -114,7 +114,7 @@ def test_saved_v1_echo_cannot_upgrade_or_refuse_historical_sampling():
     from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY
     header = '; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n'
     baseline = parse_text_config(header + fixture_text())
-    cfg = parse_text_config(header + '; Ath version V2025-06\n; Ath version V2026-08c\n'
+    cfg = parse_text_config(header + '; Ath version V2025-06\n; Ath version V2026-09a\n'
                             + fixture_text() + 'NAC = ignored-by-v1\n')
     assert cfg[TEXT_IMPORT_VERSION_KEY] == 'ath-2026-08c-v1'
     assert ATH_AXIAL_RULE_KEY not in cfg

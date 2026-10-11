@@ -855,7 +855,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         if "L" not in profile:
             raise ConfigError("ATH OSSE text configs must set Length")
         if "OSSE" in blocks:
-            # ATH V2025-12 and V2026-08c ignore OSSE.Rot and read only
+            # ATH V2025-12 and V2026-09a ignore OSSE.Rot and read only
             # top-level Rot. Saved v1/native text retains its authoring mapping.
             if v2_geometry:
                 profile.pop("rot", None)
@@ -964,7 +964,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     }
     morph = mapped(morph_items, _MORPH_KEY_MAP)
     if v2_geometry and formula == "R-OSSE" and morph.get("morphTarget", 0) != 0:
-        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-08c output changes the radial profile and has no qualified import construction")
+        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-09a output changes the radial profile and has no qualified import construction")
     if "morphTarget" in morph and imported_geometry:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
         morph.setdefault("morphCorner", 35)
@@ -1062,7 +1062,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if sim_type == 1 and enclosure:
         raise ConfigError("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
 
-    # Import-only surfaces measured against ATH V2026-08c output.
+    # Import-only surfaces measured against ATH V2026-09a output.
     roundover = blocks.get("Mesh.Roundover")
     if "Roundover" in mesh_items and _maybe_number(mesh_items["Roundover"]) != 0:
         raise ConfigError("Mesh.Roundover scalar form is unsupported: ATH requires a Radius/Segments block")

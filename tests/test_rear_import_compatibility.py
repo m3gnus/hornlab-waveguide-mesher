@@ -105,7 +105,7 @@ def test_imported_explicit_nonpositive_enclosure_depth_is_named_refusal(depth):
         build_geometry_params(cfg)
 
 
-def test_variable_import_rear_ring_retains_warp_measured_in_ath_v2026_08c():
+def test_variable_import_rear_ring_retains_warp_measured_in_ath_v2026_09a():
     # m6_var_wall establishes that RearShape 1 builds a warped rear fan.
     cfg=marked(BASE.replace('Throat.Ext.Angle = 5.25','Throat.Ext.Angle = 5+3*cos(p)^2'))
     geometry = resolve_geometry(cfg).geometry
@@ -191,10 +191,10 @@ def test_deferred_corner_preview_uses_production_rear_and_preserves_native(lod, 
 
 @pytest.mark.parametrize('lod', ['coarse', 'fine'])
 @pytest.mark.parametrize('include_cap', [True, False])
-def test_deferred_corner_import_retains_ath_v2026_08c_warp(lod, include_cap):
+def test_deferred_corner_import_retains_ath_v2026_09a_warp(lod, include_cap):
     cfg = corner_import_config()
     cfg['profile']['throatExtAngle'] = '5+3*cos(p)^2'
-    # ATH V2026-08c m6_var_wall qualifies the RearShape 1 warped fan.
+    # ATH V2026-09a m6_var_wall qualifies the RearShape 1 warped fan.
     preview = build_preview_geometry(cfg, PreviewOptionsV1(lod=lod, include_rear_cap=include_cap))
     caps = [s for s in preview.surfaces if s.role == 'wall.rear_cap']
     assert len(caps) == int(include_cap)
@@ -203,9 +203,9 @@ def test_deferred_corner_import_retains_ath_v2026_08c_warp(lod, include_cap):
 
 
 @pytest.mark.parametrize('include_cap',[True,False])
-def test_preview_retains_ath_v2026_08c_warp_with_optional_cap(include_cap):
+def test_preview_retains_ath_v2026_09a_warp_with_optional_cap(include_cap):
     cfg=marked(BASE.replace('Throat.Ext.Angle = 5.25','Throat.Ext.Angle = 5+3*cos(p)^2'))
-    # ATH V2026-08c m6_var_wall qualifies the RearShape 1 warped fan.
+    # ATH V2026-09a m6_var_wall qualifies the RearShape 1 warped fan.
     preview = build_preview_geometry(cfg,PreviewOptionsV1(lod='coarse',include_rear_cap=include_cap))
     caps = [s for s in preview.surfaces if s.role == 'wall.rear_cap']
     assert len(caps) == int(include_cap)
@@ -462,7 +462,7 @@ def test_rear_minimax_displacement_budget_has_absolute_and_wall_relative_bounds(
     outer[:,0,2]=wall+raw_z
     before=outer.copy()
     if factor>1:
-        # ATH V2026-08c m6_var_wall: a ring outside the projection budget
+        # ATH V2026-09a m6_var_wall: a ring outside the projection budget
         # uses the measured RearShape 1 throat normal instead of flattening.
         from hornlab_mesher.ath_import_surfaces import meridional_normals
         rear = freestanding_rear_ring(inner,outer,wall,text_import=True)

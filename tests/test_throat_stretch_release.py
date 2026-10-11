@@ -38,7 +38,7 @@ _SUPPLIES_S = re.compile(r'^[ \t]*(?:Term\.)?s[ \t]*=', re.M)
 
 
 def _measured_s_default(text, formula, *expected):
-    """Apply only defaults/Rot measured in ATH V2026-08c m5/m7 fixtures.
+    """Apply only defaults/Rot measured in ATH V2026-09a m5/m7 fixtures.
 
     Native captures never pass through this adjustment. Explicit coefficients
     retain their exact captured expectations and the original tolerances.
@@ -252,7 +252,7 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
                    if hashlib.sha256(p.read_text().encode()).hexdigest() == case['sha256']]
         assert len(matches) == 1, 'captured archive config missing or changed'
         text = matches[0].read_text()
-    # ATH V2025-12/V2026-08c m7_rot_* fixtures establish top-level-only Rot.
+    # ATH V2025-12/V2026-09a m7_rot_* fixtures establish top-level-only Rot.
     osse_block = text.startswith('OSSE = {')
     block_text = text.split('}', 1)[0]
     approved_rot = osse_block and 'Rot = 10' in text and 'Rot = 5' not in block_text
@@ -283,7 +283,7 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
     if expected_parsed.get('enclosure'):
         enclosure = expected_parsed['enclosure']
         if 'space_l_mm' in enclosure and 'space_r_mm' in enclosure:
-            # ATH V2026-08c m4_enc establishes the +x,+y,-x,-y order.
+            # ATH V2026-09a m4_enc establishes the +x,+y,-x,-y order.
             enclosure['space_l_mm'], enclosure['space_r_mm'] = enclosure['space_r_mm'], enclosure['space_l_mm']
     _assert_base_equal(parsed, expected_parsed)
     _assert_base_equal(params, expected_params)

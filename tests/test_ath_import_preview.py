@@ -13,7 +13,7 @@ from hornlab_mesher.viewport import build_viewport_geometry_from_config
 from hornlab_mesher.builders.point_grid_freestanding import _build_ath_import_surfaces
 from test_ath_import_surfaces import assert_watertight_after_symmetry
 
-FIXTURES = Path(__file__).parent / 'fixtures/ath_import/ath-v2026-08c'
+FIXTURES = Path(__file__).parent / 'fixtures/ath_import/ath-v2026-09a'
 
 
 def config(name):

@@ -43,7 +43,7 @@ def _bounded_pow(base: Any, exponent: Any) -> float:
 
 def _superformula(m: float, n1: float, n2: float, n3: float,
                   a: float, b: float, p: float) -> float:
-    """ATH sf(m, n1, n2, n3, a, b, p), verified by V2026-08c exports."""
+    """ATH sf(m, n1, n2, n3, a, b, p), verified by V2026-09a exports."""
     return (abs(math.cos(m * p / 4) / a) ** n2
             + abs(math.sin(m * p / 4) / b) ** n3) ** (-1 / n1)
 

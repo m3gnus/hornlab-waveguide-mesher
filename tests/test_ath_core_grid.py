@@ -1,4 +1,4 @@
-"""Complete inner grids from independent ATH V2026-08c exports."""
+"""Complete inner grids from independent ATH V2026-09a exports."""
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +8,7 @@ from hornlab_mesher.config_parser import parse_text_config
 from hornlab_mesher.config_builder import build_geometry_params
 from hornlab_mesher.profile_sampling import build_point_grid_arrays
 
-FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-08c"
+FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-09a"
 CORE_CASES = [f"f0_{kind}{suffix}" for kind in ("plain", "morph", "stretch", "both")
               for suffix in ("", "_nac")]
 

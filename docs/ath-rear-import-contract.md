@@ -4,7 +4,7 @@ The first section covers RearShape 1 without a lip. The separate Opus/lip
 section below preserves non-planar imported rears and supersedes its planar
 restriction for those paths.
 
-The versioned text import contracts `ath-2026-08c-v1` and `ath-2026-08c-v2` preserve ATH's
+The versioned text import contracts `ath-2026-08c-v1` and `ath-2026-09a-v2` preserve ATH's
 freestanding rear-return anchor for planar and bounded near-planar outer
 throat rings:
 
@@ -34,7 +34,7 @@ floating-point noise or a waiver based on CAD tolerances. XY remains exact.
 The actual computed displacement is checked before projection; nonfinite
 coordinates and nonfinite/nonpositive wall thickness are refused.
 
-Under v2, larger deviations use a warped fan with the measured ATH V2026-08c RearShape 1
+Under v2, larger deviations use a warped fan with the measured ATH V2026-09a RearShape 1
 throat construction: authored inner row 0 shifted -5 mm, then offset by wall
 thickness along its meridional chord normal. The analytic outer shell remains
 unchanged, joined to this ring by the rear return. Fixture `m6_var_wall` has a
@@ -77,14 +77,14 @@ enclosure sheet support, full ATH mesh parity or a Fusion import qualification.
 
 ## Opus rear and RearShape 1 with an ATH lip
 
-`Mesh.RearShape = 3` selects the import-only Opus rear under `ath-2026-08c-v2`. It amends the planar
+`Mesh.RearShape = 3` selects the import-only Opus rear under `ath-2026-09a-v2`. It amends the planar
 rule above: its throat ring is non-planar and is preserved pointwise, with a
 fan to an axial apex. Native rear geometry and RearShape 1 without a lip retain
 their existing rules. Enclosure, infinite baffle and CircSym combinations are
 refused by name. RearShape 2/5, RearCubic, OpusRear, MouthArc and RoundedEdge
 remain unsupported.
 
-Measured against ATH V2026-08c output, Opus clamps wall thickness to
+Measured against ATH V2026-09a output, Opus clamps wall thickness to
 0.1–1000 mm (including an authored zero), defaults `FrontOffset` to 40 mm
 and `Step` to 25 mm, and selects rings from the full inner grid, lip included:
 
@@ -153,7 +153,7 @@ nonfinite Step, and nonfinite FrontOffset are named refusals. Negative offsets
 have no qualified ATH ring fit.
 
 Evidence is the extracted wall/rear point sets and profile grids in
-`tests/fixtures/ath_import/ath-v2026-08c`: `of20` pins non-default Step/FrontOffset,
+`tests/fixtures/ath_import/ath-v2026-09a`: `of20` pins non-default Step/FrontOffset,
 `onr` omits the lip, `odef` omits both defaults, `ow0` pins the wall clamp,
 `ofull` covers a full ring, `rs1` pins the concentric outer lip, and `coreabec`
 pins morph/stretch and the warped throat. CORE selects `[4,7,9,11,12]`, with

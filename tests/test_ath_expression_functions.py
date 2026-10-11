@@ -1,4 +1,4 @@
-"""Scalar ATH functions and independent V2026-08c expression probes."""
+"""Scalar ATH functions and independent V2026-09a expression probes."""
 from pathlib import Path
 import math
 
@@ -10,7 +10,7 @@ from hornlab_mesher.config_parser import ConfigError, parse_text_config
 from hornlab_mesher.profile_common import eval_param, _fma_fallback
 from hornlab_mesher.profile_formulas import calculate_osse_curve
 
-FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-08c"
+FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-09a"
 
 
 @pytest.mark.parametrize("name", ["sf1", "sf2", "sf3"])

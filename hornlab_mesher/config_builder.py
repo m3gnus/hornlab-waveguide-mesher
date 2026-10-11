@@ -1172,7 +1172,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         if ATH_AXIAL_RULE_KEY in config:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
     if uses_v2_text_import_geometry(config) and formula == "R-OSSE" and common["morphTarget"] != 0:
-        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-08c output changes the radial profile and has no qualified import construction")
+        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-09a output changes the radial profile and has no qualified import construction")
     common.update(ath_controls)
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True

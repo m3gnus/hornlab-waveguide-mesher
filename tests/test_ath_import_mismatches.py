@@ -1,4 +1,4 @@
-"""ATH V2026-08c import witnesses and native authoring boundaries."""
+"""ATH V2026-09a import witnesses and native authoring boundaries."""
 from pathlib import Path
 import json
 
@@ -13,7 +13,7 @@ from hornlab_mesher.profile_formulas import calculate_osse, calculate_osse_curve
 from hornlab_mesher.preview import build_preview_geometry, PreviewOptionsV1
 from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_V1, TEXT_IMPORT_VERSION
 
-FIXTURES = Path(__file__).parent / 'fixtures/ath_import/ath-v2026-08c'
+FIXTURES = Path(__file__).parent / 'fixtures/ath_import/ath-v2026-09a'
 GRID_CASES = ['m3_rosse_nomorph', 'm4_enc', 'm5_osse_omit_a_s', 'm5_rosse_omit_all',
               'm6_var_wall', 'm7_rot_none', 'm7_rot_in', 'm7_rot_top', 'm7_rot_both', 'm10_ext_rot']
 
@@ -29,7 +29,7 @@ def reference(name):
 
 @pytest.mark.parametrize('name', GRID_CASES)
 @pytest.mark.parametrize('quadrants', ['1', '1234'])
-def test_grid_matches_ath_v2026_08c(name, quadrants):
+def test_grid_matches_ath_v2026_09a(name, quadrants):
     cfg = config(name)
     cfg['mesh']['quadrants'] = quadrants
     actual = build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid']
@@ -41,7 +41,7 @@ def test_grid_matches_ath_v2026_08c(name, quadrants):
 
 
 def test_rosse_morph_refusal_names_measured_radial_change():
-    # ATH V2026-08c does change these radii: morph cannot be ignored.
+    # ATH V2026-09a does change these radii: morph cannot be ignored.
     plain, morphed = reference('m3_rosse_nomorph'), reference('m3_rosse_morph')
     np.testing.assert_allclose(np.linalg.norm(plain[:, -1, :2], axis=1), 150, rtol=0, atol=2e-4)
     radius = np.linalg.norm(morphed[:, -1, :2], axis=1)
@@ -58,14 +58,14 @@ def test_rosse_morph_refusal_names_measured_radial_change():
 
 
 @pytest.mark.parametrize('name', GRID_CASES + ['m3_rosse_morph'])
-def test_normalised_ath_v2026_08c_fixtures(name):
+def test_normalised_ath_v2026_09a_fixtures(name):
     for suffix in ['cfg', 'csv']:
         data = (FIXTURES / f'{name}.{suffix}').read_bytes()
         assert b'\r' not in data
         assert data.endswith(b'\n') and not data.endswith(b'\n\n')
 
 
-def test_import_spacing_matches_ath_v2026_08c_enclosure_bounds():
+def test_import_spacing_matches_ath_v2026_09a_enclosure_bounds():
     from hornlab_mesher.builders.enclosure import enclosure_box_bounds
     cfg = config('m4_enc')
     geometry = resolve_geometry(cfg).geometry
@@ -121,7 +121,7 @@ def test_literal_osse_block_radius_is_accepted(literal):
 
 
 @pytest.mark.parametrize('expression', ['25.4/2', '(12.7)', '2*6.35', '20+4*cos(p)^2'])
-@pytest.mark.parametrize('prefix', ['', '; Waveguide Generator geometry-interpretation: ath-2026-08c-v2\n'])
+@pytest.mark.parametrize('prefix', ['', '; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n'])
 def test_nonliteral_osse_block_radius_is_refused_by_name(expression, prefix):
     text = (FIXTURES / 'm7_rot_none.cfg').read_text().replace('r0 = 12.7', 'r0 = ' + expression)
     with pytest.raises(ConfigError, match=r'OSSE.r0.*literal number'):
@@ -241,7 +241,7 @@ def test_warped_rear_preserves_analytic_body_and_outer_shell(topology, monkeypat
 
 
 
-def test_warped_rear_options_against_ath_v2026_08c_at_matching_azimuths():
+def test_warped_rear_options_against_ath_v2026_09a_at_matching_azimuths():
     from hornlab_mesher.rear_compatibility import resample_rear_ring
     from hornlab_mesher.builders.point_grid_freestanding import _restored_outer_throat_points
     geometry = resolve_geometry(config('m6_var_wall')).geometry

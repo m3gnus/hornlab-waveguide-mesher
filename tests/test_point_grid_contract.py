@@ -780,12 +780,12 @@ def test_v1_imported_rear_resolution_budget_refuses_coarse_and_builds_fine(tmp_p
 
 @pytest.mark.parametrize('quadrants', [1, 1234])
 def test_v2_coarse_imported_rear_uses_measured_warped_construction(quadrants):
-    # ATH V2026-08c m6_var_wall establishes the RearShape 1 construction
+    # ATH V2026-09a m6_var_wall establishes the RearShape 1 construction
     # outside the planar budget. V1 keeps its refusal above.
     cfg = parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0))
     cfg['mesh']['quadrants'] = quadrants
     geometry = resolve_geometry(cfg).geometry
-    assert cfg['_textImportVersion'] == 'ath-2026-08c-v2'
+    assert cfg['_textImportVersion'] == 'ath-2026-09a-v2'
     assert np.ptp(geometry.ath_warped_rear_points[:, 2]) > 0
     assert geometry.ath_warped_rear_apex.shape == (3,)
 

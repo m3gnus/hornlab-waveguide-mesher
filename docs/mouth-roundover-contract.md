@@ -30,7 +30,7 @@ implemented by every preview, CAD and mesh consumer. This is that option.
   }
   ```
 
-- 34 probes run on ATH build V2026-08c for this document. The initial profile exports were unavailable, so these measurements
+- 34 probes run on ATH build V2026-09a for this document. The initial profile exports were unavailable, so these measurements
   used the `bem_mesh.geo` point list ATH writes for its mesher
   (`Output.ABECProject = 1`). Those coordinates carry three decimals, so every
   fit below is limited to about 0.001 mm.
@@ -308,11 +308,11 @@ All six questions below are decided as recommended:
 ## ATH import lip
 
 `Mesh.Roundover = { Radius = R; Segments = N }` (members on separate lines)
-selects an import-only OSSE path under `ath-2026-08c-v2`. `Segments` defaults to 5 and changes the
+selects an import-only OSSE path under `ath-2026-09a-v2`. `Segments` defaults to 5 and changes the
 geometry; `Mesh.Roundover = 0` is a no-op. The native `OSSE-ROUNDOVER` C6
 construction above and its analytic tangent-continuous arc are unchanged.
 
-Measured against ATH V2026-08c output, the lip runs after morph and throat
+Measured against ATH V2026-09a output, the lip runs after morph and throat
 stretch, using the authored body grid with `nb` rows and the p=0 profile:
 
 ```text
@@ -350,7 +350,7 @@ sized rear rings. STEP retains a named refusal: a faithful OCC patch and
 shared-seam construction is required to transport the GEO surfaces. Mesh
 and point-grid exports include the lip.
 
-Evidence: `tests/fixtures/ath_import/ath-v2026-08c` contains the plain `p1`,
+Evidence: `tests/fixtures/ath_import/ath-v2026-09a` contains the plain `p1`,
 Segments-default `segdef`, and full `coreabec` profile exports (the latter includes
 morph, expressions and stretch). Grid comparisons use 2e-4 mm; the extracted
 wall/rear vertex sets use 2e-3 mm for ATH's three-decimal coordinates. No claim

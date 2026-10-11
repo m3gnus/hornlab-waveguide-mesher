@@ -9,6 +9,6 @@
   "scope": "Native inner/outer grids and exercised preview position/index arrays; arrays verified against the original producing-platform SHA-256 pins before conversion",
   "imported_baselines": {
     "rear-v1.npz": "a515334c554a098ca6612f336529323021284328; saved ath-2026-08c-v1",
-    "rear-imported.npz": "c47cd3b; current sampling rules, now ath-2026-08c-v2"
+    "rear-imported.npz": "c47cd3b; current sampling rules, now ath-2026-09a-v2"
   }
 }

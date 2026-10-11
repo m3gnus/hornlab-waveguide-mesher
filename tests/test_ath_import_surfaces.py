@@ -1,4 +1,4 @@
-"""Authored lip grids and rear vertex sets from ATH V2026-08c exports."""
+"""Authored lip grids and rear vertex sets from ATH V2026-09a exports."""
 from pathlib import Path
 from dataclasses import replace
 
@@ -11,7 +11,7 @@ from hornlab_mesher.config_builder import build_geometry_params, resolve_geometr
 from hornlab_mesher.profile_sampling import build_point_grid_arrays
 from hornlab_mesher.edges import build_edge_table
 
-FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-08c"
+FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-09a"
 CASES = ["p1", "segdef", "of20", "onr", "rs1", "odef", "ow0", "ofull", "coreabec"]
 REAR_CASES = CASES[2:]
 
@@ -338,7 +338,7 @@ def test_dictionary_zero_wall_clamp_is_reported(caplog):
 ])
 def test_unprobed_lip_and_opus_combinations_refused_in_both_transports(name, extra, key, section, value, named):
     text = (FIXTURES / f'{name}.cfg').read_text()
-    # ATH V2026-08c m7_rot_in/m7_rot_both establish that OSSE.Rot is
+    # ATH V2026-09a m7_rot_in/m7_rot_both establish that OSSE.Rot is
     # ignored. Exercise active top-level Rot for the lip/Opus refusal.
     text += extra
     with pytest.raises(ConfigError) as error:

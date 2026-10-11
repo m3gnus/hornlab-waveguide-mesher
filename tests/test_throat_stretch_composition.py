@@ -119,7 +119,7 @@ def test_tiny_numeric_compositions_use_exact_zero(key):
     calculate_osse(20, 0, p)
 
 
-def test_active_rosse_numeric_zero_rotation_matches_ath_v2026_08c_defaults():
+def test_active_rosse_numeric_zero_rotation_matches_ath_v2026_09a_defaults():
     imported = parse_text_config('R-OSSE = {\nR = 200\ns1 = .5\ns2 = .2\n}\nRot = 0')
     # m5_rosse_omit_all measures these imported defaults; native inputs must
     # state them explicitly to describe the same horn.

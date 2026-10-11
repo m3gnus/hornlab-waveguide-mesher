@@ -83,7 +83,7 @@ def _normalise_ath_angular_segments(raw_count: int) -> int:
 def _sampling_angular_segments(params: Mapping[str, Any]) -> int:
     count = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
     if uses_current_ath_axial_sampling(params) and not params.get("_athNacPresent"):
-        # V2026-08c applies this budget even without a rectangular morph.
+        # V2026-09a applies this budget even without a rectangular morph.
         corner = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
         count = int(math.ceil((count + corner) / 4.0)) * 4
     return count
@@ -1752,7 +1752,7 @@ def build_point_grid_arrays(
                 and eval_param(params.get("rot"), 0.0, 0.0) != 0.0):
             _, total, extension, _ = osse_length_config(params, 0.0)
             if extension > 0:
-                # ATH V2026-08c adds ten extension segments before the
+                # ATH V2026-09a adds ten extension segments before the
                 # authored body map, retaining the extension/body junction.
                 fraction = extension / total
                 t_unit_values = np.concatenate((np.linspace(0, fraction, 11)[:-1],

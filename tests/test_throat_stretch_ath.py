@@ -138,7 +138,7 @@ def test_rot_and_prefix_with_zero_s1_remains_accepted():
     assert config["profile"]["rot"] == 10
 
 
-def test_ath_v2026_08c_ignores_block_rotation_even_with_stretch():
+def test_ath_v2026_09a_ignores_block_rotation_even_with_stretch():
     inside = parse_text_config("OSSE = {\nL = 160\nRot = 10\ns1 = 0.5\ns2 = 0.2\n}")
     outside = parse_text_config("OSSE = {\nL = 160\ns1 = 0.5\ns2 = 0.2\n}\nRot = 10")
     plain = parse_text_config("OSSE = {\nL = 160\ns1 = 0.5\ns2 = 0.2\n}")

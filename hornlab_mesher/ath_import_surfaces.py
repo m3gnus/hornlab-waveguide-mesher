@@ -1,4 +1,4 @@
-"""Import-only lip and rear rules measured against ATH V2026-08c output.
+"""Import-only lip and rear rules measured against ATH V2026-09a output.
 
 The authored grid is the authority: its chord angles, not analytic derivatives
 or a refined sampling grid, determine both the lip and the rear rings.
@@ -14,7 +14,7 @@ def validate_combinations(params):
     """Refuse compositions awaiting measured ATH lip/rear witnesses."""
     from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
     if params.get(TEXT_IMPORT_VERSION_KEY) != TEXT_IMPORT_VERSION:
-        raise ValueError("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-08c-v2")
+        raise ValueError("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-09a-v2")
     for key, name, inactive in (("scale", "Scale", 1),
                                ("throatExtLength", "Throat.Ext.Length", 0),
                                ("throatExtAngle", "Throat.Ext.Angle", 0),

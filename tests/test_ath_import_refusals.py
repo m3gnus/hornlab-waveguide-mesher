@@ -138,7 +138,7 @@ def test_repeated_profile_blocks_are_refused(family: str) -> None:
 def test_osse_rotation_precedence(in_block: int | None, top_first: bool) -> None:
     block = _osse("" if in_block is None else f"  Rot = {in_block}\n")
     text = "Rot = 10\n" + block if top_first else block + "Rot = 10\n"
-    # ATH V2025-12/V2026-08c m7_rot_* fixtures: block Rot is ignored.
+    # ATH V2025-12/V2026-09a m7_rot_* fixtures: block Rot is ignored.
     expected = parse_text_config(_osse() + "Rot = 10\n")
     assert parse_text_config(text) == expected
 
@@ -227,7 +227,7 @@ def test_nested_block_does_not_end_its_parent() -> None:
     enclosure = parse_text_config(FLAT_OSSE + block)["enclosure"]
     assert enclosure["edge_mm"] == 40
     assert (enclosure["space_l_mm"], enclosure["space_t_mm"], enclosure["space_r_mm"], enclosure["space_b_mm"]) == (
-        50,  # ATH V2026-08c m4_enc: Spacing is +x,+y,-x,-y.
+        50,  # ATH V2026-09a m4_enc: Spacing is +x,+y,-x,-y.
         40,
         30,
         200,

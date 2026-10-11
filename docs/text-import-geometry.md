@@ -1,7 +1,7 @@
 # Text import geometry
 
 `parse_text_config` retains the versioned `_textImportVersion` field. Its
-current value is `ath-2026-08c-v2`. JSON round trips and callers that copy the
+current value is `ath-2026-09a-v2`. JSON round trips and callers that copy the
 parsed config must preserve it: geometry normalization retains it in the
 profile parameter dictionary. An unknown version is refused rather than
 reinterpreted. The geometry stamp identifies this import contract; the ATH
@@ -14,7 +14,7 @@ contract and its bounded refusals.
 
 The direct CFG/CLI reader honors saved application comment stamps before
 discarding comments: `; Waveguide Generator geometry-interpretation: native-v1`
-selects native interpretation and either `ath-2026-08c-v1` or `ath-2026-08c-v2` selects imported geometry.
+selects native interpretation and either `ath-2026-08c-v1` or `ath-2026-09a-v2` selects imported geometry.
 Unknown or conflicting stamps are refused. Unstamped external CFGs select the
 import contract; historical `; Parameter config` or `; MWG config` headers
 select native interpretation, consistently with the application reader. An
@@ -46,12 +46,12 @@ also reach the mesh density used to fit actual surfaces. Native omitted mouth
 resolution retains the native 26 mm default. These defaults apply to the
 supported OSSE/R-OSSE text profile families. Under v2, OSSE defaults to `a=45`,
 `a0=0`, `s=0.5`; R-OSSE defaults to `R=200`, `a=40`, `a0=0`, `r=0.25`,
-`m=0.9`, `b=0.4`, `q=3.5`, measured against ATH V2026-08c output.
+`m=0.9`, `b=0.4`, `q=3.5`, measured against ATH V2026-09a output.
 Native authored geometry types
 retain their own defaults even when provenance is carried alongside them.
 
 Expressions use the scalar C99 function whitelist in
-[the config schema](config-schema.md#parameter-expressions). ATH V2026-08c
+[the config schema](config-schema.md#parameter-expressions). ATH V2026-09a
 probes establish the Gielis `sf(m,n1,n2,n3,a,b,p)` formula, natural `log`,
 and half-away-from-zero `round`. The two-value functions `frexp` and `modf`
 are refused during parsing and evaluation.
@@ -79,7 +79,7 @@ Their implicit rectangular morph dimensions use the raw ring before the corner
 budget. Unstamped text and V2025-12 or newer use the current rule above. Stamps strictly
 between V2025-06 and V2025-12 are unverified and use the current rule. The selected
 rule is retained as a plain dictionary key and logged; native TOML/JSON keep
-their existing interpretation. Evidence: V2025-12, V2026-08c and V2026-09a produce byte-identical
+their existing interpretation. Evidence: V2025-12 and V2026-09a produce byte-identical
 CORE and Solana grids, while all 23 archived configs echo V2025-06; the previous
 sampler reproduces the four affected archive parity cases.
 
@@ -160,7 +160,7 @@ Consumers constructing their own mesher dictionaries must retain these keys:
 
 | Key | Location | Meaning |
 | --- | --- | --- |
-| `_textImportVersion` | Top level; carried into geometry params | `ath-2026-08c-v1` preserves saved geometry; `ath-2026-08c-v2` opts into the current import rules. |
+| `_textImportVersion` | Top level; carried into geometry params | `ath-2026-08c-v1` preserves saved geometry; `ath-2026-09a-v2` opts into the current import rules. |
 | `_athAxialSamplingRule` | Top level; carried into geometry params | v2 accepts `ath-v2025-06` or `ath-v2025-12+` (default). This also selects the morph start and plain-profile corner budget. v1 keeps its historical rules regardless of this key. |
 | `_athNacPresent` | Top level or `mesh`; carried into geometry params | Boolean NAC presence. With the current v2 sampling rule, true suppresses the corner addition; NAC's integer value is irrelevant to point-grid geometry. |
 
