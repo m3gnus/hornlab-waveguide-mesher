@@ -1,11 +1,11 @@
 # Text import geometry
 
 `parse_text_config` retains the versioned `_textImportVersion` field. Its
-current value is `ath-2026-08c-v1`. JSON round trips and callers that copy the
+current value is `ath-2026-08c-v2`. JSON round trips and callers that copy the
 parsed config must preserve it: geometry normalization retains it in the
 profile parameter dictionary. An unknown version is refused rather than
-reinterpreted. The version identifies this import contract; the importer does
-not detect which application build authored a file. It does not claim full
+reinterpreted. The geometry stamp identifies this import contract; the ATH
+version echo selects only the sampling rules documented below. It does not claim full
 feature, station allocation, topology, or acoustic parity.
 
 Native configurations without the field keep their established dimensions
@@ -14,7 +14,7 @@ contract and its bounded refusals.
 
 The direct CFG/CLI reader honors saved application comment stamps before
 discarding comments: `; Waveguide Generator geometry-interpretation: native-v1`
-selects native interpretation and `ath-2026-08c-v1` selects imported geometry.
+selects native interpretation and either `ath-2026-08c-v1` or `ath-2026-08c-v2` selects imported geometry.
 Unknown or conflicting stamps are refused. Unstamped external CFGs select the
 import contract; historical `; Parameter config` or `; MWG config` headers
 select native interpretation, consistently with the application reader. An
@@ -53,7 +53,7 @@ probes establish the Gielis `sf(m,n1,n2,n3,a,b,p)` formula, natural `log`,
 and half-away-from-zero `round`. The two-value functions `frexp` and `modf`
 are refused during parsing and evaluation.
 
-Imported angular sampling adds the corner budget and rounds up to four
+Current (v2, V2025-12+ rule) imported angular sampling adds the corner budget and rounds up to four
 segments even for a plain profile: `AngularSegments=100`, `CornerSegments=4`
 gives 104. The presence of integer `NAC` disables this addition; the value
 does not affect the grid and is ignored with a named warning. Previously only
@@ -75,8 +75,8 @@ OSSE station map and morph start (zero fixed part can start at the throat).
 Their implicit rectangular morph dimensions use the raw ring before the corner
 budget. Unstamped text and V2025-12 or newer use the current rule above. Stamps strictly
 between V2025-06 and V2025-12 are unverified and use the current rule. The selected
-rule is retained in internal import provenance and logged; native TOML/JSON gain
-no controls. Evidence: V2025-12, V2026-08c and V2026-09a produce byte-identical
+rule is retained as a plain dictionary key and logged; native TOML/JSON keep
+their existing interpretation. Evidence: V2025-12, V2026-08c and V2026-09a produce byte-identical
 CORE and Solana grids, while all 23 archived configs echo V2025-06; the previous
 sampler reproduces the four affected archive parity cases.
 
@@ -116,3 +116,47 @@ body grid. Viewport exports retain the authored inner rows, independent rear
 row count and apex, and optionally carry that tessellation. STEP retains a
 named refusal because GEO patches have no faithful OCC transport yet. Existing imports without
 an active lip or Opus rear retain their previous consumers and rear-plane rules.
+
+
+The saved v1 contract retains the geometry preceding v2: the fitted OSSE axial
+map, the previous morph start, and the corner budget only for rectangular
+morphs. An ATH version echo and NAC do not upgrade a v1 design. Import-only
+lip/Opus controls require v2. Saved v1 CFGs retain their stamp when parsed;
+fresh unstamped external CFGs receive v2. Unknown versions/rules are refused.
+Native and v1 arrays are pinned to the preceding contract in
+`tests/fixtures/rear-native.npz` and `rear-v1.npz`; floating coordinates are
+compared with absolute tolerance 1e-9 mm and zero relative tolerance, while
+triangle indices are exact. `rear-imported.npz` independently pins the current
+imported inner/outer grids and exercised preview arrays.
+
+Consumers constructing their own mesher dictionaries must retain these keys:
+
+| Key | Location | Meaning |
+| --- | --- | --- |
+| `_textImportVersion` | Top level; carried into geometry params | `ath-2026-08c-v1` preserves saved geometry; `ath-2026-08c-v2` opts into the current import rules. |
+| `_athAxialSamplingRule` | Top level; carried into geometry params | v2 accepts `ath-v2025-06` or `ath-v2025-12+` (default). This also selects the morph start and plain-profile corner budget. v1 keeps its historical rules regardless of this key. |
+| `_athNacPresent` | Top level or `mesh`; carried into geometry params | Boolean NAC presence. With the current v2 sampling rule, true suppresses the corner addition; NAC's integer value is irrelevant to point-grid geometry. |
+
+V2025-06's legacy angular rule keeps the corner addition for rectangular morphs
+and excludes it for plain profiles. The archive parity gate retains its existing
+checks. The initial UTF-8 BOM is stripped before reading the version echo.
+For `ldexp`/`scalbn`, finite floating exponents are truncated toward zero when
+converted to the C integer parameter. `logb` of either infinity returns positive
+infinity; `round` preserves signed infinity.
+
+For active import lips or Opus rears, `Scale` other than 1, active
+`Throat.Ext.Length`/`Throat.Ext.Angle`, nonzero `Rot`, nonzero
+`Mesh.VerticalOffset`, and `Source.Shape = 2` are refused by name pending ATH
+probes. The boundary applies to parsed CFGs and dictionary transport alike.
+
+
+The lip/Opus preview seeds structured ring lofts and preserves duplicated seam
+vertices with one-sided patch normals. Authored patch boundary curves are
+reported in `creaseFeatures`; no smoothness target is imposed across those
+features. Refinement uses shared curve midpoints, balanced triangle cuts and
+cached parametric measurements. It stops when the targets are met, no nodes
+are added, edges reach a geometric size floor, or a resource bound is reached.
+`vertex_cap_limited`, `iteration_bound_limited` and `refinement_stalled` are
+separate flags; `refinement_limit` names the reason. The preview tests check
+all emitted normal steps within patches, zero folds, closure and explicit
+LOD vertex/time budgets independently of those flags.

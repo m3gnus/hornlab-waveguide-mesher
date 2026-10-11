@@ -933,6 +933,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             raise ConfigError("Mesh.Roundover/RearShape import controls require ATH import geometry interpretation")
         from .ath_import_surfaces import normalized_controls
         try:
+            if mesh.get("athRearShape") == 3 and mode != "freestanding":
+                raise ConfigError("Mesh.RearShape = 3 requires a free-standing wall")
             input_wall = wall_thickness
             ath_controls, wall_thickness = normalized_controls(mesh, wall_thickness)
             if wall_thickness != input_wall:
@@ -1165,12 +1167,11 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         common["_athLengthMode"] = length_mode
     if imported_geometry:
         common[TEXT_IMPORT_VERSION_KEY] = config[TEXT_IMPORT_VERSION_KEY]
-        # Current sampling is the implicit imported default. Only carry the
-        # historical override into geometry params, preserving their wire shape.
-        if config.get(ATH_AXIAL_RULE_KEY) == ATH_AXIAL_LEGACY:
+        # Carry the sampling rule as plain transport data for dictionary consumers.
+        if ATH_AXIAL_RULE_KEY in config:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
     common.update(ath_controls)
-    if mesh.get("_athNacPresent"):
+    if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True
     _apply_driver_adapter(common, profile, config)
     if formula in {"OSSE", "R-OSSE"}:
@@ -1326,6 +1327,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
         common["construction_fingerprint"] = construction.fingerprint
+    if common.get("athRoundover") or common.get("athRearShape") == 3:
+        from .ath_import_surfaces import validate_combinations
+        try:
+            validate_combinations(common)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     return common, formula, mode
 
 

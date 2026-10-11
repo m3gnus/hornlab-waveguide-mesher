@@ -82,7 +82,7 @@ def _normalise_ath_angular_segments(raw_count: int) -> int:
 
 def _sampling_angular_segments(params: Mapping[str, Any]) -> int:
     count = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
-    if uses_text_import_geometry(params) and not params.get("_athNacPresent"):
+    if uses_current_ath_axial_sampling(params) and not params.get("_athNacPresent"):
         # V2026-08c applies this budget even without a rectangular morph.
         corner = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
         count = int(math.ceil((count + corner) / 4.0)) * 4
@@ -166,7 +166,7 @@ def _morph_corner_arc_subdivision(params: Mapping[str, Any]) -> int:
 def _morph_quadrant_budget(
     params: Mapping[str, Any], angular_segments: int
 ) -> int:
-    if uses_text_import_geometry(params):
+    if uses_current_ath_axial_sampling(params):
         # The shared angular rule already accounts for the corner budget.
         # NAC's presence disables that addition; its value never enters here.
         return max(1, angular_segments // 4)
@@ -1719,7 +1719,7 @@ def build_point_grid_arrays(
                      or eval_param(params.get("morphHeight"), 0.0, 0.0) <= 0.0)):
             # Historical implicit rectangle dimensions were measured on the
             # raw ring before adding the morph corner budget. The final morph
-            # angle list below still receives the full budget (and NAC rule).
+            # angle list below still receives the historical corner budget.
             raw_angle_params = {**params, "cornerSegments": 0}
         angles, full_circle = _angle_list(raw_angle_params)
         t_max = _rosse_tmax(params) if formula == "R-OSSE" else 1.0
@@ -1895,7 +1895,8 @@ def build_point_grid_arrays(
     ath_data = {}
     ath_surfaces = params.get("athRoundover") or params.get("athRearShape") == 3
     if ath_surfaces:
-        from .ath_import_surfaces import append_lip, meridional_normals
+        from .ath_import_surfaces import append_lip, meridional_normals, validate_combinations
+        validate_combinations(params)
         body_rows = inner.shape[1]
         lip = params.get("athRoundover")
         profile_zero = None

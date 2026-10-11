@@ -55,3 +55,18 @@ def test_native_angular_budget_is_preserved():
                        "quadrants": "1", "wallThickness": 0}}
     params = build_geometry_params(config)[0]
     assert build_point_grid_arrays(params)["inner_grid"].shape[0] == 26
+
+
+@pytest.mark.parametrize('rule,expected', [('ath-v2025-06', 100), ('ath-v2025-12+', 104)])
+@pytest.mark.parametrize('present', [False, True])
+def test_consumer_constructed_dictionary_carries_rule_and_nac(rule, expected, present):
+    from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, ATH_AXIAL_RULE_KEY
+    cfg = {'formula': 'OSSE', TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION,
+           ATH_AXIAL_RULE_KEY: rule, '_athNacPresent': present,
+           'profile': {'L': 160, 'a': 40},
+           'mesh': {'angularSegments': 100, 'cornerSegments': 4,
+                    'lengthSegments': 20, 'wallThickness': 0, 'quadrants': 1234}}
+    params = build_geometry_params(cfg)[0]
+    assert params[ATH_AXIAL_RULE_KEY] == rule
+    assert bool(params.get('_athNacPresent')) == present
+    assert build_point_grid_arrays(params)['inner_grid'].shape[0] == (100 if present else expected)

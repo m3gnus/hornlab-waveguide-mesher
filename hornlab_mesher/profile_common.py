@@ -50,6 +50,8 @@ def _superformula(m: float, n1: float, n2: float, n3: float,
 
 def _c99_round(x: float) -> float:
     # Adding 0.5 can round a value just below the tie up to the tie itself.
+    if not math.isfinite(x):
+        return x
     magnitude = abs(x)
     integral = math.floor(magnitude)
     return math.copysign(integral + (magnitude - integral >= 0.5), x)
@@ -88,10 +90,12 @@ _EVAL_GLOBALS = {
     "rad": math.radians,
     "fdim": lambda x, y: max(x - y, 0.0),
     "fma": getattr(math, "fma", _fma_fallback),
-    "logb": lambda x: float(math.frexp(abs(x))[1] - 1) if x else math.log(0),
+    "logb": lambda x: abs(x) if not math.isfinite(x) else float(math.frexp(abs(x))[1] - 1) if x else math.log(0),
+    # C converts the finite exponent to int by truncating toward zero.
+    "ldexp": lambda x, exponent: math.ldexp(x, int(exponent)),
     "nearbyint": lambda x: float(round(x)),
     "round": _c99_round,
-    "scalbn": math.ldexp,
+    "scalbn": lambda x, exponent: math.ldexp(x, int(exponent)),
     "sf": _superformula,
     "pi": math.pi,
     "e": math.e,

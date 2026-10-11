@@ -1,6 +1,5 @@
 import copy
 import math
-import hashlib
 import json
 from pathlib import Path
 import numpy as np
@@ -41,27 +40,33 @@ def marked(text=BASE):
     return cfg
 
 
-def array_signature(array):
-    array = np.ascontiguousarray(array)
-    return {'sha256': hashlib.sha256(array.tobytes()).hexdigest(),
-            'shape': list(array.shape), 'dtype': str(array.dtype)}
+def assert_pinned(array, fixture, key):
+    with np.load(Path(__file__).parent / 'fixtures' / fixture) as pins:
+        if array is None:
+            assert key not in pins
+        else:
+            assert array.shape == pins[key].shape
+            assert array.dtype == pins[key].dtype
+            if np.issubdtype(array.dtype, np.integer):
+                np.testing.assert_array_equal(array, pins[key])
+                return
+
+            # One picometre in millimetre coordinates, independent of platform.
+            np.testing.assert_allclose(array, pins[key], rtol=0, atol=1e-9)
 
 
 def assert_native_baseline(geometry, name):
-    """Exact native array bytes pinned before versioned ATH axial sampling."""
-    baseline = json.loads((Path(__file__).parent / 'fixtures/rear-native.json').read_text())[name]
     for field in ('inner', 'outer'):
-        array = getattr(geometry, field + '_points')
-        actual = None if array is None else array_signature(array)
-        assert actual == baseline[field]
+        assert_pinned(getattr(geometry, field + '_points'), 'rear-native.npz', f'{name}/{field}')
 
 
 def assert_native_preview_baseline(preview, name, lod):
-    baseline = json.loads((Path(__file__).parent / 'fixtures/rear-native.json').read_text())[name]['preview'][lod]
-    assert [s.role for s in preview.surfaces] == list(baseline)
+    with np.load(Path(__file__).parent / 'fixtures/rear-native.npz') as pins:
+        roles = list(dict.fromkeys(key.split('/')[3] for key in pins if key.startswith(f'{name}/preview/{lod}/')))
+    assert [s.role for s in preview.surfaces] == roles
     for surface in preview.surfaces:
         for field in ('positions', 'indices'):
-            assert array_signature(getattr(surface, field)) == baseline[surface.role][field]
+            assert_pinned(getattr(surface, field), 'rear-native.npz', f'{name}/preview/{lod}/{surface.role}/{field}')
 
 
 def body_without_rear_rule(cfg, monkeypatch):
@@ -533,3 +538,72 @@ def test_nonfreestanding_import_marker_preserves_actual_preview_surfaces(mode, m
     for actual,expected in zip(imported.surfaces,body.surfaces):
         np.testing.assert_array_equal(actual.positions,expected.positions)
         np.testing.assert_array_equal(actual.indices,expected.indices)
+
+
+def regression_config(name):
+    base_name = name.removesuffix('-legacy')
+    cfg = corner_import_config() if base_name == 'corner' else near_planar_config() if base_name == 'near' else marked()
+    if base_name == 'stretch':
+        cfg['profile'].update(s1=.4, s2=.15)
+    if base_name == 'base-zero-angle':
+        cfg = marked(BASE.replace('Throat.Ext.Angle = 5.25', 'Throat.Ext.Angle = 0'))
+    if base_name in ('bare', 'enclosure', 'infinite-baffle'):
+        cfg['mode'] = base_name
+    if base_name == 'enclosure':
+        cfg['enclosure'] = {'depth_mm': 120, 'edge_mm': 0}
+    if name.endswith('-legacy'):
+        cfg['mesh']['topology'] = 'legacy'
+    return cfg
+
+
+REGRESSION_CASES = ['base', 'stretch', 'near', 'corner', 'bare', 'enclosure',
+                    'infinite-baffle', 'base-legacy', 'stretch-legacy', 'near-legacy', 'base-zero-angle']
+
+
+@pytest.mark.parametrize('name', REGRESSION_CASES)
+@pytest.mark.parametrize('version,fixture', [('ath-2026-08c-v1', 'rear-v1.npz'),
+                                            (TEXT_IMPORT_VERSION, 'rear-imported.npz')])
+def test_versioned_imported_grids_match_pinned_baselines(name, version, fixture):
+    cfg = regression_config(name)
+    cfg[TEXT_IMPORT_VERSION_KEY] = version
+    geometry = resolve_geometry(cfg).geometry
+    for field in ('inner', 'outer'):
+        assert_pinned(getattr(geometry, field + '_points'), fixture, f'{name}/{field}')
+
+
+@pytest.mark.parametrize('name,lod', [('corner', 'coarse'), ('corner', 'fine'),
+                                    ('bare', 'coarse'), ('enclosure', 'coarse'), ('infinite-baffle', 'coarse')])
+@pytest.mark.parametrize('version,fixture', [('ath-2026-08c-v1', 'rear-v1.npz'),
+                                            (TEXT_IMPORT_VERSION, 'rear-imported.npz')])
+def test_versioned_imported_previews_match_pinned_baselines(name, lod, version, fixture):
+    cfg = regression_config(name)
+    cfg[TEXT_IMPORT_VERSION_KEY] = version
+    for surface in build_preview_geometry(cfg, PreviewOptionsV1(lod=lod)).surfaces:
+        for field in ('positions', 'indices'):
+            assert_pinned(getattr(surface, field), fixture, f'{name}/preview/{lod}/{surface.role}/{field}')
+
+
+@pytest.mark.parametrize('name', ['base', 'corner'])
+def test_v1_saved_cfg_retains_pre_branch_sampling(name):
+    cfg = parse_text_config('; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n'
+                            + BASE + ('Morph.TargetShape = 1\nMorph.TargetWidth = 150\nMorph.TargetHeight = 120\n'
+                            'Morph.CornerRadius = 12\nMorph.FixedPart = 0\nMorph.Rate = 3\n' if name == 'corner' else ''))
+    assert cfg[TEXT_IMPORT_VERSION_KEY] == 'ath-2026-08c-v1'
+    geometry = resolve_geometry(cfg).geometry
+    for field in ('inner', 'outer'):
+        assert_pinned(getattr(geometry, field + '_points'), 'rear-v1.npz', f'{name}/{field}')
+
+
+@pytest.mark.parametrize('name,extra', [
+    ('plain', ''),
+    ('rectangle', 'Morph.TargetShape = 1\nMorph.TargetWidth = 150\nMorph.TargetHeight = 120\n'
+                  'Morph.CornerRadius = 12\nMorph.FixedPart = 0\n'),
+    ('circle', 'Morph.TargetShape = 2\nMorph.FixedPart = 0\n'),
+])
+def test_saved_v1_corner_budget_and_morph_starts_match_pre_branch_grid(name, extra):
+    from hornlab_mesher.profile_sampling import build_point_grid_arrays
+    cfg = parse_text_config('; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n'
+                            + BASE + 'Mesh.CornerSegments = 4\n' + extra)
+    for transport in (cfg, json.loads(json.dumps(cfg))):
+        grid = build_point_grid_arrays(build_geometry_params(transport)[0])['inner_grid']
+        assert_pinned(grid, 'rear-v1.npz', 'sampling/' + name)

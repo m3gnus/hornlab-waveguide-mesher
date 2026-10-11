@@ -4,7 +4,7 @@ The first section covers RearShape 1 without a lip. The separate Opus/lip
 section below preserves non-planar imported rears and supersedes its planar
 restriction for those paths.
 
-The versioned text import contract `ath-2026-08c-v1` preserves ATH's
+The versioned text import contracts `ath-2026-08c-v1` and `ath-2026-08c-v2` preserve ATH's
 freestanding rear-return anchor for planar and bounded near-planar outer
 throat rings:
 
@@ -70,7 +70,7 @@ enclosure sheet support, full ATH mesh parity or a Fusion import qualification.
 
 ## Opus rear and RearShape 1 with an ATH lip
 
-`Mesh.RearShape = 3` selects the import-only Opus rear. It amends the planar
+`Mesh.RearShape = 3` selects the import-only Opus rear under `ath-2026-08c-v2`. It amends the planar
 rule above: its throat ring is non-planar and is preserved pointwise, with a
 fan to an axial apex. Native rear geometry and RearShape 1 without a lip retain
 their existing rules. Enclosure, infinite baffle and CircSym combinations are
@@ -129,8 +129,12 @@ intact. Its selected `outer_points` has an independent
 `outer_grid_n_length` (also `rear_grid_n_length`) and `rear_apex`; renderers must
 use these rather than assuming equal inner/outer row counts. Passing `lod` to
 `build_viewport_geometry_from_config` adds the complete preview surfaces.
-WG's bare inner-export request retains lip rows and treats rear controls as
-inactive, so no material is added to that export.
+A bare inner-export request retains lip rows when the caller explicitly removes
+Opus rear controls. Bare mode with RearShape 3 is refused before wall clamping,
+without a clamp warning.
+
+Active lips and Opus rears also refuse `Scale != 1`, active `Throat.Ext.*`,
+nonzero `Rot` or `Mesh.VerticalOffset`, and `Source.Shape = 2` pending ATH probes.
 
 STEP retains a named refusal: the mesh uses GEO spline/Coons patches, whereas
 the STEP writer exports OCC geometry. Faithful support requires matching OCC

@@ -10,6 +10,23 @@ import numpy as np
 from .geometry import PointGridHornGeometry
 
 
+def validate_combinations(params):
+    """Refuse compositions awaiting measured ATH lip/rear witnesses."""
+    from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
+    if params.get(TEXT_IMPORT_VERSION_KEY) != TEXT_IMPORT_VERSION:
+        raise ValueError("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-08c-v2")
+    for key, name, inactive in (("scale", "Scale", 1),
+                               ("throatExtLength", "Throat.Ext.Length", 0),
+                               ("throatExtAngle", "Throat.Ext.Angle", 0),
+                               ("rot", "Rot", 0),
+                               ("verticalOffset", "Mesh.VerticalOffset", 0)):
+        value = params.get(key, inactive)
+        if not isinstance(value, (int, float)) or value != inactive:
+            raise ValueError(f"{name} with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+    if params.get("sourceShape", 1) == 2:
+        raise ValueError("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+
+
 def meridional_normals(points):
     """Profile-plane chord normals, with one-sided body endpoint chords."""
     grid = np.asarray(points, dtype=float)

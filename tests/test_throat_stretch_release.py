@@ -199,7 +199,8 @@ def test_native_and_text_normalization_equal_captured_base(family, dormant):
     text = captured['text'].replace('\n}', ''.join(f'\n{k} = {v}' for k, v in dormant.items()) + '\n}')
     parsed = parse_text_config(text)
     assert parsed == parse_text_config(captured['text'])
-    expected_params = {**captured['text_params'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    expected_params = {**captured['text_params'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION,
+                       ATH_AXIAL_RULE_KEY: ATH_AXIAL_CURRENT}
     _measured_s_default(text, parsed['formula'], expected_params)
     _assert_base_equal(cb.build_geometry_params(parsed)[0], expected_params)
 
@@ -255,8 +256,7 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
     # V2025-06. Account for provenance without changing geometry expectations.
     rule = ATH_AXIAL_CURRENT if 'text' in case else ATH_AXIAL_LEGACY
     expected_parsed[ATH_AXIAL_RULE_KEY] = rule
-    if rule == ATH_AXIAL_LEGACY:
-        expected_params[ATH_AXIAL_RULE_KEY] = rule
+    expected_params[ATH_AXIAL_RULE_KEY] = rule
     if approved_rot:
         expected_parsed['profile']['rot'] = 10
         expected_params['rot'] = 10

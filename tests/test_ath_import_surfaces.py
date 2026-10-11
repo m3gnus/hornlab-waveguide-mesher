@@ -47,7 +47,12 @@ def test_grid_including_lip_matches_ath(name, quadrants):
 
 @pytest.mark.parametrize("name", REAR_CASES)
 def test_rear_vertex_set_matches_ath(name):
-    geometry = resolve_geometry(config(name)).geometry
+    resolved = resolve_geometry(config(name))
+    geometry = resolved.geometry
+    selected = {'of20': [10, 11], 'onr': [7, 10, 11], 'odef': [7, 9],
+                'ow0': [9], 'ofull': [7, 9], 'coreabec': [4, 7, 9, 11, 12],
+                'rs1': [3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 20, 21, 22, 23, 24, 25, 26]}
+    assert resolved.sampling_metadata['athImportSurfaces']['rearSelectedRows'] == selected[name]
     # Compare the entire rear/wall set: shifted throat ring, all selected
     # offset rings, unoffset Opus front ring, and fan apex. Exclude the bore,
     # ATH's mouth-disc construction center and source sphere control points.
@@ -320,3 +325,40 @@ def test_dictionary_zero_wall_clamp_is_reported(caplog):
     params = build_geometry_params(cfg)[0]
     assert params["wallThickness"] == .1
     assert "clamps Mesh.WallThickness to 0.1 mm" in caplog.text
+
+
+@pytest.mark.parametrize('name', ['p1', 'onr'])
+@pytest.mark.parametrize('extra,key,section,value,named', [
+    ('Scale = 2\n', 'scale', None, 2, 'Scale'),
+    ('Throat.Ext.Length = 5\n', 'throatExtLength', 'profile', 5, 'Throat.Ext.Length'),
+    ('Throat.Ext.Angle = 5\n', 'throatExtAngle', 'profile', 5, 'Throat.Ext.Angle'),
+    ('Rot = 5\n', 'rot', 'profile', 5, 'Rot'),
+    ('Mesh.VerticalOffset = 5\n', 'verticalOffset', 'mesh', 5, 'Mesh.VerticalOffset'),
+    ('Source.Shape = 2\n', 'source_shape', 'source', 2, 'Source.Shape = 2'),
+])
+def test_unprobed_lip_and_opus_combinations_refused_in_both_transports(name, extra, key, section, value, named):
+    text = (FIXTURES / f'{name}.cfg').read_text()
+    if key == 'rot':
+        text = text.replace('OSSE = {', 'OSSE = {\nRot = 5')
+    else:
+        text += extra
+    with pytest.raises(ConfigError) as error:
+        parse_text_config(text)
+    assert named in str(error.value)
+    cfg = config(name)
+    target = cfg if section is None else cfg.setdefault(section, {})
+    target[key] = value
+    for consumer in (build_geometry_params, resolve_geometry):
+        with pytest.raises(ConfigError) as error:
+            consumer(cfg)
+        assert named in str(error.value)
+
+
+def test_bare_opus_refusal_does_not_log_wall_clamp(caplog):
+    cfg = config('onr')
+    cfg['mode'] = 'bare'
+    cfg['mesh']['wallThickness'] = 0
+    caplog.clear()
+    with pytest.raises(ConfigError, match='requires a free-standing wall'):
+        resolve_geometry(cfg)
+    assert 'clamps Mesh.WallThickness' not in caplog.text

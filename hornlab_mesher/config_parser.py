@@ -8,7 +8,7 @@ from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, Mapping
 from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_coefficients
-from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, text_uses_import_geometry, text_geometry_version
+from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, TEXT_IMPORT_V1, text_uses_import_geometry, text_geometry_version
 from .text_import import ATH_AXIAL_RULE_KEY, ath_axial_sampling_rule
 from .profile_common import eval_param
 
@@ -644,10 +644,11 @@ def _warn_ignored_ath_keys(
 
 def parse_text_config(content: str) -> dict[str, Any]:
     """Parse the text `.cfg` shape used by imported waveguide configs."""
+    content = content.removeprefix("\ufeff")
     try:
         imported_geometry = text_uses_import_geometry(content)
         saved_geometry_version = text_geometry_version(content)
-        axial_rule, ath_version = ath_axial_sampling_rule(content) if imported_geometry else (None, None)
+        axial_rule, ath_version = ath_axial_sampling_rule(content) if imported_geometry and saved_geometry_version != TEXT_IMPORT_V1 else (None, None)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     blocks, flat, nested = _parse_ath_blocks(content)
@@ -894,7 +895,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("RearShape.Step", "athRearStep"),
         ),
     )
-    if "NAC" in flat:
+    if "NAC" in flat and saved_geometry_version != TEXT_IMPORT_V1:
         try:
             nac = Decimal(flat["NAC"])
             if not nac.is_finite() or nac != nac.to_integral_value():
@@ -1066,6 +1067,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         mesh["athRoundover"] = {"radius": radius, "segments": int(segments)}
     active = roundover is not None or mesh.get("athRearShape") == 3
     if active:
+        if _maybe_number(source_items.get("Shape")) == 2:
+            raise ConfigError("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
         feature = "Mesh.Roundover" if roundover is not None else "Mesh.RearShape = 3"
         if not imported_geometry:
             raise ConfigError(feature + " requires ATH import geometry interpretation")
@@ -1121,10 +1124,13 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type}
     if imported_geometry:
-        config[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
-        config[ATH_AXIAL_RULE_KEY] = axial_rule
-        logger.info("[hornlab-mesher] ATH axial sampling rule %s selected from %s",
-                    axial_rule, ath_version or "unstamped text (current default)")
+        config[TEXT_IMPORT_VERSION_KEY] = saved_geometry_version or TEXT_IMPORT_VERSION
+        if config[TEXT_IMPORT_VERSION_KEY] != TEXT_IMPORT_V1:
+            config[ATH_AXIAL_RULE_KEY] = axial_rule
+            logger.info("[hornlab-mesher] ATH axial sampling rule %s selected from %s",
+                        axial_rule, ath_version or "unstamped text (current default)")
+        else:
+            logger.info("[hornlab-mesher] saved v1 geometry retains its historical sampling")
     # Global Scale multiplies every linear geometry dimension after profile
     # evaluation (resolutions and mesh sizes stay in raw millimetres).
     scale = _maybe_number(flat.get("Scale"))
@@ -1138,6 +1144,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
         config["enclosure"] = enclosure
     if source:
         config["source"] = source
+    if active:
+        from .config_builder import build_geometry_params
+        build_geometry_params(config)
     return config
 
 

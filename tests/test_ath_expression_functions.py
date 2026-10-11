@@ -87,3 +87,16 @@ def test_ignored_solver_expressions_remain_ignored():
 def test_new_functions_do_not_expand_expression_syntax(expression):
     with pytest.raises(ValueError):
         eval_param(expression)
+
+
+@pytest.mark.parametrize('name', ['ldexp', 'scalbn'])
+@pytest.mark.parametrize('exponent,expected', [(2.9, 12), (-1.9, 1.5), (-.9, 3)])
+def test_binary_exponent_conversion_truncates_toward_zero(name, exponent, expected):
+    assert eval_param(f'{name}(3,{exponent})') == expected
+
+
+@pytest.mark.parametrize('name', ['logb', 'round'])
+@pytest.mark.parametrize('value', [math.inf, -math.inf])
+def test_nonfinite_scalar_function_limits(name, value):
+    # Pass an infinite value through p; expression constants remain bounded.
+    assert eval_param(f'{name}(p)', value) == (abs(value) if name == 'logb' else value)

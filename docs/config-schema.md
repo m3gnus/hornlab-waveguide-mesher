@@ -16,11 +16,13 @@ JSON use the same section names. Text configs are parsed by
 `hornlab_mesher.config_parser` into the same internal shape, then normalized by
 `hornlab_mesher.config_builder.build_geometry_params`.
 
-Text imports retain `_textImportVersion = "ath-2026-08c-v1"` at the config
+Fresh text imports retain `_textImportVersion = "ath-2026-08c-v2"` at the config
 root and in resolved profile parameters. Preserve this field when copying,
 serializing or reopening imported configurations. It selects the bounded
 geometry interpretation described in [text import geometry](text-import-geometry.md);
-an unknown version is refused. Native authored configurations omit the field.
+saved v1 configurations retain their preceding geometry contract, and an unknown
+version is refused. Dictionary consumers also retain `_athAxialSamplingRule` and
+NAC presence as documented there. Native authored configurations omit the field.
 
 ## File Types
 
@@ -811,11 +813,13 @@ for its strict canonical inputs, physical domain, preview certificates and expor
 | `Mesh.RearShape.FrontOffset` | Finite nonnegative millimetres, default 40; requires RearShape 3. Stored as `mesh.athRearFrontOffset`. |
 | `Mesh.RearShape.Step` | Finite positive millimetres, default 25; requires RearShape 3. Stored as `mesh.athRearStep`. |
 
-These data require the retained ATH import interpretation marker. They do not
+Active lip/Opus data require the retained `ath-2026-08c-v2` import marker. They do not
 map onto native `mesh.mouth_roundover_radius_mm`. Unknown Roundover members,
 R-OSSE lip, enclosure/infinite-baffle/CircSym compositions, and free-standing
 subdomain interfaces and `Mesh.SurfaceFit = approximate` are named refusals. RearShape 2/5, RearCubic, OpusRear,
 MouthArc and RoundedEdge remain refused. Preview and viewport support active
 ATH lip and Opus rear controls from the mesh's authored surfaces. Negative
-FrontOffset and STEP transport remain named refusals. See [lip construction](mouth-roundover-contract.md#ath-import-lip)
+FrontOffset and STEP transport remain named refusals. With an active lip or
+Opus rear, `Scale != 1`, active `Throat.Ext.*`, nonzero `Rot`, nonzero
+`Mesh.VerticalOffset`, and `Source.Shape = 2` are refused pending ATH probes. See [lip construction](mouth-roundover-contract.md#ath-import-lip)
 and [rear construction](ath-rear-import-contract.md#opus-rear-and-rearshape-1-with-an-ath-lip).

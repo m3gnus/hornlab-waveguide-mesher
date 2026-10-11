@@ -308,7 +308,7 @@ All six questions below are decided as recommended:
 ## ATH import lip
 
 `Mesh.Roundover = { Radius = R; Segments = N }` (members on separate lines)
-selects an import-only OSSE path. `Segments` defaults to 5 and changes the
+selects an import-only OSSE path under `ath-2026-08c-v2`. `Segments` defaults to 5 and changes the
 geometry; `Mesh.Roundover = 0` is a no-op. The native `OSSE-ROUNDOVER` C6
 construction above and its analytic tangent-continuous arc are unchanged.
 
@@ -328,8 +328,8 @@ normal_k = (-sin(theta_k)*cos(phi), -sin(theta_k)*sin(phi), -cos(theta_k))
 Each added row starts from the original finished mouth ring. Body normals
 are meridional chord normals computed before appending the lip, with one-sided
 endpoint chords. Morph and expressions may make the lip non-circular. Radius,
-wall thickness and rear shifts remain in finished millimetres, independent of
-`Scale`. The authored stations remain the authority in acoustic and legacy
+wall thickness and rear shifts use finished millimetres. Imports with an active
+lip currently require `Scale = 1` pending composition probes. The authored stations remain the authority in acoustic and legacy
 mesh modes; refining the body would change the measured lip angle. The final
 row identifies the rim even though it lies behind the front-most z station.
 Axial sizing bounds use the grid's minimum/maximum z. RearShape 1 offsets the
@@ -339,6 +339,8 @@ front ring and a band to the lip. See [ATH rear import](ath-rear-import-contract
 Refused by name: nonzero scalar form, missing/nonpositive/nonfinite Radius,
 unknown block members, nonintegral or fewer than one Segments, fewer than three
 body segments, R-OSSE (a folded-back lip), enclosure, infinite baffle, CircSym,
+`Scale != 1`, active `Throat.Ext.*`, nonzero `Rot` or `Mesh.VerticalOffset`,
+and `Source.Shape = 2`,
 free-standing subdomain interfaces, approximate surface fitting, and RearShape 1 with `Radius <= WallThickness`
 (a collapsed/inverted outer lip). Existing unqualified morph/stretch
 combinations keep their existing refusals. Preview uses the authored mesh
