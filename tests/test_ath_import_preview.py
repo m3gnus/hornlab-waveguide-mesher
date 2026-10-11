@@ -116,8 +116,9 @@ def test_preview_and_viewport_use_mesh_patches_at_each_lod(name, lod, monkeypatc
             steps = np.degrees(np.arccos(np.clip(np.sum(n*np.roll(n, -1, axis=1), axis=-1), -1, 1)))
             assert steps.max() <= output['metadata']['requested_fidelity']['max_normal_step_deg']
         assert_closed(surfaces, geometry)
+        # The vertex budget bounds runaway refinement; wall-clock time is not
+        # asserted because CI runners differ several-fold in speed.
         assert sum(len(s.positions) for s in surfaces) <= {'coarse': 20000, 'fine': 100000, 'inspection': 170000}[lod]
-        assert output['metadata']['timings_ms']['total'] < {'coarse': 1500, 'fine': 6500, 'inspection': 10000}[lod]
     finally:
         gmsh.finalize()
 
