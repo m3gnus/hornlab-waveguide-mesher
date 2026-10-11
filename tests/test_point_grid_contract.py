@@ -741,8 +741,9 @@ def test_native_projection_tessellation_follows_resolution_inputs(tmp_path):
 
 
 @pytest.mark.parametrize("quadrants", [1, 1234])
-def test_imported_rear_resolution_budget_refuses_coarse_and_builds_fine(tmp_path, quadrants):
+def test_v1_imported_rear_resolution_budget_refuses_coarse_and_builds_fine(tmp_path, quadrants):
     coarse = parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0))
+    coarse['_textImportVersion'] = 'ath-2026-08c-v1'
     # The measured minimum planar displacement is ~0.0001905mm, above the
     # unchanged 0.0001 mm allowance. No mesh may substitute native projection.
     with pytest.raises(ConfigError, match="nonplanar rear ring"):
@@ -750,6 +751,7 @@ def test_imported_rear_resolution_budget_refuses_coarse_and_builds_fine(tmp_path
     fine = _supported_near_planar_import(
         parse_ath_config(_asro2_ath_cfg_text(throat=3.0, mouth=5.0, rear=12.0))
     )
+    fine['_textImportVersion'] = 'ath-2026-08c-v1'
     fine["mesh"]["quadrants"] = quadrants
     result = build_from_config(fine, tmp_path / "fine-imported.msh", allow_large_mesh=True)
     mesh = meshio.read(result.mesh_path)
@@ -774,6 +776,18 @@ def test_imported_rear_resolution_budget_refuses_coarse_and_builds_fine(tmp_path
         on_x = np.all(np.abs(ends[:, :, 0]) <= 1e-8, axis=1)
         on_y = np.all(np.abs(ends[:, :, 1]) <= 1e-8, axis=1)
         assert np.all(on_x | on_y)
+
+
+@pytest.mark.parametrize('quadrants', [1, 1234])
+def test_v2_coarse_imported_rear_uses_measured_warped_construction(quadrants):
+    # ATH V2026-08c m6_var_wall establishes the RearShape 1 construction
+    # outside the planar budget. V1 keeps its refusal above.
+    cfg = parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0))
+    cfg['mesh']['quadrants'] = quadrants
+    geometry = resolve_geometry(cfg).geometry
+    assert cfg['_textImportVersion'] == 'ath-2026-08c-v2'
+    assert np.ptp(geometry.ath_warped_rear_points[:, 2]) > 0
+    assert geometry.ath_warped_rear_apex.shape == (3,)
 
 
 def test_flat_ath_config_keys_build_partial_source_group(tmp_path):

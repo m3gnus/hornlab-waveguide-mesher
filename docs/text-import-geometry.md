@@ -38,13 +38,13 @@ infinite-baffle default. Explicit `Simulation.SimType` is accepted alongside
 `Throat.Diameter` expressions such as the application writer's `2*(4)` are
 accepted; azimuth-varying diameter expressions remain unsupported.
 
-Sparse imported dictionary transport uses the same known defaults as the text
+Sparse v2 imported dictionary transport uses the same known defaults as the text
 reader: implicit sampling uses the ATH axial map, mouth mesh resolution is 8 mm,
 and a supplied morph target defaults to corner radius 35 mm, fixed part 0.2,
 and slot morphing enabled. Explicit controls remain authoritative. These defaults
 also reach the mesh density used to fit actual surfaces. Native omitted mouth
 resolution retains the native 26 mm default. These defaults apply to the
-supported OSSE/R-OSSE text profile families. OSSE defaults to `a=45`,
+supported OSSE/R-OSSE text profile families. Under v2, OSSE defaults to `a=45`,
 `a0=0`, `s=0.5`; R-OSSE defaults to `R=200`, `a=40`, `a0=0`, `r=0.25`,
 `m=0.9`, `b=0.4`, `q=3.5`, measured against ATH V2026-08c output.
 Native authored geometry types
@@ -83,8 +83,10 @@ their existing interpretation. Evidence: V2025-12, V2026-08c and V2026-09a produ
 CORE and Solana grids, while all 23 archived configs echo V2025-06; the previous
 sampler reproduces the four affected archive parity cases.
 
-| Control | Imported text interpretation | Native authoring |
+| Control | Imported text interpretation (v2) | Native authoring |
 | --- | --- | --- |
+| Omitted profile coefficients | OSSE `a=45`; R-OSSE `R=200`, `a=40`, `a0=0`, `r=0.25`, `m=0.9`, `b=0.4`, `q=3.5`. | Existing profile defaults. |
+| RearShape 1 without a lip | A materially warped rear uses the measured throat normal-offset ring and a fan, preserving the analytic outer shell. Planar rears retain their construction. | Existing planar rear rule. |
 | OSSE `Slot.Length` | A conical prefix at slope `tan(a0)`. `r0` is its starting radius; the main profile starts at `r0 + slot*tan(a0)`. The slot is included in `Length`; the main termination uses `Length - slot`. | A cylindrical prefix at `r0`, added to the body length unless an explicit total-length mode is selected. |
 | `Throat.Ext.Length` with `Rot` | The extension stays unrotated at its own angle; only the body rotates, about the end of the extension. Current imports retain ten extension segments before the body map. | Existing native rotation behavior. |
 | OSSE-block `Rot` | Ignored with a warning naming `OSSE.Rot`; only top-level `Rot` applies. | Existing authored precedence. |
@@ -123,7 +125,7 @@ body grid. Viewport exports retain the authored inner rows, independent rear
 row count and apex, and optionally carry that tessellation. STEP retains a
 named refusal because GEO patches have no faithful OCC transport yet. Existing imports without
 an active lip or Opus rear retain their previous consumers. Planar rears keep
-the existing plane bit for bit. Warped rears use the measured RearShape 1
+the existing plane bit for bit. V2 warped rears use the measured RearShape 1
 throat (-5 mm shift, then the wall offset along the authored meridional
 normal), joined to the analytic outer shell and closed by a fan. The m6_var_wall
 throat differs from ATH by at most 0.000688 mm; simply extruding the analytic
@@ -133,13 +135,25 @@ share the selected rear boundary.
 
 The saved v1 contract retains the geometry preceding v2: the fitted OSSE axial
 map, the previous morph start, and the corner budget only for rectangular
-morphs. An ATH version echo and NAC do not upgrade a v1 design. Import-only
+morphs. It also retains the earlier coefficient defaults (OSSE `a=60`;
+R-OSSE `R=150`, `a=60`, `a0=15.5`, `r=0.4`, `m=0.85`, `b=0.2`, `q=1`),
+Spacing in left/top/right/bottom order, OSSE-block rotation precedence,
+rotation of the entire throat extension about the original throat, and
+normal expression evaluation for OSSE-block `r0`. R-OSSE morph remains
+accepted under its previous construction. Materially warped RearShape 1
+walls retain their previous named refusal; such walls could not be built
+through the v1 resolver. The OSSE text defaults `a0=0` and `s=0.5` already
+precede these v2 changes; sparse v1 dictionary defaults remain unchanged.
+An ATH version echo and NAC do not upgrade a v1 design. Import-only
 lip/Opus controls require v2. Saved v1 CFGs retain their stamp when parsed;
 fresh unstamped external CFGs receive v2. Unknown versions/rules are refused.
 Native and v1 arrays are pinned to the preceding contract in
 `tests/fixtures/rear-native.npz` and `rear-v1.npz`; floating coordinates are
 compared with absolute tolerance 1e-9 mm and zero relative tolerance, while
-triangle indices are exact. `rear-imported.npz` independently pins the current
+triangle indices are exact. `tests/fixtures/ath-mismatches-v1.npz` pins the earlier coefficient, Spacing,
+rotation, extension, morph and radius-expression grids against a515334
+(with OSSE `s=0.5` explicit for the separately qualified default).
+`rear-imported.npz` independently pins the current
 imported inner/outer grids and exercised preview arrays.
 
 Consumers constructing their own mesher dictionaries must retain these keys:

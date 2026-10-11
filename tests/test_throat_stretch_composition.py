@@ -125,10 +125,11 @@ def test_active_rosse_numeric_zero_rotation_matches_ath_v2026_08c_defaults():
     # state them explicitly to describe the same horn.
     native = {'formula': 'R-OSSE', 'profile': {'R': 200, 'a': 40, 'a0': 0, 'r': .25, 'm': .9, 'b': .4, 'q': 3.5, 's1': .5, 's2': .2, 'rot': 0, '_athLengthMode': 'total'},
               'mesh': imported['mesh'], 'simType': imported['simType']}
-    from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
+    from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT
     native_params, formula, mode = build_geometry_params(native)
     assert build_geometry_params(imported) == (
-        {**native_params, TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}, formula, mode
+        {**native_params, TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION,
+         ATH_AXIAL_RULE_KEY: ATH_AXIAL_CURRENT}, formula, mode
     )
 
 

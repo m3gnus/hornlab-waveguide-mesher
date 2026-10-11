@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from .freeform import build_freeform_geometry
 from .config_parser import ConfigError
 from .throat_stretch import canonical_stretch_params, stretch_coefficients, validate_stretch_composition
-from .text_import import uses_text_import_geometry
+from .text_import import uses_text_import_geometry, uses_v2_text_import_geometry
 from .profile_common import (
     _DEFAULTS,
     _lossless_key_value,
@@ -453,7 +453,7 @@ def calculate_osse(
     x = float(z)
     y = float(radius)
     rot_deg = eval_param(params.get("rot"), p, 0.0)
-    imported_extension = uses_text_import_geometry(params) and ext_len > 0
+    imported_extension = uses_v2_text_import_geometry(params) and ext_len > 0
     if math.isfinite(rot_deg) and rot_deg != 0.0 and (not imported_extension or z > ext_len):
         rot = math.radians(rot_deg)
         pivot = ext_len if imported_extension else 0.0
@@ -557,7 +557,7 @@ def calculate_osse_curve(
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
         rot = math.radians(rot_deg)
-        imported_extension = uses_text_import_geometry(params) and ext_len > 0
+        imported_extension = uses_v2_text_import_geometry(params) and ext_len > 0
         pivot = ext_len if imported_extension else 0.0
         dx = x - pivot
         dy = y - r0_base

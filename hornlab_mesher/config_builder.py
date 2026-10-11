@@ -54,7 +54,7 @@ from .builders.point_grid_freestanding import (
     _restored_outer_throat_points,
 )
 from .rear_compatibility import freestanding_rear_ring, text_import_geometry_class
-from .text_import import uses_text_import_geometry
+from .text_import import uses_v2_text_import_geometry
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
@@ -814,6 +814,7 @@ def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
 def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
     imported_geometry = uses_text_import_geometry(config)
     imported_defaults = _uses_import_geometry_defaults(config)
+    v2_defaults = imported_defaults and uses_v2_text_import_geometry(config)
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
     from .adapter_controls import configuration as controls_configuration
@@ -977,11 +978,11 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             profile, config, names=("lookupProfile", "lookup_profile"), default=None
         ),
         "r0": _scalar_or_expr(profile, config, names=("r0_mm", "r0"), default=12.7),
-        "a": _scalar_or_expr(profile, config, names=("a_deg", "a"), default=(40.0 if formula == "R-OSSE" else 45.0) if imported_defaults else 60.0),
-        "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=0.0 if imported_defaults else 15.5),
+        "a": _scalar_or_expr(profile, config, names=("a_deg", "a"), default=(40.0 if formula == "R-OSSE" else 45.0) if v2_defaults else 60.0),
+        "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=0.0 if v2_defaults else 15.5),
         "k": _scalar_or_expr(profile, config, names=("k",), default=1.0),
         "q": _scalar_or_expr(
-            profile, config, names=("q",), default=(3.5 if imported_defaults else 1.0) if formula == "R-OSSE" else 0.995
+            profile, config, names=("q",), default=(3.5 if v2_defaults else 1.0) if formula == "R-OSSE" else 0.995
         ),
         "throatExtLength": _scalar_or_expr(
             profile,
@@ -1170,7 +1171,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         # Carry the sampling rule as plain transport data for dictionary consumers.
         if ATH_AXIAL_RULE_KEY in config:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
-    if imported_geometry and formula == "R-OSSE" and common["morphTarget"] != 0:
+    if uses_v2_text_import_geometry(config) and formula == "R-OSSE" and common["morphTarget"] != 0:
         raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-08c output changes the radial profile and has no qualified import construction")
     common.update(ath_controls)
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
@@ -1190,7 +1191,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                     profile, config, names=("L_mm", "L"), default=120.0
                 ),
                 "n": _scalar_or_expr(profile, config, names=("n",), default=4.0),
-                "s": _scalar_or_expr(profile, config, names=("s",), default=0.5 if imported_defaults else 0.0),
+                "s": _scalar_or_expr(profile, config, names=("s",), default=0.5 if v2_defaults else 0.0),
                 # The half-sine bulge. It was parsed (profile ``h`` / ATH-text
                 # ``OS.h``) and applied by the sampler, but never copied here, so
                 # every config-driven build -- preview, solve and export alike --
@@ -1290,14 +1291,14 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         common.update(
             {
                 "R": _scalar_or_expr(
-                    profile, config, names=("R_mm", "R"), default=200.0 if imported_defaults else 150.0
+                    profile, config, names=("R_mm", "R"), default=200.0 if v2_defaults else 150.0
                 ),
                 "tmax": _scalar_or_expr(profile, config, names=("tmax",), default=1.0),
             }
         )
         for key in ("m", "r", "b"):
             value = _pick(profile, config, names=(key,), default=None)
-            if value is None and imported_defaults:
+            if value is None and v2_defaults:
                 value = {"m": .9, "r": .25, "b": .4}[key]
             if value is not None:
                 common[key] = _scalar_or_expr(
@@ -2277,7 +2278,15 @@ def _certify_imported_rear_route_agreement(
     other_outer = _restored_outer_throat_points(
         other_inner, other_outer, wall_thickness_mm=wall,
     )
-    other_rear = freestanding_rear_ring(other_inner, other_outer, wall, text_import=True)
+    try:
+        other_rear = freestanding_rear_ring(
+            other_inner, other_outer, wall, text_import=True,
+            allow_warped=uses_v2_text_import_geometry(params),
+        )
+    except ValueError as exc:
+        if "nonplanar rear ring" in str(exc):
+            return  # The v1 competing route remains unsupported.
+        raise
     if np.ptp(other_rear[:, 2]) > 0:
         return  # A warped fan supplies no competing planar authority.
     # This is a consistency check, not extra geometric projection allowance.
@@ -2454,6 +2463,7 @@ def resolve_geometry(
             rear = freestanding_rear_ring(
                 inner_points, restored_outer,
                 float(params["wallThickness"] or 0.0), text_import=True,
+                allow_warped=uses_v2_text_import_geometry(params),
             )
             if np.ptp(rear[:, 2]) > 0:
                 from .ath_import_surfaces import meridional_normals

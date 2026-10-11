@@ -147,7 +147,7 @@ patches and axial knot weighting; stretch-off retains the previous fitting path.
 
 See [the geometry contract](geometry-contract.md#r-osse-s--os-se-s-throat-stretching)
 for the measured ATH evidence and finite meridian-validation tolerance. With
-stretch inactive, imported OSSE honors only top-level `Rot`; an in-block
+stretch inactive, v2 imported OSSE honors only top-level `Rot`; an in-block
 `Rot` is ignored with a named warning, as measured on ATH V2025-12 and
 V2026-08c. Numeric and expression-valued top-level rotations remain supported. The existing inactive OSSE-block slot discrepancy against
 ATH V2025-12 is recorded in the geometry contract. Supplied s1/s2 entries,
@@ -514,8 +514,8 @@ Use `[enclosure]`. A positive `depth_mm` enables enclosure topology.
 | `back_mesh_size_mm` | `backMeshSize`, `enc_back_resolution`, `encBackResolution` | none |
 
 Native `space_l_mm` and `space_r_mm` are the viewer's left (-x) and right (+x)
-margins. Imported ATH `Spacing` is +x,+y,-x,-y and maps to right, top, left,
-bottom; saved native text keeps its authored left, top, right, bottom order.
+margins. V2 imported ATH `Spacing` is +x,+y,-x,-y and maps to right, top, left,
+bottom; saved v1/native text keeps its authored left, top, right, bottom order.
 
 `plan_type`: `1` rounded rectangle, `2` ellipse, `3` superellipse.
 `edge_type`: `1` rounded fillet, `2` chamfer.
@@ -598,14 +598,18 @@ velocity direction.
 
 ## ATH Text Import Boundary
 
-ATH V2026-08c import defaults differ from native authoring: OSSE `a=45`,
+V2 ATH V2026-08c import defaults differ from native authoring: OSSE `a=45`,
 `a0=0`, `s=0.5`; R-OSSE `R=200`, `a=40`, `a0=0`, `r=0.25`, `m=0.9`,
 `b=0.4`, `q=3.5`. OSSE-block `r0` must be a literal signed decimal number,
 optionally with an exponent. Non-literal values are refused by name because
-ATH reads only their leading number. R-OSSE expressions and saved native text
-retain normal expression evaluation. R-OSSE imports with an active morph are
+ATH reads only their leading number. R-OSSE expressions and saved v1/native text
+retain normal expression evaluation. V2 R-OSSE imports with an active morph are
 refused by name: the measured rectangular morph changes radial profiles and
-has no qualified construction.
+has no qualified construction. Saved v1 imports retain their earlier defaults,
+OSSE-block rotation precedence, left/top/right/bottom Spacing order, whole
+extension rotation, and R-OSSE morph construction; materially warped rears
+retain the previous refusal. See [the versioned contract](text-import-geometry.md)
+for the v1 baseline and complete v2 rules.
 
 Text import supports OSSE and R-OSSE blocks plus selected flat ATH keys, and
 refuses every item it does not read (see "Items the importer refuses" below).
@@ -656,7 +660,8 @@ geometry. Unrecognised `Mesh.*` keys are refused instead, since a mesh key that
 silently falls back to a default changes the mesh with nothing to show for it.
 - Enclosure: `Mesh.Enclosure.Depth`, `EdgeRadius`, `EdgeType`,
   `FrontResolution`, `BackResolution`, and `Spacing` as four comma-separated
-  margins in +x,+y,-x,-y order.
+  margins in +x,+y,-x,-y order under v2; saved v1/native CFGs keep
+  left/top/right/bottom order.
 - Source: `Source.Shape` (translated from the ATH enum, where 1 = cap and
   2 = flat disc, to the internal 1 = cap / 0 = flat disc convention),
   `Source.Radius`, `Source.Curv`, `Source.Velocity` (direction enum; only 1,
@@ -740,10 +745,10 @@ Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `Profile`, `BEE = {}`, `Source.Array`,
 `FusionRotaryProfile = {}`, named enclosure plans, `Plan` and `Dim` inside
 `Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
-of the other formula. OSSE honours top-level `Rot` beside a profile block;
+of the other formula. V2 OSSE honours top-level `Rot` beside a profile block;
 ATH ignores in-block `Rot`, including an explicit zero, and the importer
 reports `OSSE.Rot` as unused. This rule is measured on V2025-12 and V2026-08c;
-saved native text retains its authoring precedence. Top-level
+saved v1/native text retains its authoring precedence. Top-level
 `Rot = 0` beside `R-OSSE` is accepted as inactive rotation. Nonzero or
 expression-valued top-level `Rot` beside `R-OSSE` is refused, as is any other
 unverified top-level profile key (`Throat.Diameter`, `Coverage.Angle`, `Length`

@@ -34,13 +34,14 @@ floating-point noise or a waiver based on CAD tolerances. XY remains exact.
 The actual computed displacement is checked before projection; nonfinite
 coordinates and nonfinite/nonpositive wall thickness are refused.
 
-Larger deviations use a warped fan with the measured ATH V2026-08c RearShape 1
+Under v2, larger deviations use a warped fan with the measured ATH V2026-08c RearShape 1
 throat construction: authored inner row 0 shifted -5 mm, then offset by wall
 thickness along its meridional chord normal. The analytic outer shell remains
 unchanged, joined to this ring by the rear return. Fixture `m6_var_wall` has a
 0.258 mm rear span. The measured rear ring differs from ATH by at most
 0.000688 mm, versus 0.398502 mm for an extrusion of the analytic outer throat, compared at matching azimuths.
-Planar rings retain their previous construction bit for bit.
+Planar rings retain their previous construction bit for bit. Saved v1 imports
+retain the named nonplanar-rear refusal for larger deviations.
 For newly supported rings (target Z spread greater than the former 1e-7 mm
 planarity cutoff), resolution checks the opposite acoustic/legacy sampling
 route as well. If both rings individually fit the displacement budget, their

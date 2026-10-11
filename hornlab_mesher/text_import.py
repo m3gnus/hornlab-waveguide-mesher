@@ -36,9 +36,14 @@ def ath_axial_sampling_rule(content: str) -> tuple[str, str | None]:
 
 def uses_current_ath_axial_sampling(values: Mapping[str, Any]) -> bool:
     """Only imported geometry can select either ATH axial interpretation."""
-    return (uses_text_import_geometry(values)
-            and values.get(TEXT_IMPORT_VERSION_KEY) == TEXT_IMPORT_VERSION
+    return (uses_v2_text_import_geometry(values)
             and values.get(ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT) == ATH_AXIAL_CURRENT)
+
+
+def uses_v2_text_import_geometry(values: Mapping[str, Any]) -> bool:
+    """Select current import geometry independently of the ATH sampling echo."""
+    return (uses_text_import_geometry(values)
+            and values.get(TEXT_IMPORT_VERSION_KEY) == TEXT_IMPORT_VERSION)
 
 
 def text_geometry_version(content: str) -> str | None:

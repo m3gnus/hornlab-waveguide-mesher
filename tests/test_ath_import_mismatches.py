@@ -1,5 +1,6 @@
 """ATH V2026-08c import witnesses and native authoring boundaries."""
 from pathlib import Path
+import json
 
 import meshio
 import numpy as np
@@ -10,7 +11,7 @@ from hornlab_mesher.config_builder import build_geometry_params, resolve_geometr
 from hornlab_mesher.profile_sampling import build_point_grid_arrays
 from hornlab_mesher.profile_formulas import calculate_osse, calculate_osse_curve
 from hornlab_mesher.preview import build_preview_geometry, PreviewOptionsV1
-from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY
+from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_V1, TEXT_IMPORT_VERSION
 
 FIXTURES = Path(__file__).parent / 'fixtures/ath_import/ath-v2026-08c'
 GRID_CASES = ['m3_rosse_nomorph', 'm4_enc', 'm5_osse_omit_a_s', 'm5_rosse_omit_all',
@@ -120,10 +121,11 @@ def test_literal_osse_block_radius_is_accepted(literal):
 
 
 @pytest.mark.parametrize('expression', ['25.4/2', '(12.7)', '2*6.35', '20+4*cos(p)^2'])
-def test_nonliteral_osse_block_radius_is_refused_by_name(expression):
+@pytest.mark.parametrize('prefix', ['', '; Waveguide Generator geometry-interpretation: ath-2026-08c-v2\n'])
+def test_nonliteral_osse_block_radius_is_refused_by_name(expression, prefix):
     text = (FIXTURES / 'm7_rot_none.cfg').read_text().replace('r0 = 12.7', 'r0 = ' + expression)
     with pytest.raises(ConfigError, match=r'OSSE.r0.*literal number'):
-        parse_text_config(text)
+        parse_text_config(prefix + text)
     saved = parse_text_config('; Waveguide Generator geometry-interpretation: native-v1\n' + text)
     assert saved['profile']['r0'] == expression
     rosse = (FIXTURES / 'm3_rosse_nomorph.cfg').read_text().replace('r0 = 12.7', 'r0 = ' + expression)
@@ -251,3 +253,110 @@ def test_warped_rear_options_against_ath_v2026_08c_at_matching_azimuths():
     b = resample_rear_ring(geometry.ath_warped_rear_points, expected, closed=True)
     assert np.linalg.norm(a-expected, axis=1).max() == pytest.approx(.398502347, abs=2e-3)
     assert np.linalg.norm(b-expected, axis=1).max() <= 2e-3
+
+
+V1_CASES = ['m4_enc', 'm5_osse_omit_a_s', 'm5_rosse_omit_all', 'm6_var_wall',
+            'm7_rot_in', 'm7_rot_both', 'm10_ext_rot', 'm3_rosse_morph']
+
+
+def saved_config(name, version=TEXT_IMPORT_V1):
+    return parse_text_config('; Waveguide Generator geometry-interpretation: ' + version + '\n'
+                             + (FIXTURES / f'{name}.cfg').read_text())
+
+
+def assert_v1_grid(cfg, key):
+    from test_rear_import_compatibility import assert_pinned
+    grid = build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid']
+    assert_pinned(grid, 'ath-mismatches-v1.npz', key)
+
+
+@pytest.mark.parametrize('name', V1_CASES)
+@pytest.mark.parametrize('roundtrip', [False, True])
+def test_saved_v1_mismatch_geometry_matches_pinned_contract(name, roundtrip):
+    # a515334 geometry, with Term.s=0.5 explicitly supplied for the omitted-s
+    # case: that separately qualified default precedes the v2 coefficient rules.
+    cfg = saved_config(name)
+    if roundtrip:
+        cfg = json.loads(json.dumps(cfg))
+    assert cfg[TEXT_IMPORT_VERSION_KEY] == TEXT_IMPORT_V1
+    assert_v1_grid(cfg, name + '/grid')
+    if name == 'm6_var_wall':
+        # v1 could not build/save a warped wall through this resolver. Keep
+        # its grid and refusal; only v2 has a qualified warped rear cap.
+        with pytest.raises(ConfigError, match='nonplanar rear ring'):
+            resolve_geometry(cfg)
+        with pytest.raises(ValueError, match='nonplanar rear ring'):
+            build_preview_geometry(cfg, PreviewOptionsV1(lod='coarse'))
+        return
+    # These profile-only ATH probes explicitly disable their wall.
+    if cfg.get('mesh', {}).get('wallThickness') == 0:
+        cfg['mode'] = 'bare'
+    geometry = resolve_geometry(cfg).geometry
+    from test_rear_import_compatibility import assert_pinned
+    for field in ('inner', 'outer'):
+        assert_pinned(getattr(geometry, field + '_points'), 'ath-mismatches-v1.npz', name + '/' + field)
+    if name == 'm4_enc':
+        from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+        assert (geometry.enclosure.space_l_mm, geometry.enclosure.space_r_mm) == (25, 35)
+        bounds = enclosure_box_bounds(geometry.inner_points, geometry.enclosure, closed=True)
+        assert_pinned(np.array([bounds[k] for k in ['bx0', 'bx1', 'by0', 'by1']]),
+                      'ath-mismatches-v1.npz', name + '/bounds')
+
+
+@pytest.mark.parametrize('name,keys', [
+    ('m5_osse_omit_a_s', ['a', 's']),
+    ('m5_rosse_omit_all', ['R', 'a', 'a0', 'r', 'm', 'b', 'q']),
+])
+def test_sparse_v1_import_defaults_match_pinned_contract(name, keys):
+    cfg = saved_config(name)
+    for key in keys:
+        cfg['profile'].pop(key, None)
+    assert_v1_grid(cfg, name + '/sparse-grid')
+
+
+@pytest.mark.parametrize('expression', ['25.4/2', '(12.7)', '2*6.35', '20+4*cos(p)^2'])
+@pytest.mark.parametrize('roundtrip', [False, True])
+def test_saved_v1_nonliteral_osse_radius_matches_pinned_contract(expression, roundtrip):
+    text = (FIXTURES / 'm7_rot_none.cfg').read_text().replace('r0 = 12.7', 'r0 = ' + expression)
+    cfg = parse_text_config('; Waveguide Generator geometry-interpretation: ' + TEXT_IMPORT_V1 + '\n' + text)
+    if roundtrip:
+        cfg = json.loads(json.dumps(cfg))
+    assert cfg['profile']['r0'] == expression
+    assert_v1_grid(cfg, 'r0/' + expression)
+
+
+@pytest.mark.parametrize('name', GRID_CASES)
+def test_saved_v2_cfg_keeps_measured_ath_grid(name):
+    cfg = saved_config(name, TEXT_IMPORT_VERSION)
+    grid = build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid']
+    np.testing.assert_allclose(grid, reference(name), rtol=0, atol=2e-4)
+
+
+@pytest.mark.parametrize('name', ['m7_rot_in', 'm7_rot_both'])
+def test_only_v2_warns_that_osse_block_rotation_is_ignored(name, caplog):
+    saved_config(name)
+    assert 'ignoring OSSE.Rot' not in caplog.text
+    saved_config(name, TEXT_IMPORT_VERSION)
+    assert 'ignoring OSSE.Rot = 10' in caplog.text
+
+
+def test_saved_v1_extension_rotation_scalar_and_vector_match_pinned_contract():
+    from test_rear_import_compatibility import assert_pinned
+    params = build_geometry_params(saved_config('m10_ext_rot'))[0]
+    stations = np.array([0, 1, 9, 10, 11, 80, 130.])
+    scalar = np.array([[calculate_osse(z, p, params) for z in stations] for p in [0, .3, np.pi/2]])
+    vector = np.array([np.column_stack(calculate_osse_curve(stations, p, params)) for p in [0, .3, np.pi/2]])
+    assert_pinned(scalar, 'ath-mismatches-v1.npz', 'm10_ext_rot/scalar')
+    assert_pinned(vector, 'ath-mismatches-v1.npz', 'm10_ext_rot/vector')
+
+
+@pytest.mark.parametrize('version', [TEXT_IMPORT_V1, TEXT_IMPORT_VERSION])
+@pytest.mark.parametrize('echo', ['V2025-06', 'V2026-09a'])
+def test_rosse_morph_refusal_depends_on_geometry_stamp_not_sampling_echo(version, echo):
+    text = ('; Ath version ' + echo + '\n; Waveguide Generator geometry-interpretation: ' + version + '\n'
+            + (FIXTURES / 'm3_rosse_morph.cfg').read_text())
+    if version == TEXT_IMPORT_VERSION:
+        with pytest.raises(ConfigError, match=r'R-OSSE with Morph.TargetShape'):
+            parse_text_config(text)
+    else:
+        assert_v1_grid(parse_text_config(text), 'm3_rosse_morph/grid')

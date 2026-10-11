@@ -47,13 +47,14 @@ _REAR_PLANAR_DISPLACEMENT_MM = 1.0e-4
 _REAR_PLANAR_WALL_FRACTION = 1.0e-4
 
 
-def freestanding_rear_ring(inner_points, outer_points, wall_mm, *, text_import=False):
+def freestanding_rear_ring(inner_points, outer_points, wall_mm, *, text_import=False, allow_warped=True):
     """Project the outer throat onto the rear plane without moving the bore.
 
     Native geometry anchors the rear to the mean inner throat. ATH anchors
     each rear point to its outer throat minus the unscaled wall thickness.
     Imported near-planar rings keep the minimax horizontal plane within
-    the displacement budget; warped rings use the measured RearShape 1 rule.
+    the displacement budget; v2 warped rings use the measured RearShape 1
+    rule. The resolver disables warped construction for saved v1 imports.
     The bore and outer shell are never projected or translated.
     """
     inner = np.asarray(inner_points, dtype=np.float64)
@@ -76,6 +77,10 @@ def freestanding_rear_ring(inner_points, outer_points, wall_mm, *, text_import=F
         budget = min(_REAR_PLANAR_DISPLACEMENT_MM,
                      _REAR_PLANAR_WALL_FRACTION * wall)
         if not np.isfinite(displacement) or displacement > budget:
+            if not allow_warped:
+                raise ValueError(
+                    "ATH text import has a nonplanar rear ring; warped rear caps are unsupported"
+                )
             # Measured ATH V2026-08c RearShape 1 throat construction.
             # The resolver supplies authored-grid normals to all consumers;
             # this fallback also permits direct grid callers to build a fan.

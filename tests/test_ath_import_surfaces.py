@@ -338,10 +338,9 @@ def test_dictionary_zero_wall_clamp_is_reported(caplog):
 ])
 def test_unprobed_lip_and_opus_combinations_refused_in_both_transports(name, extra, key, section, value, named):
     text = (FIXTURES / f'{name}.cfg').read_text()
-    if key == 'rot':
-        text = text.replace('OSSE = {', 'OSSE = {\nRot = 5')
-    else:
-        text += extra
+    # ATH V2026-08c m7_rot_in/m7_rot_both establish that OSSE.Rot is
+    # ignored. Exercise active top-level Rot for the lip/Opus refusal.
+    text += extra
     with pytest.raises(ConfigError) as error:
         parse_text_config(text)
     assert named in str(error.value)

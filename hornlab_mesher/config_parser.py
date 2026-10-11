@@ -647,6 +647,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     try:
         imported_geometry = text_uses_import_geometry(content)
         saved_geometry_version = text_geometry_version(content)
+        v2_geometry = imported_geometry and saved_geometry_version != TEXT_IMPORT_V1
         axial_rule, ath_version = ath_axial_sampling_rule(content) if imported_geometry and saved_geometry_version != TEXT_IMPORT_V1 else (None, None)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
@@ -846,7 +847,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ),
         }
 
-    if imported_geometry and profile_block == "OSSE" and "r0" in blocks["OSSE"]:
+    if v2_geometry and profile_block == "OSSE" and "r0" in blocks["OSSE"]:
         if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", blocks["OSSE"]["r0"].strip()):
             raise ConfigError("OSSE.r0 must be a literal number; ATH reads only a leading number from expressions")
 
@@ -855,8 +856,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
             raise ConfigError("ATH OSSE text configs must set Length")
         if "OSSE" in blocks:
             # ATH V2025-12 and V2026-08c ignore OSSE.Rot and read only
-            # top-level Rot. Saved native text retains its authoring mapping.
-            if imported_geometry:
+            # top-level Rot. Saved v1/native text retains its authoring mapping.
+            if v2_geometry:
                 profile.pop("rot", None)
                 if "Rot" in blocks["OSSE"]:
                     _report_ignored_ath_item("OSSE.Rot", "ATH ignores rotation inside the OSSE block; use top-level Rot", value=blocks["OSSE"]["Rot"])
@@ -869,11 +870,12 @@ def parse_text_config(content: str) -> dict[str, Any]:
         # (byte-identical profile exports; fixtures/ath_import/ath-v2025-12).
         # Native TOML/JSON configs keep the package defaults in config_builder.
         if imported_geometry:
-            profile.setdefault("a", 45)
+            if v2_geometry:
+                profile.setdefault("a", 45)
             profile.setdefault("a0", 0)
             profile.setdefault("s", 0.5)
 
-    if imported_geometry and formula == "R-OSSE":
+    if v2_geometry and formula == "R-OSSE":
         for key, value in {"R": 200, "a": 40, "a0": 0, "r": .25, "m": .9, "b": .4, "q": 3.5}.items():
             profile.setdefault(key, value)
 
@@ -961,7 +963,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("MORPH", {}),
     }
     morph = mapped(morph_items, _MORPH_KEY_MAP)
-    if imported_geometry and formula == "R-OSSE" and morph.get("morphTarget", 0) != 0:
+    if v2_geometry and formula == "R-OSSE" and morph.get("morphTarget", 0) != 0:
         raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-08c output changes the radial profile and has no qualified import construction")
     if "morphTarget" in morph and imported_geometry:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
@@ -1002,9 +1004,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
             if len(parts) >= 4:
                 enclosure.update(
                     {
-                        "space_l_mm": _maybe_number(parts[2] if imported_geometry else parts[0]),
+                        "space_l_mm": _maybe_number(parts[2] if v2_geometry else parts[0]),
                         "space_t_mm": _maybe_number(parts[1]),
-                        "space_r_mm": _maybe_number(parts[0] if imported_geometry else parts[2]),
+                        "space_r_mm": _maybe_number(parts[0] if v2_geometry else parts[2]),
                         "space_b_mm": _maybe_number(parts[3]),
                     }
                 )
