@@ -977,11 +977,11 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             profile, config, names=("lookupProfile", "lookup_profile"), default=None
         ),
         "r0": _scalar_or_expr(profile, config, names=("r0_mm", "r0"), default=12.7),
-        "a": _scalar_or_expr(profile, config, names=("a_deg", "a"), default=60.0),
-        "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=15.5),
+        "a": _scalar_or_expr(profile, config, names=("a_deg", "a"), default=(40.0 if formula == "R-OSSE" else 45.0) if imported_defaults else 60.0),
+        "a0": _scalar_or_expr(profile, config, names=("a0_deg", "a0"), default=0.0 if imported_defaults else 15.5),
         "k": _scalar_or_expr(profile, config, names=("k",), default=1.0),
         "q": _scalar_or_expr(
-            profile, config, names=("q",), default=1.0 if formula == "R-OSSE" else 0.995
+            profile, config, names=("q",), default=(3.5 if imported_defaults else 1.0) if formula == "R-OSSE" else 0.995
         ),
         "throatExtLength": _scalar_or_expr(
             profile,
@@ -1170,6 +1170,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         # Carry the sampling rule as plain transport data for dictionary consumers.
         if ATH_AXIAL_RULE_KEY in config:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
+    if imported_geometry and formula == "R-OSSE" and common["morphTarget"] != 0:
+        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-08c output changes the radial profile and has no qualified import construction")
     common.update(ath_controls)
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True
@@ -1188,7 +1190,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                     profile, config, names=("L_mm", "L"), default=120.0
                 ),
                 "n": _scalar_or_expr(profile, config, names=("n",), default=4.0),
-                "s": _scalar_or_expr(profile, config, names=("s",), default=0.0),
+                "s": _scalar_or_expr(profile, config, names=("s",), default=0.5 if imported_defaults else 0.0),
                 # The half-sine bulge. It was parsed (profile ``h`` / ATH-text
                 # ``OS.h``) and applied by the sampler, but never copied here, so
                 # every config-driven build -- preview, solve and export alike --
@@ -1288,16 +1290,18 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         common.update(
             {
                 "R": _scalar_or_expr(
-                    profile, config, names=("R_mm", "R"), default=150.0
+                    profile, config, names=("R_mm", "R"), default=200.0 if imported_defaults else 150.0
                 ),
                 "tmax": _scalar_or_expr(profile, config, names=("tmax",), default=1.0),
             }
         )
         for key in ("m", "r", "b"):
             value = _pick(profile, config, names=(key,), default=None)
+            if value is None and imported_defaults:
+                value = {"m": .9, "r": .25, "b": .4}[key]
             if value is not None:
                 common[key] = _scalar_or_expr(
-                    profile, config, names=(key,), default=None
+                    profile, config, names=(key,), default=value
                 )
 
     if formula == "FREEFORM":
@@ -2254,8 +2258,8 @@ def _certify_imported_rear_route_agreement(
     """Refuse newly supported rings when two supported routes disagree.
 
     Previously accepted planar rings keep their existing resolution path.
-    An opposite route that is itself nonplanar remains unsupported; it cannot
-    supply a competing qualified rear authority.
+    An opposite route that uses a warped fan supplies no competing planar
+    authority.
     """
     wall = float(params["wallThickness"] or 0.0)
     if float(np.ptp(restored_outer[:, 0, 2] - wall)) <= 1e-7:
@@ -2273,12 +2277,9 @@ def _certify_imported_rear_route_agreement(
     other_outer = _restored_outer_throat_points(
         other_inner, other_outer, wall_thickness_mm=wall,
     )
-    try:
-        other_rear = freestanding_rear_ring(other_inner, other_outer, wall, text_import=True)
-    except ValueError as exc:
-        if "nonplanar rear ring" in str(exc):
-            return  # This route is already explicitly unsupported.
-        raise
+    other_rear = freestanding_rear_ring(other_inner, other_outer, wall, text_import=True)
+    if np.ptp(other_rear[:, 2]) > 0:
+        return  # A warped fan supplies no competing planar authority.
     # This is a consistency check, not extra geometric projection allowance.
     # 1e-9 mm is 100,000 times below the absolute boundary-displacement budget;
     # it permits independently sampled floating calculations of the same plane.
@@ -2454,9 +2455,20 @@ def resolve_geometry(
                 inner_points, restored_outer,
                 float(params["wallThickness"] or 0.0), text_import=True,
             )
-            _certify_imported_rear_route_agreement(
-                params, density, mesh, topology_mode, inner_points, restored_outer, rear,
-            )
+            if np.ptp(rear[:, 2]) > 0:
+                from .ath_import_surfaces import meridional_normals
+                authored = build_point_grid_arrays(params)["inner_grid"]
+                authored_rear = authored[:, 0] + float(params["wallThickness"]) * meridional_normals(authored)[:, 0]
+                authored_rear[:, 2] -= 5
+                from .rear_compatibility import resample_rear_ring
+                rear = resample_rear_ring(authored_rear, inner_points[:, 0], closed=bool(grid.get("full_circle", True)))
+                geometry_cls = text_import_geometry_class(geometry_cls, warped=True)
+                probe_kwargs["ath_warped_rear_points"] = rear
+                probe_kwargs["ath_warped_rear_apex"] = np.array([0., 0., authored_rear[0, 2] if grid.get("full_circle", True) else .5*(authored_rear[0,2]+authored_rear[-1,2])])
+            else:
+                _certify_imported_rear_route_agreement(
+                    params, density, mesh, topology_mode, inner_points, restored_outer, rear,
+                )
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
     geometry = geometry_cls(

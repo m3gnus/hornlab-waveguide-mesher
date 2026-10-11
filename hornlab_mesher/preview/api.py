@@ -695,6 +695,8 @@ def build_preview_geometry(
     outer_canonical = None
     selected_outer = None
     imported_rear_plane = None
+    imported_warped_rear = None
+    imported_rear_apex = None
     if (uses_text_import_geometry(config) and _parsed_mode == "freestanding"
             and wall_mm > 0.0):
         # Production owns the rear plane for both eager and deferred walls.
@@ -709,7 +711,17 @@ def build_preview_geometry(
             production.inner_points, production_outer,
             production.wall_thickness_mm, text_import=True,
         )
-        imported_rear_plane = production_rear[0, 2]
+        if getattr(production, "ath_warped_rear_points", None) is not None:
+            from ..rear_compatibility import resample_rear_ring
+            target_ring = selected_inner[:, 0].copy()
+            target_ring[:, 1] -= production.vertical_offset_mm
+            imported_warped_rear = resample_rear_ring(
+                production.ath_warped_rear_points, target_ring, closed=production.closed)
+            imported_warped_rear[:, 1] += production.vertical_offset_mm
+            imported_rear_apex = production.ath_warped_rear_apex.copy()
+            imported_rear_apex[1] += production.vertical_offset_mm
+        else:
+            imported_rear_plane = production_rear[0, 2]
     if grid_data.get("outer_grid") is not None:
         outer_canonical = grid_data["outer_grid"]
         selected_outer = outer_canonical[np.ix_(phi_indices, t_indices)]
@@ -992,7 +1004,9 @@ def build_preview_geometry(
                 cap_limited=enclosure_cap_limited,
             )
     elif selected_outer is not None and options.include_rear_cap:
-        if imported_rear_plane is not None:
+        if imported_warped_rear is not None:
+            rear_ring = imported_warped_rear
+        elif imported_rear_plane is not None:
             # Preserve the displayed wall's selected XY boundary on either
             # wall path; only Z comes from the certified production plane.
             rear_ring = np.array(selected_outer[:, 0, :], copy=True)
@@ -1037,6 +1051,7 @@ def build_preview_geometry(
                 (0.0, 0.0, -1.0),
                 closed_phi=closed_phi,
                 include_curvature=options.include_curvature,
+                center=imported_rear_apex,
             )
         )
         fidelity["wall.rear_cap"] = _fidelity_record(

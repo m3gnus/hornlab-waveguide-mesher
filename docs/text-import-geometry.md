@@ -44,7 +44,10 @@ and a supplied morph target defaults to corner radius 35 mm, fixed part 0.2,
 and slot morphing enabled. Explicit controls remain authoritative. These defaults
 also reach the mesh density used to fit actual surfaces. Native omitted mouth
 resolution retains the native 26 mm default. These defaults apply to the
-supported OSSE/R-OSSE text profile families; native authored geometry types
+supported OSSE/R-OSSE text profile families. OSSE defaults to `a=45`,
+`a0=0`, `s=0.5`; R-OSSE defaults to `R=200`, `a=40`, `a0=0`, `r=0.25`,
+`m=0.9`, `b=0.4`, `q=3.5`, measured against ATH V2026-08c output.
+Native authored geometry types
 retain their own defaults even when provenance is carried alongside them.
 
 Expressions use the scalar C99 function whitelist in
@@ -83,7 +86,11 @@ sampler reproduces the four affected archive parity cases.
 | Control | Imported text interpretation | Native authoring |
 | --- | --- | --- |
 | OSSE `Slot.Length` | A conical prefix at slope `tan(a0)`. `r0` is its starting radius; the main profile starts at `r0 + slot*tan(a0)`. The slot is included in `Length`; the main termination uses `Length - slot`. | A cylindrical prefix at `r0`, added to the body length unless an explicit total-length mode is selected. |
-| `Throat.Ext.Length` | Adds a tapered extension behind the nominal throat; it does not change the slot or main body length. | Existing native extension behavior. |
+| `Throat.Ext.Length` with `Rot` | The extension stays unrotated at its own angle; only the body rotates, about the end of the extension. Current imports retain ten extension segments before the body map. | Existing native rotation behavior. |
+| OSSE-block `Rot` | Ignored with a warning naming `OSSE.Rot`; only top-level `Rot` applies. | Existing authored precedence. |
+| OSSE-block `r0` expression | Refused by name; ATH reads only a leading numeric token. Literal signed decimal/exponent numbers remain accepted. | Existing expression evaluation. |
+| R-OSSE morph | Refused by name: the supplied rectangular morph changes the radial profile, so dropping it would change the horn. | Existing morph behavior. |
+| `Mesh.Enclosure.Spacing` | Four margins in +x,+y,-x,-y order. | Left (-x), top (+y), right (+x), bottom (-y). |
 | Circular `Morph.TargetShape=2` | Uses the largest sampled raw mouth radius, ignoring explicit target width/height and without rounding to a whole millimetre. | Honors explicit dimensions and retains the implicit dimension rule. |
 | Rectangular morph with `Morph.AllowShrinkage=1` | Uses the requested target dimensions. | Uses the requested target dimensions. |
 | Rectangular morph with default/false shrinkage and smaller target dimensions | Refused with a named diagnostic. This reference behavior is sample dependent and has no qualified construction. Choose explicit `AllowShrinkage=1`, or author a native configuration for a literal dimension floor. | Floors each target half-dimension at the corresponding raw extent. |
@@ -115,7 +122,13 @@ authored mesh patches at every LOD; it never recomputes the lip on a refined
 body grid. Viewport exports retain the authored inner rows, independent rear
 row count and apex, and optionally carry that tessellation. STEP retains a
 named refusal because GEO patches have no faithful OCC transport yet. Existing imports without
-an active lip or Opus rear retain their previous consumers and rear-plane rules.
+an active lip or Opus rear retain their previous consumers. Planar rears keep
+the existing plane bit for bit. Warped rears use the measured RearShape 1
+throat (-5 mm shift, then the wall offset along the authored meridional
+normal), joined to the analytic outer shell and closed by a fan. The m6_var_wall
+throat differs from ATH by at most 0.000688 mm; simply extruding the analytic
+outer throat misses by up to 0.398502 mm. Both mesh routes, preview and STEP
+share the selected rear boundary.
 
 
 The saved v1 contract retains the geometry preceding v2: the fitted OSSE axial

@@ -137,10 +137,12 @@ def test_rot_and_prefix_with_zero_s1_remains_accepted():
     assert config["profile"]["rot"] == 10
 
 
-def test_in_block_and_top_level_rotation_share_the_supported_composition():
+def test_ath_v2026_08c_ignores_block_rotation_even_with_stretch():
     inside = parse_text_config("OSSE = {\nL = 160\nRot = 10\ns1 = 0.5\ns2 = 0.2\n}")
     outside = parse_text_config("OSSE = {\nL = 160\ns1 = 0.5\ns2 = 0.2\n}\nRot = 10")
-    assert build_geometry_params(inside) == build_geometry_params(outside)
+    plain = parse_text_config("OSSE = {\nL = 160\ns1 = 0.5\ns2 = 0.2\n}")
+    assert build_geometry_params(inside) == build_geometry_params(plain)
+    assert build_geometry_params(outside)[0]["rot"] == 10
 
 
 @pytest.mark.parametrize("variant", ["plain", "rotated", "gcurve", "extension"])

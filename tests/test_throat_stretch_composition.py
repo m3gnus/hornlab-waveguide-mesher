@@ -119,9 +119,11 @@ def test_tiny_numeric_compositions_use_exact_zero(key):
     calculate_osse(20, 0, p)
 
 
-def test_active_rosse_numeric_zero_rotation_matches_text():
+def test_active_rosse_numeric_zero_rotation_matches_ath_v2026_08c_defaults():
     imported = parse_text_config('R-OSSE = {\nR = 200\ns1 = .5\ns2 = .2\n}\nRot = 0')
-    native = {'formula': 'R-OSSE', 'profile': {'R': 200, 's1': .5, 's2': .2, 'rot': 0, '_athLengthMode': 'total'},
+    # m5_rosse_omit_all measures these imported defaults; native inputs must
+    # state them explicitly to describe the same horn.
+    native = {'formula': 'R-OSSE', 'profile': {'R': 200, 'a': 40, 'a0': 0, 'r': .25, 'm': .9, 'b': .4, 'q': 3.5, 's1': .5, 's2': .2, 'rot': 0, '_athLengthMode': 'total'},
               'mesh': imported['mesh'], 'simType': imported['simType']}
     from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
     native_params, formula, mode = build_geometry_params(native)

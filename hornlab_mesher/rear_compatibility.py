@@ -30,7 +30,9 @@ class _TextImportedMouthFittedStretchedPointGrid(_TextImportedRear, _MouthFitted
     pass
 
 
-def text_import_geometry_class(native_class):
+def text_import_geometry_class(native_class, *, warped=False):
+    if warped:
+        return _WARPED_CLASSES[native_class]
     return {
         PointGridHornGeometry: _TextImportedPointGrid,
         _StretchedPointGridHornGeometry: _TextImportedStretchedPointGrid,
@@ -50,8 +52,8 @@ def freestanding_rear_ring(inner_points, outer_points, wall_mm, *, text_import=F
 
     Native geometry anchors the rear to the mean inner throat. ATH anchors
     each rear point to its outer throat minus the unscaled wall thickness.
-    Imported near-planar rings use the minimax horizontal plane only within
-    the explicit boundary-displacement budget; materially warped rings fail.
+    Imported near-planar rings keep the minimax horizontal plane within
+    the displacement budget; warped rings use the measured RearShape 1 rule.
     The bore and outer shell are never projected or translated.
     """
     inner = np.asarray(inner_points, dtype=np.float64)
@@ -74,10 +76,77 @@ def freestanding_rear_ring(inner_points, outer_points, wall_mm, *, text_import=F
         budget = min(_REAR_PLANAR_DISPLACEMENT_MM,
                      _REAR_PLANAR_WALL_FRACTION * wall)
         if not np.isfinite(displacement) or displacement > budget:
-            raise ValueError(
-                "ATH text import has a nonplanar rear ring; warped rear caps are unsupported"
-            )
+            # Measured ATH V2026-08c RearShape 1 throat construction.
+            # The resolver supplies authored-grid normals to all consumers;
+            # this fallback also permits direct grid callers to build a fan.
+            from .ath_import_surfaces import meridional_normals
+            return inner[:, 0] + wall * meridional_normals(inner)[:, 0] - np.array([0., 0., 5.])
         rear[:, 2] = plane_z
     else:
         rear[:, 2] = float(np.mean(inner[:, 0, 2]) - float(wall_mm))
     return rear
+
+
+@dataclass(frozen=True)
+class _WarpedRear:
+    ath_warped_rear_points: np.ndarray | None = None
+    ath_warped_rear_apex: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class _WarpedTextImportedPointGrid(_WarpedRear, _TextImportedPointGrid):
+    pass
+
+
+@dataclass(frozen=True)
+class _WarpedTextImportedStretchedPointGrid(_WarpedRear, _TextImportedStretchedPointGrid):
+    pass
+
+
+@dataclass(frozen=True)
+class _WarpedTextImportedMouthFittedPointGrid(_WarpedRear, _TextImportedMouthFittedPointGrid):
+    pass
+
+
+@dataclass(frozen=True)
+class _WarpedTextImportedMouthFittedStretchedPointGrid(_WarpedRear, _TextImportedMouthFittedStretchedPointGrid):
+    pass
+
+
+_WARPED_CLASSES = {
+    _TextImportedPointGrid: _WarpedTextImportedPointGrid,
+    _TextImportedStretchedPointGrid: _WarpedTextImportedStretchedPointGrid,
+    _TextImportedMouthFittedPointGrid: _WarpedTextImportedMouthFittedPointGrid,
+    _TextImportedMouthFittedStretchedPointGrid: _WarpedTextImportedMouthFittedStretchedPointGrid,
+}
+
+
+def geometry_rear_ring(geometry, inner, outer):
+    rear = getattr(geometry, "ath_warped_rear_points", None)
+    if rear is not None:
+        return rear
+    return freestanding_rear_ring(inner, outer, geometry.wall_thickness_mm,
+                                  text_import=getattr(geometry, "ath_text_import_rear", False))
+
+
+def resample_rear_ring(ring, target_ring, *, closed):
+    """Interpolate rear radius and height in the source angular interval.
+
+    Polar interpolation preserves circular rings and reduced domains that
+    cross zero azimuth. It also keeps the authored rear knots exact.
+    """
+    from scipy.interpolate import CubicSpline
+    ring = np.asarray(ring, dtype=float)
+    target = np.asarray(target_ring, dtype=float)
+    phi = np.unwrap(np.arctan2(ring[:, 1], ring[:, 0]))
+    target_phi = np.arctan2(target[:, 1], target[:, 0])
+    target_phi += 2*np.pi * np.round((.5*(phi[0]+phi[-1])-target_phi)/(2*np.pi))
+    values = np.column_stack((np.linalg.norm(ring[:, :2], axis=1), ring[:, 2]))
+    if closed:
+        target_phi = phi[0] + np.mod(target_phi-phi[0], 2*np.pi)
+        phi = np.append(phi, phi[0]+2*np.pi)
+        values = np.vstack((values, values[0]))
+    else:
+        target_phi = np.clip(target_phi, phi[0], phi[-1])
+    radius, height = CubicSpline(phi, values, bc_type="periodic" if closed else "not-a-knot")(target_phi).T
+    return np.column_stack((radius*np.cos(target_phi), radius*np.sin(target_phi), height))

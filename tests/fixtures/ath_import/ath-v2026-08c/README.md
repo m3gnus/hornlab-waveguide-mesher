@@ -5,6 +5,12 @@ blank-line-separated block per profile) and the configs that produced them.
 
 | Pair | What it establishes |
 | --- | --- |
+| `m3_rosse_morph`, `m3_rosse_nomorph` | R-OSSE rectangular morph changes radial profiles: unmodified mouth radius 150 mm; morphed radii 160–217.766142 mm. The unsupported morph is refused by name. |
+| `m4_enc` | Enclosure Spacing is ordered +x,+y,-x,-y; 25,30,35,40 gives x bounds -196/186 mm on this horn. `m4_enc-enclosure.csv` contains the outer enclosure boundary witnesses. |
+| `m5_osse_omit_a_s`, `m5_rosse_omit_all` | Omitted import coefficients use ATH V2026-08c defaults: OSSE a=45, s=0.5; R-OSSE R=200, a=40, a0=0, r=0.25, m=0.9, b=0.4, q=3.5. |
+| `m6_var_wall` | Azimuth-varying OSSE with a wall builds a RearShape 1 throat shifted -5 mm and offset by wall thickness along its meridional chord normal; rear z span 0.258 mm. `m6_var_wall-rear.csv` contains the throat-ring witnesses, including duplicated ATH endpoints. |
+| `m7_rot_none`, `m7_rot_in`, `m7_rot_top`, `m7_rot_both` | OSSE-block Rot is ignored; top-level Rot is used even if both are written. |
+| `m10_ext_rot` | Extension remains unrotated; the body rotates about the extension endpoint. Ten extension segments precede the twenty body segments. |
 | `osse-block-with-top-level-length`, `osse-block-without-top-level-length` | ATH ignores a top-level `Length` beside an `OSSE` block: the block's `L = 160` sets the horn length, and the two exports are byte-identical. |
 | `sf1`, `sf2` | `sf(m,n1,n2,n3,a,b,p)` is the Gielis superformula, including odd `m` and non-unit `a`, `b`. |
 | `sf3` | `log` is natural logarithm, `round(2.5)` is 3, and `exp`/`floor` compose with azimuth-dependent expressions. |

@@ -425,6 +425,7 @@ def _add_rear_cap(
     grid_name: str,
     n_phi: int,
     closed: bool,
+    apex: np.ndarray | None = None,
 ) -> list[tuple[int, int]]:
     center_xy = (
         (float(np.mean(rear_points[:, 0])), float(np.mean(rear_points[:, 1])))
@@ -432,10 +433,8 @@ def _add_rear_cap(
         else (0.0, 0.0)
     )
     center_tag = builder.add_point(
-        (
-            center_xy[0],
-            center_xy[1],
-            float(np.mean(rear_points[:, 2])),
+        apex if apex is not None else (
+            center_xy[0], center_xy[1], float(np.mean(rear_points[:, 2])),
         )
     )
     radial_lines = {
@@ -448,9 +447,9 @@ def _add_rear_cap(
     for i in _phi_segments(n_phi, closed=closed):
         ni = (i + 1) % n_phi
         cap_boundary.append(builder.line((grid_name, i, 0), (grid_name, ni, 0)))
-        if closed:
+        if closed or apex is not None:
             cap.append(builder.surface([cap_boundary[-1], radial_lines[ni], -radial_lines[i]]))
-    if not closed and cap_boundary:
+    if not closed and apex is None and cap_boundary:
         cap.append(builder.surface([*cap_boundary, radial_lines[n_phi - 1], -radial_lines[0]]))
     return cap
 
@@ -592,6 +591,7 @@ def _add_geo_spline_span_rear_cap(
     n_phi: int,
     closed: bool,
     mesh_size: float,
+    apex: np.ndarray | None = None,
 ) -> list[tuple[int, int]]:
     center_xy = (
         (float(np.mean(rear_points[:, 0])), float(np.mean(rear_points[:, 1])))
@@ -599,10 +599,8 @@ def _add_geo_spline_span_rear_cap(
         else (0.0, 0.0)
     )
     center_tag = builder.add_point(
-        (
-            center_xy[0],
-            center_xy[1],
-            float(np.mean(rear_points[:, 2])),
+        apex if apex is not None else (
+            center_xy[0], center_xy[1], float(np.mean(rear_points[:, 2])),
         ),
         mesh_size=mesh_size,
     )

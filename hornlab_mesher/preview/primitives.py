@@ -284,11 +284,13 @@ def _flat_cap(
     closed_phi: bool,
     include_curvature: bool = True,
     simplify_tolerance: float | None = None,
+    center: NDArray[np.float64] | None = None,
 ) -> PreviewSurfaceV1:
     ring = np.asarray(ring, dtype=np.float64)
     if simplify_tolerance is not None and closed_phi:
         ring = _simplify_planar_ring(ring, simplify_tolerance)
-    center = np.mean(ring, axis=0)
+    warped = center is not None
+    center = np.mean(ring, axis=0) if center is None else np.asarray(center)
     if closed_phi:
         # A corner-refined morph lattice can contain locally out-of-order phi
         # samples even though its boundary is star-shaped. The cap has no row
@@ -307,6 +309,13 @@ def _flat_cap(
         else:
             triangles.extend((center_index, ip1, ip))
     normals = np.broadcast_to(np.asarray(normal, dtype=np.float64), positions.shape).copy()
+    if warped:
+        normals = np.zeros_like(positions)
+        for face in np.asarray(triangles).reshape(-1, 3):
+            cross = np.cross(positions[face[1]]-positions[face[0]], positions[face[2]]-positions[face[0]])
+            normals[face] += cross
+        length = np.linalg.norm(normals, axis=1)
+        normals /= np.maximum(length[:, None], np.finfo(float).tiny)
     oriented = _orient_indices_to_normals(
         role,
         positions,
@@ -319,7 +328,7 @@ def _flat_cap(
         indices=oriented.indices,
         normals=normals,
         shading="flat",
-        normal_method="exact-planar",
+        normal_method="analytic-parametric" if warped else "exact-planar",
         closed_phi=closed_phi,
         curvature_mean=(
             np.zeros(len(positions), dtype=np.float64) if include_curvature else None

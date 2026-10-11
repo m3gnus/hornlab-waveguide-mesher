@@ -138,7 +138,8 @@ def test_repeated_profile_blocks_are_refused(family: str) -> None:
 def test_osse_rotation_precedence(in_block: int | None, top_first: bool) -> None:
     block = _osse("" if in_block is None else f"  Rot = {in_block}\n")
     text = "Rot = 10\n" + block if top_first else block + "Rot = 10\n"
-    expected = parse_text_config(_osse(f"  Rot = {10 if in_block is None else in_block}\n"))
+    # ATH V2025-12/V2026-08c m7_rot_* fixtures: block Rot is ignored.
+    expected = parse_text_config(_osse() + "Rot = 10\n")
     assert parse_text_config(text) == expected
 
 
@@ -226,9 +227,9 @@ def test_nested_block_does_not_end_its_parent() -> None:
     enclosure = parse_text_config(FLAT_OSSE + block)["enclosure"]
     assert enclosure["edge_mm"] == 40
     assert (enclosure["space_l_mm"], enclosure["space_t_mm"], enclosure["space_r_mm"], enclosure["space_b_mm"]) == (
-        30,
+        50,  # ATH V2026-08c m4_enc: Spacing is +x,+y,-x,-y.
         40,
-        50,
+        30,
         200,
     )
 
@@ -536,10 +537,10 @@ def test_unused_osse_top_level_length_is_reported(caplog: pytest.LogCaptureFixtu
     assert "ignoring Length = 180: ATH uses the OSSE block's L" in caplog.text
 
 
-def test_osse_overridden_top_level_rotation_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+def test_osse_ignored_block_rotation_is_reported(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="hornlab_mesher.config_parser"):
-        assert parse_text_config(_osse("Rot = 0\n") + "Rot = 10\n") == parse_text_config(_osse("Rot = 0\n"))
-    assert "ignoring Rot = 10: ATH uses the OSSE block's Rot" in caplog.text
+        assert parse_text_config(_osse("Rot = 0\n") + "Rot = 10\n") == parse_text_config(_osse() + "Rot = 10\n")
+    assert "ignoring OSSE.Rot = 0: ATH ignores rotation inside the OSSE block" in caplog.text
 
 
 def test_geometry_relevant_abec_simtype_is_consumed(caplog: pytest.LogCaptureFixture) -> None:

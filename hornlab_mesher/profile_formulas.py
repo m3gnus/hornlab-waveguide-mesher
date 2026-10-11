@@ -453,11 +453,13 @@ def calculate_osse(
     x = float(z)
     y = float(radius)
     rot_deg = eval_param(params.get("rot"), p, 0.0)
-    if math.isfinite(rot_deg) and rot_deg != 0.0:
+    imported_extension = uses_text_import_geometry(params) and ext_len > 0
+    if math.isfinite(rot_deg) and rot_deg != 0.0 and (not imported_extension or z > ext_len):
         rot = math.radians(rot_deg)
-        dx = x
+        pivot = ext_len if imported_extension else 0.0
+        dx = x - pivot
         dy = y - r0_base
-        x = dx * math.cos(rot) - dy * math.sin(rot)
+        x = pivot + dx * math.cos(rot) - dy * math.sin(rot)
         y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
     # ATH V2025-12 stretches after Rot. Rot + prefix is refused above.
     # Keep the disabled path arithmetic unchanged.
@@ -555,10 +557,14 @@ def calculate_osse_curve(
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
         rot = math.radians(rot_deg)
-        dx = x
+        imported_extension = uses_text_import_geometry(params) and ext_len > 0
+        pivot = ext_len if imported_extension else 0.0
+        dx = x - pivot
         dy = y - r0_base
-        x = dx * math.cos(rot) - dy * math.sin(rot)
-        y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+        rotated_x = pivot + dx * math.cos(rot) - dy * math.sin(rot)
+        rotated_y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+        x = np.where(z > ext_len, rotated_x, x) if imported_extension else rotated_x
+        y = np.where(z > ext_len, rotated_y, y) if imported_extension else rotated_y
     if s1 != 0.0 and s2 != 0.0:
         x = x.copy()
         x[in_main] = ext_len + slot_len + _stretch_x_curve(

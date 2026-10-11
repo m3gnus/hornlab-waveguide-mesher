@@ -11,7 +11,7 @@ from ..geometry import (
     PointGridHornGeometry,
 )
 from ..tags import PhysicalGroup
-from ..rear_compatibility import freestanding_rear_ring
+from ..rear_compatibility import geometry_rear_ring
 from ._occ import (
     SURFACE_FIT_INTERPOLATE,
     make_planar_fill_from_boundary,
@@ -302,10 +302,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         )
 
     n_phi, n_len, _ = inner_points.shape
-    rear_points = freestanding_rear_ring(
-        inner_points, outer_points, geometry.wall_thickness_mm,
-        text_import=getattr(geometry, "ath_text_import_rear", False),
-    )
+    rear_points = geometry_rear_ring(geometry, inner_points, outer_points)
     outer_topology = np.empty((n_phi, n_len + 1, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1:, :] = outer_points
@@ -345,6 +342,7 @@ def _build_freestanding_point_grid(geometry: PointGridHornGeometry) -> BuiltGeom
         grid_name="outer",
         n_phi=n_phi,
         closed=geometry.closed,
+        apex=getattr(geometry, "ath_warped_rear_apex", None),
     )
     throat = _add_source_surfaces(builder, inner_points, geometry, wall_dimtags=wall)
 
@@ -402,10 +400,7 @@ def _build_acoustic_freestanding_point_grid(
     )
     n_phi = inner_points.shape[0]
     outer_indices = _outer_wall_axial_ring_indices(inner_points)
-    rear_points = freestanding_rear_ring(
-        inner_points, outer_points, geometry.wall_thickness_mm,
-        text_import=getattr(geometry, "ath_text_import_rear", False),
-    )
+    rear_points = geometry_rear_ring(geometry, inner_points, outer_points)
     outer_topology = np.empty((n_phi, len(outer_indices) + 2, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1, :] = outer_points[:, 0, :]
@@ -498,13 +493,27 @@ def _build_acoustic_freestanding_point_grid(
             if int(dim) == 2
         )
 
-    rear_cap = make_planar_fill_from_boundary(
-        outer_wall,
-        source_axis="z",
-        use_min=True,
-        closed=geometry.closed,
-        split_open_sectors=getattr(geometry, "quadrant_patch_fit", False),
-    )
+    apex = getattr(geometry, "ath_warped_rear_apex", None)
+    if apex is None:
+        rear_cap = make_planar_fill_from_boundary(
+            outer_wall, source_axis="z", use_min=True, closed=geometry.closed,
+            split_open_sectors=getattr(geometry, "quadrant_patch_fit", False),
+        )
+    else:
+        # Use the actual shell boundary curves so the warped fan shares
+        # every seam with the analytic outer shell.
+        center = int(gmsh.model.occ.addPoint(*map(float, apex)))
+        spokes = {}
+        rear_cap = []
+        for surface, indices in zip(outer_wall, phi_groups):
+            curve = boundary_curve_nearest_points(surface, rear_points[indices])
+            endpoints = gmsh.model.getBoundary([(1, curve)], oriented=True)
+            a, b = abs(int(endpoints[0][1])), abs(int(endpoints[-1][1]))
+            for vertex in (a, b):
+                if vertex not in spokes:
+                    spokes[vertex] = int(gmsh.model.occ.addLine(center, vertex))
+            loop = int(gmsh.model.occ.addCurveLoop([spokes[a], curve, -spokes[b]]))
+            rear_cap.append((2, int(gmsh.model.occ.addSurfaceFilling(loop))))
     cap_builder = _SharedSurfaceBuilder()
     cap_builder.add_grid("inner", inner_points)
     throat = _add_occ_source_cap_surfaces(
@@ -573,10 +582,7 @@ def _build_wg_freestanding_point_grid(
 
     n_phi, inner_len, _ = inner_points.shape
     outer_indices = _outer_wall_axial_ring_indices(inner_points)
-    rear_points = freestanding_rear_ring(
-        inner_points, outer_points, geometry.wall_thickness_mm,
-        text_import=getattr(geometry, "ath_text_import_rear", False),
-    )
+    rear_points = geometry_rear_ring(geometry, inner_points, outer_points)
     outer_topology = np.empty((n_phi, len(outer_indices) + 2, 3), dtype=np.float64)
     outer_topology[:, 0, :] = rear_points
     outer_topology[:, 1, :] = outer_points[:, 0, :]
@@ -622,6 +628,7 @@ def _build_wg_freestanding_point_grid(
         n_phi=n_phi,
         closed=geometry.closed,
         mesh_size=25.0,
+        apex=getattr(geometry, "ath_warped_rear_apex", None),
     )
     throat = _add_geo_source_cap_surfaces(
         builder,

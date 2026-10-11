@@ -38,12 +38,32 @@ _SUPPLIES_S = re.compile(r'^[ \t]*(?:Term\.)?s[ \t]*=', re.M)
 
 
 def _measured_s_default(text, formula, *expected):
-    """Move captured s = 0.7 to 0.5 where the text omits s; nothing else."""
-    if formula != 'OSSE' or _SUPPLIES_S.search(text):
-        return
+    """Apply only defaults/Rot measured in ATH V2026-08c m5/m7 fixtures.
+
+    Native captures never pass through this adjustment. Explicit coefficients
+    retain their exact captured expectations and the original tolerances.
+    """
+    from hornlab_mesher.config_parser import _parse_ath_blocks
+    blocks, flat, _ = _parse_ath_blocks(text)
+    block = blocks.get("OSSE" if formula == "OSSE" else "R-OSSE", blocks.get("ROSSE", {}))
+    items = block or flat
+    defaults = {"a": 45, "a0": 0, "s": .5} if formula == "OSSE" else {
+        "R": 200, "a": 40, "a0": 0, "r": .25, "m": .9, "b": .4, "q": 3.5}
+    aliases = {"a": ("Coverage.Angle",), "a0": ("Throat.Angle",), "s": ("Term.s",), "q": ("Term.q",)}
     for mapping in expected:
-        if mapping.get('s') == 0.7:
-            mapping['s'] = 0.5
+        for key, value in defaults.items():
+            if not any(name in items for name in (key, *aliases.get(key, ()))):
+                mapping[key] = value
+        if formula == "OSSE" and block:
+            if "Rot" in flat:
+                try:
+                    mapping["rot"] = float(flat["Rot"])
+                except ValueError:
+                    mapping["rot"] = flat["Rot"]
+            elif "type" in mapping:
+                mapping["rot"] = 0.0
+            else:
+                mapping.pop("rot", None)
 
 
 def _assert_base_equal(actual, expected):
@@ -232,8 +252,7 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
                    if hashlib.sha256(p.read_text().encode()).hexdigest() == case['sha256']]
         assert len(matches) == 1, 'captured archive config missing or changed'
         text = matches[0].read_text()
-    # Only top-level Rot beside an OSSE block may differ. In-block Rot still wins
-    # over a top-level Rot when both are supplied, exactly as at the base.
+    # ATH V2025-12/V2026-08c m7_rot_* fixtures establish top-level-only Rot.
     osse_block = text.startswith('OSSE = {')
     block_text = text.split('}', 1)[0]
     approved_rot = osse_block and 'Rot = 10' in text and 'Rot = 5' not in block_text
@@ -261,6 +280,11 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
         expected_parsed['profile']['rot'] = 10
         expected_params['rot'] = 10
     _measured_s_default(text, parsed['formula'], expected_parsed['profile'], expected_params)
+    if expected_parsed.get('enclosure'):
+        enclosure = expected_parsed['enclosure']
+        if 'space_l_mm' in enclosure and 'space_r_mm' in enclosure:
+            # ATH V2026-08c m4_enc establishes the +x,+y,-x,-y order.
+            enclosure['space_l_mm'], enclosure['space_r_mm'] = enclosure['space_r_mm'], enclosure['space_l_mm']
     _assert_base_equal(parsed, expected_parsed)
     _assert_base_equal(params, expected_params)
 

@@ -1747,6 +1747,16 @@ def build_point_grid_arrays(
             sampling_mode = "uniform"
         else:
             t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+        if (formula == "OSSE" and uses_text_import_geometry(params)
+                and uses_current_ath_axial_sampling(params)
+                and eval_param(params.get("rot"), 0.0, 0.0) != 0.0):
+            _, total, extension, _ = osse_length_config(params, 0.0)
+            if extension > 0:
+                # ATH V2026-08c adds ten extension segments before the
+                # authored body map, retaining the extension/body junction.
+                fraction = extension / total
+                t_unit_values = np.concatenate((np.linspace(0, fraction, 11)[:-1],
+                                               fraction + (1-fraction)*t_unit_values))
         t_unit_values = _pin_axial_stations(
             t_unit_values, params.get(ACOUSTIC_AXIAL_STATIONS_KEY)
         )

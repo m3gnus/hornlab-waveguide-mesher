@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import re
 from decimal import Decimal, InvalidOperation
 from difflib import get_close_matches
 from pathlib import Path
@@ -293,8 +294,6 @@ def _report_ignored_ath_items(
         if profile_block == "OSSE" and blocks.get("OSSE"):
             if key == "Length":
                 reason = "ATH uses the OSSE block's L and ignores top-level Length"
-            elif key == "Rot" and "Rot" in blocks["OSSE"]:
-                reason = "ATH uses the OSSE block's Rot ahead of top-level Rot"
         if reason:
             _report_ignored_ath_item(key, reason, value=value)
         else:
@@ -847,13 +846,22 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ),
         }
 
+    if imported_geometry and profile_block == "OSSE" and "r0" in blocks["OSSE"]:
+        if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", blocks["OSSE"]["r0"].strip()):
+            raise ConfigError("OSSE.r0 must be a literal number; ATH reads only a leading number from expressions")
+
     if formula == "OSSE":
         if "L" not in profile:
             raise ConfigError("ATH OSSE text configs must set Length")
         if "OSSE" in blocks:
-            # V2025-12 honours top-level Rot even with an OSSE block; Length
-            # stays subordinate to the block's L.
-            if "Rot" not in blocks["OSSE"]:
+            # ATH V2025-12 and V2026-08c ignore OSSE.Rot and read only
+            # top-level Rot. Saved native text retains its authoring mapping.
+            if imported_geometry:
+                profile.pop("rot", None)
+                if "Rot" in blocks["OSSE"]:
+                    _report_ignored_ath_item("OSSE.Rot", "ATH ignores rotation inside the OSSE block; use top-level Rot", value=blocks["OSSE"]["Rot"])
+                profile.update(mapped(flat, (("Rot", "rot"),)))
+            elif "Rot" not in blocks["OSSE"]:
                 profile.update(mapped(flat, (("Rot", "rot"),)))
         # ATH defaults for keys the import may omit. a0 follows the Ath 4.8.2
         # User Guide 4.1.1. Term.s does not: the guide says 0.7, but ATH
@@ -861,8 +869,13 @@ def parse_text_config(content: str) -> dict[str, Any]:
         # (byte-identical profile exports; fixtures/ath_import/ath-v2025-12).
         # Native TOML/JSON configs keep the package defaults in config_builder.
         if imported_geometry:
+            profile.setdefault("a", 45)
             profile.setdefault("a0", 0)
             profile.setdefault("s", 0.5)
+
+    if imported_geometry and formula == "R-OSSE":
+        for key, value in {"R": 200, "a": 40, "a0": 0, "r": .25, "m": .9, "b": .4, "q": 3.5}.items():
+            profile.setdefault(key, value)
 
     if "Length.Mode" in flat:
         profile["_athLengthMode"] = flat["Length.Mode"].strip()
@@ -948,6 +961,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("MORPH", {}),
     }
     morph = mapped(morph_items, _MORPH_KEY_MAP)
+    if imported_geometry and formula == "R-OSSE" and morph.get("morphTarget", 0) != 0:
+        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-08c output changes the radial profile and has no qualified import construction")
     if "morphTarget" in morph and imported_geometry:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
         morph.setdefault("morphCorner", 35)
@@ -982,14 +997,14 @@ def parse_text_config(content: str) -> dict[str, Any]:
                 # ATH documents last-value repetition for the resolution lists
                 # only; what it does with a short Spacing is not established.
                 raise ConfigError(
-                    f"Mesh.Enclosure Spacing = {spacing} must list four margins (left, top, right, bottom)"
+                    f"Mesh.Enclosure Spacing = {spacing} must list four margins (+x, +y, -x, -y)"
                 )
             if len(parts) >= 4:
                 enclosure.update(
                     {
-                        "space_l_mm": _maybe_number(parts[0]),
+                        "space_l_mm": _maybe_number(parts[2] if imported_geometry else parts[0]),
                         "space_t_mm": _maybe_number(parts[1]),
-                        "space_r_mm": _maybe_number(parts[2]),
+                        "space_r_mm": _maybe_number(parts[0] if imported_geometry else parts[2]),
                         "space_b_mm": _maybe_number(parts[3]),
                     }
                 )
