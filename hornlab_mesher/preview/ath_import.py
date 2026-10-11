@@ -19,6 +19,8 @@ from .fidelity import _point_triangle_squared
 
 # Mid-edges, centroid and interior quarter stations measure the actual emitted
 # triangles against the same parametric patches the acoustic mesh uses.
+_MAX_REFINEMENT_ITERATIONS = 64
+
 _PROBES = np.array([[.5, .5, 0], [0, .5, .5], [.5, 0, .5],
                     [1/3, 1/3, 1/3], [.5, .25, .25],
                     [.25, .5, .25], [.25, .25, .5]])
@@ -86,7 +88,8 @@ def _initial(gmsh, roles):
         if triangles:
             patches.append({'tag': tag, 'role': role, 'ids': list(map(int, ids)),
                             'uv': np.asarray(uv).reshape(-1, 2),
-                            'tri': np.concatenate(triangles)})
+                            'tri': np.concatenate(triangles),
+                            'crease_curves': [abs(curve) for _, curve in gmsh.model.getBoundary([(2, tag)])]})
     curves = {}
     for _, tag in gmsh.model.getEntities(1):
         ids, _, param = gmsh.model.mesh.getNodes(1, tag, includeBoundary=True)
@@ -111,11 +114,23 @@ def _normals(gmsh, tag, uv):
 def _measure(gmsh, patch, points):
     tri, uv = patch['tri'], patch['uv']
     xyz = np.array([points[node] for node in patch['ids']])
-    vertex_normals = _normals(gmsh, patch['tag'], uv)
-    query = np.einsum('pk,tkd->tpd', _PROBES, uv[tri])
-    reference = np.asarray(gmsh.model.getValue(2, patch['tag'], query.reshape(-1).tolist())).reshape(-1, len(_PROBES), 3)
-    a, b, c = (np.broadcast_to(xyz[tri[:, i]][:, None], reference.shape) for i in range(3))
-    errors = np.sqrt(np.maximum(0, _point_triangle_squared(reference, a, b, c))).max(axis=1)
+    low, high = (np.asarray(v) for v in gmsh.model.getParametrizationBounds(2, patch['tag']))
+    vertex_normals = patch.get('normal_cache', np.empty((0, 3)))
+    if len(vertex_normals) < len(uv):
+        query_uv = np.clip(uv[len(vertex_normals):], low + (high-low)*1e-6, high - (high-low)*1e-6)
+        vertex_normals = np.concatenate((vertex_normals, _normals(gmsh, patch['tag'], query_uv)))
+        patch['normal_cache'] = vertex_normals
+    # Stable local triangle identities, independent of the growing node count.
+    keys = tri.astype("<i8", copy=False).view("S24").ravel().tolist()
+    cache = patch.setdefault('error_cache', {})
+    errors = np.array([cache.get(key, np.nan) for key in keys])
+    fresh = np.isnan(errors)
+    if fresh.any():
+        query = np.einsum('pk,tkd->tpd', _PROBES, uv[tri[fresh]])
+        reference = np.asarray(gmsh.model.getValue(2, patch['tag'], query.reshape(-1).tolist())).reshape(-1, len(_PROBES), 3)
+        a, b, c = (np.broadcast_to(xyz[tri[fresh, i]][:, None], reference.shape) for i in range(3))
+        errors[fresh] = np.sqrt(np.maximum(0, _point_triangle_squared(reference, a, b, c))).max(axis=1)
+        cache.update((keys[i], float(errors[i])) for i in np.flatnonzero(fresh))
     normals = vertex_normals[tri]
     steps = np.zeros(len(tri))
     edge_steps = []
@@ -167,70 +182,85 @@ def _curvature(gmsh, patch, normals):
 
 
 def _refine(gmsh, points, patches, curves, marked, *, faceted=False):
-    """Conforming red/green refinement; shared curves own shared midpoints."""
+    """Conforming red/green refinement; query new nodes in batches."""
     midpoints = {}
     next_node = max(points) + 1
+    radix = next_node
+    marked_keys = np.array([a*radix+b for a, b in marked], dtype=np.int64)
     for patch in patches:
         ids, uv, tri = patch['ids'], patch['uv'], patch['tri']
-        lookup = {node: i for i, node in enumerate(ids)}
-        added_uv = []
-        refined = []
-        for a, b, c in tri:
-            vertices = [int(a), int(b), int(c)]
-            mids = []
-            for i in range(3):
-                left, right = vertices[i], vertices[(i + 1) % 3]
-                edge = tuple(sorted((ids[left], ids[right])))
-                if edge not in marked:
-                    mids.append(None)
-                    continue
-                value = .5 * (uv[left] + uv[right])
-                node = midpoints.get(edge)
-                if node is None:
-                    node = next_node
-                    next_node += 1
-                    midpoints[edge] = node
-                    if edge in curves:
-                        curve, t0, t1 = curves.pop(edge)
-                        tm = .5 * (t0 + t1)
-                        points[node] = np.asarray(gmsh.model.getValue(1, curve, [tm]))
-                        curves[tuple(sorted((edge[0], node)))] = (curve, t0, tm)
-                        curves[tuple(sorted((edge[1], node)))] = (curve, t1, tm)
-                    else:
-                        points[node] = np.asarray(gmsh.model.getValue(2, patch['tag'], value.tolist()))
-                if node not in lookup:
-                    lookup[node] = len(ids)
-                    ids.append(node)
-                    # GEO boundary parameters interpolate along each patch
-                    # edge. OCC's non-affine UV frames need reparametrization.
-                    # Avoid GEO inverse queries: rounded-source seam splines
-                    # can differ from the sphere-projected interior, making
-                    # the inverse both approximate and arbitrarily slow.
-                    if faceted:
-                        value = np.asarray(gmsh.model.getParametrization(2, patch['tag'], points[node].tolist()))
-                    added_uv.append(value)
-                mids.append(lookup[node])
-            count = sum(m is not None for m in mids)
-            if count == 0:
-                refined.append(vertices)
-            elif count == 3:
-                x, y, z = mids
-                refined.extend(((a, x, z), (x, b, y), (z, y, c), (x, y, z)))
-            else:
-                # Rotate the single unsplit edge (two cuts), or the single
-                # split edge (one cut), into the canonical orientation.
-                k = next(i for i, m in enumerate(mids) if (m is None) == (count == 2))
-                if count == 2:
-                    k = (k + 1) % 3
-                aa, bb, cc = [vertices[(k + j) % 3] for j in range(3)]
-                x, y, _ = [mids[(k + j) % 3] for j in range(3)]
-                if count == 1:
-                    refined.extend(((aa, x, cc), (x, bb, cc)))
+        local_edges = np.stack((tri, np.roll(tri, -1, axis=1)), axis=-1)
+        global_edges = np.sort(np.asarray(ids)[local_edges], axis=-1).reshape(-1, 2)
+        packed = global_edges[:, 0]*radix + global_edges[:, 1]
+        selected = np.flatnonzero(np.isin(packed, marked_keys))
+        if not len(selected):
+            continue
+        patch.pop('measured', None)
+        _, first, inverse = np.unique(packed[selected], return_index=True, return_inverse=True)
+        local = local_edges.reshape(-1, 2)[selected[first]]
+        edges = global_edges[selected[first]]
+        values = uv[local].mean(axis=1)
+        added_nodes, pending_surface, pending_curves = [], [], {}
+        for edge, value in zip(edges, values):
+            edge = tuple(edge)
+            node = midpoints.get(edge)
+            if node is None:
+                node = next_node
+                next_node += 1
+                midpoints[edge] = node
+                if edge in curves:
+                    curve, t0, t1 = curves.pop(edge)
+                    tm = .5 * (t0 + t1)
+                    pending_curves.setdefault(curve, []).append((node, tm))
+                    curves[tuple(sorted((edge[0], node)))] = (curve, t0, tm)
+                    curves[tuple(sorted((edge[1], node)))] = (curve, t1, tm)
                 else:
-                    refined.extend(((bb, y, x), (aa, x, cc), (x, y, cc)))
-        if added_uv:
-            patch['uv'] = np.concatenate((uv, np.asarray(added_uv)))
-        patch['tri'] = np.asarray(refined, dtype=int)
+                    pending_surface.append((node, value))
+            added_nodes.append(node)
+        if pending_surface:
+            new_xyz = np.asarray(gmsh.model.getValue(2, patch['tag'],
+                np.asarray([v for _, v in pending_surface]).reshape(-1).tolist())).reshape(-1, 3)
+            points.update((node, xyz) for (node, _), xyz in zip(pending_surface, new_xyz))
+        for curve, entries in pending_curves.items():
+            new_xyz = np.asarray(gmsh.model.getValue(1, curve, [t for _, t in entries])).reshape(-1, 3)
+            points.update((node, xyz) for (node, _), xyz in zip(entries, new_xyz))
+        if faceted:
+            values = np.asarray(gmsh.model.getParametrization(2, patch['tag'],
+                np.asarray([points[node] for node in added_nodes]).reshape(-1).tolist())).reshape(-1, 2)
+        # Each edge adds exactly one new vertex to this patch, even at seams.
+        mids = np.full(tri.size, -1, dtype=int)
+        mids[selected] = len(ids) + inverse
+        patch['ids'].extend(added_nodes)
+        patch['uv'] = np.concatenate((uv, values))
+        mids = mids.reshape(-1, 3)
+        count = (mids >= 0).sum(axis=1)
+        pieces = [tri[count == 0]]
+        t, m = tri[count == 3], mids[count == 3]
+        if len(t):
+            a, b, c = t.T
+            x, y, z = m.T
+            pieces.extend(np.stack(v, axis=1) for v in ((a,x,z),(x,b,y),(z,y,c),(x,y,z)))
+        for cuts in (1, 2):
+            t, m = tri[count == cuts], mids[count == cuts]
+            if not len(t):
+                continue
+            k = np.argmax(m >= 0 if cuts == 1 else m < 0, axis=1)
+            if cuts == 2:
+                k = (k + 1) % 3
+            order = (k[:, None] + np.arange(3)) % 3
+            aa, bb, cc = np.take_along_axis(t, order, axis=1).T
+            x, y, _ = np.take_along_axis(m, order, axis=1).T
+            if cuts == 1:
+                pieces.extend(np.stack(v, axis=1) for v in ((aa,x,cc),(x,bb,cc)))
+            else:
+                positions = np.asarray([points[node] for node in patch['ids']])
+                use_alternate = (np.linalg.norm(positions[aa]-positions[y], axis=1)
+                                 < np.linalg.norm(positions[x]-positions[cc], axis=1))
+                pieces.append(np.stack((bb,y,x), axis=1))
+                for mask, variants in ((~use_alternate, ((aa,x,cc),(x,y,cc))),
+                                       (use_alternate, ((aa,x,y),(aa,y,cc)))):
+                    pieces.extend(np.stack(v, axis=1)[mask] for v in variants)
+        patch['tri'] = np.concatenate(pieces)
 
 
 def build(config, options):
@@ -261,11 +291,20 @@ def build(config, options):
         roles = _roles(built, geometry)
         extent = np.ptp(geometry.inner_points.reshape(-1, 3), axis=0).max()
         gmsh.option.setNumber('Mesh.MeshSizeMax', max(.1, float(extent) / 24))
+        # Seed each ring loft as a strip, avoiding unstructured skinny faces.
+        # Patch seams remain authored crease features, with separate vertex
+        # normals on each side rather than a smoothness target across the seam.
+        ring_nodes = {'coarse': 17, 'fine': 33, 'inspection': 65}[lod]
+        for _, curve in gmsh.model.getEntities(1):
+            gmsh.model.mesh.setTransfiniteCurve(curve, 3 if gmsh.model.getType(1, curve) == 'Line' else ring_nodes)
+        for tag in roles:
+            if len(gmsh.model.getBoundary([(2, tag)])) == 4:
+                gmsh.model.mesh.setTransfiniteSurface(tag)
         mouth_curves = built.metadata['athMouthCurveTags']
         angular_span = math.tau if geometry.closed else (len(str(resolved.quadrants)) * math.pi / 2)
         mouth_intervals = max(2, math.ceil(silhouette * angular_span / math.tau / len(mouth_curves)))
         for curve in mouth_curves:
-            gmsh.model.mesh.setTransfiniteCurve(curve, mouth_intervals + 1)
+            gmsh.model.mesh.setTransfiniteCurve(curve, max(mouth_intervals + 1, ring_nodes))
         # A shared 1D tessellation makes caps and every loft close exactly.
         gmsh.model.mesh.generate(2)
         points, patches, curves = _initial(gmsh, roles)
@@ -273,27 +312,42 @@ def build(config, options):
             raise ValueError(f'max_vertices={cap} cannot represent the authored ATH patch topology')
         limited = False
         limit_reason = None
-        for iteration in range(20):
+        edge_floor = max(1e-8, float(extent)*1e-10)
+        for iteration in range(_MAX_REFINEMENT_ITERATIONS):
             marked = set()
             for patch in patches:
-                patch['measured'] = _measure(gmsh, patch, points)
-            chord_complete = all(patch['measured'][2].max() <= chord for patch in patches)
+                if 'measured' not in patch:
+                    patch['measured'] = _measure(gmsh, patch, points)
             for patch in patches:
                 xyz, normals, errors, steps = patch['measured']
-                for j, triangle in enumerate(patch['tri']):
-                    split_all = errors[j] > chord or patch['orientation_bad'][j]
-                    ids = [patch['ids'][i] for i in triangle]
-                    for i in range(3):
-                        if split_all or (chord_complete and patch['edge_steps'][j, i] > normal):
-                            marked.add(tuple(sorted((ids[i], ids[(i+1)%3]))))
+                ids = np.asarray(patch['ids'])[patch['tri']]
+                edges = np.stack((ids, np.roll(ids, -1, axis=1)), axis=-1)
+                split = np.broadcast_to((errors > chord)[:, None] | patch['orientation_bad'][:, None], (len(ids), 3)).copy()
+                # Fine strips use complete cuts to preserve triangle quality;
+                # coarse strips can use selective edge cuts at their wider target.
+                split |= patch['edge_steps'] > normal if lod == 'coarse' else (steps > normal)[:, None]
+                marked.update(map(tuple, np.sort(edges[split], axis=1)))
             if not marked:
                 break
-            if iteration == 19 or len(points) + len(marked) > cap:
-                limited = True
-                limit_reason = 'iterations' if iteration == 19 else 'vertices'
+            eligible = {edge for edge in marked if np.linalg.norm(points[edge[0]]-points[edge[1]]) > edge_floor}
+            if not eligible:
+                limited, limit_reason = True, 'edge-size'
                 break
+            marked = eligible
+            if iteration == _MAX_REFINEMENT_ITERATIONS-1 or len(points) + len(marked) > cap:
+                limited = True
+                limit_reason = 'iterations' if iteration == _MAX_REFINEMENT_ITERATIONS-1 else 'vertices'
+                break
+            previous_count = len(points)
             _refine(gmsh, points, patches, curves, marked,
                     faceted=geometry.topology_mode == 'legacy' and (geometry.preserve_grid or not geometry.wg_topology))
+            if len(points) == previous_count:
+                limited, limit_reason = True, 'no-progress'
+                break
+        # A no-progress callback can have invalidated measurement caches.
+        for patch in patches:
+            if 'measured' not in patch:
+                patch['measured'] = _measure(gmsh, patch, points)
         by_role = {}
         for patch in patches:
             role = patch['role']
@@ -317,13 +371,16 @@ def build(config, options):
             oriented = _orient_indices_to_normals(role, xyz, patch['tri'].astype(np.uint32).reshape(-1), normals,
                 wind_folds_individually=True)
             record = {'max_chord_error_mm': float(errors.max()), 'max_normal_step_deg': float(steps.max()),
-                      'measurement_complete': True, 'vertex_cap_limited': limited,
+                      'measurement_complete': True, 'vertex_cap_limited': limit_reason == 'vertices',
+                      'iteration_bound_limited': limit_reason == 'iterations',
+                      'refinement_stalled': limit_reason in ('edge-size', 'no-progress'),
+                      'minimum_edge_length_mm': edge_floor,
                       'probe_count_per_triangle': len(_PROBES),
                       'refinement_limit': limit_reason,
                       'foldedTriangles': oriented.folded_triangles,
                       'foldedTriangleIndices': list(oriented.folded_triangle_indices)}
             curvature = _curvature(gmsh, patch, normals) if options.include_curvature else (None, None)
-            by_role.setdefault(role, []).append((xyz, normals, oriented.indices, record, curvature, patch['tag']))
+            by_role.setdefault(role, []).append((xyz, normals, oriented.indices, record, curvature, patch['tag'], patch['crease_curves']))
         for role, pieces in by_role.items():
             offsets = np.cumsum([0] + [len(p[0]) for p in pieces[:-1]])
             xyz = np.concatenate([p[0] for p in pieces])
@@ -350,9 +407,10 @@ def build(config, options):
                 curvature_principal=np.concatenate([p[4][1] for p in pieces]) if options.include_curvature else None,
                 metadata={'samplingAuthority': 'authored-mesh-patches', 'fidelity': fidelity[role],
                           'foldedTriangles': len(folds), 'foldedTriangleIndices': folds,
+                          'creaseFeatures': [{'surface': p[5], 'boundaryCurves': p[6]} for p in pieces],
                           'authoredPatchSpans': [{'surface': p[5], 'start': int(offset), 'count': len(p[0])}
                                                 for p, offset in zip(pieces, offsets)]}))
-    warnings = ['ATH preview refinement reached its vertex or iteration bound; inspect achieved fidelity'] if limited else []
+    warnings = [f'ATH preview refinement stopped at {limit_reason}; inspect achieved fidelity'] if limited else []
     folded = sum(surface.metadata['foldedTriangles'] for surface in surfaces)
     if folded:
         warnings.append(f'Authored ATH patches carry {folded} folded triangles; winding follows the local parametric normals')

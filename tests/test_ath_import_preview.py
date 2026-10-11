@@ -103,9 +103,21 @@ def test_preview_and_viewport_use_mesh_patches_at_each_lod(name, lod, monkeypatc
             fidelity = output['metadata']['fidelity'][surface.role]
             assert fidelity['measurement_complete']
             assert fidelity['max_chord_error_mm'] <= output['metadata']['requested_fidelity']['max_chord_error_mm']
-            if not fidelity['vertex_cap_limited']:
-                assert fidelity['max_normal_step_deg'] <= output['metadata']['requested_fidelity']['max_normal_step_deg']
+            assert not fidelity['vertex_cap_limited']
+            assert not fidelity['iteration_bound_limited']
+            assert not fidelity['refinement_stalled']
+            assert surface.metadata['foldedTriangles'] == 0
+            assert surface.metadata['creaseFeatures']
+            assert fidelity['max_normal_step_deg'] <= output['metadata']['requested_fidelity']['max_normal_step_deg']
+            # Independent check of every emitted edge within the authored patches.
+            # Adjacent patches duplicate seam vertices and retain one-sided normals.
+            triangles = surface.indices.reshape(-1, 3)
+            n = surface.normals[triangles]
+            steps = np.degrees(np.arccos(np.clip(np.sum(n*np.roll(n, -1, axis=1), axis=-1), -1, 1)))
+            assert steps.max() <= output['metadata']['requested_fidelity']['max_normal_step_deg']
         assert_closed(surfaces, geometry)
+        assert sum(len(s.positions) for s in surfaces) <= {'coarse': 20000, 'fine': 100000, 'inspection': 170000}[lod]
+        assert output['metadata']['timings_ms']['total'] < {'coarse': 1500, 'fine': 6500, 'inspection': 10000}[lod]
     finally:
         gmsh.finalize()
 
@@ -136,26 +148,30 @@ def test_viewport_flat_list_export_retains_authored_inner_and_rear_counts(name):
         assert grid['outer_grid_n_length'] + 1 == geometry.ath_rear_points.shape[1]
 
 
-def test_wg_inner_export_can_request_bare_core_with_inactive_opus_rear():
+def test_wg_inner_export_can_request_bare_core_with_opus_rear_removed():
     cfg = config('coreabec')
     expected = resolve_geometry(cfg).geometry.inner_points
     cfg['mode'] = 'bare'
     cfg['mesh']['wallThickness'] = 0
+    for key in ('athRearShape', 'athRearFrontOffset', 'athRearStep'):
+        cfg['mesh'].pop(key, None)
     grid = build_viewport_geometry_from_config(cfg, point_lists=False)['grid']
     np.testing.assert_array_equal(grid['inner_grid'], expected)
     assert grid['outer_grid'] is None and grid['rear_apex'] is None
 
 
 @pytest.mark.parametrize('name', ['onr', 'rs1'])
-def test_visibility_and_placement_preserve_authored_surfaces(name):
+def test_visibility_preserves_authored_surfaces_and_unprobed_placement_is_refused(name):
     cfg = config(name)
     before = build_preview_geometry(cfg, PreviewOptionsV1(lod='coarse', include_curvature=False))
-    cfg['mesh']['verticalOffset'] = 23
     after = build_preview_geometry(cfg, PreviewOptionsV1(lod='coarse', include_curvature=False,
         include_source_cap=False, include_rear_cap=False, include_outer=False))
     assert [s.role for s in after.surfaces] == ['horn.inner']
-    np.testing.assert_array_equal(after.surfaces[0].positions,
-        before.surfaces[0].positions + [0,23,0])
+    np.testing.assert_array_equal(after.surfaces[0].positions, before.surfaces[0].positions)
+    cfg['mesh']['verticalOffset'] = 23
+    for consumer in (resolve_geometry, build_preview_geometry, build_viewport_geometry_from_config):
+        with pytest.raises(ConfigError, match='Mesh.VerticalOffset'):
+            consumer(cfg)
 
 
 @pytest.mark.parametrize('value', [-5, -20, -.001])
@@ -199,3 +215,24 @@ def test_bare_import_lip_keeps_only_its_open_mouth_boundary(lod, source_shape):
 def test_unrepresentable_preview_vertex_bound_is_explicit():
     with pytest.raises(ValueError, match='max_vertices=8 cannot represent'):
         build_preview_geometry(config('onr'), PreviewOptionsV1(max_vertices=8))
+
+
+def test_iteration_bound_is_distinct_from_vertex_cap(monkeypatch):
+    import hornlab_mesher.preview.ath_import as renderer
+    monkeypatch.setattr(renderer, '_MAX_REFINEMENT_ITERATIONS', 1)
+    preview = build_preview_geometry(config('coreabec'), PreviewOptionsV1(include_curvature=False))
+    for record in preview.metadata['fidelity'].values():
+        assert record['iteration_bound_limited']
+        assert not record['vertex_cap_limited']
+        assert record['refinement_limit'] == 'iterations'
+
+
+def test_refinement_stops_when_no_nodes_are_added(monkeypatch):
+    import hornlab_mesher.preview.ath_import as renderer
+    monkeypatch.setattr(renderer, '_refine', lambda *args, **kwargs: None)
+    preview = build_preview_geometry(config('coreabec'), PreviewOptionsV1(include_curvature=False))
+    for record in preview.metadata['fidelity'].values():
+        assert record['refinement_stalled']
+        assert not record['vertex_cap_limited']
+        assert not record['iteration_bound_limited']
+        assert record['refinement_limit'] == 'no-progress'
