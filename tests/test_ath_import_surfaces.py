@@ -183,6 +183,18 @@ def test_rosse_lip_refused():
         parse_text_config("R-OSSE = {\n R = 150\n a = 45\n}\nABEC.SimType = 2\n" + LIP)
 
 
+@pytest.mark.parametrize("segments", [1, 2])
+def test_lip_ring_on_the_mouth_refused_by_name(segments):
+    # A 45-degree cone has mouth angle 45 deg, so theta = 0 for row `segments`:
+    # ATH V2026-09a repeats the mouth row in its grid, which leaves zero-area faces.
+    text = ("OSSE = {\n L = 100\n r0 = 25\n a0 = 45\n a = 45\n k = 1\n n = 4\n q = 0.995\n s = 0\n}\n"
+            f"Mesh.Roundover = {{\n Radius = 20\n Segments = {segments}\n}}\n"
+            "Mesh.Quadrants = 1\nMesh.AngularSegments = 32\nMesh.LengthSegments = 20\n"
+            "Mesh.WallThickness = 5\nABEC.SimType = 2\n")
+    with pytest.raises(ConfigError, match=f"Mesh.Roundover lip row {segments} coincides"):
+        resolve_geometry(parse_text_config(text))
+
+
 def test_scalar_zero_is_noop():
     a = resolve_geometry(parse_text_config(BASE)).geometry
     b = resolve_geometry(parse_text_config(BASE + "Mesh.Roundover = 0\n")).geometry

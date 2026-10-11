@@ -57,6 +57,20 @@ def append_lip(body, radius, segments, *, profile_zero=None):
     g2 = math.atan2(p0[-2, 2] - p0[-4, 2], p0[-2, 0] - p0[-4, 0])
     angle = 2 * g1 - g2
     theta = np.arange(1, segments + 1) / segments * (math.pi / 2 - angle) - angle
+    # Consecutive rings (the mouth is theta = 0) lie a chord 2R|sin(dtheta/2)|
+    # apart. ATH writes a coincident ring as a repeated grid row, which leaves
+    # zero-area faces, so refuse it rather than build a degenerate surface.
+    # A later row with theta = 0 would land on the mouth itself.
+    spacing = 2 * radius * np.abs(np.sin(np.diff(np.concatenate(([0.0], theta))) / 2))
+    on_mouth = 2 * radius * np.abs(np.sin(theta / 2))
+    degenerate = (spacing < 1e-6) | (on_mouth < 1e-6)
+    if np.any(degenerate):
+        k = int(np.argmax(degenerate)) + 1
+        raise ValueError(
+            f"Mesh.Roundover lip row {k} coincides with the ring before it "
+            f"(mouth angle {math.degrees(angle):.3f} deg, Segments {segments}); "
+            "ATH would build zero-area faces. Change Radius, Segments or the mouth angle"
+        )
     scale = 1 + radius * np.sin(theta) / p0[-1, 0]
     lip = np.repeat(grid[:, -1:, :], segments, axis=1)
     lip[..., :2] *= scale[None, :, None]
