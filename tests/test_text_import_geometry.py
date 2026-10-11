@@ -125,6 +125,9 @@ def test_imported_explicit_shrink_targets_and_native_nonshrinking_controls():
     config = parse_text_config(BASE + "Morph.TargetShape = 1\nMorph.TargetWidth = 360\nMorph.TargetHeight = 280\nMorph.CornerRadius = 35\nMorph.AllowShrinkage = 1\n")
     assert np.max(np.abs(inner(config)[:, -1, :2]), axis=0) == pytest.approx([180,140], abs=1e-12)
     control = parse_text_config(BASE + "Morph.TargetShape = 1\nMorph.TargetWidth = 400\nMorph.TargetHeight = 380\nMorph.CornerRadius = 35\n")
+    # Compare the morph construction on identical stations; the imported
+    # default axial map is versioned independently of native sampling.
+    control["mesh"]["samplingMode"] = "uniform"
     native = copy.deepcopy(control)
     native.pop(TEXT_IMPORT_VERSION_KEY)
     assert np.array_equal(inner(control), inner(native))

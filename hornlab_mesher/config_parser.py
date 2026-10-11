@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_coefficients
 from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, text_uses_import_geometry, text_geometry_version
+from .text_import import ATH_AXIAL_RULE_KEY, ath_axial_sampling_rule
 from .profile_common import eval_param
 
 import numpy as np
@@ -169,7 +170,7 @@ _IGNORED_ATH_KEYS = frozenset(
 _IGNORED_ATH_BLOCKS = frozenset({"Report", "GridExport", "FRDExport", "RespExport"})
 
 # Top-level keys read directly rather than through a mapping table.
-_KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Simulation.SimType", "Scale", "Throat.Profile", "Length.Mode"})
+_KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Simulation.SimType", "Scale", "Throat.Profile", "Length.Mode", "NAC"})
 _KNOWN_BLOCKS = frozenset({"Mesh", "Morph", "MORPH", "GCurve", "GCURVE", "Mesh.Enclosure", "Source"})
 _PROFILE_BLOCKS = ("R-OSSE", "ROSSE", "OSSE")
 # Namespaces with their own, older handling: unknown ``Mesh.*`` keys are refused
@@ -640,9 +641,25 @@ def parse_text_config(content: str) -> dict[str, Any]:
     try:
         imported_geometry = text_uses_import_geometry(content)
         saved_geometry_version = text_geometry_version(content)
+        axial_rule, ath_version = ath_axial_sampling_rule(content) if imported_geometry else (None, None)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     blocks, flat, nested = _parse_ath_blocks(content)
+    # These C functions have an output argument as well as a return value;
+    # there is no scalar expression equivalent. Refuse at import, by name.
+    expression_flat = {key: value for key, value in flat.items()
+                       if not _ath_item_ignored(key, block=False)}
+    for items in (expression_flat, *(items for name, items in blocks.items()
+                          if not _ath_item_ignored(name, block=True))):
+        for key, value in items.items():
+            try:
+                tree = ast.parse(value.replace("^", "**"), mode="eval")
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in {"frexp", "modf"}):
+                    raise ConfigError(f"{key}: function {node.func.id} returns two values and is not supported")
     # Field precedence must not conceal an unsupported coefficient in an
     # enabled section. Wholly ignored subtrees have unrelated member names.
     for items in (flat, *(items for name, items in blocks.items() if not _ath_item_ignored(name, block=True))):
@@ -868,6 +885,18 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("SurfaceFit", "surfaceFit"),
         ),
     )
+    if "NAC" in flat:
+        try:
+            nac = Decimal(flat["NAC"])
+            if not nac.is_finite() or nac != nac.to_integral_value():
+                raise ValueError("expected an integer")
+        except (InvalidOperation, ValueError) as exc:
+            raise ConfigError(f"NAC must be a finite integer, got {flat['NAC']!r}") from exc
+        mesh["_athNacPresent"] = True
+        logger.warning(
+            "[hornlab-mesher] NAC present: preserving Mesh.AngularSegments without "
+            "the CornerSegments adjustment; ignoring NAC's value (ATH ring-spline splitting only)"
+        )
     # ATH SubdomainSlices index the segments 0..LengthSegments-1, where the
     # last slice is the mouth; internal indices address grid rings, so shift
     # by one (Ath 4.8.2 User Guide 6.7). An explicit empty value stays empty.
@@ -1022,6 +1051,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
     config: dict[str, Any] = {"formula": formula, "profile": canonical_stretch_params(profile), "mesh": mesh, "simType": sim_type}
     if imported_geometry:
         config[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
+        config[ATH_AXIAL_RULE_KEY] = axial_rule
+        logger.info("[hornlab-mesher] ATH axial sampling rule %s selected from %s",
+                    axial_rule, ath_version or "unstamped text (current default)")
     # Global Scale multiplies every linear geometry dimension after profile
     # evaluation (resolutions and mesh sizes stay in raw millimetres).
     scale = _maybe_number(flat.get("Scale"))

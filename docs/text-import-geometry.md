@@ -47,6 +47,39 @@ resolution retains the native 26 mm default. These defaults apply to the
 supported OSSE/R-OSSE text profile families; native authored geometry types
 retain their own defaults even when provenance is carried alongside them.
 
+Expressions use the scalar C99 function whitelist in
+[the config schema](config-schema.md#parameter-expressions). ATH V2026-08c
+probes establish the Gielis `sf(m,n1,n2,n3,a,b,p)` formula, natural `log`,
+and half-away-from-zero `round`. The two-value functions `frexp` and `modf`
+are refused during parsing and evaluation.
+
+Imported angular sampling adds the corner budget and rounds up to four
+segments even for a plain profile: `AngularSegments=100`, `CornerSegments=4`
+gives 104. The presence of integer `NAC` disables this addition; the value
+does not affect the grid and is ignored with a named warning. Previously only
+rectangular morphs received the corner-budget addition.
+
+The current default OSSE axial map uses a cubic Bézier from `(0,0)` to
+`(1,1)` with controls `(0.5,0.1)`, `(0.5,0.92)`. For each equally spaced
+abscissa it selects the first curve parameter on a 0.001 grid reaching that
+abscissa. This replaces the approximate historical map in current imported OSSE
+geometry. Explicit uniform/custom maps, R-OSSE's reference map and native
+geometry keep their sampling rules. Current imported morphs reserve at least the
+first segment even for `FixedPart=0`; the first positive station has zero
+blend. Morph progress uses the axial map before throat stretch, so stretch
+changes z while preserving the morphed x/y coordinates.
+
+An ATH echo line `; Ath version Vyyyy-mm[x]` in the leading comment header
+selects the axial interpretation at import: V2025-06 and older use the previous
+OSSE station map and morph start (zero fixed part can start at the throat).
+Their implicit rectangular morph dimensions use the raw ring before the corner
+budget. Unstamped text and V2025-12 or newer use the current rule above. Stamps strictly
+between V2025-06 and V2025-12 are unverified and use the current rule. The selected
+rule is retained in internal import provenance and logged; native TOML/JSON gain
+no controls. Evidence: V2025-12, V2026-08c and V2026-09a produce byte-identical
+CORE and Solana grids, while all 23 archived configs echo V2025-06; the previous
+sampler reproduces the four affected archive parity cases.
+
 | Control | Imported text interpretation | Native authoring |
 | --- | --- | --- |
 | OSSE `Slot.Length` | A conical prefix at slope `tan(a0)`. `r0` is its starting radius; the main profile starts at `r0 + slot*tan(a0)`. The slot is included in `Length`; the main termination uses `Length - slot`. | A cylindrical prefix at `r0`, added to the body length unless an explicit total-length mode is selected. |

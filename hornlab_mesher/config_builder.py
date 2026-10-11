@@ -58,6 +58,7 @@ from .text_import import uses_text_import_geometry
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
+from .text_import import ATH_AXIAL_RULE_KEY, ATH_AXIAL_LEGACY
 from .throat_adapter import normalize_adapter, resolve_adapter
 
 logger = logging.getLogger(__name__)
@@ -1151,6 +1152,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         common["_athLengthMode"] = length_mode
     if imported_geometry:
         common[TEXT_IMPORT_VERSION_KEY] = config[TEXT_IMPORT_VERSION_KEY]
+        # Current sampling is the implicit imported default. Only carry the
+        # historical override into geometry params, preserving their wire shape.
+        if config.get(ATH_AXIAL_RULE_KEY) == ATH_AXIAL_LEGACY:
+            common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
+    if mesh.get("_athNacPresent"):
+        common["_athNacPresent"] = True
     _apply_driver_adapter(common, profile, config)
     if formula in {"OSSE", "R-OSSE"}:
         for name in ("s1", "s2"):

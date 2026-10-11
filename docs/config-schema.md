@@ -30,6 +30,24 @@ an unknown version is refused. Native authored configurations omit the field.
 
 Unsupported extensions fail before any geometry is built.
 
+## Parameter expressions
+
+Numeric profile expressions accept `p` (azimuth in radians), `pi`, `e`, and
+the scalar ATH C99 functions: `abs acos acosh asin asinh atan atan2 atanh
+cbrt ceil copysign cos cosh deg erf erfc exp exp2 expm1 fdim floor fma max
+min fmod gamma hypot ldexp lgamma log log10 log1p log2 logb nearbyint
+nextafter pow rad remainder round scalbn sf sin sinh sqrt tan tanh trunc`.
+`deg` converts radians to degrees; `rad` converts degrees to radians.
+`log` is natural logarithm. `round` rounds ties away from zero;
+`nearbyint` uses ties to even (the default C rounding mode).
+`sf(m,n1,n2,n3,a,b,p)` evaluates
+`(|cos(m*p/4)/a|^n2 + |sin(m*p/4)/b|^n3)^(-1/n1)`.
+ATH V2026-08c exports verify the `sf` argument order, non-unit axes and odd
+symmetries, plus natural `log` and `round(2.5) = 3`.
+`frexp` and `modf` are refused by name because they return two values.
+Only direct whitelisted function calls are allowed; attributes, builtins and
+keyword arguments remain unavailable. `^` denotes exponentiation.
+
 ## Top-Level Keys
 
 | Key | Aliases | Default | Notes |
@@ -605,6 +623,9 @@ Imported text mappings include:
   `Mesh.RearResolution`, `Mesh.SubdomainSlices` (shifted by one onto grid
   rings), `Mesh.InterfaceOffset`, `Mesh.InterfaceResolution`,
   `Mesh.SamplingMode`, and `Mesh.ZMapPoints`.
+- `NAC`: a finite integer. Its presence suppresses the angular corner-budget
+  addition. Its value controls ATH's ring-spline splitting only and is ignored
+  with a warning naming `NAC`; 0, 4, 10 and 25 give identical mesher grids.
 - Morph: `Morph.*`, `MORPH.*`, `[Morph]`, and `[MORPH]` for
   `Morph.TargetShape`, `Morph.TargetWidth`, `Morph.TargetHeight`,
   `Morph.CornerRadius`, `Morph.Rate`, `Morph.FixedPart`, and
@@ -749,6 +770,13 @@ The text parser is an import adapter only. It does not build geometry, infer
 unsupported ATH objects, or preserve unknown sections for later use. New ATH
 behaviour is added only after it has been confirmed against ATH output; until
 then the item is refused.
+
+For imported geometry without `NAC`, the sampling budget includes
+`Mesh.CornerSegments`, rounded up to four segments, for plain profiles as
+well as rectangular morphs (`100 + 4` becomes `104`). Earlier mesher versions
+applied this addition only to rectangular morphs. Native geometry keeps its
+existing budget rule. V2026-08c OSSE imports also use the measured default
+axial map described in [text import geometry](text-import-geometry.md).
 
 ## Standalone source body
 

@@ -17,6 +17,7 @@ from hornlab_mesher.builders.osse_waveguide import _osse_params
 from hornlab_mesher.builders.rosse_waveguide import _rosse_params
 from hornlab_mesher.config_parser import ConfigError, parse_text_config
 from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
+from hornlab_mesher.text_import import ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT, ATH_AXIAL_LEGACY
 from hornlab_mesher.geometry import OsseHornGeometry, RosseHornGeometry
 from hornlab_mesher.profile_formulas import (
     _icw_cache_key, _stretch_x, _stretch_x_curve,
@@ -250,6 +251,12 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
     # account for the persisted import interpretation introduced afterward.
     expected_parsed[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
     expected_params[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
+    # Inline witnesses are unstamped; all captured archive configs echo
+    # V2025-06. Account for provenance without changing geometry expectations.
+    rule = ATH_AXIAL_CURRENT if 'text' in case else ATH_AXIAL_LEGACY
+    expected_parsed[ATH_AXIAL_RULE_KEY] = rule
+    if rule == ATH_AXIAL_LEGACY:
+        expected_params[ATH_AXIAL_RULE_KEY] = rule
     if approved_rot:
         expected_parsed['profile']['rot'] = 10
         expected_params['rot'] = 10
@@ -437,7 +444,8 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
 @pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
 def test_evaluated_zero_import_result_equals_captured_base(case):
     parsed = parse_text_config(case['text'])
-    expected = {**copy.deepcopy(case['parsed']), TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION}
+    expected = {**copy.deepcopy(case['parsed']), TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION,
+                ATH_AXIAL_RULE_KEY: ATH_AXIAL_CURRENT}
     _measured_s_default(case['text'], parsed['formula'], expected['profile'])
     _assert_base_equal(parsed, expected)
 
@@ -448,6 +456,7 @@ def test_inactive_composition_imports_equal_true_base(case, dormant):
     text = case['text'].replace('\n}', ''.join(f'\n{k} = {v}' for k, v in dormant.items()) + '\n}')
     expected = copy.deepcopy(case['parsed'])
     expected[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
+    expected[ATH_AXIAL_RULE_KEY] = ATH_AXIAL_CURRENT
     if 'top_level_rot' in case:
         expected['profile']['rot'] = case['top_level_rot']
     parsed = parse_text_config(text)

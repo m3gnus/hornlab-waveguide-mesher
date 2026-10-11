@@ -22,7 +22,7 @@ from .profile_common import (
     eval_param,
 )
 from .offset_envelope import regularize_outer_offset
-from .text_import import uses_text_import_geometry
+from .text_import import uses_text_import_geometry, uses_current_ath_axial_sampling
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -78,6 +78,15 @@ def _normalise_ath_angular_segments(raw_count: int) -> int:
     if count % 4 == 0:
         return count
     return max(8, int(math.ceil(count / 8.0) * 8))
+
+
+def _sampling_angular_segments(params: Mapping[str, Any]) -> int:
+    count = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
+    if uses_text_import_geometry(params) and not params.get("_athNacPresent"):
+        # V2026-08c applies this budget even without a rectangular morph.
+        corner = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
+        count = int(math.ceil((count + corner) / 4.0)) * 4
+    return count
 
 
 
@@ -157,6 +166,10 @@ def _morph_corner_arc_subdivision(params: Mapping[str, Any]) -> int:
 def _morph_quadrant_budget(
     params: Mapping[str, Any], angular_segments: int
 ) -> int:
+    if uses_text_import_geometry(params):
+        # The shared angular rule already accounts for the corner budget.
+        # NAC's presence disables that addition; its value never enters here.
+        return max(1, angular_segments // 4)
     # ATH adds CornerSegments to the angular point budget and rounds the
     # total up to a whole number of points per quadrant (m2-clone: 100 + 4 ->
     # 104; solana: 36 + 1 -> 40).
@@ -230,7 +243,7 @@ def _morph_corner_arc_span(
         return None
     if not half_width or not half_height or half_width <= 0.0 or half_height <= 0.0:
         return None
-    angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
+    angular_segments = _sampling_angular_segments(params)
     return rounded_rect_corner_arc_span(
         _morph_quadrant_budget(params, angular_segments),
         half_width,
@@ -251,7 +264,7 @@ def _angle_list(
             np.asarray(params["_acoustic_mouth_angles"], dtype=np.float64),
             _normalise_quadrants(params.get("quadrants", "1234")),
         )
-    angular_segments = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
+    angular_segments = _sampling_angular_segments(params)
     morphed_full = _morph_angle_list(
         params,
         angular_segments,
@@ -295,6 +308,22 @@ _ATH_T_9 = np.asarray(
 # uniform abscissa steps. Fitted against the ATH m2-clone 32-segment grid and
 # the solana 9-segment GridExport; both match to ~1e-3 of normalized length.
 _ATH_OSSE_ZMAP_BEZIER = ((0.5, 0.1), (0.5, 0.95))
+
+
+def _ath_osse_import_zmap(n_length: int) -> np.ndarray:
+    """V2025-12+ default: first 0.001-parameter step reaching each abscissa.
+
+    Independent 160/260 mm exports recover exact parameter multiples of
+    0.001 with controls (0.5, 0.1), (0.5, 0.92). Dense inversion of the
+    historical fitted curve misses stations by millimetres. Keep that older
+    map for native callers explicitly requesting ATH sampling.
+    """
+    s = np.arange(1001, dtype=np.float64) / 1000.0
+    one_minus = 1.0 - s
+    x = 1.5 * s * one_minus**2 + 1.5 * s**2 * one_minus + s**3
+    y = 0.3 * s * one_minus**2 + 2.76 * s**2 * one_minus + s**3
+    indices = np.searchsorted(x, np.linspace(0.0, 1.0, max(1, int(n_length)) + 1))
+    return y[indices]
 
 
 def _bezier_zmap(n_length: int, controls: tuple[tuple[float, float], tuple[float, float]]) -> np.ndarray:
@@ -468,7 +497,10 @@ def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndar
     if mode == "uniform":
         return np.linspace(0.0, 1.0, max(1, int(n_length)) + 1, dtype=np.float64), mode
     if mode == "ath-default-zmap":
-        return _ath_default_zmap(n_length, _normalise_formula(params.get("type", "OSSE"))), mode
+        formula = _normalise_formula(params.get("type", "OSSE"))
+        if formula == "OSSE" and uses_current_ath_axial_sampling(params):
+            return _ath_osse_import_zmap(n_length), mode
+        return _ath_default_zmap(n_length, formula), mode
     if mode == "zmap":
         return _custom_zmap(
             n_length,
@@ -955,6 +987,10 @@ def _morph_schedule(
     last = len(t_unit) - 1
     configured = eval_param(params.get("morphFixed"), 0.0, 0.0)
     index = min(last, int(np.searchsorted(measure, configured, side="left")))
+    if uses_current_ath_axial_sampling(params):
+        # Current ATH reserves the first segment even for FixedPart = 0: the first
+        # positive station has zero blend. Progress remains pre-stretch.
+        index = max(1, index)
     if e > 0.0:
         # Never inside the extension, even for a negative FixedPart.
         index = max(index, min(last, int(np.searchsorted(unit_progress, -1.0e-12, side="left"))))
@@ -1674,7 +1710,16 @@ def build_point_grid_arrays(
         t_max = 1.0
         throat_prefix = _ThroatPrefix(0.0, 0.0)
     else:
-        angles, full_circle = _angle_list(params)
+        raw_angle_params = params
+        if (uses_text_import_geometry(params) and not uses_current_ath_axial_sampling(params)
+                and _morph_active(params, 0.0) and _morph_target_shape(params, 0.0) == 1
+                and (eval_param(params.get("morphWidth"), 0.0, 0.0) <= 0.0
+                     or eval_param(params.get("morphHeight"), 0.0, 0.0) <= 0.0)):
+            # Historical implicit rectangle dimensions were measured on the
+            # raw ring before adding the morph corner budget. The final morph
+            # angle list below still receives the full budget (and NAC rule).
+            raw_angle_params = {**params, "cornerSegments": 0}
+        angles, full_circle = _angle_list(raw_angle_params)
         t_max = _rosse_tmax(params) if formula == "R-OSSE" else 1.0
         if formula == "ICW":
             # ICW samples uniformly in sigma (normalised arc length): it has no

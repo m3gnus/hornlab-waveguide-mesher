@@ -4,6 +4,7 @@ import ast
 import math
 import operator
 import re
+from fractions import Fraction
 from functools import lru_cache
 from typing import Any, Callable, Literal, Mapping
 
@@ -40,6 +41,27 @@ def _bounded_pow(base: Any, exponent: Any) -> float:
         ) from exc
 
 
+def _superformula(m: float, n1: float, n2: float, n3: float,
+                  a: float, b: float, p: float) -> float:
+    """ATH sf(m, n1, n2, n3, a, b, p), verified by V2026-08c exports."""
+    return (abs(math.cos(m * p / 4) / a) ** n2
+            + abs(math.sin(m * p / 4) / b) ** n3) ** (-1 / n1)
+
+
+def _c99_round(x: float) -> float:
+    # Adding 0.5 can round a value just below the tie up to the tie itself.
+    magnitude = abs(x)
+    integral = math.floor(magnitude)
+    return math.copysign(integral + (magnitude - integral >= 0.5), x)
+
+
+def _fma_fallback(x: float, y: float, z: float) -> float:
+    """Single rounding for finite inputs on Python versions before 3.13."""
+    if not all(math.isfinite(v) for v in (x, y, z)):
+        return x * y + z
+    return float(Fraction(x) * Fraction(y) + Fraction(z))
+
+
 _EVAL_GLOBALS = {
     "__builtins__": {},
     "abs": abs,
@@ -54,6 +76,23 @@ _EVAL_GLOBALS = {
     "acos": math.acos,
     "atan": math.atan,
     "atan2": math.atan2,
+    **{name: getattr(math, name) for name in (
+        "acosh", "asinh", "atanh", "ceil", "copysign", "cosh", "erf", "erfc",
+        "exp", "expm1", "floor", "fmod", "gamma", "hypot", "ldexp", "lgamma",
+        "log", "log10", "log1p", "log2", "nextafter", "remainder", "sinh",
+        "tanh", "trunc",
+    )},
+    "cbrt": getattr(math, "cbrt", lambda x: math.copysign(abs(x) ** (1 / 3), x)),
+    "exp2": getattr(math, "exp2", lambda x: 2.0 ** x),
+    "deg": math.degrees,
+    "rad": math.radians,
+    "fdim": lambda x, y: max(x - y, 0.0),
+    "fma": getattr(math, "fma", _fma_fallback),
+    "logb": lambda x: float(math.frexp(abs(x))[1] - 1) if x else math.log(0),
+    "nearbyint": lambda x: float(round(x)),
+    "round": _c99_round,
+    "scalbn": math.ldexp,
+    "sf": _superformula,
     "pi": math.pi,
     "e": math.e,
 }
@@ -133,6 +172,8 @@ class _ParamExpressionValidator(ast.NodeVisitor):
         if not isinstance(node.func, ast.Name):
             raise ValueError("only direct whitelisted function calls are allowed")
         name = node.func.id
+        if name in {"frexp", "modf"}:
+            raise ValueError(f"function {name!r} returns two values and is not supported")
         if "__" in name or name not in _EVAL_FUNCTIONS:
             raise ValueError(f"unknown function {name!r}")
         for arg in node.args:

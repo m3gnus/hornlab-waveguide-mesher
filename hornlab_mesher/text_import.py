@@ -7,6 +7,35 @@ TEXT_IMPORT_VERSION_KEY = "_textImportVersion"
 TEXT_IMPORT_VERSION = "ath-2026-08c-v1"
 NATIVE_GEOMETRY_VERSION = "native-v1"
 GEOMETRY_STAMP_LABEL = "Waveguide Generator geometry-interpretation:"
+ATH_AXIAL_RULE_KEY = "_athAxialSamplingRule"
+ATH_AXIAL_LEGACY = "ath-v2025-06"
+ATH_AXIAL_CURRENT = "ath-v2025-12+"
+
+
+def ath_axial_sampling_rule(content: str) -> tuple[str, str | None]:
+    """Interpret ATH's version echo in the leading comment header only.
+
+    Month/suffix variants through June 2025 use the historical rule. Builds
+    between June and December 2025 are unverified and use the current rule.
+    """
+    echo = re.compile(r"^[ \t]*;[ \t]*Ath version (V([0-9]{4})-(0[1-9]|1[0-2])[a-z]?)[ \t]*$", re.IGNORECASE)
+    versions: dict[str, tuple[int, int]] = {}
+    for line in content.splitlines():
+        if line.strip() and not line.lstrip().startswith(";"):
+            break
+        match = echo.fullmatch(line)
+        if match:
+            versions[match.group(1).lower()] = (int(match.group(2)), int(match.group(3)))
+    if len(versions) > 1:
+        raise ValueError("conflicting ATH version echoes")
+    version = next(iter(versions), None)
+    legacy = version is not None and versions[version] <= (2025, 6)
+    return (ATH_AXIAL_LEGACY if legacy else ATH_AXIAL_CURRENT), version
+
+
+def uses_current_ath_axial_sampling(values: Mapping[str, Any]) -> bool:
+    """Only imported geometry can select either ATH axial interpretation."""
+    return uses_text_import_geometry(values) and values.get(ATH_AXIAL_RULE_KEY) != ATH_AXIAL_LEGACY
 
 
 def text_geometry_version(content: str) -> str | None:
