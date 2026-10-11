@@ -723,7 +723,7 @@ inside `R-OSSE`, a `Plan` inside `Mesh.Enclosure` and a mistyped
 
 Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `Throat.Ext.Included`, `HornGeometry`, `Horn.Adapter`, `Horn.Part:<tag>`,
-`Profile`, `Mesh.Roundover = {}`, `BEE = {}`, `Source.Array`,
+`Profile`, `BEE = {}`, `Source.Array`,
 `FusionRotaryProfile = {}`, named enclosure plans, `Plan` and `Dim` inside
 `Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
 of the other formula. OSSE honours top-level `Rot` beside a profile block;
@@ -749,7 +749,7 @@ the missing profile. For example, `osse` suggests `OSSE`, `Horn.Part:1`
 names the unsupported two-profile geometry, and `Lenght` suggests `Length`.
 
 Refused with their own messages: `Throat.Profile` other than 1 (OS-SE),
-`Rollback.*` (current ATH builds refuse it too), `Mesh.RearShape` other than 1,
+`Rollback.*` (current ATH builds refuse it too), `Mesh.RearShape` other than 1 or 3,
 `Mesh.ThroatSegments` and `Mesh.ThroatExtSegments`, any other unrecognised
 `Mesh.*` key, `Source.Contours`, `LFSource*`, `Source.Velocity = 2`, and a
 `Mesh.Enclosure` `Spacing` with fewer than four values.
@@ -799,3 +799,23 @@ actual facet certificates, shared topology and zero-volume STEP contract.
 adapter/body construction, with root `scale` retaining X/Y scaling and
 finished-mm vertical placement. See the [bounded native composition contract](native-adapter-axial-scale.md)
 for its strict canonical inputs, physical domain, preview certificates and export support.
+
+### ATH import lip and rear controls
+
+| ATH text control | Import interpretation |
+| --- | --- |
+| `Mesh.Roundover = { Radius = R; Segments = N }` | OSSE-only lip appended after morph/stretch; members on separate lines. Radius is finite and positive, Segments is an integer >= 1, default 5. Stored as import-only `mesh.athRoundover` (`radius`, `segments`). |
+| `Mesh.Roundover = 0` | No-op; other scalar values are refused. |
+| `Mesh.RearShape = 1` | Existing full rear without a lip; with a lip, selected meridional-normal offsets, -5 mm throat shift, 5 mm z step. |
+| `Mesh.RearShape = 3` | Opus rear: -10 mm throat shift, offset selected rings, unoffset front ring, non-planar fan. Wall thickness clamped to 0.1–1000 mm. Stored as `mesh.athRearShape`. |
+| `Mesh.RearShape.FrontOffset` | Finite nonnegative millimetres, default 40; requires RearShape 3. Stored as `mesh.athRearFrontOffset`. |
+| `Mesh.RearShape.Step` | Finite positive millimetres, default 25; requires RearShape 3. Stored as `mesh.athRearStep`. |
+
+These data require the retained ATH import interpretation marker. They do not
+map onto native `mesh.mouth_roundover_radius_mm`. Unknown Roundover members,
+R-OSSE lip, enclosure/infinite-baffle/CircSym compositions, and free-standing
+subdomain interfaces and `Mesh.SurfaceFit = approximate` are named refusals. RearShape 2/5, RearCubic, OpusRear,
+MouthArc and RoundedEdge remain refused. Preview and viewport support active
+ATH lip and Opus rear controls from the mesh's authored surfaces. Negative
+FrontOffset and STEP transport remain named refusals. See [lip construction](mouth-roundover-contract.md#ath-import-lip)
+and [rear construction](ath-rear-import-contract.md#opus-rear-and-rearshape-1-with-an-ath-lip).

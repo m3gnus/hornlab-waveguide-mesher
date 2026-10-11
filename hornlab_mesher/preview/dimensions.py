@@ -98,7 +98,10 @@ def _geometry_dimensions(geometry) -> dict[str, Any]:
                 "horn_overall":(box[1]-box[0]).tolist()}
     inner = geometry.inner_points
     points = [inner.reshape(-1, 3)]
-    if geometry.outer_points is not None:
+    if getattr(geometry, "ath_rear_points", None) is not None:
+        points.append(geometry.ath_rear_points.reshape(-1, 3))
+        points.append(np.asarray(geometry.ath_rear_apex).reshape(1, 3))
+    elif geometry.outer_points is not None:
         points.append(geometry.outer_points.reshape(-1, 3))
         rear = geometry.outer_points[:, 0].copy()
         rear[:, 2] = inner[:, 0, 2].mean() - geometry.wall_thickness_mm

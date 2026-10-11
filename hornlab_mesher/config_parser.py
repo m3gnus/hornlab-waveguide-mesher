@@ -171,7 +171,7 @@ _IGNORED_ATH_BLOCKS = frozenset({"Report", "GridExport", "FRDExport", "RespExpor
 
 # Top-level keys read directly rather than through a mapping table.
 _KNOWN_TOP_LEVEL_KEYS = frozenset({"ABEC.SimType", "Simulation.SimType", "Scale", "Throat.Profile", "Length.Mode", "NAC"})
-_KNOWN_BLOCKS = frozenset({"Mesh", "Morph", "MORPH", "GCurve", "GCURVE", "Mesh.Enclosure", "Source"})
+_KNOWN_BLOCKS = frozenset({"Mesh", "Morph", "MORPH", "GCurve", "GCURVE", "Mesh.Enclosure", "Mesh.Roundover", "Source"})
 _PROFILE_BLOCKS = ("R-OSSE", "ROSSE", "OSSE")
 # Namespaces with their own, older handling: unknown ``Mesh.*`` keys are refused
 # by ``_reject_unsupported_ath_keys`` and unknown ``Morph.*``/``GCurve.*`` keys
@@ -207,7 +207,6 @@ _UNSUPPORTED_ATH_REASONS: dict[str, str] = {
     "Rot": "Rot in this position has not been checked against ATH output",
     "Length": "Length in this position has not been checked against ATH output",
     "Profile": "a profile read from a point file is not implemented",
-    "Mesh.Roundover": "the mouth roundover is not implemented",
     "Mesh.Enclosure": (
         "enclosure members inside Mesh and scalar enclosure markers are not supported; "
         "use supported top-level Mesh.Enclosure.* keys or a separate Mesh.Enclosure = {...} block"
@@ -412,6 +411,8 @@ def _reject_unrecognised_ath_items(
             members, known = items, known_profile
         elif name == "Mesh.Enclosure":
             members, known = items, _ENCLOSURE_KEYS
+        elif name == "Mesh.Roundover":
+            members, known = items, {"Radius", "Segments"}
         elif name == "Source":
             members, known = items, _SOURCE_KEYS
         elif name == "Mesh":
@@ -474,8 +475,13 @@ _KNOWN_MESH_KEYS = frozenset(
         "SurfaceFit",
         "ZMapPoints",
         "ZMap",
-        # Recognised only to be refused above, with a better message.
+        # Import geometry controls; block members are also exposed to consumers.
         "RearShape",
+        "RearShape.FrontOffset",
+        "RearShape.Step",
+        "Roundover",
+        "Roundover.Radius",
+        "Roundover.Segments",
         "ThroatSegments",
         "ThroatExtSegments",
         # Deferred to the final unread-item check, after C4 composition.
@@ -564,8 +570,8 @@ def _reject_unsupported_ath_keys(
     if rollback_keys:
         raise ConfigError(f"Rollback is not supported by this mesher (saw {', '.join(rollback_keys)})")
     rear_shape = _maybe_number(mesh_items.get("RearShape"))
-    if rear_shape is not None and rear_shape != 1:
-        raise ConfigError(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) is implemented")
+    if rear_shape is not None and rear_shape not in {1, 3}:
+        raise ConfigError(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) and Opus rear (3) are implemented")
     # The user guide spells the throat-extension slice count ``ThroatSegments``;
     # current ATH builds read ``ThroatExtSegments``.
     for throat_segments in ("ThroatSegments", "ThroatExtSegments"):
@@ -883,6 +889,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # interpolating fit out of reach of exactly the users most likely
             # to want it: those importing an ATH config.
             ("SurfaceFit", "surfaceFit"),
+            ("RearShape", "athRearShape"),
+            ("RearShape.FrontOffset", "athRearFrontOffset"),
+            ("RearShape.Step", "athRearStep"),
         ),
     )
     if "NAC" in flat:
@@ -1034,6 +1043,68 @@ def parse_text_config(content: str) -> dict[str, Any]:
         )
     if sim_type == 1 and enclosure:
         raise ConfigError("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
+
+    # Import-only surfaces measured against ATH V2026-08c output.
+    roundover = blocks.get("Mesh.Roundover")
+    if "Roundover" in mesh_items and _maybe_number(mesh_items["Roundover"]) != 0:
+        raise ConfigError("Mesh.Roundover scalar form is unsupported: ATH requires a Radius/Segments block")
+    if any(key.startswith("Roundover.") for key in mesh_items):
+        raise ConfigError("Mesh.Roundover members must be in a Mesh.Roundover block")
+    if roundover is not None:
+        unknown = sorted(key for key in roundover if key not in {"Radius", "Segments"} and not _ath_item_disabled(key))
+        if unknown:
+            raise ConfigError("unsupported item(s) in ATH config: Mesh.Roundover member(s): " + ", ".join("Mesh.Roundover." + key for key in unknown))
+        try:
+            radius = float(roundover.get("Radius", "nan"))
+            segments = float(roundover.get("Segments", "5"))
+        except ValueError as exc:
+            raise ConfigError("Mesh.Roundover.Radius/Segments must be finite numbers") from exc
+        if not np.isfinite(radius) or radius <= 0:
+            raise ConfigError("Mesh.Roundover.Radius must be finite and > 0")
+        if not np.isfinite(segments) or segments < 1 or segments != int(segments):
+            raise ConfigError("Mesh.Roundover.Segments must be a finite integer >= 1")
+        mesh["athRoundover"] = {"radius": radius, "segments": int(segments)}
+    active = roundover is not None or mesh.get("athRearShape") == 3
+    if active:
+        feature = "Mesh.Roundover" if roundover is not None else "Mesh.RearShape = 3"
+        if not imported_geometry:
+            raise ConfigError(feature + " requires ATH import geometry interpretation")
+        if enclosure or "Mesh.Enclosure" in blocks:
+            raise ConfigError(feature + " with Mesh.Enclosure is unsupported: the ATH free-standing lip/rear cannot attach to an enclosure")
+        if sim_type == 1:
+            raise ConfigError(feature + " with ABEC.SimType = 1 / infinite baffle is unsupported: this path requires free-standing topology")
+        circ_profile = flat.get("ABEC.SimProfile", flat.get("Simulation.SimProfile"))
+        if "CircSym" in flat or (circ_profile is not None and _maybe_number(circ_profile) == 0):
+            raise ConfigError(feature + " with CircSym / ABEC.SimProfile = 0 is unsupported: circumferential topology has not been measured")
+        if roundover is not None and formula != "OSSE":
+            raise ConfigError("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
+    if not imported_geometry and mesh.get("athRearShape") == 1:
+        # Historically accepted native saved CFGs can spell the inactive default.
+        mesh.pop("athRearShape")
+    for key, default in (("athRearFrontOffset", 40), ("athRearStep", 25)):
+        if key in mesh or mesh.get("athRearShape") == 3:
+            value = mesh.get(key, default)
+            try:
+                value = float(value)
+            except (ValueError, TypeError) as exc:
+                raise ConfigError("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite") from exc
+            if not np.isfinite(value) or (key.endswith("Step") and value <= 0):
+                raise ConfigError("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite" + (" and > 0" if key.endswith("Step") else ""))
+            if key == "athRearFrontOffset" and value < 0:
+                raise ConfigError("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
+            mesh[key] = value
+    if mesh.get("athRearShape") != 3 and any(key in mesh for key in ("athRearFrontOffset", "athRearStep")):
+        raise ConfigError("Mesh.RearShape.FrontOffset/Step require Mesh.RearShape = 3")
+    if mesh.get("athRearShape") == 3:
+        try:
+            wall = float(mesh["wallThickness"])
+        except (ValueError, TypeError) as exc:
+            raise ConfigError("Mesh.WallThickness for Mesh.RearShape = 3 must be finite") from exc
+        if not np.isfinite(wall):
+            raise ConfigError("Mesh.WallThickness for Mesh.RearShape = 3 must be finite")
+        mesh["wallThickness"] = min(1000, max(.1, wall))
+        if mesh["wallThickness"] != wall:
+            logger.warning("[hornlab-mesher] Mesh.RearShape = 3 clamps Mesh.WallThickness to %g mm", mesh["wallThickness"])
 
     # Last, so that an item with a refusal of its own above keeps that message.
     _reject_unrecognised_ath_items(

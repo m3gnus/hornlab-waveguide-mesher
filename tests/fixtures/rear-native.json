@@ -1,0 +1,1863 @@
+{
+  "base": {
+    "inner": {
+      "sha256": "83062dc8177176b88252ae792183554bae1b089e3b5ca749e8475924ab095381",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": {
+      "sha256": "f59b733c0f2d1b9d31009151c893cd63951e4e056dc42173288d437dcc1f10e8",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "12368d109714c8d897343c6cd3bfb549051ae12f0cc557881f0a822c80449595",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0f0f37913d364a786e06cff9e5deb63338479094371b8786063b95ad2e55d7bf",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "f7ed726a7d068ba472a7002d46a0b375bc0f26b1937f4d84bfa82a5885be36b7",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "825e3522a4490012a7b10b964e0b8649f8e27a5601ca25b4a8cfcc0f6b42fde2",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "e78d56ac3f5bc2be49b13e6cf02a855d5a5502d02eefa80a23075b13a00b5ad9",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "90004052f1b07d8d94f95994cfac35686dcef388d6a2ddd3ae6cc2eb0756ff5f",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "cf235a76e6121a2379fc17c2049a5c20468c765909aa3ab9ebdcc8840927c8a7",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4e9330274a85f9530befa1eacfb0858794d85177c71dae22a68c1b7e2fd8ef0",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "f4179ed275a3fd6d4b3693f4a3aa25e6c61e44d4784a7bee9a23328a2dd71bf5",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "796354d47bbddac92c357fa0c3c8a543cbeda50cc4e90b6c9b2801cfd1daf596",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "e59af961af25bcfb41b940ff35e2471324401101a344cd8a837c095f2f4c170b",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "43284507b5800fc79be07031147f1dd5ce2eb3745b5c101e09cfeeb7c9547af7",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "307a00aec18f87649855cbdbecac6119b739c615389a26b910b245fc0bbf2ae7",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f0612f52332b483feb4d338291c513deccf470be7ea27a2c1a2f4808fd6d46d5",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "f17788f1eafd50af147c3345fa50f16c43486fb367dd5db1980cb3b05b617cff",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "af2f876df198ac82fb59382ae4130771c8e33a8c4194406e767c0453f4dac368",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "3676b7bcf6f141142bcb89692598394d68891e98bb52d6f0aa95b8542016fbbb",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "094c3f9732fe17fd6d1e3975ac874d75d11317e607c7bdc274979a27df682ba4",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "6abe21050f8cee58c785e79a8ba5d26f9091bdf696e6079a080ddc1813bcd62c",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2ab8af6509f06979dc8b1fcd932bb1dd07e06f0dadd7b84de78f297599d9c31",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "2285a55aafa6350a6ce7ecde7f548721f2eb4064f3bd1c54152fd89be761abb0",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "3751a00187e6c9cf7580a3cec9b5cb5e349e0e5919ec9fc9813f36ec30975b97",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "ac3182f1ba4b242275b4befd6a845c2af09e325726ae36069da65114313eb6bd",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "127dd0f9567f9457bf0295074170fd5f8f7c372687f5c6cd7fe4a0b3dc230136",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "f68df62ae55edea4348eeb810d9aa9bcb6c0a96e9a72de139874b4008422b7fa",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "1940df13b7882b47ec932799b96474db5449b1be26f6e809b01bf7665e94b723",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "a78b56130d8589b920475e1f0d2d4ff6a6150843629b16d8ba970312f1a5b3fe",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "9ad34fb9c360eb9f1b1b7265700988e613b35ba45909d783626a85abce8b875f",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "4681bc57b3eeee14ae80a060b1669f635130fca5886a9f8b5a79cdae26c40681",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c1c785764400cc4724bbcdc08d9692c84cf71cea2ca409881bb0ab053e34e0e1",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "f332c06a57e3bb53ab1cb99164b1f318353353e8a399a5c4b526faecaeef0625",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "705bd0cdd56a580d53f3934dfbcb68e0a43f0563153f444939ec2f4aad31d37a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "f157c25be1eec8337ee473e1b4430b9822a34310c80e1cc4b96a0440b7dc977c",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4b6385273594930eaefff84d6828e609ac17fbd7b2f308d674caca1dc80cfce",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "78e160bc97aec899c7dc07960736d5a03109f85fd3023b7785a4ffc0018c5bcd",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f3479350dd63d986c1146a012008097ed3465e97aa814c6c2580ff2de204792a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "corner": {
+    "inner": {
+      "sha256": "6052bb842fcc8f2fcfb6c5ee53766fb45f98f3ee70de6557377a1c8bb3b9d454",
+      "shape": [
+        60,
+        43,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": {
+      "sha256": "23ae5acd64447fbb60b8a7bca97112713d7eed05f02dc5cb2c3f07ad64b01cca",
+      "shape": [
+        60,
+        43,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "66706a7d9970ac0b5c3097a577c3f14b9e6e63f27d96c1adb17aee29d47e17b7",
+            "shape": [
+              3944,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "6ee9cb8fe6a277590ff8c77c0e0526af71f0a8c1185d2574688d4403bf7a1e26",
+            "shape": [
+              22848
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "5440ab00f117ca5561a278687106da012efb83a5651c7ba16297ac5b3973fcf5",
+            "shape": [
+              3944,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "fea8566be1c03558365d87359b4f68f0d3fdb262b75b08f34aac2a5d10d05311",
+            "shape": [
+              22848
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "042400991edef4e597a5c0fbb20d2198682f2cab87f14822ed0bcd149568398d",
+            "shape": [
+              272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "cd6b2ebd9681f96e73ef7b9fd1f5a9b635f5e8d34986b69bd42b95583469ee54",
+            "shape": [
+              816
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "29070a5506916836b7292fd1dbdafaa3521fcc1591f816e79e22241176ddc87e",
+            "shape": [
+              137,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "4390ef19bf9740d08ad2bb53a089c6ba7a6916a945ee3edf7d6928ef134238bc",
+            "shape": [
+              408
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "8a3d77f2f6d81d5175f1a606e73041bb1e27a8bbfb93de4cd3731a5fa55511b1",
+            "shape": [
+              272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "7305c5322feb437e3ea154cacfa9ca3abfce13fdd5c9885da4e6f65dd739138a",
+            "shape": [
+              816
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "7a5d472bbc6c696042ec3e6904d5d91810300eae6aa5bffcad1884ca2f99ecb7",
+            "shape": [
+              137,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "62d655fa45980906cd3f1d998643a751930074ce26f72969e147396ad7eecfe3",
+            "shape": [
+              408
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "8fc302357b6fd6f96418c94615e4535741ac041dd6c69cf6bdb9e3d49ea37ea7",
+            "shape": [
+              16900,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2cfd93b1582c34127022d2c808c72149f38e10bf1dc57868cd0faf56a51a27b",
+            "shape": [
+              99840
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "887996a36afd341bd4a96e1b09f64d3b83f586b0b3b6adfbdf896d883bbeda65",
+            "shape": [
+              16900,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "bd8cee849e9e143dd4a381ce43fc1318f5972d19c5f7f52fe57913ffa5f18045",
+            "shape": [
+              99840
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "9ff96108a8b60b11334a479dcbd22ac752e7d374c52199cbab81c721a0891ce2",
+            "shape": [
+              520,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "23ec5d4f4098becac62441b2d973bb35b35709068df282429d61a39a393e843a",
+            "shape": [
+              1560
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "91c4fc7bd66f3e9a9ca122ab2cf81d4fd71ab64c0e632f35933c8c755702324a",
+            "shape": [
+              261,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "5895b51827bf7c875ddb2b24b0615edae577c239315d3690831f315c0ca6db8a",
+            "shape": [
+              780
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "19a07c8b74146ca9f8014583b3ca821c4abbd39c3541bd058bb35095c6fd6d08",
+            "shape": [
+              520,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "71d7bd53d6e7ff6030fab77794c8f607e109d16a5e1696d229132a746e06037d",
+            "shape": [
+              1560
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "cd51dad2cbcccb8163bcb1f3edf2c92790754bf43c6d50abf7f68546ca5c1a63",
+            "shape": [
+              261,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "2f6943b47492faa29d1b0325385f544783d4594b678cd0fdd1eee786adb29d74",
+            "shape": [
+              780
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "693826fba07f549288dc87a9c232c1cb87304554ea8437200040c319bdae636e",
+            "shape": [
+              46592,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c8bb09b37bd08468fb5bb2ed91e6a868e57eebb5794e66f6dd8d999086b465a6",
+            "shape": [
+              276864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "8bfa5b37566f040b8e3af7d9fe1ee409facd7708421b6133753cab77693062fa",
+            "shape": [
+              46592,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "cda0642be0daa27e63980ba5273e8f77152395f939ba33738cbabc3835264b04",
+            "shape": [
+              276864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "e7348d2d3b13186c436678592ff1cd6ab9866953daf70b75ae381737878034bc",
+            "shape": [
+              896,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0fb0adc013f0341403362669ed570f91a55e09e31c0b3c5b3bf086b2f592e0d4",
+            "shape": [
+              2688
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "42458257bf820fea184aa94e484ed92c4111e18a0e7aa1c8c2835c159b6bd0a3",
+            "shape": [
+              449,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "341060732a8719ff997f3caa276137c130f923b5161429f5cbcb4a9b7dbc8ea4",
+            "shape": [
+              1344
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "f81c50453e2ffd25c786719e0d98edcd7d6770013a8a4f26438606e8311f472b",
+            "shape": [
+              896,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "afdbf4d0a2467c810a95b7fa4337211fa2bb222a2f05f6ec95ea2c6111c5991d",
+            "shape": [
+              2688
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "f53f6e46d68d0d31012a35a3d3699c654b805d0372eef4e14510e83978f86550",
+            "shape": [
+              449,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0c538cb356c2adad0f4bb6c833a7b24118a997cede790194eff59bfeaf2cffb9",
+            "shape": [
+              1344
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "near": {
+    "inner": {
+      "sha256": "0f395c46720f0d4fb2a2138cd7335dd1536a7562b2bb1262763a82a954fbdf61",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": {
+      "sha256": "169fc4f57cf3fbb5a0907d3bf8123ad0f2d17d1d1f42f8972a8882c287f5996d",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "a2003d14b980ece73543935fdac290b12779cf8cf2cda69d1c4792e3b0eb7c52",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0f0f37913d364a786e06cff9e5deb63338479094371b8786063b95ad2e55d7bf",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "c5186fb1dc6e21ec8e7d0074f3cf0721055ea44d55c97aef50b444bdfad6c61c",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "825e3522a4490012a7b10b964e0b8649f8e27a5601ca25b4a8cfcc0f6b42fde2",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "e78d56ac3f5bc2be49b13e6cf02a855d5a5502d02eefa80a23075b13a00b5ad9",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "90004052f1b07d8d94f95994cfac35686dcef388d6a2ddd3ae6cc2eb0756ff5f",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "c18b838c108ad87215d8aed13103cba179a9a994c3c67ad0b9e60e7c251e6f75",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4e9330274a85f9530befa1eacfb0858794d85177c71dae22a68c1b7e2fd8ef0",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "d4d0487cb04c27811191ee03060624b48c0dfc96733fe1719c95bfd486ad96e3",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "796354d47bbddac92c357fa0c3c8a543cbeda50cc4e90b6c9b2801cfd1daf596",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "00051d2752baf524b6f19f8811af03caf0bbf5280f5116abe22e312b69146922",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "43284507b5800fc79be07031147f1dd5ce2eb3745b5c101e09cfeeb7c9547af7",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "cf9921076771463b2a589a8f805417740d8c901011dd3d1e24d7d5c8956d32fc",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f0612f52332b483feb4d338291c513deccf470be7ea27a2c1a2f4808fd6d46d5",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "262acf0cd8a45cb3ad485e4394db00756aeccf14d6623cdae4a77d351543d69a",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "af2f876df198ac82fb59382ae4130771c8e33a8c4194406e767c0453f4dac368",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "3676b7bcf6f141142bcb89692598394d68891e98bb52d6f0aa95b8542016fbbb",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "094c3f9732fe17fd6d1e3975ac874d75d11317e607c7bdc274979a27df682ba4",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "fd5c5ac289a99c5429bdc3a63ec1ebc4b2ecf1b44e7e282e464d09cfcbbc82a5",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2ab8af6509f06979dc8b1fcd932bb1dd07e06f0dadd7b84de78f297599d9c31",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "c716a51032de18d9d6a72be460b28683484ea15bd1ce43aa0342945576debc3c",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "3751a00187e6c9cf7580a3cec9b5cb5e349e0e5919ec9fc9813f36ec30975b97",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "65f0f5eabe0226a3748207222c004e4d2cd41181135bc5008121e2f91e660f58",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "127dd0f9567f9457bf0295074170fd5f8f7c372687f5c6cd7fe4a0b3dc230136",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "15565653f091d9f6d12f594c54ff0816e918f5744c2de32a0b45d3e7ed9e4e73",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "1940df13b7882b47ec932799b96474db5449b1be26f6e809b01bf7665e94b723",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "96eb382655c1e3949aa87317b0851c2462f0fa8ce73e634dc7aa6306ed008766",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "9ad34fb9c360eb9f1b1b7265700988e613b35ba45909d783626a85abce8b875f",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "4681bc57b3eeee14ae80a060b1669f635130fca5886a9f8b5a79cdae26c40681",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c1c785764400cc4724bbcdc08d9692c84cf71cea2ca409881bb0ab053e34e0e1",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "273f41ca2fcc5de232fa720347e4c9ee151460c84020d43164a36f5baf8761b8",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "705bd0cdd56a580d53f3934dfbcb68e0a43f0563153f444939ec2f4aad31d37a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "e44f339baa461005e5b211a9a538caeecf0c0ff8d9649de9767b918d161ebcae",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4b6385273594930eaefff84d6828e609ac17fbd7b2f308d674caca1dc80cfce",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "b38d489e67ba2f1dec9554201fe7a1884be4baed010d9844306c3db7a641bc90",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f3479350dd63d986c1146a012008097ed3465e97aa814c6c2580ff2de204792a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "stretch": {
+    "inner": {
+      "sha256": "a093b118515483c9ce26c88aac380aa0a66dd92b148352e394ef4796840d2dab",
+      "shape": [
+        40,
+        85,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": {
+      "sha256": "4e3762a10446076cbe1560df06f38cbacd6ff8675f46b686017cc06c726e7f69",
+      "shape": [
+        40,
+        85,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "66ecc7afb299d8051d2db0a8fddb060ee422263a514538ce694fb5d880778834",
+            "shape": [
+              1472,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "ffbc38773d6351e6251799905182c6c49a3b2d035265558ba49566bd373d09d6",
+            "shape": [
+              8448
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "9aa384fefba257a6084a7a09342375ff81dde5a885f773bebbc62903a6ba4761",
+            "shape": [
+              1472,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "d279896a43a9a784bcd878cf58a31474f04d0c4af0ef0d2f42799a5e57850ead",
+            "shape": [
+              8448
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "b10cdde73d9c5e69bac4f0a3f4840e177bb20af378da0ade76f59acfa8e0955e",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "90004052f1b07d8d94f95994cfac35686dcef388d6a2ddd3ae6cc2eb0756ff5f",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "cf235a76e6121a2379fc17c2049a5c20468c765909aa3ab9ebdcc8840927c8a7",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4e9330274a85f9530befa1eacfb0858794d85177c71dae22a68c1b7e2fd8ef0",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "f4179ed275a3fd6d4b3693f4a3aa25e6c61e44d4784a7bee9a23328a2dd71bf5",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "796354d47bbddac92c357fa0c3c8a543cbeda50cc4e90b6c9b2801cfd1daf596",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "e59af961af25bcfb41b940ff35e2471324401101a344cd8a837c095f2f4c170b",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "43284507b5800fc79be07031147f1dd5ce2eb3745b5c101e09cfeeb7c9547af7",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "91cdebd68a8a4e70b7cde7eee14b20fecfbe2d56545ec81334ab21e79155a025",
+            "shape": [
+              8576,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f20abe1f0cc2264ec16f132334073a87924d6bf6670de7873d13a9c0e560ae0f",
+            "shape": [
+              50688
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "32ebd167f4a5c509019fd0deca143076e6428edd114da0cac8039523c25384c7",
+            "shape": [
+              8576,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "5bd38c5490dead39c7e9a9f8b550276a4aa09753eb4cc2787b6f3a2349e4a497",
+            "shape": [
+              50688
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "f73292295bbb9fd53d6d9568fb65d20096625f24752eabf80d9b487d09854b3c",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "094c3f9732fe17fd6d1e3975ac874d75d11317e607c7bdc274979a27df682ba4",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "6abe21050f8cee58c785e79a8ba5d26f9091bdf696e6079a080ddc1813bcd62c",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2ab8af6509f06979dc8b1fcd932bb1dd07e06f0dadd7b84de78f297599d9c31",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "2285a55aafa6350a6ce7ecde7f548721f2eb4064f3bd1c54152fd89be761abb0",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "3751a00187e6c9cf7580a3cec9b5cb5e349e0e5919ec9fc9813f36ec30975b97",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "ac3182f1ba4b242275b4befd6a845c2af09e325726ae36069da65114313eb6bd",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "127dd0f9567f9457bf0295074170fd5f8f7c372687f5c6cd7fe4a0b3dc230136",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "f682692d26cd3c9147a089df5553cb0327f94fdbd101a9163c03bcbcdf179fe7",
+            "shape": [
+              28928,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "4b2e3fe6c260c0e67a1974510986f461f41367b038e3def5a5f8c3202169da1e",
+            "shape": [
+              172032
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "horn.outer": {
+          "positions": {
+            "sha256": "bf423785f4a2fc961e518147fe169fad4d7afe32c9e4be6866e636114d17f9d6",
+            "shape": [
+              28928,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "bb356217375544108a896dba3a7fdbaa612e7cb6505c65d46b80e48bfd288616",
+            "shape": [
+              172032
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "mouth_rim": {
+          "positions": {
+            "sha256": "038752ed71d70d16a31290eb2dbfa2e0ba37243bb3aed1039fd9bef3ea1db567",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c1c785764400cc4724bbcdc08d9692c84cf71cea2ca409881bb0ab053e34e0e1",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "f332c06a57e3bb53ab1cb99164b1f318353353e8a399a5c4b526faecaeef0625",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "705bd0cdd56a580d53f3934dfbcb68e0a43f0563153f444939ec2f4aad31d37a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_return": {
+          "positions": {
+            "sha256": "f157c25be1eec8337ee473e1b4430b9822a34310c80e1cc4b96a0440b7dc977c",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4b6385273594930eaefff84d6828e609ac17fbd7b2f308d674caca1dc80cfce",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "wall.rear_cap": {
+          "positions": {
+            "sha256": "78e160bc97aec899c7dc07960736d5a03109f85fd3023b7785a4ffc0018c5bcd",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f3479350dd63d986c1146a012008097ed3465e97aa814c6c2580ff2de204792a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "bare": {
+    "inner": {
+      "sha256": "83062dc8177176b88252ae792183554bae1b089e3b5ca749e8475924ab095381",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": null,
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "12368d109714c8d897343c6cd3bfb549051ae12f0cc557881f0a822c80449595",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0f0f37913d364a786e06cff9e5deb63338479094371b8786063b95ad2e55d7bf",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "cf235a76e6121a2379fc17c2049a5c20468c765909aa3ab9ebdcc8840927c8a7",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4e9330274a85f9530befa1eacfb0858794d85177c71dae22a68c1b7e2fd8ef0",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "307a00aec18f87649855cbdbecac6119b739c615389a26b910b245fc0bbf2ae7",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f0612f52332b483feb4d338291c513deccf470be7ea27a2c1a2f4808fd6d46d5",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "6abe21050f8cee58c785e79a8ba5d26f9091bdf696e6079a080ddc1813bcd62c",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2ab8af6509f06979dc8b1fcd932bb1dd07e06f0dadd7b84de78f297599d9c31",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "f68df62ae55edea4348eeb810d9aa9bcb6c0a96e9a72de139874b4008422b7fa",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "1940df13b7882b47ec932799b96474db5449b1be26f6e809b01bf7665e94b723",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "f332c06a57e3bb53ab1cb99164b1f318353353e8a399a5c4b526faecaeef0625",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "705bd0cdd56a580d53f3934dfbcb68e0a43f0563153f444939ec2f4aad31d37a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "enclosure": {
+    "inner": {
+      "sha256": "83062dc8177176b88252ae792183554bae1b089e3b5ca749e8475924ab095381",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": null,
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "12368d109714c8d897343c6cd3bfb549051ae12f0cc557881f0a822c80449595",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0f0f37913d364a786e06cff9e5deb63338479094371b8786063b95ad2e55d7bf",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "cf235a76e6121a2379fc17c2049a5c20468c765909aa3ab9ebdcc8840927c8a7",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4e9330274a85f9530befa1eacfb0858794d85177c71dae22a68c1b7e2fd8ef0",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.front": {
+          "positions": {
+            "sha256": "2cd358e2b644912a78dbc3e8eee09a76087e926b02af42bb9d9454aa24eb4815",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "90004052f1b07d8d94f95994cfac35686dcef388d6a2ddd3ae6cc2eb0756ff5f",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.side": {
+          "positions": {
+            "sha256": "d5d329944d90c50bb8b6e45d5900d0f8dc02221ba1574e55b2f274e59b7690c4",
+            "shape": [
+              128,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "90004052f1b07d8d94f95994cfac35686dcef388d6a2ddd3ae6cc2eb0756ff5f",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.rear": {
+          "positions": {
+            "sha256": "66965eeeac851d6384bc36796fd9caf10065c077164e2bf36a901034a7ed78ab",
+            "shape": [
+              5,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f09137dd1768690c02c0abac9d3c59f5857b2f5226555816666ba9c2010f962a",
+            "shape": [
+              12
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "307a00aec18f87649855cbdbecac6119b739c615389a26b910b245fc0bbf2ae7",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f0612f52332b483feb4d338291c513deccf470be7ea27a2c1a2f4808fd6d46d5",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "6abe21050f8cee58c785e79a8ba5d26f9091bdf696e6079a080ddc1813bcd62c",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2ab8af6509f06979dc8b1fcd932bb1dd07e06f0dadd7b84de78f297599d9c31",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.front": {
+          "positions": {
+            "sha256": "5fac7116663c35cf351890a21d0c8e65eac2a3b8fc0e5ab281b67776aea01572",
+            "shape": [
+              256,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "094c3f9732fe17fd6d1e3975ac874d75d11317e607c7bdc274979a27df682ba4",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.side": {
+          "positions": {
+            "sha256": "9725515bbe68df512fecd618a584b60e2cfbdd69d3b1a0314ba044c04ccd54bc",
+            "shape": [
+              272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "cd6b2ebd9681f96e73ef7b9fd1f5a9b635f5e8d34986b69bd42b95583469ee54",
+            "shape": [
+              816
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.rear": {
+          "positions": {
+            "sha256": "66965eeeac851d6384bc36796fd9caf10065c077164e2bf36a901034a7ed78ab",
+            "shape": [
+              5,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f09137dd1768690c02c0abac9d3c59f5857b2f5226555816666ba9c2010f962a",
+            "shape": [
+              12
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "f68df62ae55edea4348eeb810d9aa9bcb6c0a96e9a72de139874b4008422b7fa",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "1940df13b7882b47ec932799b96474db5449b1be26f6e809b01bf7665e94b723",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "f332c06a57e3bb53ab1cb99164b1f318353353e8a399a5c4b526faecaeef0625",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "705bd0cdd56a580d53f3934dfbcb68e0a43f0563153f444939ec2f4aad31d37a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.front": {
+          "positions": {
+            "sha256": "2c546021a88e4f36113a33d21d72f1a86d69d0553a7fba5d1be8a0ef61d99bf0",
+            "shape": [
+              512,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c1c785764400cc4724bbcdc08d9692c84cf71cea2ca409881bb0ab053e34e0e1",
+            "shape": [
+              1536
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.side": {
+          "positions": {
+            "sha256": "d6c45b5eeffa83a93a62dab6f753416e1768229507309ac1770fa40dd0ec4b73",
+            "shape": [
+              392,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "597a7add5c02b40aa485be5bea944fdeea24ee52e9528879dac823889eea0d00",
+            "shape": [
+              1176
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "enclosure.rear": {
+          "positions": {
+            "sha256": "66965eeeac851d6384bc36796fd9caf10065c077164e2bf36a901034a7ed78ab",
+            "shape": [
+              5,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f09137dd1768690c02c0abac9d3c59f5857b2f5226555816666ba9c2010f962a",
+            "shape": [
+              12
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "infinite-baffle": {
+    "inner": {
+      "sha256": "83062dc8177176b88252ae792183554bae1b089e3b5ca749e8475924ab095381",
+      "shape": [
+        40,
+        32,
+        3
+      ],
+      "dtype": "float64"
+    },
+    "outer": null,
+    "preview": {
+      "coarse": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "12368d109714c8d897343c6cd3bfb549051ae12f0cc557881f0a822c80449595",
+            "shape": [
+              1088,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "0f0f37913d364a786e06cff9e5deb63338479094371b8786063b95ad2e55d7bf",
+            "shape": [
+              6144
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "cf235a76e6121a2379fc17c2049a5c20468c765909aa3ab9ebdcc8840927c8a7",
+            "shape": [
+              65,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "a4e9330274a85f9530befa1eacfb0858794d85177c71dae22a68c1b7e2fd8ef0",
+            "shape": [
+              192
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "fine": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "307a00aec18f87649855cbdbecac6119b739c615389a26b910b245fc0bbf2ae7",
+            "shape": [
+              6272,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "f0612f52332b483feb4d338291c513deccf470be7ea27a2c1a2f4808fd6d46d5",
+            "shape": [
+              36864
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "6abe21050f8cee58c785e79a8ba5d26f9091bdf696e6079a080ddc1813bcd62c",
+            "shape": [
+              129,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "c2ab8af6509f06979dc8b1fcd932bb1dd07e06f0dadd7b84de78f297599d9c31",
+            "shape": [
+              384
+            ],
+            "dtype": "uint32"
+          }
+        }
+      },
+      "inspection": {
+        "horn.inner": {
+          "positions": {
+            "sha256": "f68df62ae55edea4348eeb810d9aa9bcb6c0a96e9a72de139874b4008422b7fa",
+            "shape": [
+              24832,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "1940df13b7882b47ec932799b96474db5449b1be26f6e809b01bf7665e94b723",
+            "shape": [
+              147456
+            ],
+            "dtype": "uint32"
+          }
+        },
+        "source_cap": {
+          "positions": {
+            "sha256": "f332c06a57e3bb53ab1cb99164b1f318353353e8a399a5c4b526faecaeef0625",
+            "shape": [
+              257,
+              3
+            ],
+            "dtype": "float64"
+          },
+          "indices": {
+            "sha256": "705bd0cdd56a580d53f3934dfbcb68e0a43f0563153f444939ec2f4aad31d37a",
+            "shape": [
+              768
+            ],
+            "dtype": "uint32"
+          }
+        }
+      }
+    }
+  },
+  "provenance": {
+    "geometry_interpretation": "native-v1",
+    "reference_commit": "a515334c554a098ca6612f336529323021284328",
+    "digest": "SHA-256 of contiguous array bytes",
+    "scope": "Resolved native inner/outer grids and native preview position/index arrays"
+  }
+}

@@ -5,8 +5,9 @@ are described in [Native circular mouth roundover](native-mouth-roundover.md).
 The broader support and import table below remains a target contract.
 
 **Status: contract for Program C6, reviewed by the owner on 2026-09-30 (decisions below).**
-This document adds no executable behaviour. The ATH text importer refuses
-`Mesh.Roundover` until an implementation satisfies this contract.
+The native construction below remains unchanged. ATH text imports use the
+separate measured construction in "ATH import lip"; the earlier proposed
+import mapping to the native construction is superseded.
 
 A mouth roundover is an extra radius added at the mouth of a free-standing
 horn: the inner wall continues past the mouth as a circular arc that turns back
@@ -29,9 +30,8 @@ implemented by every preview, CAD and mesh consumer. This is that option.
   }
   ```
 
-- 34 probes run on ATH build V2026-08c for this document. ATH's `GridExport`
-  stops with an out-of-range error when a roundover is active, so the geometry
-  was read from the `bem_mesh.geo` point list ATH writes for its mesher
+- 34 probes run on ATH build V2026-08c for this document. The initial profile exports were unavailable, so these measurements
+  used the `bem_mesh.geo` point list ATH writes for its mesher
   (`Output.ABECProject = 1`). Those coordinates carry three decimals, so every
   fit below is limited to about 0.001 mm.
 
@@ -84,9 +84,8 @@ n = 4, q = 0.995 }`, free standing, `Mesh.WallThickness = 5`,
    | logged mouth angle, degrees | 7.143 | 4.656 | 3.998 | 3.913 | 4.045 | 4.109 |
 
    It also changes with the z-map (4.656 linear, 3.726 with
-   `0.5,0.2,0.5,0.8`, 3.487 with the default map). The rule ATH uses was not
-   identified; chord, three-point, spline and extrapolation estimates from the
-   exported grid all fail to reproduce it. The arc end therefore moves with the
+   `0.5,0.2,0.5,0.8`, 3.487 with the default map). The later GridExport fixtures identify the chord-extrapolation rule
+   in "ATH import lip" below. The arc end therefore moves with the
    grid: (99.045, 200.281) at 20 segments, (98.478, 200.368) at 40.
 5. **Outer wall.** The outer surface gets `Segments` points on a concentric
    circle of radius `R - w` (20.000 mm for `R = 25`, `w = 5`; 15.000 for
@@ -107,7 +106,7 @@ n = 4, q = 0.995 }`, free standing, `Mesh.WallThickness = 5`,
    | `Radius = 0` | a displaced inner point list |
    | R-OSSE | logged mouth angle -84.248; points scattered behind the rolled-back mouth |
    | `ABEC.SimType = 1` (infinite baffle) | the same arc, behind the baffle plane |
-   | `Morph.TargetShape = 1` | the arc is added before the morph; off the principal meridian its radial reach is scaled with the mouth radius (24.577 mm at 0 degrees, 23.465 mm at 90 degrees), so it is no longer a circle of radius R |
+   | `Morph.TargetShape = 1` | the arc is added after morph and stretch; its transverse reach is scaled with the finished mouth radius (24.577 mm at 0 degrees, 23.465 mm at 90 degrees), so it is no longer a circle of radius R |
    | `Mesh.Enclosure` | the enclosure front starts at the arc end (z = 99.045), behind the mouth plane |
    | `ABEC.SimProfile = 0` (CircSym) | the roundover is logged but the node list ends at the mouth radius, followed by a small stray loop |
    | `Mesh.Roundover = 25` (scalar form) | ATH exits with an access violation |
@@ -201,24 +200,22 @@ refused with a stated reason.
 
 A non-circular mouth needs the arc in the plane normal to the mouth outline,
 not in the meridian plane, and a construction for the corners. ATH's behaviour
-there (arc added before the morph, then scaled) is not a circle of radius R and
+there (uniform transverse scaling of the finished mouth) is not a circle of radius R and
 is not adopted. That case stays refused until it has its own contract.
 
-### Config and import
+### Native config
 
 - Native key: `mesh.mouth_roundover_radius_mm`, default `0` (off). Off and
   absent are the same geometry and take the existing code path unchanged.
-- ATH text import: `Mesh.Roundover = { Radius = R  Segments = N }`. `Radius`
-  maps to the native key for a supported combination. `Segments` is accepted
-  and unused. Any other member, the scalar form `Mesh.Roundover = R`, and any
-  unsupported combination are refused.
+- ATH text import uses the separate construction described below.
 - The radius enters geometry identity, preview and solve cache keys and the
   CAD bundle identity. Changing it while off changes nothing.
 - The preview dimensions metadata reports the widened overall size.
 
-### What an imported roundover does not reproduce
+### How the native roundover differs from ATH
 
-An imported roundover is built with the construction above, not with ATH's.
+A native roundover is built with the construction above. ATH imports reproduce
+the measured construction described below.
 For the same `R` the differences are:
 
 - no corner at the mouth (ATH: a corner of `a` degrees);
@@ -272,6 +269,9 @@ enclosure, CircSym).
 
 ## Owner decisions (2026-09-30)
 
+These record the earlier native proposal. Question 3's import recommendation
+is superseded by the separate measured ATH import lip section below.
+
 All six questions below are decided as recommended:
 
 - Question 1: the tangent-continuous lip, not ATH's circle.
@@ -304,3 +304,52 @@ All six questions below are decided as recommended:
 6. **Non-circular mouths (morph, guiding curve) stay refused in the first
    release?** Recommended: yes; they need a lip in the plane normal to the
    mouth outline and a corner rule, under their own contract.
+
+## ATH import lip
+
+`Mesh.Roundover = { Radius = R; Segments = N }` (members on separate lines)
+selects an import-only OSSE path. `Segments` defaults to 5 and changes the
+geometry; `Mesh.Roundover = 0` is a no-op. The native `OSSE-ROUNDOVER` C6
+construction above and its analytic tangent-continuous arc are unchanged.
+
+Measured against ATH V2026-08c output, the lip runs after morph and throat
+stretch, using the authored body grid with `nb` rows and the p=0 profile:
+
+```text
+g(i) = atan2(z[i+1] - z[i-1], x[i+1] - x[i-1])
+a_hat = 2*g(nb-2) - g(nb-3)
+theta_k = (k/N)*(pi/2 - a_hat) - a_hat
+scale_k = 1 + R*sin(theta_k)/x_mouth(p=0)
+(x,y,z)_k = (x_mouth*scale_k, y_mouth*scale_k,
+             z_mouth - R*(1-cos(theta_k)))
+normal_k = (-sin(theta_k)*cos(phi), -sin(theta_k)*sin(phi), -cos(theta_k))
+```
+
+Each added row starts from the original finished mouth ring. Body normals
+are meridional chord normals computed before appending the lip, with one-sided
+endpoint chords. Morph and expressions may make the lip non-circular. Radius,
+wall thickness and rear shifts remain in finished millimetres, independent of
+`Scale`. The authored stations remain the authority in acoustic and legacy
+mesh modes; refining the body would change the measured lip angle. The final
+row identifies the rim even though it lies behind the front-most z station.
+Axial sizing bounds use the grid's minimum/maximum z. RearShape 1 offsets the
+selected lip rows using the stored normals; RearShape 3 ends with an unoffset
+front ring and a band to the lip. See [ATH rear import](ath-rear-import-contract.md).
+
+Refused by name: nonzero scalar form, missing/nonpositive/nonfinite Radius,
+unknown block members, nonintegral or fewer than one Segments, fewer than three
+body segments, R-OSSE (a folded-back lip), enclosure, infinite baffle, CircSym,
+free-standing subdomain interfaces, approximate surface fitting, and RearShape 1 with `Radius <= WallThickness`
+(a collapsed/inverted outer lip). Existing unqualified morph/stretch
+combinations keep their existing refusals. Preview uses the authored mesh
+patches, including every lip row, with shared seams and measured triangle
+fidelity at every LOD. Viewport grid exports retain the lip and independently
+sized rear rings. STEP retains a named refusal: a faithful OCC patch and
+shared-seam construction is required to transport the GEO surfaces. Mesh
+and point-grid exports include the lip.
+
+Evidence: `tests/fixtures/ath_import/ath-v2026-08c` contains the plain `p1`,
+Segments-default `segdef`, and full `coreabec` profile exports (the latter includes
+morph, expressions and stretch). Grid comparisons use 2e-4 mm; the extracted
+wall/rear vertex sets use 2e-3 mm for ATH's three-decimal coordinates. No claim
+is made about identical ATH surface numbering, triangulation or spline topology.

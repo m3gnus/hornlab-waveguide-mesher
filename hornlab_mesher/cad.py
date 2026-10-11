@@ -536,6 +536,10 @@ def write_step(
     Turning it off keeps the sewn acoustic boundary, throat plug and all.
     """
 
+    from .ath_import_surfaces import AthImportedSurfaceGeometry
+    if isinstance(geometry, AthImportedSurfaceGeometry):
+        raise MesherError("STEP export of Mesh.Roundover / Mesh.RearShape = 3 imports is unsupported: GEO spline/Coons patches cannot be exported by the OCC STEP writer; faithful OCC ring patches, rear fan and shared-seam solid sewing are not implemented")
+
     if sum(getattr(geometry, name, None) is not None
            for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")) > 1:
         raise MesherError("combined active native geometry features are not supported")

@@ -459,6 +459,7 @@ def _generic_triangle_regions(
     group_size_fields: dict[str, Any] | None = None,
     lip_size: float | None = None,
     arc_size: float | None = None,
+    surface_areas_mm2: dict[int, float] | None = None,
 ) -> list[tuple[float, float, str]]:
     """Area/size regions for non-enclosure pre-mesh cost prediction.
 
@@ -471,6 +472,12 @@ def _generic_triangle_regions(
     regions: list[tuple[float, float, str]] = []
     consumed: set[int] = set()
     fields = group_size_fields or {}
+    areas = surface_areas_mm2 or {}
+
+    def surface_area(tags):
+        if not areas:
+            return _surface_area_mm2(tags)
+        return sum(float(areas[tag]) if tag in areas else _surface_area_mm2([tag]) for tag in tags)
 
     def add(
         surface_tags: list[int],
@@ -484,14 +491,14 @@ def _generic_triangle_regions(
         consumed.update(tags)
         if group is not None and group in fields:
             for tag in tags:
-                area = _surface_area_mm2([tag])
+                area = surface_area([tag])
                 sampled = _sampled_effective_size_mm(tag, fields[group])
                 if area > 0.0:
                     regions.append(
                         (area, float(sampled if sampled is not None else size), label)
                     )
             return
-        area = _surface_area_mm2(tags)
+        area = surface_area(tags)
         if area > 0.0:
             regions.append((area, float(size), label))
 
@@ -1227,6 +1234,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                 lip_size=(min(float(geometry.metadata["mouthRoundoverMeshSizeMm"]), mouth_res)
                           if "mouthRoundoverMeshSizeMm" in geometry.metadata else None),
                 arc_size=arc_effective_size,
+                surface_areas_mm2=geometry.metadata.get("surfaceAreasMm2"),
             ),
         )
     add_field(

@@ -1626,6 +1626,8 @@ def build_point_grid(
     )
     inner = grid.pop("inner_grid")
     outer = grid.pop("outer_grid")
+    if "ath_normals" in grid:
+        grid["ath_normals"] = grid["ath_normals"].tolist()
     return {
         "inner_points": inner.reshape(-1).tolist(),
         "outer_points": None if outer is None else outer.reshape(-1).tolist(),
@@ -1890,11 +1892,41 @@ def build_point_grid_arrays(
     # y=0 rather than the shifted plane (an ATH quirk we reproduce for parity).
     vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
 
+    ath_data = {}
+    ath_surfaces = params.get("athRoundover") or params.get("athRearShape") == 3
+    if ath_surfaces:
+        from .ath_import_surfaces import append_lip, meridional_normals
+        body_rows = inner.shape[1]
+        lip = params.get("athRoundover")
+        profile_zero = None
+        if abs(inner[0, -1, 1]) > 1e-8 or inner[0, -1, 0] <= 0:
+            full = build_point_grid_arrays({**params, "quadrants": "1234", "wallThickness": 0,
+                                           "athRoundover": None, "athRearShape": 1})
+            profile_zero = full["inner_grid"][0]
+        if lip:
+            if formula != "OSSE":
+                raise ValueError("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
+            inner, normals, angle = append_lip(inner, lip["radius"], lip["segments"], profile_zero=profile_zero)
+            ath_data["ath_mouth_angle"] = angle
+            # Path coordinates stay ordered although z reverses at the lip.
+            t_values = np.concatenate((t_values, 1 + np.arange(1, lip["segments"] + 1) / lip["segments"]))
+            n_length = inner.shape[1] - 1
+        else:
+            normals = meridional_normals(inner)
+        if profile_zero is not None:
+            if lip:
+                p0_lip, _, _ = append_lip(profile_zero[None], lip["radius"], lip["segments"])
+                profile_zero = p0_lip[0]
+            ath_data["ath_profile_zero_z"] = profile_zero[:, 2].tolist()
+        ath_data.update(ath_normals=normals, ath_body_rows=body_rows)
+
     outer = None
     outer_fold: str | None = None
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
-    if enc_depth <= 0.0 and wall > 0.0:
+    if ath_surfaces and enc_depth <= 0.0 and wall > 0.0:
+        outer = inner + wall * normals
+    elif enc_depth <= 0.0 and wall > 0.0:
         outer = _outer_offset_shell(
             inner,
             wall,
@@ -1955,6 +1987,7 @@ def build_point_grid_arrays(
         **({"construction_fingerprint": adapter.fingerprint,
             "semantic_stations": {"driver": 0.0, "adapter_join": .5, "mouth": 1.0}}
            if adapter is not None else {}),
+        **ath_data,
         "inner_grid": inner,
         "outer_grid": outer,
         "outer_offset_fold": outer_fold,

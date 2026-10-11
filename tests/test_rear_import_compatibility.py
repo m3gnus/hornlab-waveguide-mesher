@@ -1,5 +1,8 @@
 import copy
 import math
+import hashlib
+import json
+from pathlib import Path
 import numpy as np
 import pytest
 from hornlab_mesher.config_parser import parse_text_config, ConfigError
@@ -38,6 +41,48 @@ def marked(text=BASE):
     return cfg
 
 
+def array_signature(array):
+    array = np.ascontiguousarray(array)
+    return {'sha256': hashlib.sha256(array.tobytes()).hexdigest(),
+            'shape': list(array.shape), 'dtype': str(array.dtype)}
+
+
+def assert_native_baseline(geometry, name):
+    """Exact native array bytes pinned before versioned ATH axial sampling."""
+    baseline = json.loads((Path(__file__).parent / 'fixtures/rear-native.json').read_text())[name]
+    for field in ('inner', 'outer'):
+        array = getattr(geometry, field + '_points')
+        actual = None if array is None else array_signature(array)
+        assert actual == baseline[field]
+
+
+def assert_native_preview_baseline(preview, name, lod):
+    baseline = json.loads((Path(__file__).parent / 'fixtures/rear-native.json').read_text())[name]['preview'][lod]
+    assert [s.role for s in preview.surfaces] == list(baseline)
+    for surface in preview.surfaces:
+        for field in ('positions', 'indices'):
+            assert array_signature(getattr(surface, field)) == baseline[surface.role][field]
+
+
+def body_without_rear_rule(cfg, monkeypatch):
+    # Disable only rear selection/class decoration; retain the ATH sampling marker.
+    import hornlab_mesher.config_builder as builder
+    with monkeypatch.context() as patch:
+        patch.setattr(builder, 'text_import_geometry_class', lambda cls: cls)
+        original = builder.freestanding_rear_ring
+        patch.setattr(builder, 'freestanding_rear_ring',
+                      lambda inner, outer, wall, **kwargs: original(inner, outer, wall))
+        return resolve_geometry(cfg).geometry
+
+
+def preview_without_rear_rule(cfg, lod, monkeypatch):
+    # The marker still reaches viewport/profile sampling; only rear assembly changes.
+    import hornlab_mesher.preview.api as api
+    with monkeypatch.context() as patch:
+        patch.setattr(api, 'uses_text_import_geometry', lambda config: False)
+        return build_preview_geometry(cfg, PreviewOptionsV1(lod=lod))
+
+
 @pytest.mark.parametrize('angle', [0,5.25,15])
 def test_preview_rear_plane_matches_reference_outer_offset_rule(angle):
     cfg=marked(BASE.replace('Throat.Ext.Angle = 5.25',f'Throat.Ext.Angle = {angle}'))
@@ -61,14 +106,16 @@ def test_variable_import_rear_ring_is_named_refusal():
         resolve_geometry(cfg)
 
 
-def test_native_rear_and_inner_geometry_remain_unchanged():
+def test_native_rear_and_inner_geometry_remain_unchanged(monkeypatch):
     cfg=marked()
     native=copy.deepcopy(cfg)
     native.pop(TEXT_IMPORT_VERSION_KEY)
     imported=resolve_geometry(cfg).geometry
     ordinary=resolve_geometry(native).geometry
-    np.testing.assert_array_equal(imported.inner_points, ordinary.inner_points)
-    np.testing.assert_array_equal(imported.outer_points, ordinary.outer_points)
+    body = body_without_rear_rule(cfg, monkeypatch)
+    np.testing.assert_array_equal(imported.inner_points, body.inner_points)
+    np.testing.assert_array_equal(imported.outer_points, body.outer_points)
+    assert_native_baseline(ordinary, 'base')
     assert not hasattr(ordinary,'ath_text_import_rear')
     preview=build_preview_geometry(native,PreviewOptionsV1(lod='coarse'))
     cap=next(s for s in preview.surfaces if s.role=='wall.rear_cap')
@@ -128,8 +175,10 @@ def test_deferred_corner_preview_uses_production_rear_and_preserves_native(lod, 
     assert not resolutions  # No new production resolution for native rendering.
     native_cap = next(s for s in ordinary.surfaces if s.role == 'wall.rear_cap')
     np.testing.assert_allclose(native_cap.positions[:, 2], -5, rtol=0, atol=1e-9)
+    assert_native_preview_baseline(ordinary, 'corner', lod)
+    body_preview = preview_without_rear_rule(cfg, lod, monkeypatch)
     for role in ('horn.inner', 'horn.outer', 'mouth_rim', 'source_cap'):
-        surface = next(s for s in ordinary.surfaces if s.role == role)
+        surface = next(s for s in body_preview.surfaces if s.role == role)
         np.testing.assert_array_equal(roles[role].positions, surface.positions)
         np.testing.assert_array_equal(roles[role].indices, surface.indices)
 
@@ -316,7 +365,7 @@ def test_all_freestanding_builder_paths_use_same_imported_rear_plane(tmp_path,pa
 
 
 @pytest.mark.parametrize('stretch',[(0,0),(.4,.15)])
-def test_actual_resolver_retains_stretch_variant_behavior(stretch):
+def test_actual_resolver_retains_stretch_variant_behavior(stretch, monkeypatch):
     cfg=marked()
     cfg['profile']['s1'],cfg['profile']['s2']=stretch
     native=copy.deepcopy(cfg)
@@ -325,7 +374,10 @@ def test_actual_resolver_retains_stretch_variant_behavior(stretch):
     ordinary=resolve_geometry(native).geometry
     assert getattr(imported,'quadrant_patch_fit',False)==getattr(ordinary,'quadrant_patch_fit',False)
     assert getattr(imported,'ath_text_import_rear',False)
-    np.testing.assert_array_equal(imported.inner_points,ordinary.inner_points)
+    body = body_without_rear_rule(cfg, monkeypatch)
+    np.testing.assert_array_equal(imported.inner_points,body.inner_points)
+    np.testing.assert_array_equal(imported.outer_points,body.outer_points)
+    assert_native_baseline(ordinary, 'base' if stretch == (0,0) else 'stretch')
     assert type(imported).__mro__[2] is type(ordinary)
 
 
@@ -379,8 +431,10 @@ def test_near_planar_preview_uses_full_ring_certified_plane_at_every_lod(lod,mon
     native.pop(TEXT_IMPORT_VERSION_KEY)
     imported_geom=resolve_geometry(cfg).geometry
     native_geom=resolve_geometry(native).geometry
-    np.testing.assert_array_equal(imported_geom.inner_points,native_geom.inner_points)
-    np.testing.assert_array_equal(imported_geom.outer_points,native_geom.outer_points)
+    body = body_without_rear_rule(cfg, monkeypatch)
+    np.testing.assert_array_equal(imported_geom.inner_points,body.inner_points)
+    np.testing.assert_array_equal(imported_geom.outer_points,body.outer_points)
+    assert_native_baseline(native_geom, 'near')
 
 
 @pytest.mark.parametrize('wall', [0.5,5.0])
@@ -464,7 +518,7 @@ def test_new_unscaled_quarter_ring_with_inconsistent_planes_is_also_refused(topo
 
 
 @pytest.mark.parametrize('mode', ['bare','enclosure','infinite-baffle'])
-def test_nonfreestanding_import_marker_preserves_actual_preview_surfaces(mode):
+def test_nonfreestanding_import_marker_preserves_actual_preview_surfaces(mode, monkeypatch):
     cfg=marked()
     cfg['mode']=mode
     if mode=='enclosure':cfg['enclosure']={'depth_mm':120,'edge_mm':0}
@@ -472,7 +526,10 @@ def test_nonfreestanding_import_marker_preserves_actual_preview_surfaces(mode):
     native.pop(TEXT_IMPORT_VERSION_KEY)
     imported=build_preview_geometry(cfg,PreviewOptionsV1(lod='coarse'))
     ordinary=build_preview_geometry(native,PreviewOptionsV1(lod='coarse'))
-    assert [s.role for s in imported.surfaces]==[s.role for s in ordinary.surfaces]
-    for actual,expected in zip(imported.surfaces,ordinary.surfaces):
+    assert_native_preview_baseline(ordinary, mode, 'coarse')
+    # Nonfreestanding consumers must never invoke the imported rear rule.
+    body = preview_without_rear_rule(cfg, 'coarse', monkeypatch)
+    assert [s.role for s in imported.surfaces]==[s.role for s in body.surfaces]
+    for actual,expected in zip(imported.surfaces,body.surfaces):
         np.testing.assert_array_equal(actual.positions,expected.positions)
         np.testing.assert_array_equal(actual.indices,expected.indices)

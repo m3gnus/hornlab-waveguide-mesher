@@ -663,3 +663,134 @@ def _build_wg_freestanding_point_grid(
             "mouthRimClearance": _mouth_clearance_metadata(geometry, inner_points),
         },
     )
+
+
+def _build_ath_import_surfaces(geometry):
+    """Fan and ring lofts on ATH's authored grid, including the returning lip.
+
+    Both topology modes retain the measured stations: acoustic fitting must
+    not resample the body and thereby change the lip angle or rear selection.
+    Spline spans share ring curves with the fan, band and source. The legacy
+    preserve-grid variant instead shares straight per-profile edges.
+    """
+    from .point_grid_surfaces import _spline_span_phi_groups, _phi_segments
+    inner = _snap_open_symmetry_grid(
+        geometry.inner_points, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
+    rear = geometry.ath_rear_points
+    if rear is not None:
+        rear = _snap_open_symmetry_grid(
+            rear, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
+    faceted = geometry.topology_mode == "legacy" and (geometry.preserve_grid or not geometry.wg_topology)
+    builder = _SharedSurfaceBuilder() if faceted else _GeoSurfaceBuilder()
+    builder.add_grid("inner", inner)
+    n_phi, n_len, _ = inner.shape
+    wall_function = _add_grid_wall_surfaces if faceted else _add_spline_span_wall_surfaces
+    wall = wall_function(builder, "inner", n_phi=n_phi, n_len=n_len, closed=geometry.closed)
+    throat = (_add_source_surfaces(builder, inner, geometry, wall_dimtags=wall) if faceted
+              else _add_geo_source_cap_surfaces(builder, inner, geometry, mesh_size=0))
+    outer, cap, mouth = [], [], []
+    if rear is not None:
+        if faceted:
+            builder.add_grid("outer", rear)
+        else:
+            sizes = np.full(rear.shape[:2], geometry.ath_rear_resolution_mm)
+            if geometry.ath_rear_shape == 3:
+                sizes[:, -1] = 1.2 * geometry.ath_mouth_resolution_mm
+            builder.add_grid("outer", rear, mesh_size=sizes)
+        coincident_front = np.array_equal(rear[:, -1], inner[:, -1])
+        if coincident_front:
+            # FrontOffset=0 needs a shared rim, not a zero-area front band.
+            for i in range(n_phi):
+                builder.points[("outer", i, rear.shape[1] - 1)] = builder.point("inner", i, n_len - 1)
+        outer = wall_function(builder, "outer", n_phi=n_phi, n_len=rear.shape[1],
+                              closed=geometry.closed, reverse=True)
+        # Each sector is a fan to the observed apex, never a horizontal fill.
+        center = (builder.add_point(geometry.ath_rear_apex) if faceted else
+                  builder.add_point(geometry.ath_rear_apex, mesh_size=geometry.ath_rear_resolution_mm))
+        spokes = {i: builder.line_tags(center, builder.point("outer", i, 0)) for i in range(n_phi)}
+        groups = ([[i, (i + 1) % n_phi] for i in _phi_segments(n_phi, closed=geometry.closed)]
+                  if faceted else _spline_span_phi_groups(n_phi, closed=geometry.closed))
+        for indices in groups:
+            ring = (builder.line(("outer", indices[0], 0), ("outer", indices[-1], 0)) if faceted
+                    else builder.spline([("outer", i, 0) for i in indices]))
+            cap.append(builder.surface([spokes[indices[0]], ring, -spokes[indices[-1]]]))
+        if coincident_front:
+            mouth = []
+        elif faceted:
+            mouth = _add_mouth_rim_surfaces(builder, n_phi=n_phi, n_len=n_len,
+                                          outer_len=rear.shape[1], closed=geometry.closed)
+        else:
+            mouth = _add_geo_spline_span_mouth_rim_surfaces(builder, n_phi=n_phi, inner_len=n_len,
+                                                         outer_len=rear.shape[1], closed=geometry.closed)
+    mouth_curves = ([abs(builder.line(("inner", i, n_len - 1),
+                                     ("inner", (i + 1) % n_phi, n_len - 1)))
+                     for i in _phi_segments(n_phi, closed=geometry.closed)] if faceted else
+                    [abs(builder.spline([("inner", i, n_len - 1) for i in indices]))
+                     for indices in _spline_span_phi_groups(n_phi, closed=geometry.closed)])
+    if faceted:
+        require_gmsh().model.occ.synchronize()
+    else:
+        require_gmsh().model.geo.synchronize()
+    wall_tags, outer_tags, cap_tags, mouth_tags, throat_tags = (
+        [int(tag) for _, tag in surfaces] for surfaces in (wall, outer, cap, mouth, throat))
+    open_points, open_normals = None, None
+    if rear is None:
+        from ..normals import open_shell_wall_orientation_references
+        open_points, open_normals = open_shell_wall_orientation_references(inner, closed=geometry.closed)
+    return BuiltGeometry(
+        open_shell_wall_points_mm=open_points, open_shell_wall_normals=open_normals,
+        surface_groups={int(PhysicalGroup.RIGID_WALL): [*wall_tags, *outer_tags, *cap_tags, *mouth_tags],
+                        int(PhysicalGroup.PRIMARY_SOURCE): throat_tags},
+        # The returning rim is not the front-most axial plane.
+        axial_bounds_mm=(float(np.min(inner[..., 2])), float(np.max(inner[..., 2]))),
+        source_axis="z", mesh_surface_groups={"inner": wall_tags, "outer": outer_tags,
+            "mouth": mouth_tags, "rear": cap_tags, "rear_cap": cap_tags, "throat_disc": throat_tags},
+        symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
+        symmetry_snap_tol_mm=1e-6, mesh_algorithm=MESH_ALGORITHM_AUTOMATIC,
+        metadata={"meshTopologyMode": geometry.topology_mode,
+                  "athImportSamplingAuthority": "authored-grid",
+                  "surfaceAreasMm2": ({} if faceted else _ath_import_surface_areas([*wall, *outer, *cap, *mouth, *throat])),
+                  "athRearShape": geometry.ath_rear_shape,
+                  "athMouthCurveTags": mouth_curves,
+                  "athRearVertexTags": ([] if rear is None else
+                      [builder.point("outer", i, j) for i in range(n_phi) for j in range(rear.shape[1])] + [center]),
+                  **({"mouthRoundoverMeshSizeMm": min(geometry.ath_lip_radius_mm / 3,
+                        float(np.min(np.linalg.norm(np.diff(inner[:, geometry.ath_body_rows - 1:], axis=1), axis=-1))))
+                     } if geometry.ath_lip_radius_mm else {})},
+    )
+
+
+def _ath_import_surface_areas(surfaces):
+    """Integrate GEO patch areas for the pre-mesh budget, without a mesh job.
+
+    Bounding-box products count the transverse box once per thin ring loft;
+    with an authored lip grid that can overstate the bore area severalfold.
+    Tensor Gauss quadrature measures the actual parametric patch instead.
+    """
+    gmsh = require_gmsh()
+    nodes, weights = np.polynomial.legendre.leggauss(12)
+    quadrature_weights = np.outer(weights, weights).reshape(-1)
+    areas = {}
+    for _, tag in surfaces:
+        try:
+            low, high = (np.asarray(bound, dtype=float) for bound in gmsh.model.getParametrizationBounds(2, tag))
+            half = (high - low) / 2
+            u = (high[0] + low[0]) / 2 + half[0] * nodes
+            v = (high[1] + low[1]) / 2 + half[1] * nodes
+            uv = np.stack(np.meshgrid(u, v, indexing="ij"), axis=-1).reshape(-1, 2)
+            # GEO's derivative uses a very short numerical chord, losing area
+            # digits even on a plane. A fourth-order stencil at a longer
+            # parameter step avoids that cancellation without changing geometry.
+            steps = (high - low) * 1e-4
+            queries = np.broadcast_to(uv, (2, 4, len(uv), 2)).copy()
+            for axis in range(2):
+                queries[axis, :, :, axis] += np.array([-2, -1, 1, 2])[:, None] * steps[axis]
+            values = np.asarray(gmsh.model.getValue(2, tag, queries.reshape(-1).tolist())).reshape(2, 4, len(uv), 3)
+            derivatives = np.einsum("s,aspc->apc", [1, -8, 8, -1], values) / (12 * steps[:, None, None])
+            jacobian = np.linalg.norm(np.cross(derivatives[0], derivatives[1]), axis=1)
+            area = float(np.dot(quadrature_weights, jacobian) * np.prod(half))
+        except (ValueError, RuntimeError):
+            continue  # The generic conservative estimate remains available.
+        if np.isfinite(area) and area > 0:
+            areas[int(tag)] = area
+    return areas

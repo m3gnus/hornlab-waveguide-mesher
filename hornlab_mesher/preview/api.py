@@ -394,6 +394,9 @@ def build_preview_geometry(
     if "mouthRoundoverRadiusMm" in params:
         from .mouth_roundover import build
         return build(params, options)
+    if params.get("athRoundover") or params.get("athRearShape") == 3:
+        from .ath_import import build
+        return build(config, options)
     lod = str(options.lod).strip().lower()
     if lod not in _LOD_PRESETS:
         raise ValueError("lod must be 'coarse', 'fine', or 'inspection'")

@@ -101,3 +101,18 @@ Physical-curve comparisons evaluate radius at exported axial coordinates;
 equal station indices do not establish equal wall geometry. The committed
 slot regression table is a small physical-profile witness, not a complete
 reference archive or a full mesh/STEP parity qualification.
+
+ATH OSSE imports now support `Mesh.Roundover = { Radius; Segments }` with
+Segments default 5, and `Mesh.RearShape = 3` with `FrontOffset` default 40 mm
+and `Step` default 25 mm. RearShape 1 with a lip follows ATH's selected normal
+offset rings. These controls are retained as import-only mesh data across JSON
+round trips; the native C6 roundover is unchanged. The complete authored grid,
+including the nonmonotonic lip, supplies both legacy and acoustic mesh modes.
+See [ATH import lip](mouth-roundover-contract.md#ath-import-lip) and
+[Opus rear](ath-rear-import-contract.md#opus-rear-and-rearshape-1-with-an-ath-lip)
+for rules, fixture evidence and named refusals. Preview tessellates the same
+authored mesh patches at every LOD; it never recomputes the lip on a refined
+body grid. Viewport exports retain the authored inner rows, independent rear
+row count and apex, and optionally carry that tessellation. STEP retains a
+named refusal because GEO patches have no faithful OCC transport yet. Existing imports without
+an active lip or Opus rear retain their previous consumers and rear-plane rules.

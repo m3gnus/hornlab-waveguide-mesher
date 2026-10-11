@@ -177,6 +177,7 @@ def build_viewport_geometry_from_config(
     *,
     point_lists: bool = True,
     defer_osse_offset_repair: bool = False,
+    lod: str | None = None,
 ) -> dict[str, Any]:
     """Build point-grid horn and optional enclosure viewport data from config.
 
@@ -189,6 +190,8 @@ def build_viewport_geometry_from_config(
     """
 
     params, formula, mode = build_geometry_params(config)
+    if params.get("athRoundover") or params.get("athRearShape") == 3:
+        return _ath_import_viewport(config, params, formula, mode, point_lists=point_lists, lod=lod)
     mesh = _section(config, "mesh")
     enclosure_cfg = _section(config, "enclosure")
     enclosure = _enclosure_from_config(config, mesh, enclosure_cfg)
@@ -226,6 +229,60 @@ def build_viewport_geometry_from_config(
         "grid": grid,
         "enclosure": enclosure_grid,
     }
+
+
+def _ath_import_viewport(config, params, formula, mode, *, point_lists, lod):
+    """Keep authored export rows and carry the independently sized rear grid.
+
+    Existing inner-grid consumers retain their exact flat-list/count contract.
+    Rear renderers use rear_grid_n_length and rear_apex rather than inventing
+    a planar cap. Pass lod to include the complete error-bounded tessellation.
+    """
+    import copy
+    from .config_builder import resolve_geometry
+    from .ath_import_surfaces import rear_rings
+    render_config = config
+    if mode == 'bare':
+        # WG's inner export deliberately requests no material while retaining
+        # the imported lip controls. An inactive rear must not add a wall.
+        params = dict(params, wallThickness=0)
+        render_config = copy.deepcopy(dict(config))
+        render_config['mesh'] = dict(render_config.get('mesh', {}))
+        for key in ('athRearShape', 'athRearFrontOffset', 'athRearStep'):
+            render_config['mesh'].pop(key, None)
+    resolve_geometry(render_config)  # Same combination/refusal contract as mesh.
+    grid = build_point_grid_arrays(params)
+    rear, apex = None, None
+    if mode == 'freestanding' and params['wallThickness'] > 0:
+        rear, apex, _ = rear_rings(grid['inner_grid'], grid['ath_normals'],
+            params.get('athRearShape', 1), params['wallThickness'],
+            params.get('athRearFrontOffset', 40), params.get('athRearStep', 25),
+            profile_zero_z=grid.get('ath_profile_zero_z'), closed=grid['full_circle'])
+    # The mesh's outer surface is the selected rear loft, with its own rows.
+    grid['outer_grid'] = rear
+    offset = float(grid.get('vertical_offset_mm', 0) or 0)
+    for points in (grid['inner_grid'], rear):
+        if points is not None:
+            points[..., 1] += offset
+    if apex is not None:
+        apex[1] += offset
+    grid['outer_grid_n_length'] = None if rear is None else rear.shape[1] - 1
+    grid['rear_grid_n_length'] = grid['outer_grid_n_length']
+    grid['rear_apex'] = None if apex is None else (apex.tolist() if point_lists else apex)
+    if point_lists:
+        grid = _grid_with_point_lists(grid)
+        # Internal normal/probe arrays are not part of flat-list transport.
+        for key in ('ath_normals', 'ath_profile_zero_z'):
+            if key in grid:
+                grid[key] = np.asarray(grid[key]).tolist()
+    result = {'params': params, 'formula': formula, 'mode': mode,
+              'grid': grid, 'enclosure': None}
+    if lod is not None:
+        from .preview.api import build_preview_geometry, PreviewOptionsV1
+        preview = build_preview_geometry(render_config, PreviewOptionsV1(lod=lod))
+        result['surfaces'] = preview.surfaces
+        result['metadata'] = preview.metadata
+    return result
 
 
 __all__ = [

@@ -298,6 +298,10 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     if getattr(geometry, "roundover", None) is not None:
         from .mouth_roundover import build_roundover
         return build_roundover(geometry)
+    from ..ath_import_surfaces import AthImportedSurfaceGeometry
+    if isinstance(geometry, AthImportedSurfaceGeometry):
+        from .point_grid_freestanding import _build_ath_import_surfaces
+        return _build_ath_import_surfaces(geometry)
     inner_points = _validated_grid(geometry.inner_points, name="inner_points")
     source_shape = _validate_source_shape(geometry)
     build_mode = geometry.build_mode

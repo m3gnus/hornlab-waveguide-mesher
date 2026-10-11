@@ -917,7 +917,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     elif mode == "enclosure":
         raise ConfigError("enclosure mode requires enclosure.depth_mm > 0")
 
-    default_wall = 0.0 if mode in {"bare", "enclosure", "infinite-baffle"} else 6.0
+    default_wall = (0.0 if mode in {"bare", "enclosure", "infinite-baffle"} else
+                    5.0 if imported_geometry and (mesh.get("athRoundover") or mesh.get("athRearShape") == 3) else 6.0)
     wall_thickness = _float(
         mesh,
         config,
@@ -926,6 +927,18 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     )
     if mode in {"bare", "enclosure", "infinite-baffle"}:
         wall_thickness = 0.0
+    ath_controls = {}
+    if any(key in mesh for key in ("athRoundover", "athRearShape", "athRearFrontOffset", "athRearStep")):
+        if not imported_geometry:
+            raise ConfigError("Mesh.Roundover/RearShape import controls require ATH import geometry interpretation")
+        from .ath_import_surfaces import normalized_controls
+        try:
+            input_wall = wall_thickness
+            ath_controls, wall_thickness = normalized_controls(mesh, wall_thickness)
+            if wall_thickness != input_wall:
+                logger.warning("[hornlab-mesher] Mesh.RearShape = 3 clamps Mesh.WallThickness to %g mm", wall_thickness)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     z_map_points = _pick(
         mesh,
         config,
@@ -1156,6 +1169,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         # historical override into geometry params, preserving their wire shape.
         if config.get(ATH_AXIAL_RULE_KEY) == ATH_AXIAL_LEGACY:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
+    common.update(ath_controls)
     if mesh.get("_athNacPresent"):
         common["_athNacPresent"] = True
     _apply_driver_adapter(common, profile, config)
@@ -2298,6 +2312,9 @@ def resolve_geometry(
     if "mouthRoundoverRadiusMm" in params:
         from .mouth_roundover import resolve
         return resolve(config, params, allow_large_mesh)
+    if params.get("athRoundover") or params.get("athRearShape") == 3:
+        from .ath_import_surfaces import resolve
+        return resolve(config, params, formula, mode, allow_large_mesh)
     _validate_mode_contract(params, mode)
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")

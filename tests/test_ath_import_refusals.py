@@ -93,7 +93,7 @@ def test_unknown_top_level_key_is_refused_by_name(config: str, named: str) -> No
     [
         ("Horn.Adapter = {\n  Width = 20\n  Height = 40\n}\n", "Horn.Adapter"),
         ("Horn.Part:1 = {\n  L = 50\n}\n", "Horn.Part:1"),
-        ("Mesh.Roundover = {\n  Radius = 25\n  Segments = 5\n}\n", "Mesh.Roundover"),
+        ("Mesh.Roundover = {\n  Radius = 25\n  Unknown = 5\n}\n", "Mesh.Roundover.Unknown"),
         ("Mesh.MadeUp = {\n  Depth = 200\n}\n", "Mesh.MadeUp"),
         ("BEE = {\n  Height = 500\n  Port = {\n    z = 40\n  }\n}\n", "BEE"),
         ("Vanes = {\n  Points = 16\n}\n", "Vanes"),
