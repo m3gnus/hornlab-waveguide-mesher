@@ -148,6 +148,10 @@ _IGNORED_ATH_PREFIXES: tuple[str, ...] = (
     # Settings for ATH's external Gmsh run; this mesher owns its own meshing.
     "Gmsh.",
 )
+# Mesh output switches: the file format and the mesher run, not the horn.
+_IGNORED_ATH_MESH_OUTPUT_KEYS = frozenset(
+    f"Mesh.{name}" for name in ("Algorithm", "Binary", "MshFileVersion", "Wireframe")
+)
 _IGNORED_ATH_KEYS = frozenset(
     {
         "LE",
@@ -158,11 +162,9 @@ _IGNORED_ATH_KEYS = frozenset(
         # ATH User Guide 4.1.1: only active for Throat.Profile = 3, which
         # this importer refuses in _reject_unsupported_ath_keys.
         "CircArc.TermAngle",
-        # Mesh output switches: the file format and the mesher run, not the horn.
-        *(f"Mesh.{name}" for name in ("Algorithm", "Binary", "MshFileVersion")),
+        *_IGNORED_ATH_MESH_OUTPUT_KEYS,
     }
 )
-_IGNORED_ATH_MESH_OUTPUT_KEYS = frozenset(f"Mesh.{name}" for name in ("Algorithm", "Binary", "MshFileVersion"))
 # Block names are compared without their ``:<tag>`` suffix (``GridExport:f360``).
 _IGNORED_ATH_BLOCKS = frozenset({"Report", "GridExport", "FRDExport", "RespExport"})
 
@@ -312,8 +314,13 @@ def _report_ignored_ath_items(
         if key_map is not None:
             _warn_ignored_ath_keys(name + ".", items, key_map)
         for key, value in items.items():
+            reason = None
             if _ath_item_disabled(key):
-                _report_ignored_ath_item(f"{name}.{key}", _ath_ignore_reason(key, block=False), value=value)
+                reason = _ath_ignore_reason(key, block=False)
+            elif name == "Mesh" and f"{name}.{key}" in _IGNORED_ATH_MESH_OUTPUT_KEYS:
+                reason = _ath_ignore_reason(f"{name}.{key}", block=False)
+            if reason:
+                _report_ignored_ath_item(f"{name}.{key}", reason, value=value)
     for path in nested:
         if any(path[:len(parent)] == parent for parent in skipped):
             continue

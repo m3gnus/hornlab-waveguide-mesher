@@ -290,6 +290,25 @@ def test_output_report_and_solver_items_are_ignored() -> None:
     assert parse_text_config(FLAT_OSSE + IGNORED_ITEMS) == plain
 
 
+@pytest.mark.parametrize(("member", "value"), [
+    ("Algorithm", "6"),
+    ("Binary", "1"),
+    ("MshFileVersion", "2.2"),
+    ("Wireframe", "0"),
+])
+@pytest.mark.parametrize("form", ["flat", "block"])
+def test_mesh_output_keys_are_ignored_and_warned(
+    member: str, value: str, form: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    plain = parse_text_config(FLAT_OSSE)
+    extra = f"Mesh.{member} = {value}\n" if form == "flat" else f"Mesh = {{\n  {member} = {value}\n}}\n"
+    with caplog.at_level(logging.WARNING, logger="hornlab_mesher.config_parser"):
+        assert parse_text_config(FLAT_OSSE + extra) == plain
+    assert len(caplog.records) == 1
+    assert caplog.records[0].levelno == logging.WARNING
+    assert f"ignoring Mesh.{member} = {value}: ATH mesh-output setting" in caplog.text
+
+
 def test_simulation_settings_are_ignored_and_reported(caplog: pytest.LogCaptureFixture) -> None:
     settings = (
         "Simulation.F1 = 400\nSimulation.F2 = 20000\nSimulation.NumFrequencies = 40\n"
