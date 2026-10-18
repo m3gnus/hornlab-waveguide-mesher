@@ -197,6 +197,7 @@ Each row is used in production by the consumer named. Contract tests live in
 | `profile_sampling.ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY` | WG | Densify morph corner arcs for an export measurement reference; adds samples only. |
 | `normals.validate_orientation` | WG | Mesh integrity report (`tests/test_orientation_validation.py`). |
 | `tags.PhysicalGroup` | WG | Tag numbers above. |
+| `printable_surface_tags(config)` | WG STL export | Printable physical tags: `(1,)` for horns, `(1, 2)` for SOURCE-DISK. Accepts a validated config; does not build or modify geometry. |
 | `geometry.PointGridHornGeometry` | WG | STEP export of imported fixtures. |
 | `step_import.postprocess_mesh`, `run_occ_healing_fallbacks`, `OCC_HEALING_FALLBACKS`, `StepFaceGroup`, `StepLabelSelector`, `detect_symmetry_planes` | WG | Imported-CAD meshing (`tests/test_step_import.py`). |
 | `step_import.parse_named_shell_faces`, `parse_styled_face_groups`, `advanced_face_order` | WG | STEP face labels and face order (`tests/test_step_text.py`). |

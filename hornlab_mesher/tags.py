@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import IntEnum
+from typing import Any
 
 
 class PhysicalGroup(IntEnum):
@@ -15,6 +17,22 @@ class PhysicalGroup(IntEnum):
     MID_PORT_EXIT_LEFT = 10
     MID_PORT_EXIT_RIGHT = 11
     MOUTH_APERTURE = 12
+
+
+def printable_surface_tags(config: Mapping[str, Any]) -> tuple[int, ...]:
+    """Return physical tags retained by a printable STL of a validated config.
+
+    Horns retain the rigid surface only. A standalone SOURCE-DISK also retains
+    its moving disc, which is part of the printable body. This selection does
+    not describe solver boundaries or the imported-geometry tag namespace.
+    An omitted formula uses the ordinary horn default; SOURCE-DISK configs
+    require their formula (or type alias) at the root.
+    """
+    formula = str(config.get("formula", config.get("type", "OSSE"))).strip().upper()
+    rigid = int(PhysicalGroup.RIGID_WALL)
+    if formula == "SOURCE-DISK":
+        return (rigid, int(PhysicalGroup.PRIMARY_SOURCE))
+    return (rigid,)
 
 
 PHYSICAL_NAMES: dict[int, str] = {

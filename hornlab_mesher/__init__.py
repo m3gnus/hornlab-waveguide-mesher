@@ -78,7 +78,7 @@ from .mesher import (
     build_mesh_with_info,
     load_mesh,
 )
-from .tags import PhysicalGroup
+from .tags import PhysicalGroup, printable_surface_tags
 from .step_prepare import (
     DEFAULT_AUTO_CUT_GRID,
     DEFAULT_AUTO_CUT_TOLERANCE_REL,
@@ -143,6 +143,7 @@ __all__ = [
     "OsseHornGeometry",
     "RosseHornGeometry",
     "PhysicalGroup",
+    "printable_surface_tags",
     "OccAutoCutResult",
     "OccSurfaceGroup",
     "OccSurfaceRole",
