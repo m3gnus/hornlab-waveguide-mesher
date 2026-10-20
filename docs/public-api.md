@@ -297,7 +297,7 @@ Everything not listed above, in particular:
 - `hornlab_mesher.density`, `hornlab_mesher.normals` internals,
   `hornlab_mesher.preview.fidelity`;
 - underscored names anywhere, including the underscored `config_builder`
-  helpers `hornlab_mesher.cli` re-exports for this repository's own tests.
+  helpers this repository's own tests import directly.
 
 ## Compatibility promise
 

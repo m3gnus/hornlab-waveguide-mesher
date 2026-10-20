@@ -14,9 +14,8 @@ import numpy as np
 import pytest
 
 from hornlab_mesher import config_builder
-from hornlab_mesher.cli import build_geometry_params, load_config
-from hornlab_mesher.config_builder import resolve_geometry
-from hornlab_mesher.config_parser import ConfigError
+from hornlab_mesher.config_builder import build_geometry_params, resolve_geometry
+from hornlab_mesher.config_parser import ConfigError, load_config
 from hornlab_mesher.profile_common import eval_param
 from hornlab_mesher.profile_formulas import (
     calculate_osse,

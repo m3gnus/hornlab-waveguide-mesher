@@ -4,8 +4,8 @@ import math
 
 import pytest
 
-from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
-from hornlab_mesher.config_parser import ConfigError
+from hornlab_mesher.config_builder import build_from_config, build_geometry_params
+from hornlab_mesher.config_parser import ConfigError, load_config
 from hornlab_mesher.profile_formulas import osse_coverage_inversion
 
 

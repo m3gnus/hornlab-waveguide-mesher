@@ -11,8 +11,15 @@ import numpy as np
 import pytest
 import meshio
 
-from hornlab_mesher.cli import build_from_config, build_geometry_params, load_config
-from hornlab_mesher.cli import _bool, _enclosure_from_config, _reshape_grid, _section
+from hornlab_mesher.config_builder import (
+    _bool,
+    _enclosure_from_config,
+    _reshape_grid,
+    _section,
+    build_from_config,
+    build_geometry_params,
+)
+from hornlab_mesher.config_parser import load_config
 from hornlab_mesher.geometry import PointGridHornGeometry
 from hornlab_mesher.mesher import _triangles_and_physical_tags
 from hornlab_mesher.profile_formulas import calculate_osse, osse_coverage_inversion

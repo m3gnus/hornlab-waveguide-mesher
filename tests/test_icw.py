@@ -629,7 +629,7 @@ class TestReviewFixes:
     def test_rollback_r_aperture_reaches_the_solver(self):
         """config_builder used to materialise R=150.0 for every termination,
         silently overriding an explicit rollback r_aperture."""
-        from hornlab_mesher.cli import build_geometry_params
+        from hornlab_mesher.config_builder import build_geometry_params
 
         params, formula, _mode = build_geometry_params(
             {

@@ -11,18 +11,7 @@ from typing import Iterator
 
 from .config_builder import (
     BuildResult,
-    _bool,
-    _enclosure_from_config,
-    _first_number,
-    _float,
-    _int,
-    _interfaces_from_params,
-    _normalise_formula,
-    _normalise_mode,
-    _number_list,
     _pick,
-    _reshape_grid,
-    _scalar_or_expr,
     _section,
     build_from_config,
     build_geometry_params,
@@ -46,19 +35,6 @@ __all__ = [
     "parse_ath_config",
     "parse_legacy_config",
     "parse_text_config",
-    "_bool",
-    "_enclosure_from_config",
-    "_first_number",
-    "_float",
-    "_int",
-    "_interfaces_from_params",
-    "_normalise_formula",
-    "_normalise_mode",
-    "_number_list",
-    "_pick",
-    "_reshape_grid",
-    "_scalar_or_expr",
-    "_section",
 ]
 
 

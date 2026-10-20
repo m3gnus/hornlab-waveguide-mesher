@@ -31,13 +31,13 @@ from hornlab_mesher.builders.point_grid_surfaces import (
     _rear_rim_points,
 )
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
-from hornlab_mesher.cli import (
+from hornlab_mesher.config_builder import (
+    _number_list,
     build_from_config,
     build_geometry_params,
-    parse_ath_config,
+    resolve_geometry,
 )
-from hornlab_mesher.config_builder import _number_list, resolve_geometry
-from hornlab_mesher.config_parser import ConfigError
+from hornlab_mesher.config_parser import ConfigError, parse_ath_config
 from hornlab_mesher.density import _parse_quadrant_resolutions
 from hornlab_mesher.geometry import (
     MESH_ALGORITHM_DELAUNAY,
