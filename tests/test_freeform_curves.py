@@ -235,7 +235,7 @@ def test_mixed_handles_still_refuse_invalid_geometry_at_minimum(handle, match):
 def test_exact_insert_whole_curve_and_json_roundtrip(profile, z):
     original = copy.deepcopy(profile)
     plane = resolved(profile)
-    inserted = freeform_insert_anchor(profile, z=z)
+    inserted = freeform_insert_anchor(profile, default_throat_angle_deg=15.5, z=z)
     assert profile == original
     assert len(inserted["points"]) == len(profile["points"]) + 1
     for output in (inserted, json.loads(json.dumps(inserted, allow_nan=False))):
@@ -256,17 +256,17 @@ def test_reviewer_naive_refit_moves_other_span():
     refitted = resolved(p)
     difference = float(refitted.radii_at_z(np.asarray(70.5)) - old.radii_at_z(np.asarray(70.5)))
     assert abs(difference) == pytest.approx(1.207, abs=.001)
-    inserted = resolved(freeform_insert_anchor(reviewer(), z=21.407))
+    inserted = resolved(freeform_insert_anchor(reviewer(), default_throat_angle_deg=15.5, z=21.407))
     assert float(inserted.radii_at_z(np.asarray(70.5))) == pytest.approx(float(old.radii_at_z(np.asarray(70.5))), abs=1e-9)
 
 
 @pytest.mark.parametrize("z", [-1, 0, 40, 120, 121, float("nan")])
 def test_insert_requires_z_strictly_inside_span(z):
     with pytest.raises(ValueError):
-        freeform_insert_anchor(reviewer(), z=z)
+        freeform_insert_anchor(reviewer(), default_throat_angle_deg=15.5, z=z)
 
 
-@pytest.mark.parametrize("profile", [reviewer(), corners(), freeform_insert_anchor(reviewer(), z=21.407)])
+@pytest.mark.parametrize("profile", [reviewer(), corners(), freeform_insert_anchor(reviewer(), default_throat_angle_deg=15.5, z=21.407)])
 def test_curve_query_shape_samples_and_report(profile):
     q = freeform_profile_curves(params(profile), samples_per_span=13)
     assert set(q) == {"H", "V", "warnings"}
@@ -336,7 +336,7 @@ def test_corner_wall_refused_at_build_entry(tmp_path, position, entry):
 
 
 def test_handles_only_c1_mesh_builds(tmp_path):
-    p = freeform_insert_anchor({"points": [[0, 12.7], [40, 30], [100, 60]]}, z=20)
+    p = freeform_insert_anchor({"points": [[0, 12.7], [40, 30], [100, 60]]}, default_throat_angle_deg=15.5, z=20)
     result = build_from_config(coarse_config(p), tmp_path / "handles.msh")
     assert Path(result.mesh_path).stat().st_size > 0
     assert result.metadata["freeformReport"]["throatRadiusMm"] == 12.7
@@ -360,7 +360,7 @@ def test_extended_report_and_cache_fields():
 def test_preview_semantic_stations_accept_object_points():
     from hornlab_mesher.preview.horn import _semantic_t_stations
     from hornlab_mesher.profile_sampling import build_point_grid_arrays
-    p = freeform_insert_anchor({"points": [[0, 12.7], [40, 30], [100, 60]]}, z=20)
+    p = freeform_insert_anchor({"points": [[0, 12.7], [40, 30], [100, 60]]}, default_throat_angle_deg=15.5, z=20)
     profile_params = {"type": "FREEFORM", **params(p), "lengthSegments": 8, "angularSegments": 16}
     grid = build_point_grid_arrays(profile_params)
     t = np.asarray(grid["slice_map"])
@@ -389,7 +389,7 @@ def test_single_smooth_explicit_handle_keeps_opposite_side_smooth(field, handle)
     a = freeform_profile_curves(params(p))["H"]["anchors"][1]
     assert a["angleInDeg"] == pytest.approx(a["angleOutDeg"], abs=1e-9)
     for z in (20, 60, 100):
-        inserted = resolved(freeform_insert_anchor(p, z=z))
+        inserted = resolved(freeform_insert_anchor(p, default_throat_angle_deg=15.5, z=z))
         samples = np.linspace(0, 120, 4001)
         np.testing.assert_allclose(inserted.radii_at_z(samples), resolved(p).radii_at_z(samples), rtol=0, atol=1e-9)
 
@@ -398,7 +398,7 @@ def test_single_smooth_explicit_handle_keeps_opposite_side_smooth(field, handle)
 def test_exact_insert_near_anchor_avoids_handle_cancellation(z):
     p = reviewer()
     original = resolved(p)
-    inserted = freeform_insert_anchor(p, z=z)
+    inserted = freeform_insert_anchor(p, default_throat_angle_deg=15.5, z=z)
     # Re-parsing the serialized vectors must preserve their collinearity.
     after = resolved(json.loads(json.dumps(inserted)))
     anchor = freeform_profile_curves(params(inserted))["H"]["anchors"][next(
@@ -413,7 +413,7 @@ def test_exact_insert_preserves_subdivision_radius_overshoot():
          "throatAngleDeg": -60, "mouthAngleDeg": 45}
     build_freeform_geometry(params(p))
     original = resolved(p)
-    inserted = freeform_insert_anchor(p, z=10)
+    inserted = freeform_insert_anchor(p, default_throat_angle_deg=15.5, z=10)
     after = resolved(json.loads(json.dumps(inserted, allow_nan=False)))
     for first, last in zip(original.anchors[:-1], original.anchors[1:]):
         samples = np.linspace(first[0], last[0], 2001)
@@ -439,7 +439,7 @@ def test_exact_insert_seeded_random_legacy_profiles(seed):
     for _ in range(5):
         span = int(rng.integers(count - 1))
         insert_z = float(z[span] + rng.uniform(.01, .99) * (z[span+1] - z[span]))
-        inserted = freeform_insert_anchor(p, z=insert_z)
+        inserted = freeform_insert_anchor(p, default_throat_angle_deg=15.5, z=insert_z)
         after = resolved(json.loads(json.dumps(inserted, allow_nan=False)))
         assert len(after.anchors) == count + 1
         np.testing.assert_allclose(after.radii_at_z(samples), expected, rtol=0, atol=1e-9)
@@ -482,3 +482,113 @@ def test_legacy_gate_persisted_freeform_fixtures(fixture_path):
         z = np.linspace(old._profile_h.anchors[0, 0], old._profile_h.anchors[-1, 0], 2001)
         assert all((a == b).all() for a, b in zip(old.evaluate_radii(z), new.evaluate_radii(z)))
         assert old.report() == new.report()
+
+
+def assert_noop_mouth_corner_matches_legacy(rows, throat_angle, mouth_angle):
+    legacy_profile = {"points": rows[:-1] + [rows[-1] + [mouth_angle]],
+                      "throatAngleDeg": throat_angle}
+    extended_profile = {"points": rows[:-1] + [{
+        "z": rows[-1][0], "r": rows[-1][1], "join": "corner", "angleDeg": mouth_angle}],
+        "throatAngleDeg": throat_angle}
+    legacy_parsed = _parse_anchors(legacy_profile, "H")
+    legacy = _resolve_plane("H", legacy_parsed, *_parse_endpoint_values(
+        legacy_profile, legacy_parsed, "H", 15.5))
+    extended_parsed = _parse_anchors(extended_profile, "H")
+    assert extended_parsed.extended
+    extended = _resolve_plane("H", extended_parsed, *_parse_endpoint_values(
+        extended_profile, extended_parsed, "H", 15.5))
+    assert type(legacy) is _PlaneSpline
+    assert isinstance(extended, _BezierPlane)
+    for span, controls in enumerate(extended.beziers):
+        s = np.linspace(0, 1, 2001)
+        expected = legacy.spline(legacy.anchor_u[span] + s*np.diff(legacy.anchor_u)[span])
+        actual = _bezier_values(np.broadcast_to(controls, (len(s), 4, 2)), s)
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-9)
+    return legacy, extended
+
+
+def test_noop_endpoint_corner_keeps_legacy_coupled_shrink_and_recovery():
+    rows = [[0.0, 14.373572909889862], [55.96646683225384, 15.002087483252387],
+            [89.66662890006872, 49.629936232028875], [119.13219990981908, 87.68472976774237],
+            [173.17850370314514, 107.13099782405419], [228.32909105379, 134.91078951780898]]
+    legacy, extended = assert_noop_mouth_corner_matches_legacy(
+        rows, -8.649040915866527, 41.70111879212033)
+    assert np.any(legacy.speed_factors < 1)
+    np.testing.assert_array_equal(extended.speed_factors, legacy.speed_factors)
+    z = np.linspace(0, rows[-1][0], 4001)
+    np.testing.assert_allclose(extended.radii_at_z(z), legacy.radii_at_z(z), rtol=0, atol=1e-4)
+
+
+def test_noop_endpoint_corner_200_seeded_random_profiles_exact_hermite():
+    # Same generator, seed and 200 trials as the reviewer's exp4.py.
+    rng = np.random.default_rng(3)
+    for _ in range(200):
+        count = rng.integers(3, 7)
+        z = np.cumsum(rng.uniform(5, 60, count))
+        z -= z[0]
+        radii = np.maximum(10 + np.cumsum(rng.uniform(-5, 40, count)), 3)
+        throat = float(rng.uniform(-10, 60))
+        mouth = float(rng.uniform(0, 85))
+        assert_noop_mouth_corner_matches_legacy(np.column_stack((z, radii)).tolist(), throat, mouth)
+
+
+def test_exact_insert_required_default_throat_matches_a0_query_and_build():
+    profile = {"points": [[0, 12.7], [40, 30], [120, 140]], "mouthAngleDeg": 60}
+    with pytest.raises(TypeError, match="default_throat_angle_deg"):
+        freeform_insert_anchor(profile, z=21.407)
+    config = {**params(profile), "a0": 30}
+    query = freeform_profile_curves(config)
+    inserted = freeform_insert_anchor(profile, z=21.407, default_throat_angle_deg=30)
+    after = build_freeform_geometry({**params(json.loads(json.dumps(inserted))), "a0": 30})
+    # Compare to the exact mathematical curve: the legacy evaluator retains its
+    # sampled inverse error, as required by the compatibility gate.
+    controls = np.asarray([span["bezier"] for span in query["H"]["spans"]])
+    for control in controls:
+        s = np.linspace(0, 1, 2001)
+        expected = _bezier_values(np.broadcast_to(control, (len(s), 4, 2)), s)
+        np.testing.assert_allclose(after.evaluate_radii(expected[:, 0])[0], expected[:, 1],
+                                   rtol=0, atol=1e-9)
+    assert query["H"]["anchors"][0]["angleOutDeg"] == pytest.approx(30)
+
+
+@pytest.mark.parametrize("profile", [reviewer(), corners()])
+def test_query_handles_with_null_endpoints_can_be_echoed_as_profile(profile):
+    query = freeform_profile_curves(params(profile))["H"]
+    rows = [{key: anchor[key] for key in ("z", "r", "join", "handleIn", "handleOut")}
+            for anchor in query["anchors"]]
+    for row in rows:
+        row.update(angleDeg=None, angleOutDeg=None)
+    assert rows[0]["handleIn"] is None and rows[-1]["handleOut"] is None
+    echoed = json.loads(json.dumps({"points": rows}))
+    after = freeform_profile_curves(params(echoed))["H"]
+    np.testing.assert_allclose([s["bezier"] for s in after["spans"]],
+                               [s["bezier"] for s in query["spans"]], rtol=0, atol=1e-12)
+    np.testing.assert_allclose(after["samples"], query["samples"], rtol=0, atol=1e-9)
+
+
+def test_null_optional_anchor_fields_keep_legacy_gate():
+    profile = reviewer()
+    profile["points"] = [{"z": row[0], "r": row[1], "angleDeg": None,
+                          "angleOutDeg": None, "handleIn": None, "handleOut": None}
+                         for row in profile["points"]]
+    parsed = _parse_anchors(profile, "H")
+    assert not parsed.extended
+    old = build_freeform_geometry(params(reviewer()))
+    new = build_freeform_geometry(params(profile))
+    z = np.linspace(0, 120, 2001)
+    np.testing.assert_array_equal(old.evaluate_radii(z), new.evaluate_radii(z))
+    assert old.report() == new.report()
+
+
+def test_corner_automatic_sides_shrink_and_recover_independently():
+    profile = {"points": [[0, 20], {"z": 40, "r": 20, "join": "corner",
+                                   "angleDeg": 80, "angleOutDeg": 30}, [100, 80]],
+               "throatAngleDeg": 0, "mouthAngleDeg": 45}
+    shrinking = resolved(profile)
+    profile["points"][1]["angleDeg"] = 0
+    unshrunk = resolved(profile)
+    # The tight first span shrinks the incoming side, without shortening the
+    # automatic outgoing side on the independent second span.
+    assert np.linalg.norm(shrinking.beziers[0, 2] - shrinking.anchors[1]) < 1
+    assert np.linalg.norm(unshrunk.beziers[0, 2] - unshrunk.anchors[1]) > 10
+    np.testing.assert_array_equal(shrinking.beziers[1], unshrunk.beziers[1])

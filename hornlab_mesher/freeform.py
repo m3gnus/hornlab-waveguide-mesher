@@ -585,7 +585,7 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
             raise ValueError(f"FREEFORM {label}.join must be 'smooth' or 'corner'")
         joins.append(join)
         angle_out = None
-        if "angleOutDeg" in obj:
+        if obj.get("angleOutDeg") is not None:
             if join != "corner" or index in (0, len(points) - 1):
                 raise ValueError(f"FREEFORM {label}.angleOutDeg is only allowed on interior corners")
             angle_out = _finite_float(obj["angleOutDeg"], f"{label}.angleOutDeg")
@@ -595,7 +595,7 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
         for key, values, illegal in (("handleIn", handles_in, index == 0),
                                      ("handleOut", handles_out, index == len(points) - 1)):
             handle = None
-            if key in obj:
+            if obj.get(key) is not None:
                 if illegal:
                     raise ValueError(f"FREEFORM {label}.{key} is not allowed on this endpoint")
                 value = obj[key]
@@ -615,7 +615,7 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
         if isinstance(row, Mapping):
             if "z" not in row or "r" not in row:
                 raise ValueError(f"FREEFORM {label} requires z and r")
-            row = [row["z"], row["r"]] + ([row["angleDeg"]] if "angleDeg" in row else [])
+            row = [row["z"], row["r"]] + ([row["angleDeg"]] if row.get("angleDeg") is not None else [])
         row_is_sequence = isinstance(row, (list, tuple, np.ndarray)) and not (
             isinstance(row, np.ndarray) and row.ndim == 0
         )
@@ -1072,7 +1072,7 @@ def _resolve_plane(
         # Compatibility gate: same builder, arguments, object, and inversion.
         return _build_plane_spline(name, parsed, throat_angle_deg, mouth_angle_deg)
 
-    from scipy.interpolate import PchipInterpolator
+    from scipy.interpolate import PchipInterpolator, PPoly
 
     anchors = parsed.points
     n = len(anchors)
@@ -1082,7 +1082,8 @@ def _resolve_plane(
     angles_out = parsed.angles_out_deg or (None,) * n
     chord = np.diff(anchors, axis=0)
     lengths = np.linalg.norm(chord, axis=1)
-    anchor_u = np.r_[0., np.cumsum(lengths)] / np.sum(lengths)
+    cumulative = np.r_[0., np.cumsum(lengths)]
+    anchor_u = cumulative / cumulative[-1]
     derivatives = np.column_stack([
         PchipInterpolator(anchor_u, anchors[:, axis]).derivative()(anchor_u)
         for axis in (0, 1)
@@ -1090,31 +1091,34 @@ def _resolve_plane(
     speeds = np.linalg.norm(derivatives, axis=1)
     directions = np.divide(derivatives, speeds[:, None], out=np.zeros_like(derivatives),
                            where=speeds[:, None] > 0)
+    directions[speeds == 0, 0] = 1.0
     for index, angle in ((0, throat_angle_deg), (n-1, mouth_angle_deg)):
         directions[index] = [math.cos(math.radians(angle)), math.sin(math.radians(angle))]
     for index in np.flatnonzero(np.isfinite(parsed.angles_deg)):
         angle = math.radians(float(parsed.angles_deg[index]))
         directions[index] = [math.cos(angle), math.sin(angle)]
 
-    controls = np.empty((n - 1, 4, 2))
+    intervals = np.diff(anchor_u)[:, None]
     explicit = np.zeros((n - 1, 2), dtype=bool)
+    side_directions = np.empty((n - 1, 2, 2))
+    side_speeds = np.empty((n - 1, 2))
     for span in range(n - 1):
-        controls[span, 0], controls[span, 3] = anchors[span:span+2]
         for side, index, sign, given in ((0, span, 1, handles_out[span]),
                                          (1, span+1, -1, handles_in[span+1])):
             explicit[span, side] = given is not None
             if given is not None:
-                handle = np.asarray(given)
+                # Explicit sides keep factor 1 and never enter a shrink group.
+                side_directions[span, side] = sign * np.asarray(given) * 3 / intervals[span]
+                side_speeds[span, side] = 1.0
             else:
                 angle = parsed.angles_deg[index]
                 if side == 0 and 0 < index < n-1 and angles_out[index] is not None:
                     angle = angles_out[index]
                 if joins[index] == "corner" and not np.isfinite(angle):
-                    handle = sign * chord[span] / 3
+                    side_directions[span, side] = chord[span] / intervals[span]
+                    side_speeds[span, side] = 1.0
                 else:
                     direction = directions[index]
-                    # A single fixed side also fixes a smooth anchor's tangent
-                    # line; the opposite automatic side retains its own speed.
                     opposite = handles_in[index] if side == 0 else handles_out[index]
                     if joins[index] == "smooth" and opposite is not None:
                         vector = -np.asarray(opposite) if side == 0 else np.asarray(opposite)
@@ -1124,72 +1128,128 @@ def _resolve_plane(
                     if joins[index] == "corner" and np.isfinite(angle):
                         rad = math.radians(float(angle))
                         direction = np.asarray([math.cos(rad), math.sin(rad)])
-                    handle = sign * direction * speeds[index] * np.diff(anchor_u)[span] / 3
-            controls[span, 1 if side == 0 else 2] = anchors[index] + handle
+                    side_directions[span, side] = direction
+                    side_speeds[span, side] = speeds[index]
 
+    # One factor per smooth anchor couples its automatic sides across both spans.
+    # Corner sides have independent factors; explicit sides belong to no group.
+    groups = []
+    for index in range(n):
+        sides = [(span, side) for span, side in ((index-1, 1), (index, 0))
+                 if 0 <= span < n-1 and not explicit[span, side]]
+        if joins[index] == "corner":
+            groups.extend([[side] for side in sides])
+        elif sides:
+            groups.append(sides)
     factors = np.ones((n-1, 2))
-    validation_warnings = []
-    if not parsed.extended:
-        # Forced conversion is also useful for exact insertion into legacy curves.
-        legacy = _build_plane_spline(name, parsed, throat_angle_deg, mouth_angle_deg)
-        controls = _plane_beziers(legacy)
-        factors[:, 0], factors[:, 1] = legacy.speed_factors[:-1], legacy.speed_factors[1:]
-    else:
-        initial = controls.copy()
-        def span_controls(span: int, scale: float) -> np.ndarray:
-            trial = controls.copy()
-            for side, control, anchor in ((0, 1, 0), (1, 2, 3)):
-                if not explicit[span, side]:
-                    trial[span, control] = initial[span, anchor] + scale * (
-                        initial[span, control] - initial[span, anchor])
-            return trial
+    minimum = 2.0**-48
 
-        for span in range(n - 1):
-            def violations_at(trial: np.ndarray) -> list[_SplineViolation]:
-                failures = _plane_spline_violations(name, anchors,
-                    _bezier_spline(trial, anchor_u), [span])
-                # Explicit geometry is constrained only by forward z and r > 0.
-                return [v for v in failures
-                        if not (np.all(explicit[span]) and v.overshoot)]
-            failures = violations_at(controls)
-            if not failures:
+    def derivatives_for(trial: np.ndarray) -> np.ndarray:
+        # Preserve the legacy Hermite arithmetic, including operation order.
+        return (side_speeds * trial)[..., None] * side_directions
+
+    def spline_for(trial: np.ndarray) -> Any:
+        derivatives = derivatives_for(trial)
+        slope = chord / intervals
+        t = (derivatives[:, 0] + derivatives[:, 1] - 2 * slope) / intervals
+        coefficients = np.stack((t / intervals,
+                                 (slope - derivatives[:, 0]) / intervals - t,
+                                 derivatives[:, 0], anchors[:-1]))
+        return PPoly(coefficients, anchor_u, axis=0)
+
+    def violations_for(trial: np.ndarray, segments: Sequence[int] | None = None
+                       ) -> list[_SplineViolation]:
+        failures = _plane_spline_violations(name, anchors, spline_for(trial), segments)
+        return [v for v in failures if not (v.overshoot and (
+            np.all(explicit[v.segment]) or (
+                np.any(explicit[v.segment]) and
+                np.all(trial[v.segment, ~explicit[v.segment]] <= minimum))))]
+
+    def scaled(trial: np.ndarray, segment: int, scale: float) -> np.ndarray:
+        result = trial.copy()
+        for group in groups:
+            if any(span == segment for span, _ in group):
+                for span, side in group:
+                    result[span, side] *= scale
+        return result
+
+    def refuse(failure: _SplineViolation) -> None:
+        z0, z1 = anchors[failure.segment:failure.segment+2, 0]
+        raise ValueError(f"FREEFORM profile{name} span {failure.segment} "
+                         f"z=[{z0:g}, {z1:g}] mm: " + failure.message)
+
+    violations = violations_for(factors)
+    # Same iteration order, coupled reduction and bisections as the legacy solver.
+    for _iteration in range(4 * n + 8):
+        if not violations:
+            break
+        for segment in sorted({v.segment for v in violations}):
+            if not violations_for(factors, [segment]):
                 continue
-            feasible = None
-            if not np.all(explicit[span]):
-                scale = .5
-                for _ in range(48):
-                    if not violations_at(span_controls(span, scale)):
-                        feasible = scale
-                        break
-                    scale *= .5
-            if feasible is None:
-                z0, z1 = anchors[span:span+2, 0]
-                if np.any(explicit[span]) and not np.all(explicit[span]):
-                    minimum = 2.0**-48
-                    trial = span_controls(span, minimum)
-                    failures = violations_at(trial)
-                    hard_failures = [v for v in failures if not v.overshoot]
-                    if not hard_failures:
-                        controls = trial
-                        factors[span, ~explicit[span]] = minimum
-                        validation_warnings.append(
-                            f"FREEFORM profile{name} span {span} z=[{z0:g}, {z1:g}] mm: "
-                            "automatic handle reached its minimum; " + failures[0].message)
-                        continue
-                    failures = hard_failures
-                raise ValueError(f"FREEFORM profile{name} span {span} z=[{z0:g}, {z1:g}] mm: "
-                                 + failures[0].message)
-            lower, upper = feasible, min(1., 2 * feasible)
-            for _ in range(32):
-                middle = (lower + upper) / 2
-                if violations_at(span_controls(span, middle)):
-                    upper = middle
+            feasible_scale = None
+            trial_scale = 0.5
+            for _search in range(48):
+                trial = scaled(factors, segment, trial_scale)
+                if not violations_for(trial, [segment]):
+                    feasible_scale = trial_scale
+                    break
+                trial_scale *= 0.5
+            if feasible_scale is None:
+                break
+            lower = feasible_scale
+            upper = min(1.0, 2.0 * feasible_scale)
+            for _bisection in range(24):
+                midpoint = 0.5 * (lower + upper)
+                if violations_for(scaled(factors, segment, midpoint), [segment]):
+                    upper = midpoint
                 else:
-                    lower = middle
-            controls = span_controls(span, lower)
-            factors[span, ~explicit[span]] = lower
+                    lower = midpoint
+            factors = scaled(factors, segment, lower)
+        violations = violations_for(factors)
+    if violations:
+        refuse(violations[0])
 
-    spline = _bezier_spline(controls, anchor_u)
+    # Recover in anchor order, keeping smooth sides coupled and corners separate.
+    for group in groups:
+        trial = factors.copy()
+        for span, side in group:
+            trial[span, side] = 1.0
+        if not violations_for(trial):
+            factors = trial
+            continue
+        lower = float(factors[group[0]])
+        upper = 1.0
+        for _bisection in range(24):
+            midpoint = 0.5 * (lower + upper)
+            for span, side in group:
+                trial[span, side] = midpoint
+            if violations_for(trial):
+                upper = midpoint
+            else:
+                lower = midpoint
+        for span, side in group:
+            factors[span, side] = lower
+
+    spline = spline_for(factors)
+    derivatives = derivatives_for(factors)
+    controls = np.stack((anchors[:-1],
+                         anchors[:-1] + derivatives[:, 0] * intervals / 3,
+                         anchors[1:] - derivatives[:, 1] * intervals / 3,
+                         anchors[1:]), axis=1)
+    # Retain explicit vectors exactly when constructing their absolute controls.
+    for span in range(n-1):
+        if handles_out[span] is not None:
+            controls[span, 1] = anchors[span] + handles_out[span]
+        if handles_in[span+1] is not None:
+            controls[span, 2] = anchors[span+1] + handles_in[span+1]
+    validation_warnings = []
+    for failure in _plane_spline_violations(name, anchors, spline):
+        if (failure.overshoot and np.any(explicit[failure.segment])
+                and not np.all(explicit[failure.segment])):
+            z0, z1 = anchors[failure.segment:failure.segment+2, 0]
+            validation_warnings.append(
+                f"FREEFORM profile{name} span {failure.segment} z=[{z0:g}, {z1:g}] mm: "
+                "automatic handle reached its minimum; " + failure.message)
     inverse_u = np.unique(np.r_[np.linspace(0, 1, _INVERSION_SAMPLE_N), anchor_u])
     endpoint_angles = []
     endpoint_vectors = (
@@ -1215,12 +1275,19 @@ def _resolve_plane(
     return plane
 
 
-def freeform_insert_anchor(profile: Mapping[str, Any], *, z: float) -> dict:
-    """Split the resolved curve at z and pin any automatic spans that move."""
+def freeform_insert_anchor(
+    profile: Mapping[str, Any], *, z: float, default_throat_angle_deg: float,
+) -> dict:
+    """Split the resolved curve at z and pin any automatic spans that move.
+
+    Pass the same ``a0`` used by the build or curve query as the required
+    ``default_throat_angle_deg``. The profile's own throat angle takes precedence.
+    """
     if not isinstance(profile, Mapping):
         raise ValueError("FREEFORM profile must be a mapping")
     parsed = _parse_anchors(profile, "H")
-    endpoints = _parse_endpoint_values(profile, parsed, "H", 15.5)
+    default_throat_angle_deg = _finite_float(default_throat_angle_deg, "default_throat_angle_deg")
+    endpoints = _parse_endpoint_values(profile, parsed, "H", default_throat_angle_deg)
     original = _resolve_plane("H", parsed, *endpoints, force_extended=True)
     z = _finite_float(z, "insert z")
     if z <= parsed.points[0, 0] or z >= parsed.points[-1, 0] or np.any(parsed.points[:, 0] == z):
@@ -1264,7 +1331,7 @@ def freeform_insert_anchor(profile: Mapping[str, Any], *, z: float) -> dict:
     # Each pass pins at least one previously automatic span; finite termination.
     for _ in range(len(target) + 1):
         updated = _parse_anchors(result, "H")
-        endpoints = _parse_endpoint_values(result, updated, "H", 15.5)
+        endpoints = _parse_endpoint_values(result, updated, "H", default_throat_angle_deg)
         try:
             current = _resolve_plane("H", updated, *endpoints)
         except ValueError:

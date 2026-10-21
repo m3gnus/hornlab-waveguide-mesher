@@ -394,7 +394,8 @@ relative to the anchor. Incoming handles are forbidden at the throat and
 outgoing handles at the mouth. `angleOutDeg` is allowed only at an interior
 corner. Endpoint angles lie in `[-90, 90]` degrees; interior angles lie in
 `(-90, 90)`. A smooth anchor's two explicit handles must be nonzero,
-collinear and opposite, within `1e-9` radians.
+collinear and opposite, within `1e-9` radians. JSON null means absent for
+`angleDeg`, `angleOutDeg`, `handleIn` and `handleOut`.
 
 When all anchors are equivalent to legacy rows (smooth joins, no outgoing
 angles or handles), the original Hermite builder and sampled inverse remain
@@ -402,7 +403,9 @@ unchanged, including its floating-point results and report. Other profiles
 resolve to one cubic Bézier per adjacent pair of anchors. For span `i` the
 controls are `P_i`, `P_i + handleOut_i`, `P_(i+1) + handleIn_(i+1)`,
 `P_(i+1)`. Radius queries invert the monotone axial coordinate on each span.
-A profile switching to the extended path on its first join, outgoing angle or handle can move by up to the legacy inverse-table error (measured up to `5e-5` mm on the existing fixtures, largest near a steep throat; bounded at `1e-4` mm by the tests).
+A profile switching to the extended path on its first join, outgoing angle or
+handle can move by up to the legacy inverse-table error: measured up to 5e-5 mm on the existing fixtures; profiles with near-vertical throats (≥ 89°) or very long horns can move by up to a few µm (worst measured 2.4e-3 mm).
+The existing-fixture test retains its `1e-4` mm bound.
 
 The precedence on each side is:
 
@@ -424,14 +427,20 @@ The precedence on each side is:
    their radius overshoot is allowed. With one explicit side, the automatic side
    still shrinks for all guards; if only overshoot remains at its minimum,
    the span is accepted with a warning in the report and curve query.
-   With two automatic sides all guards remain mandatory. An infeasible span
+   Automatic sides at a smooth anchor share one shrink factor across both
+   adjacent spans, including the legacy per-anchor recovery pass. Corner sides
+   shrink and recover independently. With two automatic sides all guards remain
+   mandatory. An infeasible span
    is refused with plane, span index and axial range.
 
 Facing chord-default corner sides place controls at chord thirds, giving an
 exactly straight span and radius linear in z. Extended reports add
 `straightSpans`, the per-plane indices of these spans.
 
-`freeform_insert_anchor(profile, *, z)` returns a new single-plane mapping.
+`freeform_insert_anchor(profile, *, z, default_throat_angle_deg)` returns a new
+single-plane mapping. The required default must match the `a0` supplied to the
+curve query or build (`15.5` when that config omits `a0`); an explicit profile
+`throatAngleDeg` takes precedence.
 It resolves the current mathematical curve, splits strictly inside a span by
 de Casteljau, and stores explicit handles at the split and both neighbours.
 It also pins any other span whose controls change when automatic tangents are

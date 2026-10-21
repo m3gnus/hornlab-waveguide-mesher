@@ -280,6 +280,7 @@ Object rows may be mixed with positional rows:
 
 Only `z`, `r`, `join`, `angleDeg`, `angleOutDeg`, `handleIn`, and `handleOut`
 are accepted; unknown keys are refused by name. `z` and `r` are required.
+JSON null means absent for `angleDeg`, `angleOutDeg`, `handleIn` and `handleOut`.
 `join` is `smooth` (default) or `corner`. Handles are finite `[dz, dr]` vectors
 in millimetres relative to the anchor. `handleIn` is forbidden on the first
 anchor, `handleOut` on the last. Two explicit smooth handles must be nonzero,
@@ -301,8 +302,10 @@ corners produce exact straight spans.
 
 Default smooth objects retain the legacy evaluation path. Non-default joins,
 outgoing angles or handles enable local cubic Béziers. Corner profiles can be
-queried with `freeform_profile_curves` and edited with `freeform_insert_anchor`,
-but grid, mesh and STEP building currently refuse them with
+queried with `freeform_profile_curves` and edited with
+`freeform_insert_anchor(profile, z=..., default_throat_angle_deg=...)`. The required
+default throat angle must equal the build/query `a0` (15.5 if omitted).
+Grid, mesh and STEP building currently refuse corners with
 `FREEFORM corner joins need the corner-wall builder (not yet available)`.
 Smooth profiles with handles build normally. See the FREEFORM joins subsection
 in [geometry-contract.md](geometry-contract.md) for the curve-query and exact
