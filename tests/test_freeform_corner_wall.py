@@ -76,10 +76,32 @@ def rounded_enclosure_config(case='c', edge_mm=18, quadrants='1234'):
 @pytest.mark.parametrize('case', ['a', 'c'], ids=['circle', 'rounded-rectangle'])
 @pytest.mark.parametrize('edge_mm', [18, 5])
 @pytest.mark.parametrize('quadrants', ['1234', '12'])
-def test_rounded_corner_enclosure(session, tmp_path, case, edge_mm, quadrants):
+def test_rounded_corner_enclosure(session, tmp_path, monkeypatch, case, edge_mm, quadrants):
+    from hornlab_mesher import corner_wall
     from hornlab_mesher import write_step_from_config
     from test_cad_step import _reimported_solids
 
+    def checked_build(geometry):
+        built = build_corner_wall(geometry)
+        for side, direction in (('front', -1), ('back', 1)):
+            tags = built.mesh_surface_groups[f'enclosure_edges_{side}']
+            assert tags
+            z = built.enclosure_bounds[f'z_{side}']
+            z0, z1 = sorted((z, z + direction * edge_mm))
+            for tag in tags:
+                lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(2, tag))
+                uv = [lo + np.array([u, v]) * (hi - lo)
+                      for u in (.23, .5, .77) for v in (.23, .5, .77)]
+                uv = [p for p in uv if gmsh.model.isInside(2, tag, p, parametric=True)]
+                assert len(uv) > 0, (side, tag)
+                xyz = np.asarray(gmsh.model.getValue(2, tag, np.asarray(uv).ravel())).reshape(-1, 3)
+                # Roundovers occupy one radius next to their own end plane.
+                # Sample the actual trim: OCC boxes can bound distant poles.
+                assert xyz[:, 2].min() >= z0 - 1e-6, (side, tag, xyz)
+                assert xyz[:, 2].max() <= z1 + 1e-6, (side, tag, xyz)
+        return built
+
+    monkeypatch.setattr(corner_wall, 'build_corner_wall', checked_build)
     config = rounded_enclosure_config(case, edge_mm, quadrants)
     result = build_from_config(config, tmp_path / 'rounded.msh')
     assert result.metadata['acousticEnclosureEdgeSuppressed'] is False
@@ -209,6 +231,22 @@ def test_sewing_refuses_disjoint_trim_on_same_surface(session, monkeypatch):
     monkeypatch.setattr(gmsh.model.occ, 'addSurfaceLoop', disjoint_sew)
     with pytest.raises(ValueError, match='lost face ancestry'):
         _sew_roles({'wall': [*frame, other]})
+
+
+def test_sewing_refuses_two_parents_matching_one_child(session, monkeypatch):
+    from hornlab_mesher.corner_wall import _sew_roles
+
+    faces = [(2, gmsh.model.occ.addRectangle(0, 0, 0, 1, 1)) for _ in range(2)]
+
+    def one_child(tags, *, sewing):
+        assert tags == [tag for _, tag in faces] and sewing
+        # Coincident parents have identical signatures. Supply exactly one
+        # matching child, so neither candidate multiplicity nor loss refuses it.
+        gmsh.model.occ.copy([faces[0]])
+
+    monkeypatch.setattr(gmsh.model.occ, 'addSurfaceLoop', one_child)
+    with pytest.raises(ValueError, match='ambiguous face ancestry'):
+        _sew_roles({'front': [faces[0]], 'back': [faces[1]]})
 
 
 @pytest.fixture
