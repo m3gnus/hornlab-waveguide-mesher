@@ -618,12 +618,17 @@ def _enclosure_from_config(
 ) -> HornEnclosure | None:
     depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if depth <= 0.0:
+        if enclosure.get("woofers"):
+            raise ConfigError("enclosure.woofers requires positive enclosure depth")
         return None
-    from .spike_woofer_cut import SpikeWoofer
+    from .enclosure_woofers import woofer_from_config
+
+    if "spike_woofers" in enclosure:
+        raise ConfigError("enclosure.spike_woofers was experimental; use enclosure.woofers")
 
     return HornEnclosure(
         depth_mm=depth,
-        spike_woofers=tuple(SpikeWoofer(**row) for row in enclosure.get("spike_woofers", [])),
+        woofers=tuple(woofer_from_config(row) for row in enclosure.get("woofers", [])),
         space_l_mm=_float(
             enclosure, names=("space_l_mm", "space_l", "left_margin_mm"), default=25.0
         ),
@@ -2314,6 +2319,9 @@ def resolve_geometry(
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config, allow_large_mesh=allow_large_mesh)
     params, formula, mode = build_geometry_params(config)
+    requested_woofers = _section(config, "enclosure").get("woofers")
+    if requested_woofers and mode != "enclosure":
+        raise ConfigError("enclosure.woofers requires enclosure mode")
     if "controlsAdapter" in params:
         from .adapter_controls import resolve
         return resolve(config, params, allow_large_mesh)
@@ -2341,6 +2349,9 @@ def resolve_geometry(
     topology_mode = _mesh_topology_mode(mesh)
     density = _mesh_density_from_config(config, allow_large_mesh=allow_large_mesh)
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
+    if requested_woofers:
+        from .enclosure_woofers import validate_woofer_domain
+        validate_woofer_domain(params, enclosure_obj)
 
     wall_thickness_mm = float(params.get("wallThickness") or 0.0)
     acoustic_wall_floor_mm = 0.025 * min(

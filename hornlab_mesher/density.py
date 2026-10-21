@@ -1460,6 +1460,13 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     if arc_size is not None:
         add_field(arc_formula,mesh_groups.get("arc",[]),curve_groups.get("arc",[]))
 
+    woofer_sizes = []
+    for patch in geometry.metadata.get("assembly", {}).get("patches", []):
+        size = float(patch["resolution_mm"])
+        role = patch["density_role"]
+        add_field(f"{size:.12g}", mesh_groups[role], curve_groups.get(role, []))
+        woofer_sizes.append(size)
+
     corner_sizes = []
     if getattr(geometry, "freeform_wall_recipe", None) is not None:
         from .corner_wall import corner_size_fields
@@ -1471,7 +1478,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res, *corner_sizes]
+    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res, *corner_sizes, *woofer_sizes]
     if arc_size is not None:
         sizes.append(float(arc_size))
     if lip_size is not None:

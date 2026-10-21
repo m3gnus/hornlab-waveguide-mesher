@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .throat_stretch import stretch_is_inactive
+from .enclosure_woofers import EnclosureWoofer
 
 
 class _StretchIdentity:
@@ -149,8 +150,16 @@ class HornEnclosure:
     depth_margin_mm: float = 1.0
     front_mesh_size_mm: float | None = None
     back_mesh_size_mm: float | None = None
-    # Opt-in experiment; not the production assembly schema.
-    spike_woofers: tuple = ()
+    # Resolved geometry only; placement relations belong to the caller.
+    woofers: tuple[EnclosureWoofer, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "woofers", tuple(self.woofers))
+        if any(not isinstance(w, EnclosureWoofer) for w in self.woofers):
+            raise ValueError("enclosure woofers must be EnclosureWoofer values")
+        ids = [w.radiator_id for w in self.woofers]
+        if len(set(ids)) != len(ids):
+            raise ValueError("woofer radiator_id must be unique")
 
 
 @dataclass(frozen=True)

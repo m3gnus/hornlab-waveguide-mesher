@@ -23,6 +23,7 @@ from .geometry import (
     OsseHornGeometry,
     RosseHornGeometry,
 )
+from .enclosure_woofers import AthConeShape, EnclosureWoofer, PistonShape
 from .freeform import freeform_insert_anchor, freeform_profile_curves
 from .source_body import StandaloneSourceGeometry
 from .cost import (
@@ -139,6 +140,9 @@ __all__ = [
     "CrossSection",
     "Enclosure",
     "HornEnclosure",
+    "EnclosureWoofer",
+    "PistonShape",
+    "AthConeShape",
     "MeshDensity",
     "MeshInfo",
     "OsseHornGeometry",

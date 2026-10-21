@@ -1,0 +1,319 @@
+{
+  "provenance": {
+    "corpus": "phase1/corpus",
+    "expected_files": "*/expected.json",
+    "ath_version": "V2026-09a",
+    "b_q14_geo_sha256": "ac2c1f34a7c51a48e3d068b707c12f19747c6e66929667dd48ecea61a1086228"
+  },
+  "cases": [
+    {
+      "case_id": "a-explicit",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "A",
+          "aperture_center_mm": [
+            0.0,
+            230.544,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -201.0,
+          -80.0
+        ],
+        [
+          201.0,
+          381.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "07c91c92a872d110d66d5abf0eeffc8feb7212a5a9b7cd2056b50b927d0523b5"
+    },
+    {
+      "case_id": "b-base",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          201.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "9db271023436717cffac027dc5195722556577cbc1bcaf41dd3444caf86bc87d"
+    },
+    {
+      "case_id": "b-dim4",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -270.0,
+          -450.0,
+          -80.0
+        ],
+        [
+          250.0,
+          400.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "71c162ed5e0966c45c0c0bfccf1f43bd65a1713880d3e4ced06631878809d290"
+    },
+    {
+      "case_id": "b-edge",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          201.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "3fc2b9a92f40fbd27ebdb1f05634f80f4c3ee32e6f8e72068e8471cf335804b0"
+    },
+    {
+      "case_id": "b-morph-wide",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -250.0,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -260.0,
+          -400.0,
+          -80.0
+        ],
+        [
+          261.0,
+          221.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "72bff67c630c19d03d056b04294a6b41a4d632fb2e3076eba21a144be23692ec"
+    },
+    {
+      "case_id": "b-pair",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -260.544,
+            120.0
+          ],
+          "radius_mm": 65.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          201.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "c073db083439dee017a6bd35ec7e071339b0356a3832eae86799d3e3459d5281"
+    },
+    {
+      "case_id": "b-q14",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          201.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "00f574effc69cf955dfc32f0ec2228b46c8ad75b4eaf815521c8fa18c861988d"
+    },
+    {
+      "case_id": "b-resolution",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 49.99999999999997,
+          "resolution_mm": 6.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          201.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "087cda8900ff413eb53066db42b279511a591f7fed9dedf43655434a520a819d"
+    },
+    {
+      "case_id": "b-weight-sid",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 50.0,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          201.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "ecc8b66872c343ce4e46c195729080651f68990dc06d15b47c4233361d1302b5"
+    },
+    {
+      "case_id": "mtm-q14",
+      "baffle_plane_z_mm": 120.0,
+      "woofers": [
+        {
+          "source": "A",
+          "aperture_center_mm": [
+            0.0,
+            230.544,
+            120.0
+          ],
+          "radius_mm": 49.99999999999997,
+          "resolution_mm": 10.0
+        },
+        {
+          "source": "B",
+          "aperture_center_mm": [
+            0.0,
+            -230.544,
+            120.0
+          ],
+          "radius_mm": 49.99999999999997,
+          "resolution_mm": 10.0
+        }
+      ],
+      "enclosure_extents_mm": [
+        [
+          -201.0,
+          -381.0,
+          -80.0
+        ],
+        [
+          201.0,
+          381.0,
+          120.0
+        ]
+      ],
+      "expected_sha256": "91bc1d374e2c053e9948638ed74bae4bb4db0622d918c94e71ebedc3454aac65"
+    }
+  ],
+  "q14_meridian_mm": {
+    "radius": 50.0,
+    "rim_z": 120.0,
+    "join_radius": 17.5,
+    "join_z": 100.0,
+    "apex_z": 106.684,
+    "sphere_center_z": 80.434,
+    "sphere_radius": 26.25
+  }
+}

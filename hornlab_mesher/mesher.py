@@ -320,8 +320,8 @@ def build_mesh_with_info(
                 geometry, mesh_density
             )
             built = _dispatch_builder(acoustic_geometry)
-            if getattr(getattr(acoustic_geometry, "enclosure", None), "spike_woofers", ()):
-                from .spike_woofer_cut import cut_woofers
+            if getattr(getattr(acoustic_geometry, "enclosure", None), "woofers", ()):
+                from .enclosure_woofers import cut_woofers
                 cut_woofers(built, acoustic_geometry)
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
@@ -430,7 +430,8 @@ def build_mesh_with_info(
                     for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")),
                 controls_meridian=controls,
                 controls_branch_tags=built.metadata.get("controlsBranchSurfaceTags"),
-                physical_name_overrides=built.metadata.get("spikePhysicalNames"),
+                physical_name_overrides=built.metadata.get("assemblyPhysicalNames"),
+                assembly=built.metadata.get("assembly"),
             )
             if isinstance(geometry,StandaloneSourceGeometry):
                 from .source_body import certify_mesh
@@ -538,6 +539,7 @@ def _postprocess_mesh(
     controls_meridian=None,
     controls_branch_tags=None,
     physical_name_overrides: dict[int, str] | None = None,
+    assembly: dict | None = None,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -548,7 +550,7 @@ def _postprocess_mesh(
     # Keep OCC patch identity through both removal passes. Physical tags alone
     # deliberately combine bore, shell and caps and cannot identify a repair.
     surfaces = None
-    if shell_surface_groups is not None or controls_meridian is not None or open_shell_bore_surface_tags is not None:
+    if shell_surface_groups is not None or controls_meridian is not None or open_shell_bore_surface_tags is not None or assembly is not None:
         surfaces = np.concatenate([
             mesh.cell_data['gmsh:geometrical'][i]
             for i, block in enumerate(mesh.cells)
@@ -573,7 +575,7 @@ def _postprocess_mesh(
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
     shell_stats = None
-    if shell_surface_groups is not None or controls_meridian is not None or open_shell_bore_surface_tags is not None:
+    if shell_surface_groups is not None or controls_meridian is not None or open_shell_bore_surface_tags is not None or assembly is not None:
         phys, surfaces = phys[:, 0], phys[:, 1]
     if shell_surface_groups is not None:
         from .shell_facets import validate_shell_facets
@@ -633,6 +635,9 @@ def _postprocess_mesh(
         symmetry_snap_tol_mm=symmetry_snap_tol_mm,
         is_open_shell=open_shell_wall_points_mm is not None,
     )
+    if assembly is not None:
+        from .enclosure_woofers import certify_arrays
+        certify_arrays(points, triangles, phys, surfaces, assembly)
     points, triangles = _compact_unused_vertices(points, triangles)
     if vertical_offset_mm:
         # Mesh.VerticalOffset: rigid +y placement of the finished reduced/full
@@ -655,7 +660,7 @@ def _postprocess_mesh(
         cells=[("triangle", triangles.astype(np.int64))],
         cell_data={
             "gmsh:physical": [phys.astype(np.int32)],
-            "gmsh:geometrical": [(surfaces if controls_meridian is not None or open_shell_bore_surface_tags is not None else phys).astype(np.int32)],
+            "gmsh:geometrical": [(surfaces if controls_meridian is not None or open_shell_bore_surface_tags is not None or assembly is not None else phys).astype(np.int32)],
         },
         field_data={
             name: np.array([tag, 2], dtype=np.int32)

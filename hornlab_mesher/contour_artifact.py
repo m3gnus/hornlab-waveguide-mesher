@@ -144,23 +144,9 @@ def _worker(stage):
         gmsh.option.setString("Geometry.OCCTargetUnit", "MM")
         gmsh.model.add("native-source-contour")
         occ = gmsh.model.occ
-        point_tags = {p.id: occ.addPoint(p.r_mm, 0, p.z_mm) for p in contour.points}
-        patch_faces = {}
-        for segment in contour.segments:
-            a, b = point_tags[segment.start], point_tags[segment.end]
-            if segment.kind == "line":
-                edge = occ.addLine(a, b)
-            else:
-                # Three points preserve the authored branch even for exactly
-                # semicircular surrounds (center-only arcs are ambiguous).
-                r, z = contour.evaluate(len(patch_faces), 0.5)
-                midpoint = occ.addPoint(r, 0, z)
-                edge = occ.addCircleArc(a, midpoint, b, center=False)
-            swept = occ.revolve([(1, edge)], 0, 0, 0, 0, 0, 1, 2 * math.pi)
-            faces = [tag for dim, tag in swept if dim == 2]
-            if len(faces) != 1:
-                raise ValueError("a contour segment must revolve into exactly one face")
-            patch_faces[segment.id] = faces[0]
+        from .source_contour_occ import revolve_contour
+
+        point_tags, patch_faces = revolve_contour(occ, contour, (0, 0, 0))
         mouth = occ.addPoint(horn["mouth_radius_mm"], 0, horn["length_mm"])
         edge = occ.addLine(point_tags[contour.points[-1].id], mouth)
         swept = occ.revolve([(1, edge)], 0, 0, 0, 0, 0, 1, 2 * math.pi)

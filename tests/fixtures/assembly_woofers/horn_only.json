@@ -1,0 +1,391 @@
+{
+  "base": "e35f9da",
+  "gmsh": "4.15.0",
+  "cases": {
+    "osse": {
+      "config": {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {
+          "L_mm": 120.0,
+          "r0_mm": 12.7,
+          "a_deg": 60.0,
+          "a0_deg": 15.5,
+          "k": 1.0,
+          "n": 4.0,
+          "q": 0.995,
+          "s": 0.0
+        },
+        "cross_section": {
+          "exponent": 2.0,
+          "aspect_ratio": 1.0
+        },
+        "mesh": {
+          "angular_segments": 64,
+          "length_segments": 32,
+          "throat_res_mm": 8,
+          "mouth_res_mm": 20,
+          "rear_res_mm": 25,
+          "enc_front_res_mm": 12,
+          "enc_back_res_mm": 30,
+          "scale_to_metres": false,
+          "source_shape": 0,
+          "quadrants": "1234"
+        },
+        "enclosure": {
+          "depth_mm": 240,
+          "space_l_mm": 80,
+          "space_r_mm": 80,
+          "space_t_mm": 150,
+          "space_b_mm": 150,
+          "edge_mm": 18
+        }
+      },
+      "mesh_sha256": "72fdbff178489407891c8ebff4b0310be3e5f518a147a5aa0dbe7ff659ec6824",
+      "physical_groups": {
+        "1": "SD1G0",
+        "2": "SD1D1001",
+        "3": "SD2G0"
+      },
+      "tag_namespace": null
+    },
+    "rosse": {
+      "config": {
+        "formula": "ROSSE",
+        "profile": {
+          "R_mm": 150.0,
+          "r0_mm": 12.7,
+          "a_deg": 60.0,
+          "a0_deg": 15.5,
+          "k": 1.0,
+          "q": 1.0
+        },
+        "cross_section": {
+          "exponent": 2.0,
+          "aspect_ratio": 1.0
+        },
+        "mesh": {
+          "angular_segments": 64,
+          "length_segments": 32,
+          "throat_res_mm": 8,
+          "mouth_res_mm": 20,
+          "rear_res_mm": 25,
+          "enc_front_res_mm": 12,
+          "enc_back_res_mm": 30,
+          "scale_to_metres": false,
+          "source_shape": 0,
+          "quadrants": "1234"
+        },
+        "enclosure": {
+          "depth_mm": 240,
+          "space_l_mm": 80,
+          "space_r_mm": 80,
+          "space_t_mm": 150,
+          "space_b_mm": 150,
+          "edge_mm": 18
+        },
+        "mode": "enclosure"
+      },
+      "mesh_sha256": "a08d9b774eba69870389cb3dd0e733a3fb5a59737467535dd8b171930e083efb",
+      "physical_groups": {
+        "1": "SD1G0",
+        "2": "SD1D1001",
+        "3": "SD2G0"
+      },
+      "tag_namespace": null
+    },
+    "freeform-rounded": {
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "enclosure",
+        "profile": {
+          "profileH": {
+            "points": [
+              [
+                0.0,
+                12.7
+              ],
+              [
+                60.0,
+                80.0
+              ],
+              [
+                120.0,
+                160.0
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 70.0
+          },
+          "profileV": {
+            "points": [
+              [
+                0.0,
+                12.7
+              ],
+              [
+                60.0,
+                60.0
+              ],
+              [
+                120.0,
+                110.0
+              ]
+            ],
+            "throatAngleDeg": 15.5,
+            "mouthAngleDeg": 60.0
+          },
+          "crossSections": [
+            {
+              "t": 0.0,
+              "shape": "circle"
+            },
+            {
+              "t": 0.4,
+              "shape": "rounded_rectangle",
+              "cornerRadiusMm": 5.9
+            },
+            {
+              "t": 1.0,
+              "shape": "rounded_rectangle",
+              "cornerRadiusMm": 5.9
+            }
+          ]
+        },
+        "mesh": {
+          "angularSegments": 32,
+          "lengthSegments": 8,
+          "samplingMode": "uniform",
+          "quadrants": "1234",
+          "throat_res_mm": 8,
+          "mouth_res_mm": 20,
+          "rear_res_mm": 25,
+          "enc_front_res_mm": 12,
+          "enc_back_res_mm": 30,
+          "max_triangles": 100000,
+          "allow_large_mesh": true,
+          "scale_to_metres": false,
+          "source_shape": 0
+        },
+        "enclosure": {
+          "depth_mm": 240,
+          "space_l_mm": 80,
+          "space_r_mm": 80,
+          "space_t_mm": 150,
+          "space_b_mm": 150,
+          "edge_mm": 18
+        }
+      },
+      "mesh_sha256": "6baa0d1c2e7eb7d3c1968664484de980b376e0b278bbc1639e12666670c3b320",
+      "physical_groups": {
+        "1": "SD1G0",
+        "2": "SD1D1001",
+        "3": "SD2G0"
+      },
+      "tag_namespace": null
+    },
+    "lookup": {
+      "config": {
+        "formula": "LOOKUP",
+        "mode": "enclosure",
+        "profile": {
+          "lookupProfile": [
+            [
+              0,
+              12.7
+            ],
+            [
+              30,
+              28
+            ],
+            [
+              80,
+              85
+            ],
+            [
+              120,
+              150
+            ]
+          ]
+        },
+        "cross_section": {
+          "exponent": 2.0,
+          "aspect_ratio": 1.0
+        },
+        "mesh": {
+          "angular_segments": 64,
+          "length_segments": 32,
+          "throat_res_mm": 8,
+          "mouth_res_mm": 20,
+          "rear_res_mm": 25,
+          "enc_front_res_mm": 12,
+          "enc_back_res_mm": 30,
+          "scale_to_metres": false,
+          "source_shape": 0,
+          "quadrants": "1234"
+        },
+        "enclosure": {
+          "depth_mm": 240,
+          "space_l_mm": 80,
+          "space_r_mm": 80,
+          "space_t_mm": 150,
+          "space_b_mm": 150,
+          "edge_mm": 18
+        }
+      },
+      "mesh_sha256": "9fbca3b90165974bbbd7ac6e34e92a945e3f0281343c7d771ac3d54fc41a9ea6",
+      "physical_groups": {
+        "1": "SD1G0",
+        "2": "SD1D1001",
+        "3": "SD2G0"
+      },
+      "tag_namespace": null
+    },
+    "osse-rectangle": {
+      "config": {
+        "formula": "OSSE",
+        "mode": "enclosure",
+        "profile": {
+          "L_mm": 120.0,
+          "r0_mm": 12.7,
+          "a_deg": 60.0,
+          "a0_deg": 15.5,
+          "k": 1.0,
+          "n": 4.0,
+          "q": 0.995,
+          "s": 0.0
+        },
+        "cross_section": {
+          "exponent": 2.0,
+          "aspect_ratio": 1.0
+        },
+        "mesh": {
+          "angular_segments": 64,
+          "length_segments": 32,
+          "throat_res_mm": 8,
+          "mouth_res_mm": 20,
+          "rear_res_mm": 25,
+          "enc_front_res_mm": 12,
+          "enc_back_res_mm": 30,
+          "scale_to_metres": false,
+          "source_shape": 0,
+          "quadrants": "1234"
+        },
+        "morph": {
+          "morph_target": 1,
+          "morph_width_mm": 300,
+          "morph_height_mm": 200,
+          "morph_corner_mm": 30
+        },
+        "enclosure": {
+          "depth_mm": 240,
+          "space_l_mm": 80,
+          "space_r_mm": 80,
+          "space_t_mm": 150,
+          "space_b_mm": 150,
+          "edge_mm": 18
+        }
+      },
+      "mesh_sha256": "2e4f91bcaf58cbb0914116cfe72beec41ecdd28b99ec6b07940209cb77f866f3",
+      "physical_groups": {
+        "1": "SD1G0",
+        "2": "SD1D1001",
+        "3": "SD2G0"
+      },
+      "tag_namespace": null
+    },
+    "freeform-corners": {
+      "config": {
+        "formula": "FREEFORM",
+        "mode": "enclosure",
+        "profile": {
+          "profileH": {
+            "points": [
+              {
+                "z": 0,
+                "r": 12.7,
+                "join": "corner"
+              },
+              {
+                "z": 60,
+                "r": 23.279618842507897,
+                "join": "corner"
+              },
+              {
+                "z": 120,
+                "r": 57.92063499388543,
+                "join": "corner"
+              }
+            ]
+          },
+          "profileV": {
+            "points": [
+              {
+                "z": 0,
+                "r": 12.7,
+                "join": "corner"
+              },
+              {
+                "z": 60,
+                "r": 20.067073654174276,
+                "join": "corner"
+              },
+              {
+                "z": 120,
+                "r": 44.30864720428369,
+                "join": "corner"
+              }
+            ]
+          },
+          "crossSections": [
+            {
+              "t": 0,
+              "shape": "circle"
+            },
+            {
+              "t": 0.4,
+              "shape": "rounded_rectangle",
+              "cornerRadiusMm": 5.9
+            },
+            {
+              "t": 1,
+              "shape": "rounded_rectangle",
+              "cornerRadiusMm": 5.9
+            }
+          ]
+        },
+        "mesh": {
+          "angularSegments": 64,
+          "lengthSegments": 24,
+          "samplingMode": "uniform",
+          "throat_res_mm": 8,
+          "mouth_res_mm": 20,
+          "rear_res_mm": 25,
+          "enc_front_res_mm": 12,
+          "enc_back_res_mm": 30,
+          "wall_thickness_mm": 1,
+          "max_triangles": 100000,
+          "allow_large_mesh": true,
+          "source_shape": 0,
+          "scale_to_metres": false,
+          "quadrants": "1234"
+        },
+        "enclosure": {
+          "depth_mm": 240,
+          "space_l_mm": 80,
+          "space_r_mm": 80,
+          "space_t_mm": 150,
+          "space_b_mm": 150,
+          "edge_mm": 18
+        }
+      },
+      "mesh_sha256": "83380af058fdb5ef94a2c026bc0674ac0743bd8d349f1be52bb8b4764aabe54b",
+      "physical_groups": {
+        "1": "SD1G0",
+        "2": "SD1D1001",
+        "3": "SD2G0"
+      },
+      "tag_namespace": null
+    }
+  }
+}
