@@ -461,11 +461,30 @@ number of samples including endpoints; shared anchors appear once.
 Legacy controls are the Hermite-to-Bézier conversion and legacy samples are
 computed on the original Hermite curve.
 
-Corner wall construction is reserved for the corner-wall builder. Any endpoint
-or interior corner is accepted by the geometry kernel and curve query, but
-entry into a grid, mesh or STEP build raises
-`FREEFORM corner joins need the corner-wall builder (not yet available)`.
-Smooth profiles with explicit handles use the existing grid and patch builders.
+An explicit `join: corner` selects the FREEFORM corner-wall builder in bare,
+enclosure, infinite-baffle and freestanding modes. Interior H/V corner z
+positions are merged into one semantic cut set. Each axial segment is an
+approximating OCC patch per angular quadrant, with degree `min(3, rings-1)`.
+Coincident boundaries are sewn by a scoped fragment; its ancestry determines
+face roles. Caps, enclosure and mouth closures reuse the actual first/last
+patch boundaries. Endpoint corners select this path but introduce no cut.
+
+The angular approximation constrains H/V and diagonal radii. One-sided axial
+derivative poles are fitted on the built angular boundary. The builder measures
+OCC jumps at eight azimuths and refines axially only when the error exceeds
+0.5 degrees, up to four refinements or 1025 rings. Failure names the cut z.
+H/V mesh-edge chord limits are selected from built OCC one-sided secants,
+with a bounded refinement and node count, so coarse surrounding meshes can
+retain the measured corner slopes.
+Freestanding spans use a shared mitred offset ring; unsafe mitres and folded
+outer grids are refused with corner z in the error.
+
+Mesh metadata includes `freeformReport.cornerWall`: each interior corner's
+OCC slopes/jump/error at 0,45,...,315 degrees, shared-edge incidence, H/V mesh
+slopes/jump/error and maximum sampled fixed-z radial deviation. These are
+sampled diagnostics, not continuous error certificates. Smooth profiles,
+including profiles with handles and no corners, retain the existing grid and
+patch builders with their existing arguments.
 
 ### FREEFORM sampling
 

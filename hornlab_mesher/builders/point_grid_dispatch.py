@@ -283,6 +283,9 @@ def _build_coupled_baffle_point_grid(
 
 
 def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
+    if getattr(geometry, "freeform_wall", None) is not None:
+        from ..corner_wall import build_corner_wall
+        return build_corner_wall(geometry)
     if sum(getattr(geometry, name, None) is not None
            for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")) > 1:
         raise ValueError("combined active native geometry features are not supported")

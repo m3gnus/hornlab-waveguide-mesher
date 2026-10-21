@@ -361,6 +361,9 @@ def build_mesh_with_info(
             else:
                 gmsh.model.mesh.generate(2)
             gmsh.model.mesh.removeDuplicateNodes()
+            if getattr(acoustic_geometry, "freeform_wall", None) is not None:
+                from .corner_wall import measure_corner_mesh
+                measure_corner_mesh(acoustic_geometry, built)
             if controls is not None:
                 from .builders.adapter_controls import certify_occ_mesh
                 certify_occ_mesh(controls,built)

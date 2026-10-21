@@ -411,26 +411,40 @@ class FreeformGeometry:
         )
         dt = 2.5e-4
         dphi = 2.5e-4
+        cuts = np.asarray(freeform_corner_z(self, interior=True))
+        if cuts.size:
+            cuts = (cuts - self._profile_h.anchors[0, 0]) / self.length_mm
+            t_samples = t_samples[np.all(np.abs(t_samples[:, None] - cuts) > dt, axis=1)]
+            bounds = np.r_[0., cuts, 1.]
+            t_samples = np.unique(np.r_[t_samples, cuts - 2 * dt, cuts + 2 * dt,
+                                         (bounds[:-1] + bounds[1:]) / 2])
+            t_samples = t_samples[(t_samples >= 0) & (t_samples <= 1)]
 
         for t in t_samples:
+            axial_step = dt
             tc = min(1.0 - dt, max(dt, float(t)))
+            if cuts.size:
+                span = int(np.searchsorted(cuts, float(t), side="right"))
+                left, right = bounds[span:span + 2]
+                axial_step = min(dt, (right - left) / 4)
+                tc = min(right - axial_step, max(left + axial_step, float(t)))
             phi = _curvature_phi_samples(self, tc)
 
             center = _surface_points(self, tc, phi)
-            t_minus = _surface_points(self, tc - dt, phi)
-            t_plus = _surface_points(self, tc + dt, phi)
+            t_minus = _surface_points(self, tc - axial_step, phi)
+            t_plus = _surface_points(self, tc + axial_step, phi)
             phi_minus = _surface_points(self, tc, phi - dphi)
             phi_plus = _surface_points(self, tc, phi + dphi)
-            mixed_pp = _surface_points(self, tc + dt, phi + dphi)
-            mixed_pm = _surface_points(self, tc + dt, phi - dphi)
-            mixed_mp = _surface_points(self, tc - dt, phi + dphi)
-            mixed_mm = _surface_points(self, tc - dt, phi - dphi)
+            mixed_pp = _surface_points(self, tc + axial_step, phi + dphi)
+            mixed_pm = _surface_points(self, tc + axial_step, phi - dphi)
+            mixed_mp = _surface_points(self, tc - axial_step, phi + dphi)
+            mixed_mm = _surface_points(self, tc - axial_step, phi - dphi)
 
-            s_t = (t_plus - t_minus) / (2.0 * dt)
+            s_t = (t_plus - t_minus) / (2.0 * axial_step)
             s_phi = (phi_plus - phi_minus) / (2.0 * dphi)
-            s_tt = (t_plus - 2.0 * center + t_minus) / (dt * dt)
+            s_tt = (t_plus - 2.0 * center + t_minus) / (axial_step * axial_step)
             s_phiphi = (phi_plus - 2.0 * center + phi_minus) / (dphi * dphi)
-            s_tphi = (mixed_pp - mixed_pm - mixed_mp + mixed_mm) / (4.0 * dt * dphi)
+            s_tphi = (mixed_pp - mixed_pm - mixed_mp + mixed_mm) / (4.0 * axial_step * dphi)
 
             cross = np.cross(s_t, s_phi)
             cross_length = np.linalg.norm(cross, axis=1)
@@ -1418,10 +1432,13 @@ def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_
     return result
 
 
-def _require_freeform_smooth_wall(geometry: FreeformGeometry) -> None:
-    if any(isinstance(plane, _BezierPlane) and "corner" in plane.joins
-           for plane in (geometry._profile_h, geometry._profile_v)):
-        raise ValueError("FREEFORM corner joins need the corner-wall builder (not yet available)")
+def freeform_corner_z(geometry: FreeformGeometry, *, interior: bool = False) -> tuple[float, ...]:
+    """Semantic axial cut identities; endpoints select the new path but need no cut."""
+    return tuple(sorted({float(z) for plane in (geometry._profile_h, geometry._profile_v)
+                         if isinstance(plane, _BezierPlane)
+                         for (z, _r), join in zip(plane.anchors, plane.joins)
+                         if join == "corner" and (not interior or
+                             plane.anchors[0, 0] < z < plane.anchors[-1, 0])}))
 
 
 def _normalise_stations(value: Any) -> list[dict[str, Any]]:

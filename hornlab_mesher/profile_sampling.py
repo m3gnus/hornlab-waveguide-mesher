@@ -10,7 +10,8 @@ import numpy as np
 from .freeform import (
     FreeformGeometry,
     _validate_freeform_config,
-    _require_freeform_smooth_wall,
+    freeform_corner_z,
+    build_freeform_geometry,
     active_rounded_rect_corner_radius_mm,
     validate_outer_offset_grid,
 )
@@ -1384,7 +1385,6 @@ def _freeform_raw_radial_grid(
     list[list[float]] | None,
 ]:
     geometry = _validate_freeform_config(params)
-    _require_freeform_smooth_wall(geometry)
     t_values, sampling_mode = _freeform_merged_axial_map(params, geometry, n_length)
     z0 = float(geometry._profile_h.anchors[0, 0])
     shared_z = z0 + t_values * geometry.length_mm
@@ -1967,23 +1967,29 @@ def build_point_grid_arrays(
     if ath_surfaces and enc_depth <= 0.0 and wall > 0.0:
         outer = inner + wall * normals
     elif enc_depth <= 0.0 and wall > 0.0:
-        outer = _outer_offset_shell(
-            inner,
-            wall,
-            full_circle=full_circle,
-            repair_osse=formula == "OSSE" and not defer_osse_offset_repair,
-            t_coordinates=np.asarray(t_values, dtype=np.float64),
-            # ``phi_grid`` is (phi, t); the derivative helper wants (t, phi).
-            # Outside FREEFORM only the morph angle list is non-uniform, but it
-            # is non-uniform exactly where the corner arc turns fastest.
-            phi_coordinates=(
-                phi_grid.T
-                if phi_grid is not None
-                else np.broadcast_to(
-                    np.asarray(angles, dtype=np.float64), inner.shape[1::-1]
-                )
-            ),
-        )
+        if formula == "FREEFORM" and freeform_corner_z(build_freeform_geometry(params)):
+            from .corner_wall import mitred_outer_grid
+            outer = mitred_outer_grid(inner, wall, full_circle=full_circle,
+                                      corner_z=tuple(float(eval_param(params.get("scale"), 0.0, 1.0)) * z
+                                                     for z in freeform_corner_z(build_freeform_geometry(params), interior=True)))
+        else:
+            outer = _outer_offset_shell(
+                inner,
+                wall,
+                full_circle=full_circle,
+                repair_osse=formula == "OSSE" and not defer_osse_offset_repair,
+                t_coordinates=np.asarray(t_values, dtype=np.float64),
+                # ``phi_grid`` is (phi, t); the derivative helper wants (t, phi).
+                # Outside FREEFORM only the morph angle list is non-uniform, but it
+                # is non-uniform exactly where the corner arc turns fastest.
+                phi_coordinates=(
+                    phi_grid.T
+                    if phi_grid is not None
+                    else np.broadcast_to(
+                        np.asarray(angles, dtype=np.float64), inner.shape[1::-1]
+                    )
+                ),
+            )
         # FREEFORM rejects a folded shell outright: its profile is user-drawn,
         # so a fold means the input is wrong and refusing is the right answer.
         #

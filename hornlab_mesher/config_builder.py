@@ -18,7 +18,7 @@ import numpy as np
 
 from . import cost
 from .config_parser import ConfigError
-from .freeform import build_freeform_geometry, _validate_freeform_config
+from .freeform import build_freeform_geometry, _validate_freeform_config, freeform_corner_z
 from .geometry import (
     HornGeometry,
     HornEnclosure,
@@ -2481,6 +2481,11 @@ def resolve_geometry(
                 )
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
+    if formula == "FREEFORM" and freeform_corner_z(freeform_geometry):
+        from .corner_wall import CornerWall, corner_geometry_class
+        geometry_cls = corner_geometry_class(geometry_cls)
+        probe_kwargs["freeform_wall"] = CornerWall(
+            freeform_geometry, scale=float(eval_param(params.get("scale"), 0.0, 1.0)))
     geometry = geometry_cls(
         inner_points=inner_points,
         outer_points=outer_points,
@@ -2584,6 +2589,8 @@ def build_from_config(
         )
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     freeform_report = resolved.freeform_report
+    if getattr(geometry, "freeform_wall", None) is not None:
+        freeform_report = info.metadata.get("freeformReport", freeform_report)
     fit_used = getattr(geometry, "surface_fit", None)
     return BuildResult(
         mesh_path=mesh_path,

@@ -305,9 +305,11 @@ outgoing angles or handles enable local cubic Béziers. Corner profiles can be
 queried with `freeform_profile_curves` and edited with
 `freeform_insert_anchor(profile, z=..., default_throat_angle_deg=...)`. The required
 default throat angle must equal the build/query `a0` (15.5 if omitted).
-Grid, mesh and STEP building currently refuse corners with
-`FREEFORM corner joins need the corner-wall builder (not yet available)`.
-Smooth profiles with handles build normally. See the FREEFORM joins subsection
+Grid, mesh and STEP builds support corner joins through split OCC patches in
+all FREEFORM wall modes. Endpoint corners need no interior split. Unsafe
+freestanding mitres and a built OCC slope error above 0.5 degrees at the
+refinement cap refuse with the corner z named. Smooth profiles with handles
+retain the existing wall path. See the FREEFORM joins subsection
 in [geometry-contract.md](geometry-contract.md) for the curve-query and exact
 insertion APIs.
 

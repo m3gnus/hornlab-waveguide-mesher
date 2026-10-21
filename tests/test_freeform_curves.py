@@ -319,20 +319,19 @@ def coarse_config(profile):
 
 @pytest.mark.parametrize("position", [0, 1, 2])
 @pytest.mark.parametrize("entry", ["mesh", "step", "grid"])
-def test_corner_wall_refused_at_build_entry(tmp_path, position, entry):
+def test_corner_wall_builds_at_entry(tmp_path, position, entry):
     p = reviewer()
     row = p["points"][position]
     p["points"][position] = {"z": row[0], "r": row[1], "join": "corner"}
     assert freeform_profile_curves(params(p))["H"]["anchors"][position]["join"] == "corner"
     assert build_freeform_geometry(params(p)).length_mm == 120
-    with pytest.raises(ValueError, match=r"^FREEFORM corner joins need the corner-wall builder \(not yet available\)$"):
-        if entry == "mesh":
-            build_from_config(coarse_config(p), tmp_path / "corner.msh")
-        elif entry == "step":
-            write_step_from_config(coarse_config(p), tmp_path / "corner.step")
-        else:
-            from hornlab_mesher.profile_sampling import build_point_grid
-            build_point_grid({"type": "FREEFORM", **params(p), "lengthSegments": 8, "angularSegments": 16})
+    if entry == "mesh":
+        build_from_config(coarse_config(p), tmp_path / "corner.msh")
+    elif entry == "step":
+        write_step_from_config(coarse_config(p), tmp_path / "corner.step")
+    else:
+        from hornlab_mesher.profile_sampling import build_point_grid
+        build_point_grid({"type": "FREEFORM", **params(p), "lengthSegments": 8, "angularSegments": 16})
 
 
 def test_handles_only_c1_mesh_builds(tmp_path):
