@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import math
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import gmsh
@@ -51,10 +51,10 @@ def raw_geometry(config):
     params, _, mode = build_geometry_params(config)
     grid = build_point_grid_arrays(params)
     kernel = build_freeform_geometry(params)
-    return corner_geometry_class(PointGridHornGeometry)(
+    return corner_geometry_class(PointGridHornGeometry, CornerWall(kernel))(
         inner_points=grid['inner_grid'], outer_points=grid['outer_grid'],
         closed=grid['full_circle'], freeform_report=kernel.report(),
-        freeform_wall=CornerWall(kernel), wall_thickness_mm=1.,
+        wall_thickness_mm=1.,
         source_shape=0, infinite_baffle=mode == 'infinite-baffle',
         enclosure=HornEnclosure(depth_mm=150, edge_mm=0) if mode == 'enclosure' else None)
 
@@ -137,7 +137,8 @@ def test_real_corner_acceptance(session, tmp_path, case, mode):
             point.pop('join', None)
     baseline = raw_geometry(smooth)
     baseline_recipe = baseline.freeform_wall
-    baseline = replace(baseline, freeform_wall=None)
+    baseline = PointGridHornGeometry(**{field.name: getattr(baseline, field.name)
+                                        for field in fields(baseline)})
     from hornlab_mesher.mesher import _dispatch_builder
     gmsh.clear()
     gmsh.model.add('smooth-station-baseline')
@@ -224,18 +225,29 @@ def test_measured_refinement_and_named_cap(session, monkeypatch):
     assert max(row['occJumpErrorDeg'] for row in built.metadata['cornerWall']['corners'][0]['azimuths']) <= .5
 
 
-@pytest.mark.parametrize('quadrants', ['1','12','14'])
-def test_reduced_corner_mesh_and_step(tmp_path, quadrants):
-    config = case_config('a')
+@pytest.mark.parametrize('quadrants,mode,endpoints_only', [
+    (q, mode, endpoint) for q in ('1', '12', '14')
+    for mode in ('bare', 'freestanding') for endpoint in (False, True)
+] + [('12', 'enclosure', False)])
+def test_reduced_corner_mesh_and_step(tmp_path, quadrants, mode, endpoints_only):
+    config = case_config('a', mode)
     config['mesh']['quadrants'] = quadrants
-    # Public default source is a rounded cap, so this also covers shared curved rims.
+    if endpoints_only:
+        for name in ('profileH', 'profileV'):
+            config['profile'][name]['points'][1].pop('join')
+    if mode == 'enclosure':
+        config['enclosure']['edge'] = 0
+    # Public default source is a rounded cap, so this covers shared curved rims.
     result = build_from_config(config, tmp_path / f'{quadrants}.msh')
     assert result.n_triangles > 0
-    assert len(result.metadata['freeformReport']['cornerWall']['corners'][0]['azimuths']) == 8
+    corners = result.metadata['freeformReport']['cornerWall']['corners']
+    assert len(corners) == (0 if endpoints_only else 1)
+    if corners:
+        assert len(corners[0]['azimuths']) == 8
     from hornlab_mesher import write_step_from_config
     path, info = write_step_from_config(config, tmp_path / f'{quadrants}.step')
     assert path.stat().st_size > 1000
-    assert info.body == 'surface'
+    assert info.body == ('surface' if mode == 'bare' else 'solid')
 
 
 def test_refinement_preserves_interface_z(session):
@@ -295,3 +307,110 @@ def test_outer_crease_edges_have_two_incident_faces(session):
     for record in built.metadata['cornerWall']['corners']:
         assert len(record['outerSharedEdgeIncidence']) == 4
         assert all(edge['wallFaces'] == 2 for edge in record['outerSharedEdgeIncidence'])
+
+
+def angled_config(before, after, mode='bare'):
+    config = case_config('a', mode)
+    rows = config['profile']['profileH']['points']
+    rows[1]['r'] = rows[0]['r'] + 60 * math.tan(math.radians(before))
+    rows[2]['r'] = rows[1]['r'] + 60 * math.tan(math.radians(after))
+    config['profile']['profileV'] = copy.deepcopy(config['profile']['profileH'])
+    return config
+
+
+def without_corners(config):
+    config = copy.deepcopy(config)
+    for name in ('profileH', 'profileV'):
+        profile = config['profile'][name]
+        rows = profile['points']
+        for point in rows:
+            point.pop('join', None)
+        for key, a, b in [('throatAngleDeg', rows[0], rows[1]),
+                          ('mouthAngleDeg', rows[-2], rows[-1])]:
+            profile[key] = math.degrees(math.atan((b['r'] - a['r']) / (b['z'] - a['z'])))
+    return config
+
+
+def test_tolerance_inflated_crease_public_build(tmp_path):
+    config = angled_config(65, 5)
+    config['mesh'].update(throat_res_mm=6, mouth_res_mm=6)
+    result = build_from_config(config, tmp_path / 'inflated.msh')
+    corner = result.metadata['freeformReport']['cornerWall']['corners'][0]
+    assert len(corner['sharedEdgeIncidence']) == 4
+    assert all(edge['wallFaces'] == 2 for edge in corner['sharedEdgeIncidence'])
+    assert all(row['jumpErrorDeg'] <= .5 for row in corner['mesh'].values())
+
+
+@pytest.mark.parametrize('case,mode', [('a', 'bare'), ('b', 'freestanding')])
+def test_corner_build_timing(session, tmp_path, case, mode):
+    from time import perf_counter
+    config = case_config(case, mode)
+    config['mesh'].update(throat_res_mm=3, mouth_res_mm=3, rear_res_mm=3)
+    timings = {}
+    for label, cfg in [('smooth', without_corners(config)), ('corner', config)]:
+        start = perf_counter()
+        build_from_config(cfg, tmp_path / f'{label}.msh')
+        timings[label] = perf_counter() - start
+    (tmp_path / 'timing.json').write_text(json.dumps(timings))
+    assert timings['corner'] <= 3 * timings['smooth'] + 2, timings
+
+
+def test_coarse_corner_respects_user_density(tmp_path):
+    config = case_config('a')
+    config['mesh'].update(throat_res_mm=20, mouth_res_mm=20)
+    smooth = build_from_config(without_corners(config), tmp_path / 'smooth.msh')
+    corner = build_from_config(config, tmp_path / 'corner.msh')
+    (tmp_path / 'density.json').write_text(json.dumps({'smooth': smooth.n_triangles, 'corner': corner.n_triangles}))
+    assert corner.n_triangles <= 1.5 * smooth.n_triangles, (corner.n_triangles, smooth.n_triangles)
+    assert all(row['jumpErrorDeg'] <= .5 for record in
+        corner.metadata['freeformReport']['cornerWall']['corners'] for row in record['mesh'].values())
+
+
+@pytest.mark.parametrize('segments', [12, 48, 96])
+def test_concave_mitre_trims_swallowtail_at_any_resolution(tmp_path, segments):
+    config = angled_config(5, 65, 'freestanding')
+    config['mesh'].update(wall_thickness_mm=5, lengthSegments=segments)
+    result = build_from_config(config, tmp_path / 'mitre.msh')
+    assert result.n_triangles > 0
+    assert all(edge['wallFaces'] == 2 for record in
+        result.metadata['freeformReport']['cornerWall']['corners']
+        for edge in record['outerSharedEdgeIncidence'])
+
+
+def test_corner_geometry_asdict_is_json_safe_and_equal():
+    from dataclasses import asdict, fields
+    from hornlab_mesher.config_builder import resolve_geometry
+    geometries = [resolve_geometry(case_config('a')).geometry for _ in range(2)]
+    dictionaries = [asdict(geometry) for geometry in geometries]
+    assert all('freeform_wall' not in {field.name for field in fields(g)} for g in geometries)
+    np.testing.assert_equal(dictionaries[0], dictionaries[1])
+    assert json.loads(json.dumps(dictionaries[0], default=str)) == json.loads(json.dumps(dictionaries[1], default=str))
+    assert replace(geometries[0], source_shape=0).freeform_wall is geometries[0].freeform_wall
+
+
+def test_close_interior_corners_refused_at_resolve():
+    from hornlab_mesher.config_builder import resolve_geometry
+    config = case_config('b')
+    for name in ('profileH', 'profileV'):
+        config['profile'][name]['points'][2]['z'] = 40.3
+    with pytest.raises(ValueError, match=r'corners z=40 mm and z=40.3 mm must be at least 1 mm apart'):
+        resolve_geometry(config)
+
+
+def test_mesh_chord_cap_names_corner_and_spacing_cause(tmp_path, monkeypatch):
+    import hornlab_mesher.corner_wall as module
+    monkeypatch.setattr(module, 'MAX_MERIDIAN_NODES', 2)
+    from hornlab_mesher.mesher import MesherError
+    with pytest.raises(MesherError, match=r'corner z=60 mm: mesh meridian needs .*chord refinement cap; corners may be too close to each other or to the throat/mouth'):
+        build_from_config(case_config('e'), tmp_path / 'cap.msh')
+
+
+def test_corner_affine_z_inversion_matches_general_solver():
+    from hornlab_mesher.freeform import (_corner_bezier_parameters_at_z,
+        _bezier_parameters_at_z)
+    controls = np.array([[[0, 1], [20, 8], [40, 12], [60, 15]],
+                         [[0, 1], [4, 2], [55, 12], [60, 15]]], dtype=float)
+    controls = np.repeat(controls, 121, axis=0)
+    z = np.tile(np.linspace(0, 60, 121), 2)
+    np.testing.assert_allclose(_corner_bezier_parameters_at_z(controls, z),
+                               _bezier_parameters_at_z(controls, z), atol=1e-14)

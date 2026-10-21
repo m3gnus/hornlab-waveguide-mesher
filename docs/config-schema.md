@@ -306,7 +306,9 @@ queried with `freeform_profile_curves` and edited with
 `freeform_insert_anchor(profile, z=..., default_throat_angle_deg=...)`. The required
 default throat angle must equal the build/query `a0` (15.5 if omitted).
 Grid, mesh and STEP builds support corner joins through split OCC patches in
-all FREEFORM wall modes. Endpoint corners need no interior split. Unsafe
+all FREEFORM wall modes. Endpoint corners need no interior split. Interior
+corner positions (the union of H and V) must be at least 1 mm apart; this
+fixed geometric floor is independent of mesh density. Unsafe
 freestanding mitres and a built OCC slope error above 0.5 degrees at the
 refinement cap refuse with the corner z named. Smooth profiles with handles
 retain the existing wall path. See the FREEFORM joins subsection
@@ -373,10 +375,10 @@ Ingest rejects non-convex station blends. Freestanding builds with positive
 `wall_thickness_mm` also run a full-surface principal-curvature guard and then
 check the generated outer offset for normal flips and self-intersections. A
 positive rounded-cap `source.source_radius_mm` must be at least the FREEFORM
-throat radius. Active morph targets and guiding curves are rejected because
-`crossSections` owns the outline; FREEFORM likewise rejects non-default legacy
-cross-section exponent/aspect, rotation, `h`, throat extensions, and slot
-length.
+throat radius. Active morph targets use the shared morph evaluator on the
+`crossSections` outline. Guiding curves are rejected; FREEFORM likewise
+rejects non-default legacy cross-section exponent/aspect, rotation, `h`,
+throat extensions, and slot length.
 
 Formula-specific keys are rejected when used with the other formula. For
 example, `R_mm`, `m`, `r`, `b`, and `tmax` are invalid with `OSSE`, while

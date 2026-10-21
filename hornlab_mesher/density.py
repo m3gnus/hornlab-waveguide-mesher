@@ -1460,12 +1460,18 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     if arc_size is not None:
         add_field(arc_formula,mesh_groups.get("arc",[]),curve_groups.get("arc",[]))
 
+    corner_sizes = []
+    if getattr(geometry, "freeform_wall_recipe", None) is not None:
+        from .corner_wall import corner_size_fields
+        corner_fields, corner_sizes = corner_size_fields(geometry, density)
+        fields.extend(corner_fields)
+
     if fields:
         minimum = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res]
+    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res, *corner_sizes]
     if arc_size is not None:
         sizes.append(float(arc_size))
     if lip_size is not None:

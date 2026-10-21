@@ -42,12 +42,29 @@ def identity_cases():
     configs.append(('FREEFORM-handles-C1', {'formula':'FREEFORM','mode':'bare',
         'profile':{'profileH':handles,'profileV':handles},
         'mesh':{'throat_res_mm':15,'mouth_res_mm':15,'allow_large_mesh':True}}))
-    assert len(configs) == 14
+    from test_freeform_corner_wall import case_config
+    for mode in ('freestanding', 'enclosure', 'infinite-baffle'):
+        for quadrants in ('1234', '12'):
+            config = case_config('a', mode)
+            config['mesh']['quadrants'] = quadrants
+            if mode == 'enclosure':
+                config['enclosure']['edge'] = 0
+            for plane in ('profileH', 'profileV'):
+                for point in config['profile'][plane]['points']:
+                    point.pop('join')
+            configs.append((f'FREEFORM-{mode}-{quadrants}', config))
+    assert len(configs) == 20
     return configs
 
 
 @pytest.fixture(scope='module')
 def base_tree(tmp_path_factory):
+    if not (ROOT / '.git').exists():
+        pytest.skip('S1-wall slice gate requires a Git checkout with the S1-curve base')
+    ancestry = subprocess.run(['git', 'merge-base', '--is-ancestor', BASE, 'HEAD'],
+                              cwd=ROOT, capture_output=True)
+    if ancestry.returncode != 0:
+        pytest.skip('S1-wall slice gate applies only while cf21494 is an ancestor of HEAD')
     archive = subprocess.run(['git','archive',BASE], cwd=ROOT, check=True, capture_output=True).stdout
     tree = tmp_path_factory.mktemp('wall-identity-base')
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:

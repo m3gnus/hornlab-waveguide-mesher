@@ -5,8 +5,7 @@ angular partition or OCC operation is changed for a profile without a corner.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, make_dataclass
-from functools import lru_cache
+from dataclasses import dataclass
 import math
 from typing import Any
 
@@ -34,16 +33,19 @@ class CornerWall:
 
 
 
-@lru_cache(maxsize=None)
-def corner_geometry_class(base: type) -> type:
-    """Add recipe state only to corner instances; keep legacy dataclass identity."""
-    return make_dataclass(f"Corner{base.__name__}",
-                          [("freeform_wall", Any, field(default=None))], bases=(base,), frozen=True)
+def corner_geometry_class(base: type, recipe: CornerWall | None = None) -> type:
+    """Keep the immutable build recipe outside the inherited dataclass fields.
+
+    A class property survives dataclasses.replace without entering asdict (the
+    profile contains deliberately immutable mapping proxies).
+    """
+    return type(f"Corner{base.__name__}", (base,), {"freeform_wall": property(lambda self: recipe)})
 
 
 @dataclass
 class _BuiltCornerGeometry(BuiltGeometry):
     freeform_wall_points_mm: np.ndarray | None = None
+    freeform_wall_recipe: CornerWall | None = None
 
 
 def cut_indices(points: np.ndarray, cuts: tuple[float, ...]) -> list[int]:
@@ -88,6 +90,26 @@ def mitred_outer_grid(inner: np.ndarray, wall: float, *, full_circle: bool,
             raise ValueError(f"FREEFORM corner z={cut:g} mm: unsafe offset mitre (opposing normals)")
         delta = wall * (left + right) / denominator[:, None]
         outer[:, j] = inner[:, j] + delta
+    # A concave mitre consumes a finite part of each offset span. Samples
+    # inside that swallowtail are not exterior boundary points. Trim them,
+    # then resample the retained polyline to preserve semantic cut indices.
+    for a, b in zip(ends[:-1], ends[1:]):
+        if b - a < 2:
+            continue
+        start_tangent = inner[:, a + 1] - inner[:, a]
+        end_tangent = inner[:, b] - inner[:, b - 1]
+        rows = outer[:, a + 1:b]
+        forward = np.einsum('ijk,ik->ij', rows - outer[:, a, None], start_tangent)
+        backward = np.einsum('ijk,ik->ij', outer[:, b, None] - rows, end_tangent)
+        keep = np.r_[True, np.all((forward > 0) & (backward > 0), axis=0), True]
+        if np.all(keep):
+            continue
+        for i in range(len(outer)):
+            retained = outer[i, a:b + 1][keep]
+            arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(retained, axis=0), axis=1))]
+            stations = np.linspace(0., arc[-1], b - a + 1)
+            outer[i, a:b + 1] = np.column_stack([
+                np.interp(stations, arc, retained[:, axis]) for axis in range(3)])
     try:
         validate_outer_offset_grid(inner, outer, full_circle=full_circle)
     except ValueError as exc:
@@ -206,20 +228,61 @@ def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]
     return patches
 
 
-def _fragment_roles(roles: dict[str, list[tuple[int, int]]]) -> dict[str, list[tuple[int, int]]]:
-    """Scoped sewing; ancestry, never tag survival, determines each face role."""
+def _sew_roles(roles: dict[str, list[tuple[int, int]]]) -> dict[str, list[tuple[int, int]]]:
+    """Sew coincident boundaries without intersecting whole B-spline faces.
+
+    Sewing retains the source surfaces, replacing only their wires. Gmsh does
+    not expose OCC's Modified() ancestry; recover that one-to-one relation by
+    the unchanged surface parametrization, and refuse ambiguous ancestry.
+    """
     from .builders._occ import require_gmsh
 
     gmsh = require_gmsh()
     faces = list(dict.fromkeys(face for values in roles.values() for face in values))
     if len(faces) < 2:
         return roles
-    _, ancestry = gmsh.model.occ.fragment(faces[:1], faces[1:], removeObject=True, removeTool=True)
-    mapping = {face: [tuple(map(int, child)) for child in children if child[0] == 2]
-               for face, children in zip(faces, ancestry, strict=True)}
     gmsh.model.occ.synchronize()
-    return {role: list(dict.fromkeys(child for face in values for child in mapping[face]))
+
+    def signature(face):
+        lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(*face))
+        uv = [lo + fraction * (hi - lo) for fraction in (.23, .5, .77)]
+        return tuple(np.round(gmsh.model.getValue(*face, np.concatenate(uv)), 7))
+
+    source = {face: signature(face) for face in faces}
+    before = set(gmsh.model.occ.getEntities(2))
+    gmsh.model.occ.addSurfaceLoop([tag for _, tag in faces], sewing=True)
+    gmsh.model.occ.synchronize()
+    children = set(gmsh.model.occ.getEntities(2)) - before
+    by_signature = {}
+    for face in children:
+        by_signature.setdefault(signature(face), []).append(face)
+    mapping = {}
+    for face, key in source.items():
+        candidates = by_signature.get(key, [])
+        if not candidates:
+            # Faces whose boundaries already have shared topology survive.
+            mapping[face] = face
+        elif len(candidates) == 1:
+            mapping[face] = candidates[0]
+        else:
+            raise ValueError("FREEFORM corner sewing has ambiguous face ancestry")
+    if set(mapping.values()) - set(faces) != children:
+        raise ValueError("FREEFORM corner sewing lost face ancestry")
+    obsolete = [face for face in faces if face not in mapping.values()]
+    gmsh.model.occ.remove(obsolete, recursive=False)
+    gmsh.model.occ.synchronize()
+    return {role: list(dict.fromkeys(mapping[face] for face in values))
             for role, values in roles.items()}
+
+
+def _crease_edges(left, right, wall_tags):
+    """Select a crease by adjacent span ancestry, never tolerance-inflated boxes."""
+    from .builders._occ import require_gmsh
+    gmsh = require_gmsh()
+    boundaries = [{int(tag) for dim, tag in gmsh.model.getBoundary(
+        faces, oriented=False, combined=False) if dim == 1} for faces in (left, right)]
+    return [{'edge': tag, 'wallFaces': len(set(map(int, gmsh.model.getAdjacencies(1, tag)[0])) & wall_tags)}
+            for tag in sorted(boundaries[0] & boundaries[1])]
 
 
 def occ_radius(tags: list[int], phi: float, z: float, expected: float) -> float:
@@ -300,14 +363,8 @@ def measure_occ(points: np.ndarray, recipe: CornerWall, wall: list[tuple[int, in
             azimuths.append({'phiDeg': deg, 'intendedSlopesDeg': intended, 'occSlopesDeg': built,
                              'occJumpDeg': built[1] - built[0],
                              'occJumpErrorDeg': abs((built[1] - built[0]) - (intended[1] - intended[0]))})
+        # Incidence is attached from semantic span ancestry after sewing.
         edges = []
-        for dim, tag in gmsh.model.getEntities(1):
-            box = gmsh.model.getBoundingBox(dim, tag)
-            if abs(box[2] - cut) < 1e-6 and abs(box[5] - cut) < 1e-6:
-                up, _ = gmsh.model.getAdjacencies(1, tag)
-                incidence = len(set(map(int, up)) & set(tags))
-                if incidence:
-                    edges.append({'edge': int(tag), 'wallFaces': incidence})
         records.append({'zMm': cut, 'azimuths': azimuths, 'sharedEdgeIncidence': edges})
     return records
 
@@ -399,7 +456,7 @@ def build_corner_wall(geometry):
         points = _refine(points, recipe)
     # Sewing happens before caps/enclosure see the first/last boundaries.
     segment_roles = {f'{span}:{sector}': [face] for span, sector, face in patches}
-    segment_roles = _fragment_roles(segment_roles)
+    segment_roles = _sew_roles(segment_roles)
     last_span = len(cut_indices(points, recipe.cuts(points))) - 2
     first = [face for key, faces in segment_roles.items() if key.startswith('0:') for face in faces]
     last = [face for key, faces in segment_roles.items() if key.startswith(f'{last_span}:') for face in faces]
@@ -420,15 +477,17 @@ def build_corner_wall(geometry):
         from .rear_compatibility import geometry_rear_ring
         cuts = recipe.cuts(points)
         outer = mitred_outer_grid(points, geometry.wall_thickness_mm, full_circle=geometry.closed, corner_z=cuts)
+        outer = _snap_open_symmetry_grid(outer, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
         ends = cut_indices(points, cuts)
         outer_patches = _patches(outer, (), groups, identities=ends)
         # The rear return is its own linear patch and cannot round a profile crease.
         rear = geometry_rear_ring(geometry, points, outer)
+        rear = _snap_open_symmetry_grid(rear[:, None, :], closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)[:, 0]
         extension = np.stack((rear, outer[:, 0]), axis=1)
         rear_patches = _patches(extension, (), groups)
         outer_roles = {f'{span}:{sector}': [face] for span, sector, face in outer_patches}
         outer_roles.update({f'rear:{sector}': [face] for _, sector, face in rear_patches})
-        outer_roles = _fragment_roles(outer_roles)
+        outer_roles = _sew_roles(outer_roles)
         roles['outer'] = [face for key, faces in outer_roles.items() if not key.startswith('rear:') for face in faces]
         roles['rear'] = [face for key, faces in outer_roles.items() if key.startswith('rear:') for face in faces]
         gmsh.model.occ.synchronize()
@@ -442,7 +501,10 @@ def build_corner_wall(geometry):
     if mode is PointGridBuildMode.FREESTANDING:
         roles.update({f'_outer_segment:{key}': faces for key, faces in outer_roles.items()
                       if not key.startswith('rear:')})
-    roles = _fragment_roles(roles)
+    roles.update({f'_inner_segment:{key}': faces for key, faces in segment_roles.items()})
+    roles = _sew_roles(roles)
+    mapped_inner = {key.removeprefix('_inner_segment:'): roles.pop(key)
+                    for key in list(roles) if key.startswith('_inner_segment:')}
     mapped_outer = {key.removeprefix('_outer_segment:'): roles.pop(key)
                     for key in list(roles) if key.startswith('_outer_segment:')}
     if geometry.enclosure is not None:
@@ -452,8 +514,11 @@ def build_corner_wall(geometry):
                                   offset_mm=offset)]
     gmsh.model.occ.synchronize()
     records = measure_occ(points, recipe, roles['inner'])
-    for record in records:
-        edges = record['sharedEdgeIncidence']
+    for span, record in enumerate(records):
+        edges = [edge for sector in range(len(groups))
+                 for edge in _crease_edges(mapped_inner[f'{span}:{sector}'],
+                     mapped_inner[f'{span + 1}:{sector}'], {tag for _, tag in roles['inner']})]
+        record['sharedEdgeIncidence'] = edges
         if len(edges) != len(groups) or any(edge['wallFaces'] != 2 for edge in edges):
             raise ValueError(f"FREEFORM corner z={record['zMm']:g} mm: crease is not shared by exactly two wall faces")
     if mapped_outer:
@@ -474,38 +539,6 @@ def build_corner_wall(geometry):
                     raise ValueError(f"FREEFORM corner z={record['zMm']:g} mm: outer crease needs two incident wall faces")
                 edges.append({'edge': tag, 'wallFaces': incidence})
             record['outerSharedEdgeIncidence'] = edges
-    # H/V sections are actual mesh edges. Choose their chord limit from
-    # one-sided secants on the built OCC wall, leaving margin below 0.5 deg.
-    chord_limit = 2.0
-    inner_tags = [tag for _, tag in roles['inner']]
-    for record in records:
-        cut = record['zMm']
-        distance = min(abs(cut - z) for z in (points[0, 0, 2], *recipe.cuts(points), points[0, -1, 2]) if z != cut)
-        for phi in (0., math.pi / 2):
-            expected = lambda z: float(recipe.radius(phi, z, points))
-            fn = lambda z: occ_radius(inner_tags, phi, z, expected(z))
-            intended = slope_pair(expected, cut, min(0.001, distance / 1000))
-            step = min(chord_limit, distance / 4)
-            for _ in range(6):
-                angles = [math.degrees(math.atan((fn(cut) - fn(cut-step)) / step)),
-                          math.degrees(math.atan((fn(cut+step) - fn(cut)) / step))]
-                if abs((angles[1] - angles[0]) - (intended[1] - intended[0])) <= 0.45:
-                    break
-                step /= 2
-            else:
-                raise ValueError(f"FREEFORM corner z={cut:g} mm: mesh meridian chord refinement cap exceeded")
-            chord_limit = min(chord_limit, step)
-    meridians = {int(tag) for dim, tag in gmsh.model.getBoundary(roles['inner'], oriented=False, combined=False)
-                 if dim == 1}
-    for tag in meridians:
-        lo, hi = gmsh.model.getParametrizationBounds(1, tag)
-        first_z = gmsh.model.getValue(1, tag, lo)[2]
-        last_z = gmsh.model.getValue(1, tag, hi)[2]
-        if abs(first_z - last_z) > 1e-6:
-            count = max(2, int(math.ceil(gmsh.model.occ.getMass(1, tag) / chord_limit)) + 1)
-            if count > 4097:
-                raise ValueError(f"FREEFORM corner wall: mesh meridian needs {count} nodes, exceeding chord refinement cap")
-            gmsh.model.mesh.setTransfiniteCurve(tag, count)
     tags = {role: [int(tag) for _, tag in faces] for role, faces in roles.items()}
     rigid = [tag for role in ('inner', 'outer', 'rear', 'rear_cap', 'mouth') for tag in tags.get(role, [])]
     physical = {int(PhysicalGroup.RIGID_WALL): rigid,
@@ -525,7 +558,71 @@ def build_corner_wall(geometry):
                          source_axis='z', mesh_surface_groups=tags, enclosure_bounds=enclosure_bounds,
                          symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
                          open_shell_wall_points_mm=reference_points, open_shell_wall_normals=reference_normals,
-                         mesh_algorithm=MESH_ALGORITHM_MESHADAPT, metadata=metadata, freeform_wall_points_mm=points)
+                         mesh_algorithm=MESH_ALGORITHM_MESHADAPT, metadata=metadata, freeform_wall_points_mm=points, freeform_wall_recipe=recipe)
+
+
+MAX_MERIDIAN_NODES = 4097
+
+
+def corner_size_fields(built, density):
+    """User density everywhere; bounded local grading only at curved creases."""
+    from .builders._occ import require_gmsh
+    gmsh = require_gmsh()
+    points, recipe = built.freeform_wall_points_mm, built.freeform_wall_recipe
+    records = built.metadata['cornerWall']['corners']
+    tags = built.mesh_surface_groups['inner']
+    fields, sizes = [], []
+    bounds = (points[0, 0, 2], *recipe.cuts(points), points[0, -1, 2])
+    for record in records:
+        cut = record['zMm']
+        t = (cut - bounds[0]) / (bounds[-1] - bounds[0])
+        local_size = (1 - t) * density.throat_res_mm + t * density.mouth_res_mm
+        distance = min(abs(cut - z) for z in bounds if z != cut)
+        chord_limit = local_size
+        for phi in (0., math.pi / 2):
+            expected = lambda z: float(recipe.radius(phi, z, points))
+            fn = lambda z: occ_radius(tags, phi, z, expected(z))
+            intended = slope_pair(expected, cut, min(.001, distance / 1000))
+            step = min(local_size, distance / 4)
+            for _ in range(12):
+                angles = [math.degrees(math.atan((fn(cut) - fn(cut-step)) / step)),
+                          math.degrees(math.atan((fn(cut+step) - fn(cut)) / step))]
+                if abs((angles[1] - angles[0]) - (intended[1] - intended[0])) <= .45:
+                    break
+                step /= 2
+            else:
+                raise ValueError(f"FREEFORM corner z={cut:g} mm: mesh meridian chord refinement cap exceeded; corners may be too close to each other or to the throat/mouth")
+            # Do not tighten a straight meridian merely because the next cut
+            # limits the probe distance. Only a measured failed probe refines.
+            if step < min(local_size, distance / 4):
+                chord_limit = min(chord_limit, step)
+        count = math.ceil(min(local_size, distance / 4) / chord_limit) + 1
+        if count > MAX_MERIDIAN_NODES:
+            raise ValueError(f"FREEFORM corner z={cut:g} mm: mesh meridian needs {count} nodes, exceeding chord refinement cap; corners may be too close to each other or to the throat/mouth")
+        if chord_limit >= local_size:
+            continue
+        # A short band covers both H/V curves and their adjacent faces.
+        # Gmsh can overshoot its target; retain half the measured safe chord.
+        size = chord_limit / 2
+        band = min(local_size, distance / 4)
+        distance_field = gmsh.model.mesh.field.add('Distance')
+        gmsh.model.mesh.field.setNumbers(distance_field, 'CurvesList',
+            [edge['edge'] for edge in record['sharedEdgeIncidence']])
+        gmsh.model.mesh.field.setNumber(distance_field, 'Sampling', 200)
+        field = gmsh.model.mesh.field.add('Threshold')
+        for option, value in {'InField': distance_field, 'SizeMin': size,
+                              'SizeMax': local_size, 'DistMin': size,
+                              'DistMax': band, 'StopAtDistMax': 1}.items():
+            gmsh.model.mesh.field.setNumber(field, option, value)
+        restrict = gmsh.model.mesh.field.add('Restrict')
+        gmsh.model.mesh.field.setNumber(restrict, 'InField', field)
+        gmsh.model.mesh.field.setNumbers(restrict, 'SurfacesList', tags)
+        curves = {tag for dim, tag in gmsh.model.getBoundary([(2, tag) for tag in tags],
+                  combined=False, oriented=False) if dim == 1}
+        gmsh.model.mesh.field.setNumbers(restrict, 'CurvesList', list(curves))
+        fields.append(restrict)
+        sizes.append(size)
+    return fields, sizes
 
 
 def mesh_sections(xyz: np.ndarray, triangles: np.ndarray, phi: float) -> np.ndarray:

@@ -465,19 +465,33 @@ An explicit `join: corner` selects the FREEFORM corner-wall builder in bare,
 enclosure, infinite-baffle and freestanding modes. Interior H/V corner z
 positions are merged into one semantic cut set. Each axial segment is an
 approximating OCC patch per angular quadrant, with degree `min(3, rings-1)`.
-Coincident boundaries are sewn by a scoped fragment; its ancestry determines
-face roles. Caps, enclosure and mouth closures reuse the actual first/last
-patch boundaries. Endpoint corners select this path but introduce no cut.
+Coincident boundaries are sewn as an OCC shell without whole-face Boolean
+intersections. The unchanged surface parametrizations identify source-to-sewn
+face ancestry; ambiguous or missing ancestry is refused. Caps, enclosure and
+mouth closures reuse the actual first/last patch boundaries. Endpoint corners select this path but introduce no cut.
 
 The angular approximation constrains H/V and diagonal radii. One-sided axial
 derivative poles are fitted on the built angular boundary. The builder measures
 OCC jumps at eight azimuths and refines axially only when the error exceeds
 0.5 degrees, up to four refinements or 1025 rings. Failure names the cut z.
-H/V mesh-edge chord limits are selected from built OCC one-sided secants,
-with a bounded refinement and node count, so coarse surrounding meshes can
-retain the measured corner slopes.
-Freestanding spans use a shared mitred offset ring; unsafe mitres and folded
+Mesh sizes start from the user's local throat/mouth density. Built OCC
+one-sided H/V secants select any necessary tightening, bounded by a refinement
+and node cap, within a short band at the cut. Straight meridians do not cause
+extra refinement. Interior corners in the union of H and V must be at least
+1 mm apart (a fixed floor independent of mesh density); refusal names both z
+values. Chord-cap errors name the responsible cut and suggest checking nearby
+corners and throat/mouth spacing.
+Freestanding spans use a shared mitred offset ring. Offset rings swallowed by
+a concave mitre are trimmed and the retained polyline is resampled with the
+same cut identities before the outer-grid validation. Unsafe mitres and folded
 outer grids are refused with corner z in the error.
+
+The corner path always uses approximating split patches. The existing
+FREEFORM refusal of explicit `surface_fit = "interpolate"` still applies.
+The corner builder ignores the resolved `surface_fit`, `preserve_grid`,
+legacy `topology_mode`, and
+`outer_clearance_points_mm`; these options do not change its construction.
+The no-corner path continues to honor its existing options.
 
 Mesh metadata includes `freeformReport.cornerWall`: each interior corner's
 OCC slopes/jump/error at 0,45,...,315 degrees, shared-edge incidence, H/V mesh

@@ -2483,9 +2483,8 @@ def resolve_geometry(
             raise ConfigError(str(exc)) from exc
     if formula == "FREEFORM" and freeform_corner_z(freeform_geometry):
         from .corner_wall import CornerWall, corner_geometry_class
-        geometry_cls = corner_geometry_class(geometry_cls)
-        probe_kwargs["freeform_wall"] = CornerWall(
-            freeform_geometry, scale=float(eval_param(params.get("scale"), 0.0, 1.0)))
+        geometry_cls = corner_geometry_class(geometry_cls, CornerWall(
+            freeform_geometry, scale=float(eval_param(params.get("scale"), 0.0, 1.0))))
     geometry = geometry_cls(
         inner_points=inner_points,
         outer_points=outer_points,

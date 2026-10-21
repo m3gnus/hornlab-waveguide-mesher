@@ -1021,7 +1021,10 @@ class _BezierPlane(_PlaneSpline):
         indices = np.clip(np.searchsorted(self.anchors[:, 0], flat, side="right") - 1,
                           0, len(self.beziers) - 1)
         controls = self.beziers[indices]
-        parameters = _bezier_parameters_at_z(controls, flat)
+        if "corner" in self.joins:
+            parameters = _corner_bezier_parameters_at_z(controls, flat)
+        else:
+            parameters = _bezier_parameters_at_z(controls, flat)
         values = _bezier_values(controls, parameters)[:, 1]
         # Return saved anchors exactly, including at a span boundary.
         for anchor in self.anchors:
@@ -1048,6 +1051,24 @@ def _bezier_parameters_at_z(controls: np.ndarray, z: np.ndarray) -> np.ndarray:
         lower = np.where(below, midpoint, lower)
         upper = np.where(below, upper, midpoint)
     return (lower + upper) / 2
+
+
+def _corner_bezier_parameters_at_z(controls: np.ndarray, z: np.ndarray) -> np.ndarray:
+    """Invert affine z exactly on corner spans; bisect general handles as usual.
+
+    Chord-default spans have their z poles at thirds. Repeating 55 bisections
+    for these spans dominated the corner diagnostics and curvature checks.
+    This shortcut is gated to corner profiles, leaving C1 input bytes intact.
+    """
+    start, stop = controls[:, 0, 0], controls[:, -1, 0]
+    affine = start[:, None] + (stop - start)[:, None] * np.arange(4) / 3
+    linear = np.all(np.abs(controls[:, :, 0] - affine) <=
+                    8 * np.finfo(float).eps * np.maximum(1., np.abs(affine)), axis=1)
+    result = np.empty_like(z, dtype=float)
+    result[linear] = np.clip((z[linear] - start[linear]) / (stop[linear] - start[linear]), 0, 1)
+    if np.any(~linear):
+        result[~linear] = _bezier_parameters_at_z(controls[~linear], z[~linear])
+    return result
 
 
 def _plane_beziers(plane: _PlaneSpline) -> np.ndarray:
@@ -1430,6 +1451,10 @@ def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_
                 f"z={inflection['zStartMm']:.3f}..{inflection['zEndMm']:.3f} mm with a "
                 f"{inflection['tangentDropDeg']:.2f} deg tangent-angle drop")
     return result
+
+
+# Fixed geometric floor, independent of the requested mesh density.
+MIN_INTERIOR_CORNER_SPACING_MM = 1.0
 
 
 def freeform_corner_z(geometry: FreeformGeometry, *, interior: bool = False) -> tuple[float, ...]:
@@ -2399,6 +2424,11 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         ),
         _inflection_spans=inflection_spans,
     )
+    cuts = freeform_corner_z(geometry, interior=True)
+    for left, right in zip(cuts[:-1], cuts[1:]):
+        if right - left < MIN_INTERIOR_CORNER_SPACING_MM:
+            raise ValueError(f"FREEFORM interior corners z={left:g} mm and z={right:g} mm "
+                             f"must be at least {MIN_INTERIOR_CORNER_SPACING_MM:g} mm apart")
     _validate_station_corner_radii(geometry)
 
     convexity_samples = _convexity_ingest_samples(stations)
