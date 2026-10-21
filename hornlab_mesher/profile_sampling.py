@@ -893,9 +893,16 @@ def _raw_radial_grid(
     # point per grid node: their parameter sets, length solves and coverage
     # inversions are all constant along t, and paying them per node is what
     # made a preview build spend ~90% of its time in the profile formulas.
+    circular_section = _cross_section_is_circular(exponent, aspect_ratio)
     for i, phi in enumerate(angles):
         phi_value = float(phi)
-        scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
+        # A circular section is exactly 1.0; the superellipse formula can land
+        # an ulp short of it at some azimuths.
+        scale = (
+            1.0
+            if circular_section
+            else _superellipse_scale(phi_value, exponent, aspect_ratio)
+        )
         meridian_prefix = 0.0
         if formula == "LOOKUP":
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
