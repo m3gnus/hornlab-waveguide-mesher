@@ -544,6 +544,28 @@ def _superellipse_scale(phi: float, exponent: float, aspect_ratio: float) -> flo
     return 1.0 / max(denom, 1.0e-12)
 
 
+def _cross_section_scaled(
+    radius: np.ndarray, t_unit: np.ndarray, prefix: float, scale: float
+) -> np.ndarray:
+    """Apply the cross-section scale to one meridian, keeping its throat.
+
+    The throat is the driver's exit and must stay the circle the profile
+    defines, so only the growth past the throat is scaled: the wall is
+    ``r_t + (r - r_t) * scale`` with ``r_t`` the radius where the throat
+    extension and slot end (``prefix``, a fraction of normalised ``t``), and
+    the extension and slot themselves stay round. ATH has no cross-section
+    exponent; its own outline controls (``Morph``, ``a(p)``) likewise leave
+    the throat circular (ath.exe GridExport, V2026-09a).
+    """
+
+    if scale == 1.0:
+        return radius
+    t = np.asarray(t_unit, dtype=np.float64)
+    throat_radius = float(np.interp(prefix, t, radius))
+    scaled = throat_radius + (radius - throat_radius) * scale
+    return np.where(t <= prefix, radius, scaled)
+
+
 def _normalise3(vec: np.ndarray, fallback: tuple[float, float, float] = (0.0, -1.0, 0.0)) -> np.ndarray:
     length = float(np.linalg.norm(vec))
     if length <= 1.0e-12:
@@ -874,6 +896,7 @@ def _raw_radial_grid(
     for i, phi in enumerate(angles):
         phi_value = float(phi)
         scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
+        meridian_prefix = 0.0
         if formula == "LOOKUP":
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
             # cross-section (superellipse scale) and morph are layered on top
@@ -886,10 +909,9 @@ def _raw_radial_grid(
         elif formula == "OSSE":
             _main_len, total, ext_len, slot_len = osse_length_config(params, phi_value)
             if total > 1.0e-12:
+                meridian_prefix = (float(ext_len) + float(slot_len)) / float(total)
                 prefix_fraction = max(prefix_fraction, float(ext_len) / float(total))
-                slot_end_fraction = max(
-                    slot_end_fraction, (float(ext_len) + float(slot_len)) / float(total)
-                )
+                slot_end_fraction = max(slot_end_fraction, meridian_prefix)
             h_bulge = eval_param(params.get("h"), phi_value, 0.0)
             # The guiding-curve inversion depends only on phi; hoist it out of
             # the per-z loop (a 24-step bisection per grid point otherwise).
@@ -904,6 +926,7 @@ def _raw_radial_grid(
         else:
             layout = rosse_axial_layout(params, phi_value)
             if layout.full_length > 1.0e-12 and (layout.ext_len > 0.0 or layout.slot_len > 0.0):
+                meridian_prefix = (layout.ext_len + layout.slot_len) / layout.full_length
                 prefix_fraction = max(
                     prefix_fraction, layout.ext_len / layout.full_length
                 )
@@ -914,7 +937,9 @@ def _raw_radial_grid(
             curve_z, curve_radius = calculate_rosse_curve(
                 t_values, phi_value, params
             )
-        raw_radials[i] = curve_radius * scale
+        raw_radials[i] = _cross_section_scaled(
+            curve_radius, t_unit_values, meridian_prefix, scale
+        )
         z_values[i] = curve_z
     return raw_radials, z_values, _ThroatPrefix(prefix_fraction, slot_end_fraction)
 

@@ -385,6 +385,12 @@ Use `[cross_section]` or `[crossSection]`.
 | `exponent` | `profile.exponent`, top-level `cross_section_exponent` | `2.0` | Superellipse exponent. |
 | `aspect_ratio` | `aspectRatio` | `1.0` | Width-to-height scaling. |
 
+The section scales only the wall's growth past the throat: at each azimuth the
+radius is `r_t + (r - r_t) * scale`, where `r_t` is the throat radius (the end
+of any throat extension and slot). The throat stays the circle the profile
+defines, so a compression driver still fits it; the extension and slot stay
+round too.
+
 ## Mesh Keys
 
 | Canonical TOML/JSON key | Aliases | Default | Notes |

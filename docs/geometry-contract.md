@@ -479,6 +479,16 @@ an active guiding curve must fail explicitly.
 
 Unsupported guiding curve types must fail explicitly.
 
+## Cross-section
+
+A non-circular `cross_section` (superellipse `exponent`, `aspect_ratio`) scales
+each meridian's growth past the throat by the superellipse factor `s(phi)`:
+`r'(t) = r_t + (r(t) - r_t) * s(phi)`, with `r_t` the meridian's radius where
+the throat extension and slot end. Stations up to that point are unchanged, so
+the throat stays circular. ATH has no cross-section key; its own outline
+controls (`Morph`, `a(p)`) also leave the throat circular (ath.exe V2026-09a
+GridExport: throat radius equal at every azimuth).
+
 ## Morphing
 
 Morphing is a universal target-mouth rule, not an ATH case fix. The OS-SE paper
