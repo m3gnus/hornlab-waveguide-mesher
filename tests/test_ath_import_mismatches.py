@@ -65,6 +65,18 @@ def test_normalised_ath_v2026_09a_fixtures(name):
         assert data.endswith(b'\n') and not data.endswith(b'\n\n')
 
 
+@pytest.mark.parametrize('name', GRID_CASES)
+def test_windows_crlf_cfg_text_imports_identically(name):
+    # A Windows user's ATH .cfg has CRLF; text reaching parse_text_config
+    # without universal-newline translation must import the same geometry.
+    text = (FIXTURES / f'{name}.cfg').read_bytes().decode('utf-8')
+    lf, crlf = parse_text_config(text), parse_text_config(text.replace('\n', '\r\n'))
+    assert crlf == lf
+    grids = [build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid'] for cfg in (lf, crlf)]
+    assert grids[0].shape == reference(name).shape
+    np.testing.assert_array_equal(grids[1], grids[0])
+
+
 def test_import_spacing_matches_ath_v2026_09a_enclosure_bounds():
     from hornlab_mesher.builders.enclosure import enclosure_box_bounds
     cfg = config('m4_enc')
