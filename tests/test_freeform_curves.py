@@ -372,3 +372,42 @@ def test_exact_insert_reports_subdivision_envelope_conflict():
     build_freeform_geometry(params(p))
     with pytest.raises(ValueError, match="subdivided-span validation guards.*overshoots"):
         freeform_insert_anchor(p, z=10)
+
+
+@pytest.mark.parametrize("fixture_path", [
+    "tests/fixtures/morph_identity/baseline.json",
+    "tests/fixtures/throat_stretch/base-compatibility.json",
+])
+def test_legacy_gate_persisted_freeform_fixtures(fixture_path):
+    from hornlab_mesher.config_builder import build_geometry_params
+
+    def configurations(value):
+        if isinstance(value, dict):
+            profile = value.get("profile")
+            if isinstance(profile, dict) and "profileH" in profile:
+                yield value
+            else:
+                for child in value.values():
+                    yield from configurations(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from configurations(child)
+
+    configs = list(configurations(json.loads(Path(fixture_path).read_text())))
+    assert configs  # Refuse a vacuous pass if a fixture's schema changes.
+    for config in configs:
+        original, formula, _ = build_geometry_params(config)
+        assert formula == "FREEFORM"
+        rewritten = copy.deepcopy(original)
+        for key in ("profileH", "profileV"):
+            rewritten[key]["points"] = [
+                {"z": row[0], "r": row[1], "join": "smooth",
+                 **({"angleDeg": row[2]} if len(row) == 3 else {})}
+                for row in original[key]["points"]]
+        old = build_freeform_geometry(original)
+        new = build_freeform_geometry(rewritten)
+        assert type(new._profile_h) is _PlaneSpline
+        assert type(new._profile_v) is _PlaneSpline
+        z = np.linspace(old._profile_h.anchors[0, 0], old._profile_h.anchors[-1, 0], 2001)
+        assert all((a == b).all() for a, b in zip(old.evaluate_radii(z), new.evaluate_radii(z)))
+        assert old.report() == new.report()
