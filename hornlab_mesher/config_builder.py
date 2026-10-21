@@ -619,8 +619,11 @@ def _enclosure_from_config(
     depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if depth <= 0.0:
         return None
+    from .spike_woofer_cut import SpikeWoofer
+
     return HornEnclosure(
         depth_mm=depth,
+        spike_woofers=tuple(SpikeWoofer(**row) for row in enclosure.get("spike_woofers", [])),
         space_l_mm=_float(
             enclosure, names=("space_l_mm", "space_l", "left_margin_mm"), default=25.0
         ),

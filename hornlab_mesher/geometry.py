@@ -149,6 +149,8 @@ class HornEnclosure:
     depth_margin_mm: float = 1.0
     front_mesh_size_mm: float | None = None
     back_mesh_size_mm: float | None = None
+    # Opt-in experiment; not the production assembly schema.
+    spike_woofers: tuple = ()
 
 
 @dataclass(frozen=True)

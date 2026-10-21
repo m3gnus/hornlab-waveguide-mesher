@@ -1,0 +1,318 @@
+{
+  "base": "d740c28",
+  "tests": "tests/test_spike_woofer_cut.py",
+  "cases": [
+    {
+      "case": "freeform-corners",
+      "recessMm": 0.0,
+      "triangles": 5182,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 25448114.240256127,
+      "sources": {
+        "101": {
+          "triangles": 129,
+          "areaMm2": 3841.1745772983977,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 100,
+          "areaMm2": 1959.657208933944,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.036664653844848516
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "freeform-corners",
+      "recessMm": 2.0,
+      "triangles": 5408,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 25436512.576683667,
+      "sources": {
+        "101": {
+          "triangles": 129,
+          "areaMm2": 3841.1745772983986,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521067955
+        },
+        "102": {
+          "triangles": 102,
+          "areaMm2": 1959.6572089339447,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.036664653844848516
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "freeform-rounded",
+      "recessMm": 0.0,
+      "triangles": 10754,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 56720757.590100825,
+      "sources": {
+        "101": {
+          "triangles": 157,
+          "areaMm2": 3841.1745772983977,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 130,
+          "areaMm2": 1959.6572089339443,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.036664653721953044
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "freeform-rounded",
+      "recessMm": 2.0,
+      "triangles": 11214,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 56709067.27129311,
+      "sources": {
+        "101": {
+          "triangles": 149,
+          "areaMm2": 3841.1745772983986,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 128,
+          "areaMm2": 1959.6572089339445,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.03666465372193528
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "lookup",
+      "recessMm": 0.0,
+      "triangles": 11156,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 63397348.69282418,
+      "sources": {
+        "101": {
+          "triangles": 157,
+          "areaMm2": 3841.1745772983986,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 130,
+          "areaMm2": 1959.6572089339447,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.036664653811946835
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "lookup",
+      "recessMm": 2.0,
+      "triangles": 11620,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 63385953.37805612,
+      "sources": {
+        "101": {
+          "triangles": 151,
+          "areaMm2": 3841.174577298399,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 126,
+          "areaMm2": 1959.6572089339452,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.036664653811921966
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "osse",
+      "recessMm": 0.0,
+      "triangles": 14762,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 94610658.35988517,
+      "sources": {
+        "101": {
+          "triangles": 153,
+          "areaMm2": 3841.174577298397,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.051330515210736394
+        },
+        "102": {
+          "triangles": 128,
+          "areaMm2": 1959.6572089339443,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.03666465383427209
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "osse",
+      "recessMm": 2.0,
+      "triangles": 15198,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 94599334.1549369,
+      "sources": {
+        "101": {
+          "triangles": 151,
+          "areaMm2": 3841.1745772983973,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.051330515210750605
+        },
+        "102": {
+          "triangles": 130,
+          "areaMm2": 1959.6572089339443,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.03666465383427919
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "osse-rectangle",
+      "recessMm": 0.0,
+      "triangles": 14518,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 93741867.16634774,
+      "sources": {
+        "101": {
+          "triangles": 155,
+          "areaMm2": 3841.1745772983973,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.051330515210736394
+        },
+        "102": {
+          "triangles": 128,
+          "areaMm2": 1959.6572089339443,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.03666465383427209
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "osse-rectangle",
+      "recessMm": 2.0,
+      "triangles": 14972,
+      "baffleZMm": 120.0,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 93729946.80744578,
+      "sources": {
+        "101": {
+          "triangles": 151,
+          "areaMm2": 3841.174577298397,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.051330515210750605
+        },
+        "102": {
+          "triangles": 130,
+          "areaMm2": 1959.6572089339447,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.03666465383427919
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "rosse",
+      "recessMm": 0.0,
+      "triangles": 10920,
+      "baffleZMm": 34.88203774544669,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 65447307.28241911,
+      "sources": {
+        "101": {
+          "triangles": 153,
+          "areaMm2": 3841.1745772983977,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 128,
+          "areaMm2": 1959.6572089339443,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.036664653811936176
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    },
+    {
+      "case": "rosse",
+      "recessMm": 2.0,
+      "triangles": 11386,
+      "baffleZMm": 34.88203774544669,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentEdges": 0,
+      "signedVolumeMm3": 65436227.429867476,
+      "sources": {
+        "101": {
+          "triangles": 153,
+          "areaMm2": 3841.1745772983986,
+          "exactAreaMm2": 3848.4510006474966,
+          "maxRimChordErrorMm": 0.05133051521070797
+        },
+        "102": {
+          "triangles": 130,
+          "areaMm2": 1959.6572089339445,
+          "exactAreaMm2": 1963.4954084936207,
+          "maxRimChordErrorMm": 0.03666465381194328
+        }
+      },
+      "gmsh": "4.15.0",
+      "python": "3.13.1"
+    }
+  ]
+}

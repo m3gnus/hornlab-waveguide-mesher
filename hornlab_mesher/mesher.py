@@ -320,6 +320,9 @@ def build_mesh_with_info(
                 geometry, mesh_density
             )
             built = _dispatch_builder(acoustic_geometry)
+            if getattr(getattr(acoustic_geometry, "enclosure", None), "spike_woofers", ()):
+                from .spike_woofer_cut import cut_woofers
+                cut_woofers(built, acoustic_geometry)
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
             if isinstance(acoustic_geometry, PointGridHornGeometry):
@@ -427,6 +430,7 @@ def build_mesh_with_info(
                     for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")),
                 controls_meridian=controls,
                 controls_branch_tags=built.metadata.get("controlsBranchSurfaceTags"),
+                physical_name_overrides=built.metadata.get("spikePhysicalNames"),
             )
             if isinstance(geometry,StandaloneSourceGeometry):
                 from .source_body import certify_mesh
@@ -533,6 +537,7 @@ def _postprocess_mesh(
     weld_near_duplicates: bool = True,
     controls_meridian=None,
     controls_branch_tags=None,
+    physical_name_overrides: dict[int, str] | None = None,
 ) -> MeshInfo:
     mesh = meshio.read(raw_path)
     triangles, phys = _triangles_and_physical_tags(mesh)
@@ -641,7 +646,8 @@ def _postprocess_mesh(
 
     used_tags = sorted({int(tag) for tag in phys.tolist()})
     physical_names = {
-        int(tag): PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}")
+        int(tag): (physical_name_overrides or {}).get(
+            int(tag), PHYSICAL_NAMES.get(int(tag), f"SD1D{1000 + int(tag) - 1}"))
         for tag in used_tags
     }
     out_mesh = meshio.Mesh(
