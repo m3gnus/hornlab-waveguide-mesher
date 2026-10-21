@@ -296,7 +296,14 @@ def _flat_cap(
         # samples even though its boundary is star-shaped. The cap has no row
         # correspondence to preserve, so angular ordering avoids manufacturing
         # inverted fan faces from that sampling artifact.
-        angles = np.arctan2(ring[:, 1] - center[1], ring[:, 0] - center[0])
+        offset = ring[:, :2] - center[:2]
+        # A sample on the -x axis sits on atan2's +-pi branch cut. Its y
+        # offset from the centre is then rounding noise from the platform's
+        # libm, and the noise's sign would move it from the last fan vertex
+        # to the first. Snap that noise to +0 so it always sorts last.
+        seam = 1.0e-12 * max(float(np.max(np.abs(offset))), 1.0)
+        dy = np.where(np.abs(offset[:, 1]) <= seam, 0.0, offset[:, 1])
+        angles = np.arctan2(dy, offset[:, 0])
         ring = ring[np.argsort(angles, kind="stable")]
     positions = np.vstack((ring, center))
     center_index = len(ring)

@@ -10,5 +10,8 @@
   "imported_baselines": {
     "rear-v1.npz": "a515334c554a098ca6612f336529323021284328; saved ath-2026-08c-v1",
     "rear-imported.npz": "c47cd3b; current sampling rules, now ath-2026-09a-v2"
+  },
+  "repinned": {
+    "corner/preview/coarse/wall.rear_cap/positions": "rear-native.npz and rear-v1.npz: the -x seam vertex moved from first to last ring vertex when the flat cap stopped sorting on rounding noise; a pure one-step rotation with the identical oriented triangle set and unchanged indices"
   }
 }

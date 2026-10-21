@@ -189,6 +189,22 @@ def test_deferred_corner_preview_uses_production_rear_and_preserves_native(lod, 
         np.testing.assert_array_equal(roles[role].indices, surface.indices)
 
 
+def test_flat_cap_seam_order_ignores_rounding_noise_in_the_centre():
+    # Linux, macOS and Windows libm round the corner ring differently, so the
+    # cap centre's y differs by ~1e-15 mm. A ring sample on -x must not move
+    # between the first and last fan vertex with the sign of that noise.
+    from hornlab_mesher.preview.primitives import _flat_cap
+    phi = np.linspace(-np.pi, np.pi, 16, endpoint=False)
+    ring = np.column_stack((23 * np.cos(phi), 23 * np.sin(phi), np.full(16, -5.0)))
+    ring[0, 1] = 2.2530261791044707e-15
+    caps = [_flat_cap('wall.rear_cap', ring, (0.0, 0.0, -1.0), closed_phi=True,
+                      center=np.array([0.0, dy, -5.0]))
+            for dy in (-1e-15, 0.0, 1.3e-15, 2.3e-15)]
+    for cap in caps:
+        np.testing.assert_array_equal(cap.positions[:-1], np.roll(ring, -1, axis=0))
+        np.testing.assert_array_equal(cap.indices, caps[0].indices)
+
+
 @pytest.mark.parametrize('lod', ['coarse', 'fine'])
 @pytest.mark.parametrize('include_cap', [True, False])
 def test_deferred_corner_import_retains_ath_v2026_09a_warp(lod, include_cap):
