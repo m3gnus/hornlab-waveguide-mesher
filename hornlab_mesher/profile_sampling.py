@@ -558,8 +558,6 @@ def _cross_section_scaled(
     the throat circular (ath.exe GridExport, V2026-09a).
     """
 
-    if scale == 1.0:
-        return radius
     t = np.asarray(t_unit, dtype=np.float64)
     throat_radius = float(np.interp(prefix, t, radius))
     scaled = throat_radius + (radius - throat_radius) * scale
@@ -896,13 +894,7 @@ def _raw_radial_grid(
     circular_section = _cross_section_is_circular(exponent, aspect_ratio)
     for i, phi in enumerate(angles):
         phi_value = float(phi)
-        # A circular section is exactly 1.0; the superellipse formula can land
-        # an ulp short of it at some azimuths.
-        scale = (
-            1.0
-            if circular_section
-            else _superellipse_scale(phi_value, exponent, aspect_ratio)
-        )
+        scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
         meridian_prefix = 0.0
         if formula == "LOOKUP":
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
@@ -944,8 +936,13 @@ def _raw_radial_grid(
             curve_z, curve_radius = calculate_rosse_curve(
                 t_values, phi_value, params
             )
-        raw_radials[i] = _cross_section_scaled(
-            curve_radius, t_unit_values, meridian_prefix, scale
+        # A circular section keeps the historical ``r * scale`` arithmetic:
+        # the scale can land an ulp short of 1.0 at some azimuths, and the
+        # published solve and STEP bytes carry that product.
+        raw_radials[i] = (
+            curve_radius * scale
+            if circular_section
+            else _cross_section_scaled(curve_radius, t_unit_values, meridian_prefix, scale)
         )
         z_values[i] = curve_z
     return raw_radials, z_values, _ThroatPrefix(prefix_fraction, slot_end_fraction)
