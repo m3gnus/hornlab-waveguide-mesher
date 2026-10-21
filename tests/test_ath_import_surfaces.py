@@ -17,12 +17,12 @@ REAR_CASES = CASES[2:]
 
 
 def config(name):
-    return parse_text_config((FIXTURES / f"{name}.cfg").read_text())
+    return parse_text_config((FIXTURES / f"{name}.cfg").read_text(encoding="utf-8"))
 
 
 def reference(name):
     return np.array([[[float(v) for v in row.split(";")] for row in block.splitlines()]
-                     for block in (FIXTURES / f"{name}.csv").read_text().strip().split("\n\n")])
+                     for block in (FIXTURES / f"{name}.csv").read_text(encoding="utf-8").strip().split("\n\n")])
 
 
 @pytest.mark.parametrize("name", CASES)
@@ -70,7 +70,7 @@ def test_fixture_normalisation(name):
         assert b"\r" not in data
         assert data.endswith(b"\n") and not data.endswith(b"\n\n")
     if name == "coreabec":
-        assert (FIXTURES / f"{name}.cfg").read_text().startswith(
+        assert (FIXTURES / f"{name}.cfg").read_text(encoding="utf-8").startswith(
             "; Derived from ATH CORE (C) 2026 Marcel Batík, CC-BY-4.0, at-horns.eu/core.html\n")
 
 
@@ -349,7 +349,7 @@ def test_dictionary_zero_wall_clamp_is_reported(caplog):
     ('Source.Shape = 2\n', 'source_shape', 'source', 2, 'Source.Shape = 2'),
 ])
 def test_unprobed_lip_and_opus_combinations_refused_in_both_transports(name, extra, key, section, value, named):
-    text = (FIXTURES / f'{name}.cfg').read_text()
+    text = (FIXTURES / f'{name}.cfg').read_text(encoding="utf-8")
     # ATH V2026-09a m7_rot_in/m7_rot_both establish that OSSE.Rot is
     # ignored. Exercise active top-level Rot for the lip/Opus refusal.
     text += extra

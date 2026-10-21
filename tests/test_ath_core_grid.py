@@ -15,13 +15,13 @@ CORE_CASES = [f"f0_{kind}{suffix}" for kind in ("plain", "morph", "stretch", "bo
 
 def reference(name):
     return np.array([[[float(v) for v in row.split(";")] for row in block.splitlines()]
-                     for block in (FIXTURES / f"{name}.csv").read_text().strip().split("\n\n")])
+                     for block in (FIXTURES / f"{name}.csv").read_text(encoding="utf-8").strip().split("\n\n")])
 
 
 @pytest.mark.parametrize("name", CORE_CASES + ["sf1", "sf2", "sf3"])
 @pytest.mark.parametrize("quadrants", ["1", "1234"])
 def test_inner_grid_matches_ath(name, quadrants):
-    config = parse_text_config((FIXTURES / f"{name}.cfg").read_text())
+    config = parse_text_config((FIXTURES / f"{name}.cfg").read_text(encoding="utf-8"))
     config["mesh"]["quadrants"] = quadrants
     params = build_geometry_params(config)[0]
     actual = build_point_grid_arrays(params)["inner_grid"]
@@ -40,7 +40,7 @@ def test_fixture_normalisation(name):
         assert b"\r" not in data
         assert data.endswith(b"\n") and not data.endswith(b"\n\n")
     if name.startswith("f0_"):
-        assert (FIXTURES / f"{name}.cfg").read_text().startswith(
+        assert (FIXTURES / f"{name}.cfg").read_text(encoding="utf-8").startswith(
             "; Derived from ATH CORE (C) 2026 Marcel Batík, CC-BY-4.0, at-horns.eu/core.html\n")
 
 

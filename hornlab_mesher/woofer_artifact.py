@@ -83,7 +83,7 @@ def export_woofer(
             raise ValueError("native woofer export failed: " + run.stderr)
         (stage / "request.json").unlink()
         stage.rename(destination)
-    return json.loads((destination / "source.json").read_text())
+    return json.loads((destination / "source.json").read_text(encoding="utf-8"))
 
 
 def _worker(stage):
@@ -93,7 +93,7 @@ def _worker(stage):
     from .cad import _entity_closure, _prune_to
     from .step_mapping import advanced_face_order_for_surfaces
 
-    request = json.loads((stage / "request.json").read_text())
+    request = json.loads((stage / "request.json").read_text(encoding="utf-8"))
     contour = SourceContour.from_dict(request["contour"])
     drive = ContourDrive(**request["drive"])
     drive.validate(contour)
@@ -236,7 +236,7 @@ def _worker(stage):
             )
         step = stage / "geometry.step"
         gmsh.write(str(step))
-        step_text = step.read_text()
+        step_text = step.read_text(encoding="utf-8")
         step_text, n = re.subn(
             r"MANIFOLD_SOLID_BREP\('([^']*)',(#\d+)\)",
             r"SHELL_BASED_SURFACE_MODEL('\1',(\2))",

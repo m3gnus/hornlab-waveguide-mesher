@@ -82,7 +82,7 @@ def export_assembly(
             raise ValueError("native assembly export failed: " + run.stderr)
         (stage / "request.json").unlink()
         stage.rename(destination)
-    return json.loads((destination / "source.json").read_text())
+    return json.loads((destination / "source.json").read_text(encoding="utf-8"))
 
 
 def _worker(stage):
@@ -92,7 +92,7 @@ def _worker(stage):
     from .cad import _entity_closure, _prune_to
     from .step_mapping import advanced_face_order_for_surfaces
 
-    request = json.loads((stage / "request.json").read_text())
+    request = json.loads((stage / "request.json").read_text(encoding="utf-8"))
     assembly = SourceAssembly.from_dict(request["recipe"])
     drives = [ContourDrive(**d) for d in request["drives"]]
     channels = assembly_channels(assembly, drives)
@@ -275,7 +275,7 @@ def _worker(stage):
         step_text, count = re.subn(
             r"MANIFOLD_SOLID_BREP\('([^']*)',(#\d+)\)",
             r"SHELL_BASED_SURFACE_MODEL('\1',(\2))",
-            step.read_text(),
+            step.read_text(encoding="utf-8"),
         )
         if count != len(handles):
             raise ValueError("assembly must export its exact sewn shell inventory")
