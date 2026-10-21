@@ -23,6 +23,7 @@ from .geometry import (
     OsseHornGeometry,
     RosseHornGeometry,
 )
+from .freeform import freeform_insert_anchor, freeform_profile_curves
 from .source_body import StandaloneSourceGeometry
 from .cost import (
     SolveCostEstimate,
@@ -170,6 +171,8 @@ __all__ = [
     "graded_size_mm",
     "role_size_mm",
     "valid_f_max_hz",
+    "freeform_insert_anchor",
+    "freeform_profile_curves",
     "build_from_config",
     "build_geometry_params",
     "build_mesh",

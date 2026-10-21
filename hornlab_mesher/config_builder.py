@@ -2420,7 +2420,7 @@ def resolve_geometry(
         freeform_report = freeform_geometry.report()
         source_auto_angle_deg = _freeform_source_auto_angle_deg(freeform_report)
         slice_map = np.asarray(grid.get("slice_map"), dtype=np.float64)
-        z0 = float(params["profileH"]["points"][0][0])
+        z0 = float(freeform_geometry._profile_h.anchors[0, 0])
         analytic_z = z0 + slice_map * freeform_geometry.length_mm
         analytic_h, analytic_v = freeform_geometry.evaluate_radii(analytic_z)
         if mode == "infinite-baffle":

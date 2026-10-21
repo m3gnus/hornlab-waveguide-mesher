@@ -258,7 +258,7 @@ crossSections = [
 
 | Key | Default | Validation and meaning |
 | --- | --- | --- |
-| `points` | required | List of 2-64 anchors. A row is `[z, r]` or `[z, r, angleDeg]`; `z` and `r` are millimetres. Values must be finite, radii must be positive, and z values must be strictly increasing. A four-element row (the removed per-anchor `strength`) is refused. |
+| `points` | required | List of 2-64 anchors. A row is `[z, r]` or `[z, r, angleDeg]`, or an object as below; `z` and `r` are millimetres. Values must be finite, radii must be positive, and z values must be strictly increasing. A four-element row (the removed per-anchor `strength`) is refused. |
 | `throatAngleDeg` | top-level/profile `a0_deg` or `a0`, otherwise `15.5` | Endpoint tangent angle in degrees from the +z axis, in `[-90, 90]`. |
 | `mouthAngleDeg` | direction of the last anchor chord | Endpoint tangent angle in degrees from the +z axis, in `[-90, 90]`. |
 
@@ -270,6 +270,39 @@ An anchor-row `angleDeg` overrides the corresponding automatically derived
 tangent. Interior anchor angles must be strictly inside `(-90, 90)`; endpoint
 angles may equal either limit. An endpoint row with an explicit angle overrides
 its block-level angle.
+
+Object rows may be mixed with positional rows:
+
+```json
+{"z": 40, "r": 30, "join": "corner", "angleDeg": 20,
+ "angleOutDeg": 50, "handleIn": [-8, -3], "handleOut": [10, 12]}
+```
+
+Only `z`, `r`, `join`, `angleDeg`, `angleOutDeg`, `handleIn`, and `handleOut`
+are accepted; unknown keys are refused by name. `z` and `r` are required.
+`join` is `smooth` (default) or `corner`. Handles are finite `[dz, dr]` vectors
+in millimetres relative to the anchor. `handleIn` is forbidden on the first
+anchor, `handleOut` on the last. Two explicit smooth handles must be nonzero,
+collinear and opposite within `1e-9` radians. `angleOutDeg` is legal only at an
+interior corner, in `(-90, 90)` degrees.
+
+Explicit handles win on their own side. An endpoint's own `angleDeg` wins over
+its join; otherwise a corner follows the chord and ignores the block endpoint
+angle. At an interior corner `angleDeg` sets incoming and outgoing, with
+`angleOutDeg` overriding outgoing; a side without an angle uses its own chord
+at one-third length. Smooth automatic tangents retain the PCHIP model; with one explicit handle,
+the other side follows that handle's tangent line to retain a smooth join.
+Explicit handles are never shrunk; invalid spans name their plane, index and
+z range. Adjacent chord-default corners produce exact straight spans.
+
+Default smooth objects retain the legacy evaluation path. Non-default joins,
+outgoing angles or handles enable local cubic Béziers. Corner profiles can be
+queried with `freeform_profile_curves` and edited with `freeform_insert_anchor`,
+but grid, mesh and STEP building currently refuse them with
+`FREEFORM corner joins need the corner-wall builder (not yet available)`.
+Smooth profiles with handles build normally. See the FREEFORM joins subsection
+in [geometry-contract.md](geometry-contract.md) for the curve-query and exact
+insertion APIs.
 
 The two planes must have the same first and last z values (within `1e-9` mm)
 and equal first radii (within `1e-6` mm). The first anchor is the throat; use

@@ -378,6 +378,83 @@ whole span. This weight-aware active window prevents an absolute corner from
 binding an unrelated region where its contribution is negligible while still
 rejecting an impossible local corner.
 
+### FREEFORM joins, handles and curve editing
+
+Alongside `[z, r]` and `[z, r, angleDeg]`, each profile accepts object anchors;
+rows and objects may be mixed:
+
+```json
+{"z": 40, "r": 30, "join": "corner", "angleDeg": 20,
+ "angleOutDeg": 50, "handleIn": [-8, -3], "handleOut": [10, 12]}
+```
+
+`join` defaults to `smooth`. Unknown object keys are refused by name.
+`handleIn` and `handleOut` are Bézier vectors `[dz, dr]` in millimetres,
+relative to the anchor. Incoming handles are forbidden at the throat and
+outgoing handles at the mouth. `angleOutDeg` is allowed only at an interior
+corner. Endpoint angles lie in `[-90, 90]` degrees; interior angles lie in
+`(-90, 90)`. A smooth anchor's two explicit handles must be nonzero,
+collinear and opposite, within `1e-9` radians.
+
+When all anchors are equivalent to legacy rows (smooth joins, no outgoing
+angles or handles), the original Hermite builder and sampled inverse remain
+unchanged, including its floating-point results and report. Other profiles
+resolve to one cubic Bézier per adjacent pair of anchors. For span `i` the
+controls are `P_i`, `P_i + handleOut_i`, `P_(i+1) + handleIn_(i+1)`,
+`P_(i+1)`. Radius queries invert the monotone axial coordinate on each span.
+
+The precedence on each side is:
+
+1. An explicit handle fixes that side exactly.
+2. At an endpoint, the anchor's `angleDeg` wins; otherwise a corner follows
+   the endpoint chord and ignores the block endpoint angle; otherwise the
+   block `throatAngleDeg` or `mouthAngleDeg` applies.
+3. At an interior corner, `angleDeg` sets incoming and, unless overridden by
+   `angleOutDeg`, outgoing. Each side without an angle follows its own chord
+   with handle length one third of the chord.
+4. An interior smooth anchor uses its `angleDeg`, otherwise the existing
+   global chord-length PCHIP direction. If only one side has an explicit handle,
+   the opposite automatic side follows that tangent line to keep the join smooth. Automatic speeds use the existing
+   model, converted to handles by multiplying by the span's parameter length
+   and dividing by three.
+5. Only automatic handles can shrink to satisfy the forward-z, positive-radius
+   and adjacent-anchor overshoot guards (with the existing tolerance). Explicit
+   handles never shrink. An infeasible span is refused with plane, span index
+   and axial range.
+
+Facing chord-default corner sides place controls at chord thirds, giving an
+exactly straight span and radius linear in z. Extended reports add
+`straightSpans`, the per-plane indices of these spans.
+
+`freeform_insert_anchor(profile, *, z)` returns a new single-plane mapping.
+It resolves the current mathematical curve, splits strictly inside a span by
+de Casteljau, and stores explicit handles at the split and both neighbours.
+It also pins any other span whose controls change when automatic tangents are
+recomputed, repeating until stable. Thus the resolved curve survives insertion
+and JSON save/reload within `1e-9` mm. Existing anchors and positions outside
+the profile are refused. Legacy radius queries retain their historical sampled
+inverse; this editing operation preserves the resolved cubic, rather than the
+small numerical error of that inverse. A curve already using the allowed
+overshoot tolerance can become invalid when subdivision tightens the new
+span's relative tolerance. In that case insertion is refused with a
+`subdivided-span validation guards` diagnostic; the original is unchanged.
+
+`freeform_profile_curves(config_or_params, *, samples_per_span=64)` returns
+JSON data `{H, V, warnings}` without Gmsh or grid construction. Each plane has
+`anchors` (z/r, join, explicitIn/Out, resolved handleIn/Out, angleInDeg/OutDeg),
+`spans` (`straight` and four absolute `bezier` controls), ordered `[z, r]`
+`samples` including every anchor exactly, and `inflections` with the report's
+span fields. Absent endpoint sides are null. Each span contributes the requested
+number of samples including endpoints; shared anchors appear once.
+Legacy controls are the Hermite-to-Bézier conversion and legacy samples are
+computed on the original Hermite curve.
+
+Corner wall construction is reserved for the corner-wall builder. Any endpoint
+or interior corner is accepted by the geometry kernel and curve query, but
+entry into a grid, mesh or STEP build raises
+`FREEFORM corner joins need the corner-wall builder (not yet available)`.
+Smooth profiles with explicit handles use the existing grid and patch builders.
+
 ### FREEFORM sampling
 
 The base axial map is uniform or a user-supplied custom z-map. The sampler
@@ -428,8 +505,9 @@ default and retains it as a diagnostic. There is no `"allow"` policy.
   authoritative display curve.
 - `throatRadiusMm`: the shared H/V throat radius.
 - `tangentAnglesDeg`: resolved throat and mouth angles for H and V.
-- `anchorTangents`: every anchor as `z`, `r`, and its explicit `angleDeg` and
-  `strength` (the latter two are null when automatic).
+- `anchorTangents`: legacy anchors have `z`, `r`, explicit `angleDeg` (null
+  when automatic), and the solved `speedFactor`. Extended anchors include
+  their joins, resolved handles, side angles, and explicit-handle flags.
 - `inflectionSpans`: per-plane `zStartMm`, `zEndMm`, and `tangentDropDeg`.
 
 The report is carried into build metadata as `freeformReport`. Acoustic OCC

@@ -289,10 +289,11 @@ def _semantic_t_stations(
             rows = descriptor.get("points")
             if not isinstance(rows, list) or len(rows) < 2:
                 continue
-            z0 = float(rows[0][0])
-            length = float(rows[-1][0]) - z0
+            anchor_z = [float(row["z"] if isinstance(row, Mapping) else row[0]) for row in rows]
+            z0 = anchor_z[0]
+            length = anchor_z[-1] - z0
             if length > 0.0:
-                targets.extend((float(row[0]) - z0) / length for row in rows)
+                targets.extend((z - z0) / length for z in anchor_z)
         inserted.extend(["FREEFORM cross-section stations", "FREEFORM H/V anchors"])
         unavailable.remove("OSSE extension/slot boundaries when expression-valued")
 

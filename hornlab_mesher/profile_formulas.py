@@ -1465,7 +1465,7 @@ def profile_points(
         return icw_meridian_points(curve, t_values)
     if formula == "FREEFORM":
         geometry = build_freeform_geometry(params)
-        profile_h = params["profileH"]["points"]
+        profile_h = geometry._profile_h.anchors
         z = np.linspace(
             float(profile_h[0][0]),
             float(profile_h[-1][0]),

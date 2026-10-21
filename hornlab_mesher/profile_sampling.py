@@ -10,6 +10,7 @@ import numpy as np
 from .freeform import (
     FreeformGeometry,
     _validate_freeform_config,
+    _require_freeform_smooth_wall,
     active_rounded_rect_corner_radius_mm,
     validate_outer_offset_grid,
 )
@@ -1311,15 +1312,13 @@ def _freeform_merged_axial_map(
     params: Mapping[str, Any], geometry: FreeformGeometry, n_length: int
 ) -> tuple[np.ndarray, str]:
     base_t, sampling_mode = _axial_sample_map(n_length, params)
-    z0 = float(params["profileH"]["points"][0][0])
+    z0 = float(geometry._profile_h.anchors[0, 0])
     semantic_features = [
         (float(station["t"]), f"crossSections[{index}]")
         for index, station in enumerate(geometry.stations)
     ]
-    for profile_key in ("profileH", "profileV"):
-        anchor_z = np.asarray(
-            [row[0] for row in params[profile_key]["points"]], dtype=np.float64
-        )
+    for profile_key, plane in (("profileH", geometry._profile_h), ("profileV", geometry._profile_v)):
+        anchor_z = plane.anchors[:, 0]
         semantic_features.extend(
             (float(t), f"{profile_key}.points[{index}]")
             for index, t in enumerate((anchor_z - z0) / geometry.length_mm)
@@ -1385,8 +1384,9 @@ def _freeform_raw_radial_grid(
     list[list[float]] | None,
 ]:
     geometry = _validate_freeform_config(params)
+    _require_freeform_smooth_wall(geometry)
     t_values, sampling_mode = _freeform_merged_axial_map(params, geometry, n_length)
-    z0 = float(params["profileH"]["points"][0][0])
+    z0 = float(geometry._profile_h.anchors[0, 0])
     shared_z = z0 + t_values * geometry.length_mm
     radii_h, radii_v = geometry.evaluate_radii(shared_z)
 

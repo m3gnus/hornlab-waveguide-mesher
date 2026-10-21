@@ -6,7 +6,8 @@ C2), and both meridians share one axial ``z`` span.  The implementation follows
 ``https://github.com/m3gnus/waveguide-generator/blob/v1/docs/plans/260801-freeform-hv-spline-profiles.md``
 (especially sections 2.1, 2.2, 2.3, and 2.5).
 
-Profile anchors accept ``[z, r]`` or ``[z, r, angleDeg]``.  A per-anchor
+Profile anchors accept ``[z, r]``, ``[z, r, angleDeg]`` or objects with
+join, angle and local Bézier handle fields.  A per-anchor
 tangent angle takes precedence over the corresponding block-level endpoint
 angle; tangent speeds are solved automatically to preserve a valid meridian.
 
@@ -330,7 +331,7 @@ class FreeformGeometry:
         for plane_name, plane in (("H", self._profile_h), ("V", self._profile_v)):
             points = np.asarray(plane.spline(sample_u), dtype=float)
             curve_samples[plane_name] = [[float(z), float(r)] for z, r in points]
-        return {
+        result = {
             "maxNormalDeviationMm": deviations,
             "curveSamples": curve_samples,
             "throatRadiusMm": float(self._profile_h.anchors[0, 1]),
@@ -360,6 +361,11 @@ class FreeformGeometry:
                 for plane in ("H", "V")
             },
         }
+        if any(isinstance(p, _BezierPlane) for p in (self._profile_h, self._profile_v)):
+            result["straightSpans"] = {name: [i for i, c in enumerate(_plane_beziers(p))
+                                                    if _straight_bezier(c)]
+                                       for name, p in (("H", self._profile_h), ("V", self._profile_v))}
+        return result
 
     def surface_curvature_report(
         self, wall_thickness_mm: float, *, margin: float = 0.4
@@ -525,6 +531,15 @@ def _finite_float(value: Any, field: str) -> float:
 class _ParsedAnchors:
     points: np.ndarray
     angles_deg: np.ndarray
+    joins: tuple[str, ...] = ()
+    angles_out_deg: tuple[float | None, ...] = ()
+    handles_in: tuple[tuple[float, float] | None, ...] = ()
+    handles_out: tuple[tuple[float, float] | None, ...] = ()
+
+    @property
+    def extended(self) -> bool:
+        return ("corner" in self.joins or any(a is not None for a in self.angles_out_deg)
+                or any(h is not None for h in (*self.handles_in, *self.handles_out)))
 
 
 def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
@@ -551,7 +566,52 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
 
     anchors = np.empty((len(points), 2), dtype=float)
     angles_deg = np.full(len(points), np.nan, dtype=float)
+    joins = []
+    angles_out = []
+    handles_in = []
+    handles_out = []
     for index, row in enumerate(points):
+        label = f"profile{plane}.points[{index}]"
+        obj = row if isinstance(row, Mapping) else {}
+        unknown = set(obj) - {"z", "r", "join", "angleDeg", "angleOutDeg", "handleIn", "handleOut"}
+        if unknown:
+            raise ValueError(f"FREEFORM {label} has unknown key {sorted(unknown, key=str)[0]!r}")
+        join = obj.get("join", "smooth")
+        if join not in ("smooth", "corner"):
+            raise ValueError(f"FREEFORM {label}.join must be 'smooth' or 'corner'")
+        joins.append(join)
+        angle_out = None
+        if "angleOutDeg" in obj:
+            if join != "corner" or index in (0, len(points) - 1):
+                raise ValueError(f"FREEFORM {label}.angleOutDeg is only allowed on interior corners")
+            angle_out = _finite_float(obj["angleOutDeg"], f"{label}.angleOutDeg")
+            if not -90 < angle_out < 90:
+                raise ValueError(f"FREEFORM {label}.angleOutDeg must be in (-90, 90) degrees")
+        angles_out.append(angle_out)
+        for key, values, illegal in (("handleIn", handles_in, index == 0),
+                                     ("handleOut", handles_out, index == len(points) - 1)):
+            handle = None
+            if key in obj:
+                if illegal:
+                    raise ValueError(f"FREEFORM {label}.{key} is not allowed on this endpoint")
+                value = obj[key]
+                if not isinstance(value, (list, tuple, np.ndarray)) or np.shape(value) != (2,):
+                    raise ValueError(f"FREEFORM {label}.{key} must be a [dz, dr] vector")
+                handle = tuple(_finite_float(v, f"{label}.{key}") for v in value)
+            values.append(handle)
+        if join == "smooth" and handles_in[-1] is not None and handles_out[-1] is not None:
+            hi, ho = np.asarray(handles_in[-1]), np.asarray(handles_out[-1])
+            ni, no = np.linalg.norm(hi), np.linalg.norm(ho)
+            if ni == 0 or no == 0:
+                raise ValueError(f"FREEFORM {label} smooth handles must be nonzero, collinear and opposite")
+            hi, ho = hi / ni, ho / no
+            deviation = math.atan2(abs(float(hi[0]*ho[1]-hi[1]*ho[0])), -float(hi @ ho))
+            if deviation > 1e-9:
+                raise ValueError(f"FREEFORM {label} smooth handles must be collinear and opposite within 1e-9 rad")
+        if isinstance(row, Mapping):
+            if "z" not in row or "r" not in row:
+                raise ValueError(f"FREEFORM {label} requires z and r")
+            row = [row["z"], row["r"]] + ([row["angleDeg"]] if "angleDeg" in row else [])
         row_is_sequence = isinstance(row, (list, tuple, np.ndarray)) and not (
             isinstance(row, np.ndarray) and row.ndim == 0
         )
@@ -589,7 +649,8 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
         raise ValueError(
             f"FREEFORM profile{plane} anchor z values must be strictly increasing"
         )
-    return _ParsedAnchors(anchors, angles_deg)
+    return _ParsedAnchors(anchors, angles_deg, tuple(joins), tuple(angles_out),
+                          tuple(handles_in), tuple(handles_out))
 
 
 def _parse_endpoint_values(
@@ -627,7 +688,18 @@ def _parse_endpoint_values(
                 f"got {angle:g}"
             )
 
-    return throat_angle, mouth_angle
+    # Resolve new endpoint precedence for diagnostics as well as evaluation.
+    effective = [throat_angle, mouth_angle]
+    for side, index, handles, sign, chord in (
+        (0, 0, parsed.handles_out, 1, anchors[1] - anchors[0]),
+        (1, -1, parsed.handles_in, -1, anchors[-1] - anchors[-2]),
+    ):
+        if handles and handles[index] is not None:
+            vector = sign * np.asarray(handles[index])
+            effective[side] = math.degrees(math.atan2(vector[1], vector[0]))
+        elif parsed.joins and parsed.joins[index] == "corner" and not np.isfinite(parsed.angles_deg[index]):
+            effective[side] = math.degrees(math.atan2(chord[1], chord[0]))
+    return effective[0], effective[1]
 
 
 def _quadratic_roots(a: float, b: float, c: float) -> list[float]:
@@ -911,6 +983,347 @@ def _build_plane_spline(
     )
     _validate_plane_spline(plane)
     return plane
+
+
+@dataclass(frozen=True)
+class _BezierPlane(_PlaneSpline):
+    beziers: np.ndarray
+    joins: tuple[str, ...]
+    explicit_in: tuple[bool, ...]
+    explicit_out: tuple[bool, ...]
+    source_handles_in: tuple[tuple[float, float] | None, ...]
+    source_handles_out: tuple[tuple[float, float] | None, ...]
+
+    def radii_at_z(self, z: np.ndarray) -> np.ndarray:
+        query = np.asarray(z, dtype=float)
+        flat = query.reshape(-1)
+        indices = np.clip(np.searchsorted(self.anchors[:, 0], flat, side="right") - 1,
+                          0, len(self.beziers) - 1)
+        controls = self.beziers[indices]
+        parameters = _bezier_parameters_at_z(controls, flat)
+        values = _bezier_values(controls, parameters)[:, 1]
+        # Return saved anchors exactly, including at a span boundary.
+        for anchor in self.anchors:
+            values[flat == anchor[0]] = anchor[1]
+        return values.reshape(query.shape)
+
+
+def _bezier_values(controls: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """Vectorized de Casteljau evaluation, one control polygon per parameter."""
+    s = np.asarray(s)[..., None, None]
+    work = np.asarray(controls, dtype=float)
+    for _ in range(3):
+        work = (1 - s) * work[..., :-1, :] + s * work[..., 1:, :]
+    return work[..., 0, :]
+
+
+def _bezier_parameters_at_z(controls: np.ndarray, z: np.ndarray) -> np.ndarray:
+    lower = np.zeros_like(z, dtype=float)
+    upper = np.ones_like(z, dtype=float)
+    # Bisection remains well-conditioned for vertical endpoint tangents.
+    for _ in range(55):
+        midpoint = (lower + upper) / 2
+        below = _bezier_values(controls, midpoint)[..., 0] < z
+        lower = np.where(below, midpoint, lower)
+        upper = np.where(below, upper, midpoint)
+    return (lower + upper) / 2
+
+
+def _plane_beziers(plane: _PlaneSpline) -> np.ndarray:
+    if isinstance(plane, _BezierPlane):
+        return plane.beziers.copy()
+    intervals = np.diff(plane.anchor_u)[:, None]
+    derivatives = plane.spline.derivative()(plane.anchor_u)
+    return np.stack((plane.anchors[:-1],
+                     plane.anchors[:-1] + derivatives[:-1] * intervals / 3,
+                     plane.anchors[1:] - derivatives[1:] * intervals / 3,
+                     plane.anchors[1:]), axis=1)
+
+
+def _bezier_spline(controls: np.ndarray, anchor_u: np.ndarray) -> Any:
+    from scipy.interpolate import PPoly
+
+    p0, p1, p2, p3 = np.moveaxis(controls, 1, 0)
+    du = np.diff(anchor_u)[:, None]
+    coefficients = np.stack(((-p0 + 3*p1 - 3*p2 + p3) / du**3,
+                             3*(p0 - 2*p1 + p2) / du**2,
+                             3*(p1 - p0) / du, p0))
+    return PPoly(coefficients, anchor_u, axis=0)
+
+
+def _straight_bezier(controls: np.ndarray) -> bool:
+    chord = controls[3] - controls[0]
+    expected = controls[0] + np.arange(4)[:, None] * chord / 3
+    return bool(np.all(np.abs(controls - expected) <= 1e-12))
+
+
+def _resolve_plane(
+    name: str, parsed: _ParsedAnchors, throat_angle_deg: float, mouth_angle_deg: float,
+    *, force_extended: bool = False,
+) -> _PlaneSpline:
+    if not parsed.extended and not force_extended:
+        # Compatibility gate: same builder, arguments, object, and inversion.
+        return _build_plane_spline(name, parsed, throat_angle_deg, mouth_angle_deg)
+
+    from scipy.interpolate import PchipInterpolator
+
+    anchors = parsed.points
+    n = len(anchors)
+    joins = parsed.joins or ("smooth",) * n
+    handles_in = parsed.handles_in or (None,) * n
+    handles_out = parsed.handles_out or (None,) * n
+    angles_out = parsed.angles_out_deg or (None,) * n
+    chord = np.diff(anchors, axis=0)
+    lengths = np.linalg.norm(chord, axis=1)
+    anchor_u = np.r_[0., np.cumsum(lengths)] / np.sum(lengths)
+    derivatives = np.column_stack([
+        PchipInterpolator(anchor_u, anchors[:, axis]).derivative()(anchor_u)
+        for axis in (0, 1)
+    ])
+    speeds = np.linalg.norm(derivatives, axis=1)
+    directions = np.divide(derivatives, speeds[:, None], out=np.zeros_like(derivatives),
+                           where=speeds[:, None] > 0)
+    for index, angle in ((0, throat_angle_deg), (n-1, mouth_angle_deg)):
+        directions[index] = [math.cos(math.radians(angle)), math.sin(math.radians(angle))]
+    for index in np.flatnonzero(np.isfinite(parsed.angles_deg)):
+        angle = math.radians(float(parsed.angles_deg[index]))
+        directions[index] = [math.cos(angle), math.sin(angle)]
+
+    controls = np.empty((n - 1, 4, 2))
+    explicit = np.zeros((n - 1, 2), dtype=bool)
+    for span in range(n - 1):
+        controls[span, 0], controls[span, 3] = anchors[span:span+2]
+        for side, index, sign, given in ((0, span, 1, handles_out[span]),
+                                         (1, span+1, -1, handles_in[span+1])):
+            explicit[span, side] = given is not None
+            if given is not None:
+                handle = np.asarray(given)
+            else:
+                angle = parsed.angles_deg[index]
+                if side == 0 and 0 < index < n-1 and angles_out[index] is not None:
+                    angle = angles_out[index]
+                if joins[index] == "corner" and not np.isfinite(angle):
+                    handle = sign * chord[span] / 3
+                else:
+                    direction = directions[index]
+                    # A single fixed side also fixes a smooth anchor's tangent
+                    # line; the opposite automatic side retains its own speed.
+                    opposite = handles_in[index] if side == 0 else handles_out[index]
+                    if joins[index] == "smooth" and opposite is not None:
+                        vector = -np.asarray(opposite) if side == 0 else np.asarray(opposite)
+                        norm = np.linalg.norm(vector)
+                        if norm > 0:
+                            direction = vector / norm
+                    if joins[index] == "corner" and np.isfinite(angle):
+                        rad = math.radians(float(angle))
+                        direction = np.asarray([math.cos(rad), math.sin(rad)])
+                    handle = sign * direction * speeds[index] * np.diff(anchor_u)[span] / 3
+            controls[span, 1 if side == 0 else 2] = anchors[index] + handle
+
+    factors = np.ones((n-1, 2))
+    if not parsed.extended:
+        # Forced conversion is also useful for exact insertion into legacy curves.
+        legacy = _build_plane_spline(name, parsed, throat_angle_deg, mouth_angle_deg)
+        controls = _plane_beziers(legacy)
+        factors[:, 0], factors[:, 1] = legacy.speed_factors[:-1], legacy.speed_factors[1:]
+    else:
+        initial = controls.copy()
+        def span_controls(span: int, scale: float) -> np.ndarray:
+            trial = controls.copy()
+            for side, control, anchor in ((0, 1, 0), (1, 2, 3)):
+                if not explicit[span, side]:
+                    trial[span, control] = initial[span, anchor] + scale * (
+                        initial[span, control] - initial[span, anchor])
+            return trial
+
+        for span in range(n - 1):
+            def violations_at(trial: np.ndarray) -> list[_SplineViolation]:
+                return _plane_spline_violations(name, anchors,
+                    _bezier_spline(trial, anchor_u), [span])
+            failures = violations_at(controls)
+            if not failures:
+                continue
+            feasible = None
+            if not np.all(explicit[span]):
+                scale = .5
+                for _ in range(48):
+                    if not violations_at(span_controls(span, scale)):
+                        feasible = scale
+                        break
+                    scale *= .5
+            if feasible is None:
+                z0, z1 = anchors[span:span+2, 0]
+                raise ValueError(f"FREEFORM profile{name} span {span} z=[{z0:g}, {z1:g}] mm: "
+                                 + failures[0].message)
+            lower, upper = feasible, min(1., 2 * feasible)
+            for _ in range(32):
+                middle = (lower + upper) / 2
+                if violations_at(span_controls(span, middle)):
+                    upper = middle
+                else:
+                    lower = middle
+            controls = span_controls(span, lower)
+            factors[span, ~explicit[span]] = lower
+
+    spline = _bezier_spline(controls, anchor_u)
+    inverse_u = np.unique(np.r_[np.linspace(0, 1, _INVERSION_SAMPLE_N), anchor_u])
+    endpoint_angles = []
+    endpoint_vectors = (
+        np.asarray(handles_out[0]) if handles_out[0] is not None else controls[0, 1] - controls[0, 0],
+        -np.asarray(handles_in[-1]) if handles_in[-1] is not None else controls[-1, 3] - controls[-1, 2],
+    )
+    for vector in endpoint_vectors:
+        endpoint_angles.append(math.degrees(math.atan2(vector[1], vector[0])))
+    plane = _BezierPlane(
+        name, anchors.copy(), anchor_u, spline, spline(inverse_u)[:, 0], inverse_u,
+        *endpoint_angles, parsed.angles_deg.copy(),
+        np.r_[factors[:, 0], factors[-1, 1]], controls, joins,
+        tuple(h is not None for h in handles_in), tuple(h is not None for h in handles_out),
+        tuple(handles_in), tuple(handles_out),
+    )
+    _validate_plane_spline(plane)
+    plane.beziers.setflags(write=False)
+    return plane
+
+
+def freeform_insert_anchor(profile: Mapping[str, Any], *, z: float) -> dict:
+    """Split the resolved curve at z and pin any automatic spans that move."""
+    if not isinstance(profile, Mapping):
+        raise ValueError("FREEFORM profile must be a mapping")
+    parsed = _parse_anchors(profile, "H")
+    endpoints = _parse_endpoint_values(profile, parsed, "H", 15.5)
+    original = _resolve_plane("H", parsed, *endpoints, force_extended=True)
+    z = _finite_float(z, "insert z")
+    if z <= parsed.points[0, 0] or z >= parsed.points[-1, 0] or np.any(parsed.points[:, 0] == z):
+        raise ValueError("FREEFORM insert z must be strictly inside a span, not on an anchor")
+    if len(parsed.points) == 64:
+        raise ValueError("FREEFORM insertion would exceed 64 anchors")
+    span = int(np.searchsorted(parsed.points[:, 0], z) - 1)
+    controls = _plane_beziers(original)
+    s = float(_bezier_parameters_at_z(controls[span:span+1], np.asarray([z]))[0])
+    p0, p1, p2, p3 = controls[span]
+    q0, q1, q2 = (1-s)*controls[span, :-1] + s*controls[span, 1:]
+    r0, r1 = (1-s)*np.asarray([q0, q1]) + s*np.asarray([q1, q2])
+    point = (1-s)*r0 + s*r1
+    point[0] = z
+    target = np.concatenate((controls[:span], [[p0, q0, r0, point],
+                                              [point, r1, q2, p3]], controls[span+1:]))
+    outgoing = np.asarray([parsed.handles_out[i] if parsed.handles_out[i] is not None
+                           else c[1] - c[0] for i, c in enumerate(controls)])
+    incoming = np.asarray([parsed.handles_in[i+1] if parsed.handles_in[i+1] is not None
+                           else c[2] - c[3] for i, c in enumerate(controls)])
+    # Derive split vectors algebraically. Subtracting nearby absolute control
+    # points loses tangent direction when an insertion approaches an anchor.
+    tangent = r1 - r0
+    target_out = np.concatenate((outgoing[:span], [s*outgoing[span], (1-s)*tangent], outgoing[span+1:]))
+    target_in = np.concatenate((incoming[:span], [-s*tangent, (1-s)*incoming[span]], incoming[span+1:]))
+    result = copy.deepcopy(dict(profile))
+    rows = []
+    for row in profile["points"]:
+        rows.append(copy.deepcopy(dict(row)) if isinstance(row, Mapping) else
+                    {"z": float(row[0]), "r": float(row[1]),
+                     **({"angleDeg": float(row[2])} if len(row) == 3 else {})})
+    rows.insert(span+1, {"z": float(z), "r": float(point[1]), "join": "smooth"})
+    result["points"] = rows
+
+    def pin(index: int) -> None:
+        rows[index]["handleOut"] = target_out[index].tolist()
+        rows[index+1]["handleIn"] = target_in[index].tolist()
+
+    pin(span)
+    pin(span+1)
+    # Each pass pins at least one previously automatic span; finite termination.
+    for _ in range(len(target) + 1):
+        updated = _parse_anchors(result, "H")
+        endpoints = _parse_endpoint_values(result, updated, "H", 15.5)
+        try:
+            current = _resolve_plane("H", updated, *endpoints)
+        except ValueError:
+            # Refitting automatic neighbours can itself become infeasible before
+            # their controls can be compared. Pin their original controls first.
+            for index in range(len(target)):
+                pin(index)
+            updated = _parse_anchors(result, "H")
+            try:
+                current = _resolve_plane("H", updated, *endpoints)
+            except ValueError as exc:
+                raise ValueError(
+                    "FREEFORM exact insertion cannot preserve this curve under the "
+                    "subdivided-span validation guards: " + str(exc)
+                ) from exc
+        changed = np.flatnonzero(np.max(np.abs(_plane_beziers(current) - target), axis=(1, 2)) > 1e-12)
+        if not len(changed):
+            return result
+        for index in changed:
+            pin(int(index))
+    raise ValueError("FREEFORM exact insertion failed to stabilize")
+
+
+def _resolved_anchor_report(plane: _PlaneSpline) -> list[dict[str, Any]]:
+    controls = _plane_beziers(plane)
+    anchors = []
+    for index, anchor in enumerate(plane.anchors):
+        hi = controls[index-1, 2] - anchor if index else None
+        ho = controls[index, 1] - anchor if index < len(controls) else None
+        if isinstance(plane, _BezierPlane):
+            if plane.source_handles_in[index] is not None:
+                hi = np.asarray(plane.source_handles_in[index])
+            if plane.source_handles_out[index] is not None:
+                ho = np.asarray(plane.source_handles_out[index])
+        def angle(handle: np.ndarray | None, sign: int) -> float | None:
+            return None if handle is None else math.degrees(math.atan2(sign*handle[1], sign*handle[0]))
+        anchors.append({"z": float(anchor[0]), "r": float(anchor[1]),
+            "join": plane.joins[index] if isinstance(plane, _BezierPlane) else "smooth",
+            "explicitIn": plane.explicit_in[index] if isinstance(plane, _BezierPlane) else False,
+            "explicitOut": plane.explicit_out[index] if isinstance(plane, _BezierPlane) else False,
+            "handleIn": hi.tolist() if hi is not None else None,
+            "handleOut": ho.tolist() if ho is not None else None,
+            "angleInDeg": angle(hi, -1), "angleOutDeg": angle(ho, 1)})
+    return anchors
+
+
+def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_span: int = 64) -> dict:
+    """Return JSON curve data without importing Gmsh or constructing a grid."""
+    if isinstance(samples_per_span, bool) or not isinstance(samples_per_span, (int, np.integer)) or samples_per_span < 2:
+        raise ValueError("FREEFORM samples_per_span must be an integer >= 2")
+    if not isinstance(config_or_params, Mapping):
+        raise ValueError("FREEFORM params must be a mapping")
+    params = dict(config_or_params)
+    if isinstance(params.get("profile"), Mapping):
+        params.update(params.pop("profile"))
+        if "a0_deg" in params:
+            params["a0"] = params["a0_deg"]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
+        geometry = build_freeform_geometry(params)
+    result = {"warnings": [str(w.message) for w in caught]}
+    for name, plane in (("H", geometry._profile_h), ("V", geometry._profile_v)):
+        controls = _plane_beziers(plane)
+        anchors = _resolved_anchor_report(plane)
+        samples = []
+        for index in range(len(controls)):
+            # Legacy samples evaluate the original Hermite, without swapping its evaluator.
+            u = np.linspace(plane.anchor_u[index], plane.anchor_u[index+1], samples_per_span)
+            points = np.asarray(plane.spline(u))
+            points[0], points[-1] = plane.anchors[index:index+2]
+            samples.extend(points[int(index > 0):].tolist())
+        inflections = [{"zStartMm": s.z_start_mm, "zEndMm": s.z_end_mm,
+                        "tangentDropDeg": s.tangent_drop_deg}
+                       for s in geometry._inflection_spans[name]]
+        result[name] = {"anchors": anchors,
+                        "spans": [{"straight": _straight_bezier(c), "bezier": c.tolist()} for c in controls],
+                        "samples": samples, "inflections": inflections}
+        for inflection in inflections:
+            result["warnings"].append(f"FREEFORM profile{name} inflection spans "
+                f"z={inflection['zStartMm']:.3f}..{inflection['zEndMm']:.3f} mm with a "
+                f"{inflection['tangentDropDeg']:.2f} deg tangent-angle drop")
+    return result
+
+
+def _require_freeform_smooth_wall(geometry: FreeformGeometry) -> None:
+    if any(isinstance(plane, _BezierPlane) and "corner" in plane.joins
+           for plane in (geometry._profile_h, geometry._profile_v)):
+        raise ValueError("FREEFORM corner joins need the corner-wall builder (not yet available)")
 
 
 def _normalise_stations(value: Any) -> list[dict[str, Any]]:
@@ -1699,7 +2112,9 @@ def _max_normal_deviation(plane: _PlaneSpline) -> float:
     return maximum
 
 
-def _anchor_tangent_report(plane: _PlaneSpline) -> list[dict[str, float | None]]:
+def _anchor_tangent_report(plane: _PlaneSpline) -> list[dict[str, Any]]:
+    if isinstance(plane, _BezierPlane):
+        return _resolved_anchor_report(plane)
     return [
         {
             "z": float(anchor[0]),
@@ -1837,8 +2252,8 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         _FREEFORM_GEOMETRY_CACHE.move_to_end(key)
         return cached
 
-    plane_h = _build_plane_spline("H", parsed_h, *endpoint_h)
-    plane_v = _build_plane_spline("V", parsed_v, *endpoint_v)
+    plane_h = _resolve_plane("H", parsed_h, *endpoint_h)
+    plane_v = _resolve_plane("V", parsed_v, *endpoint_v)
     inflection_spans = {
         "H": _significant_inflection_spans(plane_h),
         "V": _significant_inflection_spans(plane_v),
