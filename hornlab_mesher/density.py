@@ -1465,6 +1465,17 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         size = float(patch["resolution_mm"])
         role = patch["density_role"]
         add_field(f"{size:.12g}", mesh_groups[role], curve_groups.get(role, []))
+        # Bound circular rim/join chord error locally. A model-wide circle
+        # minimum also refines the enclosure roundovers and overrides its size.
+        for curve in curve_groups.get(role, []):
+            if gmsh.model.getType(1, curve) not in {"Circle", "Ellipse"}:
+                continue
+            lo, hi = gmsh.model.getParametrizationBounds(1, curve)
+            curvature = float(gmsh.model.getCurvature(1, curve, [(lo[0]+hi[0])/2])[0])
+            if curvature > 0:
+                rim_size = min(size, math.sqrt(8*.025/curvature))
+                add_field(f"{rim_size:.12g}", [], [curve])
+                woofer_sizes.append(rim_size)
         woofer_sizes.append(size)
 
     corner_sizes = []

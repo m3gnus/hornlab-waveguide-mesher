@@ -158,7 +158,7 @@ def test_incompatible_half_refused(tmp_path, quadrants):
 
 @pytest.mark.parametrize('change,message', [
     ({'radius_mm':-1}, 'radius_mm must be positive'),
-    ({'x_mm':float('nan')}, 'must be finite'),
+    ({'x_mm':float('nan')}, 'finite'),
     ({'shape':{'kind':'piston','recess_mm':-1}}, 'recess must be nonnegative'),
     ({'shape':{'kind':'piston','recess_mm':.001}}, 'at least 0.01 mm'),
     ({'shape':{'kind':'mystery'}}, 'shape kind'),
@@ -329,3 +329,82 @@ def test_asymmetric_horn_half_refused(tmp_path):
     config['profile']['a_deg'] = '60+5*cos(p)'
     with pytest.raises((ValueError,MesherError),match='horn symmetric'):
         build_from_config(config,tmp_path/'asymmetric.msh')
+
+
+@pytest.mark.parametrize('shape', ['piston', 'ath_cone'])
+def test_woofer_density_preserves_enclosure_roundovers(tmp_path, monkeypatch, shape):
+    # Review probe: identical OSSE enclosure, 18 mm edges, radii 35 and 25.
+    # Count actual edge-face elements before horn-only export folds CAD tags.
+    import gmsh
+    from hornlab_mesher import mesher
+    configure = mesher.configure_density
+    generate = gmsh.model.mesh.generate
+    edge_faces, realized = {}, {}
+
+    def capture(built, density):
+        edge_faces.clear()
+        for role in ('enclosure_edges_front', 'enclosure_edges_back'):
+            edge_faces[role] = list(built.mesh_surface_groups[role])
+        configure(built, density)
+
+    def measure(dim):
+        generate(dim)
+        realized.clear()
+        for role, faces in edge_faces.items():
+            realized[role] = sum(len(gmsh.model.mesh.getElementsByType(2, face)[0])
+                                 for face in faces)
+
+    monkeypatch.setattr(mesher, 'configure_density', capture)
+    monkeypatch.setattr(gmsh.model.mesh, 'generate', measure)
+    config = assembly_config(shape=shape)
+    without = copy.deepcopy(config)
+    without['enclosure'].pop('woofers')
+    counts = []
+    for name, recipe in [('horn-only', without), ('woofers', config)]:
+        result = build_from_config(recipe, tmp_path/(name+'.msh'))
+        counts.append(dict(realized))
+        assert all(counts[-1].values())
+        print(name, result.n_triangles, counts[-1])
+    # Fragmentation can change the neighboring front-panel triangulation.
+    # Edge-face triangle differences must stay within the added diaphragm
+    # contribution and 2% of the original edges.
+    _, _, _, tags, _ = arrays(result)
+    woofer_triangles = int(np.isin(tags, [tag for key, tag in result.metadata['source_tags'].items()
+                                         if key != 'horn-throat']).sum())
+    for role, count in counts[0].items():
+        assert abs(counts[1][role]-count) <= min(woofer_triangles, .02*count)
+
+
+@pytest.mark.parametrize('change', [
+    {'shape': None}, {'shape': {}}, {'shape': {'kind': 'piston', 'label': 'LF'}},
+    {'label': 'LF'}, {'enabled': True}, {'placement': {}},
+])
+def test_malformed_woofer_config_raises_value_error(change):
+    from hornlab_mesher.enclosure_woofers import woofer_from_config
+    row = assembly_config()['enclosure']['woofers'][0]
+    row.update(change)
+    with pytest.raises(ValueError):
+        woofer_from_config(row)
+
+
+def test_missing_woofer_shape_raises_value_error():
+    from hornlab_mesher.enclosure_woofers import woofer_from_config
+    row = assembly_config()['enclosure']['woofers'][0]
+    row.pop('shape')
+    with pytest.raises(ValueError):
+        woofer_from_config(row)
+
+
+def test_certificate_uses_authored_contour(tmp_path, monkeypatch):
+    from hornlab_mesher import enclosure_woofers
+    from hornlab_mesher.source_contour import cone
+
+    def authored(w):
+        contour = cone(w.radius_mm, .3*w.radius_mm, cap_radius_mm=.4*w.radius_mm,
+                       cap_height_mm=.1*w.radius_mm, physical_source_id=w.radiator_id, rim_id='rim')
+        return replace(contour, segments=(replace(contour.segments[0], id='cap'), contour.segments[1]))
+
+    monkeypatch.setattr(enclosure_woofers, 'ath_contour', authored)
+    result = build_from_config(assembly_config(shape='ath_cone'), tmp_path/'authored.msh')
+    _, points, triangles, tags, surfaces = arrays(result)
+    certify_arrays(points, triangles, tags, surfaces, result.metadata['assembly'])

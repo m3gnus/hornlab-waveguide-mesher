@@ -6,27 +6,20 @@ The ordinary enclosure builder remains the only owner of the box and baffle.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Literal
 
 import numpy as np
 
-from .source_contour import ContourPoint, ContourSegment, SourceContour
+from .source_body import _number
+from .source_contour import SourceContour, cone
 
 NAMESPACE = "wg-assembly-v1"
 CLEARANCE_MM = 0.1
 ATH_JOIN_RADIUS = 0.35
 ATH_JOIN_DEPTH = 0.4
 ATH_SPHERE_RADIUS = 0.525
-ATH_SPHERE_CENTER_Z = -ATH_JOIN_DEPTH - math.sqrt(ATH_SPHERE_RADIUS**2 - ATH_JOIN_RADIUS**2)
-
-
-def _number(value, name, *, positive=False):
-    if type(value) not in (float, int) or not math.isfinite(value):
-        raise ValueError(f"woofer {name} must be finite")
-    if positive and value <= 0:
-        raise ValueError(f"woofer {name} must be positive")
 
 
 @dataclass(frozen=True)
@@ -37,7 +30,7 @@ class PistonShape:
     def __post_init__(self):
         if self.kind != "piston":
             raise ValueError("invalid piston kind")
-        _number(self.recess_mm, "recess")
+        _number(self.recess_mm, "woofer recess")
         if self.recess_mm < 0:
             raise ValueError("woofer recess must be nonnegative")
         if 0 < self.recess_mm < .01:
@@ -70,40 +63,43 @@ class EnclosureWoofer:
                 or not self.radiator_id.isprintable() or self.radiator_id == "horn-throat"):
             raise ValueError("woofer radiator_id must be a nonempty trimmed identity without '/' and not horn-throat")
         for name in ("x_mm", "y_mm", "radius_mm"):
-            _number(getattr(self, name), name, positive=name == "radius_mm")
+            _number(getattr(self, name), "woofer " + name)
+        if self.radius_mm <= 0:
+            raise ValueError("woofer radius_mm must be positive")
         if not isinstance(self.shape, (PistonShape, AthConeShape)):
             raise ValueError("woofer shape must be piston or ath_cone")
         if type(self.active) is not bool:
             raise ValueError("woofer active must be boolean")
         if self.resolution_mm is not None:
-            _number(self.resolution_mm, "resolution_mm", positive=True)
+            _number(self.resolution_mm, "woofer resolution_mm")
+            if self.resolution_mm <= 0:
+                raise ValueError("woofer resolution_mm must be positive")
 
 
 def woofer_from_config(row):
-    values = dict(row)
-    shape = dict(values.pop("shape"))
-    kind = shape.pop("kind")
-    if kind == "piston":
-        resolved = PistonShape(**shape)
-    elif kind == "ath_cone":
-        resolved = AthConeShape(**shape)
-    else:
-        raise ValueError("woofer shape kind must be piston or ath_cone")
-    return EnclosureWoofer(**values, shape=resolved)
+    try:
+        values = dict(row)
+        shape = dict(values.pop("shape"))
+        kind = shape.pop("kind")
+        if kind == "piston":
+            resolved = PistonShape(**shape)
+        elif kind == "ath_cone":
+            resolved = AthConeShape(**shape)
+        else:
+            raise ValueError("woofer shape kind must be piston or ath_cone")
+        return EnclosureWoofer(**values, shape=resolved)
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"invalid woofer configuration: {exc}") from exc
 
 
 def ath_contour(w):
     """ATH's scale-invariant meridian; sphere R=.525r, centre=-.791311896r."""
     r = w.radius_mm
-    center = ATH_SPHERE_CENTER_Z * r
-    return SourceContour(w.radiator_id, "rim", (
-        ContourPoint("pole", 0, center + ATH_SPHERE_RADIUS*r),
-        ContourPoint("join", ATH_JOIN_RADIUS*r, -ATH_JOIN_DEPTH*r),
-        ContourPoint("rim", r, 0),
-    ), (
-        ContourSegment("cap", "pole", "join", kind="arc", center_mm=(0, center), direction="cw"),
-        ContourSegment("cone", "join", "rim"),
-    ))
+    cap_height = (ATH_SPHERE_RADIUS - math.sqrt(ATH_SPHERE_RADIUS**2 - ATH_JOIN_RADIUS**2))*r
+    contour = cone(r, ATH_JOIN_DEPTH*r, cap_radius_mm=ATH_JOIN_RADIUS*r,
+                   cap_height_mm=cap_height, physical_source_id=w.radiator_id, rim_id="rim")
+    # Preserve the assembly's existing public patch identity.
+    return replace(contour, segments=(replace(contour.segments[0], id="cap"), contour.segments[1]))
 
 
 def _on_x_cut(gmsh, dim, tag):
@@ -223,11 +219,14 @@ def cut_woofers(built, geometry):
     tag_map = {"1": {"source_id": None, "instance_id": None, "role": "rigid"},
                "2": {"source_id": "horn-throat", "instance_id": None, "role": "primary"}}
     records = []
+    contours = {}
     names = {1: NAMESPACE+"|rigid", 2: NAMESPACE+"|tag=2|source_id=horn-throat|instance_id=null|role=primary"}
     for w, top in zip(woofers, patches):
         collar = set()
         if isinstance(w.shape, AthConeShape):
-            _, diaphragm = revolve_contour(occ, ath_contour(w), (w.x_mm, w.y_mm, z), half_x=half)
+            contour = ath_contour(w)
+            contours[w.radiator_id] = contour.to_dict()
+            _, diaphragm = revolve_contour(occ, contour, (w.x_mm, w.y_mm, z), half_x=half)
             segments = {s: {t} for s, t in diaphragm.items()}
             occ.remove([(2, t) for t in top], recursive=False)
         elif w.shape.recess_mm:
@@ -278,7 +277,7 @@ def cut_woofers(built, geometry):
             built.mesh_surface_groups[role] = sorted(faces)
             size = w.resolution_mm or 10.0
             if segment == "cap":
-                size = min(size, math.sqrt(8*ATH_SPHERE_RADIUS*w.radius_mm*.025))
+                size = min(size, math.sqrt(8*contour.arc(0)[0]*.025))
             records.append({"patch_id": patch_id, "radiator_id": w.radiator_id,
                             "segment_id": segment, "role": "secondary" if w.active else "rigid",
                             "physical_tag": physical, "surface_tags": sorted(faces),
@@ -296,11 +295,8 @@ def cut_woofers(built, geometry):
     _remap_groups(built.mesh_surface_groups, remap)
     for record in records:
         record["surface_tags"] = sorted({new for old in record["surface_tags"] for new in remap[old]})
-    max_radius = max(w.radius_mm for w in woofers)
-    circle_points = max(16, math.ceil(math.pi/math.acos(1-min(.025/max_radius, 1.0))))
-    gmsh.option.setNumber("Mesh.MinimumCirclePoints", circle_points)
     built.metadata.update(source_tags=sources, tag_map=tag_map, tag_namespace=NAMESPACE,
-                          rigid_tag=1, assembly={"patches": records,
+                          rigid_tag=1, assembly={"patches": records, "contours": contours,
                               "face_tags": {str(k): v for k, v in built.surface_groups.items()},
                               "half_x": half,
                               "coordinate_frame": "horn-throat-pre-placement-mm",
@@ -354,15 +350,25 @@ def certify_arrays(points, triangles, physical, surfaces, assembly):
         if segment == "piston":
             residual = abs(local[:, :, 2]+patch["recess_mm"])
             expected[:, 2] = 1
-        elif segment == "cone":
-            residual = abs(local[:, :, 2]-(radial-r)*ATH_JOIN_DEPTH/(1-ATH_JOIN_RADIUS))
-            expected[:, :2] = -local[:, :, :2].mean(axis=1)
-            expected[:, 2] = np.linalg.norm(expected[:, :2], axis=1)*(1-ATH_JOIN_RADIUS)/ATH_JOIN_DEPTH
         else:
-            relative = local.copy()
-            relative[:, :, 2] -= ATH_SPHERE_CENTER_Z*r
-            residual = abs(np.linalg.norm(relative, axis=2)-ATH_SPHERE_RADIUS*r)
-            expected = relative.mean(axis=1)
+            contour = SourceContour.from_dict(assembly["contours"][patch["radiator_id"]])
+            index = next(i for i, s in enumerate(contour.segments) if s.id == segment)
+            authored = contour.segments[index]
+            if authored.kind == "line":
+                a, b = contour.points[index:index+2]
+                slope = (b.z_mm-a.z_mm)/(b.r_mm-a.r_mm)
+                residual = abs(local[:, :, 2] - (a.z_mm + (radial-a.r_mm)*slope))
+                expected[:, :2] = -local[:, :, :2].mean(axis=1)*slope
+                expected[:, 2] = np.linalg.norm(local[:, :, :2].mean(axis=1), axis=1)
+            else:
+                radius, _, _ = contour.arc(index)
+                cr, cz = authored.center_mm
+                relative = np.stack((radial-cr, local[:, :, 2]-cz), axis=2)
+                residual = abs(np.linalg.norm(relative, axis=2)-radius)
+                radial_unit = np.divide(local[:, :, :2], radial[:, :, None],
+                                        out=np.zeros_like(local[:, :, :2]), where=radial[:, :, None] > 0)
+                expected[:, :2] = (radial_unit*(radial-cr)[:, :, None]).mean(axis=1)
+                expected[:, 2] = (local[:, :, 2]-cz).mean(axis=1)
         if np.max(residual) > 1e-5 or np.any(radial > r+1e-5):
             raise ValueError(f"assembly patch {patch['patch_id']} deviates from declared geometry")
         if np.any(np.einsum("ij,ij->i", normals[selected], expected) <= 0):

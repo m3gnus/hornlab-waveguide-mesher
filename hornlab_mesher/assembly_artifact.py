@@ -16,6 +16,7 @@ from .phase_plug import passage_contract, rigid_edges, surface_targets, wall_edg
 from .source_assembly import FEATURE, SourceAssembly, assembly_channels
 from .source_contour import FEATURE as CONTOUR_FEATURE
 from .source_contour import ContourDrive, canonical, digest
+from .source_contour_occ import revolve_contour
 
 
 def export_assembly(
@@ -106,33 +107,14 @@ def _worker(stage):
         plug_faces = []
         for contour, origin, band in assembly.parts:
             cx, cy, cz = origin
-            points = {
-                p.id: occ.addPoint(cx + p.r_mm, cy, cz + p.z_mm) for p in contour.points
-            }
+            points, faces = revolve_contour(occ, contour, origin)
             chain = []
             for identifier, c, i, _, _ in assembly.patches:
                 if c is not contour:
                     continue
-                s = c.segments[i]
-                a, b = points[s.start], points[s.end]
-                if s.kind == "line":
-                    edge = occ.addLine(a, b)
-                else:
-                    r, z = c.evaluate(i, 0.5)
-                    edge = occ.addCircleArc(
-                        a, occ.addPoint(cx + r, cy, cz + z), b, center=False
-                    )
-                faces = [
-                    t
-                    for dim, t in occ.revolve(
-                        [(1, edge)], cx, cy, cz, 0, 0, 1, 2 * math.pi
-                    )
-                    if dim == 2
-                ]
-                if len(faces) != 1:
-                    raise ValueError("each canonical patch must revolve into one face")
-                patch_faces[identifier] = faces[0]
-                chain.append(faces[0])
+                face = faces[c.segments[i].id]
+                patch_faces[identifier] = face
+                chain.append(face)
             if band == "HF":
                 role, r, z = "horn-wall", assembly.mouth_radius_mm, assembly.front_z_mm
             else:
