@@ -91,6 +91,8 @@ def test_hermite_bezier_same_mathematical_curve(profile):
         expected = legacy.spline(legacy.anchor_u[index] + s*np.diff(legacy.anchor_u)[index])
         np.testing.assert_allclose(actual, expected, rtol=0, atol=1e-9)
         np.testing.assert_allclose(bezier.radii_at_z(expected[:, 0]), expected[:, 1], rtol=0, atol=1e-9)
+        np.testing.assert_allclose(legacy.radii_at_z(expected[:, 0]),
+                                   bezier.radii_at_z(expected[:, 0]), rtol=0, atol=1e-4)  # legacy inverse-table error, measured <= 5.0e-5 mm
 
 
 def test_corner_straight_spans_including_endpoints():
@@ -169,7 +171,6 @@ def test_object_validation_refusals(index, changes, match):
 @pytest.mark.parametrize("outgoing,incoming,match", [
     ([100, 0], [100, 0], "folds backward"),
     ([10, -80], [-10, -80], "non-positive radius"),
-    ([10, 100], [-10, 100], "overshoots"),
 ])
 def test_explicit_invalid_span_names_plane_index_and_z_range(outgoing, incoming, match):
     p = {"points": [{"z": 0, "r": 12.7, "handleOut": outgoing},
@@ -184,6 +185,49 @@ def test_only_automatic_handle_shrinks():
     plane = resolved(p)
     assert (plane.beziers[0, 1] - plane.beziers[0, 0]).tolist() == [5, pytest.approx(.01)]
     assert plane.speed_factors[-1] < 1
+
+
+def test_both_explicit_handles_allow_radius_overshoot():
+    p = {"points": [{"z": 0, "r": 12.7, "handleOut": [10, 100]},
+                    {"z": 40, "r": 30, "handleIn": [-10, 100]}]}
+    plane = resolved(p)
+    assert plane.radii_at_z(np.asarray(20)) > 30
+    q = freeform_profile_curves(params(p))["H"]
+    assert q["anchors"][0]["handleOut"] == [10, 100]
+    assert q["anchors"][1]["handleIn"] == [-10, 100]
+
+
+@pytest.mark.parametrize("explicit_side", ["out", "in"])
+def test_mixed_handles_warn_when_only_overshoot_remains_at_minimum(explicit_side):
+    points = [{"z": 0, "r": 20}, {"z": 40, "r": 20}]
+    points[0 if explicit_side == "out" else 1][
+        "handleOut" if explicit_side == "out" else "handleIn"] = [
+            10 if explicit_side == "out" else -10, 100]
+    p = {"points": points, "throatAngleDeg": 0, "mouthAngleDeg": 0}
+    geometry = build_freeform_geometry(params(p))
+    query = freeform_profile_curves(params(p))
+    messages = geometry.report()["warnings"]
+    assert len(messages) == 2
+    for name, message in zip(("H", "V"), messages):
+        assert f"profile{name} span 0 z=[0, 40]" in message
+        assert "minimum" in message and "overshoots" in message
+        assert message in query["warnings"]
+    anchors = query["H"]["anchors"]
+    assert anchors[0 if explicit_side == "out" else 1][
+        "handleOut" if explicit_side == "out" else "handleIn"] == [
+            10 if explicit_side == "out" else -10, 100]
+    automatic = anchors[1 if explicit_side == "out" else 0][
+        "handleIn" if explicit_side == "out" else "handleOut"]
+    assert np.linalg.norm(automatic) < 1e-12
+
+
+@pytest.mark.parametrize("handle,match", [([-100, 0], "folds backward"),
+                                        ([10, -100], "non-positive radius")])
+def test_mixed_handles_still_refuse_invalid_geometry_at_minimum(handle, match):
+    p = {"points": [{"z": 0, "r": 20, "handleOut": handle}, [40, 20]],
+         "mouthAngleDeg": 0}
+    with pytest.raises(ValueError, match=r"profileH span 0 z=\[0, 40\].*" + match):
+        resolved(p)
 
 
 @pytest.mark.parametrize("profile,z", [(reviewer(), 21.407), (corners(), 21.407),
@@ -364,14 +408,41 @@ def test_exact_insert_near_anchor_avoids_handle_cancellation(z):
     np.testing.assert_allclose(after.radii_at_z(samples), original.radii_at_z(samples), rtol=0, atol=1e-9)
 
 
-def test_exact_insert_reports_subdivision_envelope_conflict():
-    # The original 0.08 mm excursion is legal, but subdivision changes the
-    # maximum anchor radius and tightens the inherited 0.1% allowance.
+def test_exact_insert_preserves_subdivision_radius_overshoot():
     p = {"points": [[0, 80], [75, 50], [100, 80]],
          "throatAngleDeg": -60, "mouthAngleDeg": 45}
     build_freeform_geometry(params(p))
-    with pytest.raises(ValueError, match="subdivided-span validation guards.*overshoots"):
-        freeform_insert_anchor(p, z=10)
+    original = resolved(p)
+    inserted = freeform_insert_anchor(p, z=10)
+    after = resolved(json.loads(json.dumps(inserted, allow_nan=False)))
+    for first, last in zip(original.anchors[:-1], original.anchors[1:]):
+        samples = np.linspace(first[0], last[0], 2001)
+        np.testing.assert_allclose(after.radii_at_z(samples), original.radii_at_z(samples),
+                                   rtol=0, atol=1e-9)
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_exact_insert_seeded_random_legacy_profiles(seed):
+    rng = np.random.default_rng(seed)
+    count = 3 + seed % 4
+    z = np.r_[0., np.cumsum(rng.uniform(15, 50, count - 1))]
+    radii = rng.uniform(10, 120, count)
+    p = {"points": np.column_stack((z, radii)).tolist(),
+         "throatAngleDeg": float(rng.uniform(-65, 65)),
+         "mouthAngleDeg": float(rng.uniform(-65, 65))}
+    legacy = build_freeform_geometry(params(p))._profile_h
+    assert type(legacy) is _PlaneSpline
+    original = resolved(p)
+    samples = np.unique(np.concatenate([
+        np.linspace(first, last, 2001) for first, last in zip(z[:-1], z[1:])]))
+    expected = original.radii_at_z(samples)
+    for _ in range(5):
+        span = int(rng.integers(count - 1))
+        insert_z = float(z[span] + rng.uniform(.01, .99) * (z[span+1] - z[span]))
+        inserted = freeform_insert_anchor(p, z=insert_z)
+        after = resolved(json.loads(json.dumps(inserted, allow_nan=False)))
+        assert len(after.anchors) == count + 1
+        np.testing.assert_allclose(after.radii_at_z(samples), expected, rtol=0, atol=1e-9)
 
 
 @pytest.mark.parametrize("fixture_path", [

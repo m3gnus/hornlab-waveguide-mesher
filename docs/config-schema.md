@@ -292,8 +292,12 @@ angle. At an interior corner `angleDeg` sets incoming and outgoing, with
 `angleOutDeg` overriding outgoing; a side without an angle uses its own chord
 at one-third length. Smooth automatic tangents retain the PCHIP model; with one explicit handle,
 the other side follows that handle's tangent line to retain a smooth join.
-Explicit handles are never shrunk; invalid spans name their plane, index and
-z range. Adjacent chord-default corners produce exact straight spans.
+Explicit handles are never shrunk and require only monotone z and positive r.
+Radius overshoot is a shrink target for automatic handles. A mixed span with
+only overshoot remaining at the automatic handle's minimum is accepted with
+a report and curve-query warning. Both-automatic spans retain all guards.
+Invalid spans name their plane, index and z range. Adjacent chord-default
+corners produce exact straight spans.
 
 Default smooth objects retain the legacy evaluation path. Non-default joins,
 outgoing angles or handles enable local cubic Béziers. Corner profiles can be

@@ -362,6 +362,10 @@ class FreeformGeometry:
             },
         }
         if any(isinstance(p, _BezierPlane) for p in (self._profile_h, self._profile_v)):
+            result["warnings"] = [message
+                                  for p in (self._profile_h, self._profile_v)
+                                  if isinstance(p, _BezierPlane)
+                                  for message in p.validation_warnings]
             result["straightSpans"] = {name: [i for i, c in enumerate(_plane_beziers(p))
                                                     if _straight_bezier(c)]
                                        for name, p in (("H", self._profile_h), ("V", self._profile_v))}
@@ -749,6 +753,7 @@ def _poly_derivative(coefficients: np.ndarray, local_u: float) -> float:
 class _SplineViolation:
     segment: int
     message: str
+    overshoot: bool = False
 
 
 def _plane_spline_violations(
@@ -842,6 +847,7 @@ def _plane_spline_violations(
                     f"FREEFORM profile{name} segment {segment}, bounded by anchors "
                     f"{segment} and {segment + 1}, radius overshoots its anchor range "
                     f"[{lower:g}, {upper:g}] mm by {excursion:.6g} mm",
+                    overshoot=True,
                 )
             )
 
@@ -993,6 +999,7 @@ class _BezierPlane(_PlaneSpline):
     explicit_out: tuple[bool, ...]
     source_handles_in: tuple[tuple[float, float] | None, ...]
     source_handles_out: tuple[tuple[float, float] | None, ...]
+    validation_warnings: tuple[str, ...]
 
     def radii_at_z(self, z: np.ndarray) -> np.ndarray:
         query = np.asarray(z, dtype=float)
@@ -1121,6 +1128,7 @@ def _resolve_plane(
             controls[span, 1 if side == 0 else 2] = anchors[index] + handle
 
     factors = np.ones((n-1, 2))
+    validation_warnings = []
     if not parsed.extended:
         # Forced conversion is also useful for exact insertion into legacy curves.
         legacy = _build_plane_spline(name, parsed, throat_angle_deg, mouth_angle_deg)
@@ -1138,8 +1146,11 @@ def _resolve_plane(
 
         for span in range(n - 1):
             def violations_at(trial: np.ndarray) -> list[_SplineViolation]:
-                return _plane_spline_violations(name, anchors,
+                failures = _plane_spline_violations(name, anchors,
                     _bezier_spline(trial, anchor_u), [span])
+                # Explicit geometry is constrained only by forward z and r > 0.
+                return [v for v in failures
+                        if not (np.all(explicit[span]) and v.overshoot)]
             failures = violations_at(controls)
             if not failures:
                 continue
@@ -1153,6 +1164,19 @@ def _resolve_plane(
                     scale *= .5
             if feasible is None:
                 z0, z1 = anchors[span:span+2, 0]
+                if np.any(explicit[span]) and not np.all(explicit[span]):
+                    minimum = 2.0**-48
+                    trial = span_controls(span, minimum)
+                    failures = violations_at(trial)
+                    hard_failures = [v for v in failures if not v.overshoot]
+                    if not hard_failures:
+                        controls = trial
+                        factors[span, ~explicit[span]] = minimum
+                        validation_warnings.append(
+                            f"FREEFORM profile{name} span {span} z=[{z0:g}, {z1:g}] mm: "
+                            "automatic handle reached its minimum; " + failures[0].message)
+                        continue
+                    failures = hard_failures
                 raise ValueError(f"FREEFORM profile{name} span {span} z=[{z0:g}, {z1:g}] mm: "
                                  + failures[0].message)
             lower, upper = feasible, min(1., 2 * feasible)
@@ -1179,9 +1203,14 @@ def _resolve_plane(
         *endpoint_angles, parsed.angles_deg.copy(),
         np.r_[factors[:, 0], factors[-1, 1]], controls, joins,
         tuple(h is not None for h in handles_in), tuple(h is not None for h in handles_out),
-        tuple(handles_in), tuple(handles_out),
+        tuple(handles_in), tuple(handles_out), tuple(validation_warnings),
     )
-    _validate_plane_spline(plane)
+    for failure in _plane_spline_violations(name, anchors, spline):
+        if failure.overshoot and np.any(explicit[failure.segment]):
+            continue
+        z0, z1 = anchors[failure.segment:failure.segment+2, 0]
+        raise ValueError(f"FREEFORM profile{name} span {failure.segment} "
+                         f"z=[{z0:g}, {z1:g}] mm: " + failure.message)
     plane.beziers.setflags(write=False)
     return plane
 
@@ -1298,6 +1327,8 @@ def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_
         geometry = build_freeform_geometry(params)
     result = {"warnings": [str(w.message) for w in caught]}
     for name, plane in (("H", geometry._profile_h), ("V", geometry._profile_v)):
+        if isinstance(plane, _BezierPlane):
+            result["warnings"].extend(plane.validation_warnings)
         controls = _plane_beziers(plane)
         anchors = _resolved_anchor_report(plane)
         samples = []

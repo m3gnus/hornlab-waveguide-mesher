@@ -402,6 +402,7 @@ unchanged, including its floating-point results and report. Other profiles
 resolve to one cubic Bézier per adjacent pair of anchors. For span `i` the
 controls are `P_i`, `P_i + handleOut_i`, `P_(i+1) + handleIn_(i+1)`,
 `P_(i+1)`. Radius queries invert the monotone axial coordinate on each span.
+A profile switching to the extended path on its first join, outgoing angle or handle can move by up to the legacy inverse-table error (measured up to `5e-5` mm on the existing fixtures, largest near a steep throat; bounded at `1e-4` mm by the tests).
 
 The precedence on each side is:
 
@@ -419,8 +420,12 @@ The precedence on each side is:
    and dividing by three.
 5. Only automatic handles can shrink to satisfy the forward-z, positive-radius
    and adjacent-anchor overshoot guards (with the existing tolerance). Explicit
-   handles never shrink. An infeasible span is refused with plane, span index
-   and axial range.
+   handles never shrink and are validated only for monotone z and positive r;
+   their radius overshoot is allowed. With one explicit side, the automatic side
+   still shrinks for all guards; if only overshoot remains at its minimum,
+   the span is accepted with a warning in the report and curve query.
+   With two automatic sides all guards remain mandatory. An infeasible span
+   is refused with plane, span index and axial range.
 
 Facing chord-default corner sides place controls at chord thirds, giving an
 exactly straight span and radius linear in z. Extended reports add
@@ -434,10 +439,8 @@ recomputed, repeating until stable. Thus the resolved curve survives insertion
 and JSON save/reload within `1e-9` mm. Existing anchors and positions outside
 the profile are refused. Legacy radius queries retain their historical sampled
 inverse; this editing operation preserves the resolved cubic, rather than the
-small numerical error of that inverse. A curve already using the allowed
-overshoot tolerance can become invalid when subdivision tightens the new
-span's relative tolerance. In that case insertion is refused with a
-`subdivided-span validation guards` diagnostic; the original is unchanged.
+small numerical error of that inverse. Explicit split handles preserve radius
+excursions even when subdivision changes the adjacent anchor range.
 
 `freeform_profile_curves(config_or_params, *, samples_per_span=64)` returns
 JSON data `{H, V, warnings}` without Gmsh or grid construction. Each plane has
