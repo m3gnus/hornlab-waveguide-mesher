@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 import pytest
 
 BASE = 'cf21494a94937f368e5b3c9f706f98e0a27c2667'
+ROUNDED_BASE = 'd740c28ea4ee3dfb8662544d62613e16e98e76ed'
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -59,13 +60,22 @@ def identity_cases():
 
 @pytest.fixture(scope='module')
 def base_tree(tmp_path_factory):
+    return archive_base(tmp_path_factory, BASE)
+
+
+@pytest.fixture(scope='module')
+def rounded_base_tree(tmp_path_factory):
+    return archive_base(tmp_path_factory, ROUNDED_BASE)
+
+
+def archive_base(tmp_path_factory, base):
     if not (ROOT / '.git').exists():
-        pytest.skip('S1-wall slice gate requires a Git checkout with the S1-curve base')
-    ancestry = subprocess.run(['git', 'merge-base', '--is-ancestor', BASE, 'HEAD'],
+        pytest.skip(f'S1-wall slice gate requires a Git checkout with base {base[:7]}')
+    ancestry = subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'],
                               cwd=ROOT, capture_output=True)
     if ancestry.returncode != 0:
-        pytest.skip('S1-wall slice gate applies only while cf21494 is an ancestor of HEAD')
-    archive = subprocess.run(['git','archive',BASE], cwd=ROOT, check=True, capture_output=True).stdout
+        pytest.skip(f'S1-wall slice gate applies only while {base[:7]} is an ancestor of HEAD')
+    archive = subprocess.run(['git','archive',base], cwd=ROOT, check=True, capture_output=True).stdout
     tree = tmp_path_factory.mktemp('wall-identity-base')
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         tar.extractall(tree, filter='data')
@@ -93,6 +103,23 @@ finally:
 
 @pytest.mark.parametrize('name,config', identity_cases(), ids=[item[0] for item in identity_cases()])
 def test_base_mesh_and_step_bytes(base_tree, tmp_path, name, config):
+    assert_mesh_and_step_bytes(base_tree, tmp_path, name, config)
+
+
+@pytest.mark.parametrize('family', ['FREEFORM', 'OSSE'])
+def test_rounded_enclosure_mesh_and_step_bytes(rounded_base_tree, tmp_path, family):
+    from test_freeform_corner_wall import rounded_enclosure_config, without_corners
+
+    config = without_corners(rounded_enclosure_config(case='a'))
+    if family == 'OSSE':
+        data = json.loads((ROOT / 'tests/fixtures/morph_identity/baseline.json').read_text())
+        osse = next(case['config'] for case in data['cases'] if case['config']['formula'] == family)
+        config['formula'] = family
+        config['profile'] = osse['profile']
+    assert_mesh_and_step_bytes(rounded_base_tree, tmp_path, family, config)
+
+
+def assert_mesh_and_step_bytes(base_tree, tmp_path, name, config):
     source = tmp_path/'config.json'
     source.write_text(json.dumps(config))
     artifacts=[]

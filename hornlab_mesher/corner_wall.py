@@ -231,9 +231,10 @@ def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]
 def _sew_roles(roles: dict[str, list[tuple[int, int]]]) -> dict[str, list[tuple[int, int]]]:
     """Sew coincident boundaries without intersecting whole B-spline faces.
 
-    Sewing retains the source surfaces, replacing only their wires. Gmsh does
-    not expose OCC's Modified() ancestry; recover that one-to-one relation by
-    the unchanged surface parametrization, and refuse ambiguous ancestry.
+    Sewing retains the source surfaces, replacing their wires and sometimes
+    their UV trim bounds. Gmsh does not expose OCC's Modified() ancestry;
+    recover the one-to-one relation at unchanged UV coordinates, and refuse
+    ambiguous or incomplete ancestry.
     """
     from .builders._occ import require_gmsh
 
@@ -243,19 +244,45 @@ def _sew_roles(roles: dict[str, list[tuple[int, int]]]) -> dict[str, list[tuple[
         return roles
     gmsh.model.occ.synchronize()
 
-    def signature(face):
+    def parameters(face):
         lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(*face))
-        uv = [lo + fraction * (hi - lo) for fraction in (.23, .5, .77)]
-        return tuple(np.round(gmsh.model.getValue(*face, np.concatenate(uv)), 7))
+        return np.array([lo + fraction * (hi - lo) for fraction in (.23, .5, .77)])
 
-    source = {face: signature(face) for face in faces}
+    def signature(face, uv):
+        return tuple(np.round(gmsh.model.getValue(*face, uv.ravel()), 7))
+
+    source_uv = {face: parameters(face) for face in faces}
+    source = {face: signature(face, uv) for face, uv in source_uv.items()}
+    source_keys = set(source.values())
+    source_bounds = {face: tuple(map(np.asarray, gmsh.model.getParametrizationBounds(*face)))
+                     for face in faces}
+    source_types = {face: gmsh.model.getType(*face) for face in faces}
     before = set(gmsh.model.occ.getEntities(2))
     gmsh.model.occ.addSurfaceLoop([tag for _, tag in faces], sewing=True)
     gmsh.model.occ.synchronize()
     children = set(gmsh.model.occ.getEntities(2)) - before
     by_signature = {}
     for face in children:
-        by_signature.setdefault(signature(face), []).append(face)
+        uv = parameters(face)
+        key = signature(face, uv)
+        by_signature.setdefault(key, []).append(face)
+        if key not in source_keys:
+            # OCC sewing can shrink a roundover's UV trim bounds without
+            # changing its supporting surface. Compare at the source UVs,
+            # rather than moving the probes with the new bounds. Require
+            # mutual interior overlap to distinguish disjoint trims on the
+            # same supporting surface; keep the original signature precision.
+            lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(*face))
+            for parent, parent_uv in source_uv.items():
+                parent_lo, parent_hi = source_bounds[parent]
+                if (gmsh.model.getType(*face) == source_types[parent]
+                        and np.all((parent_uv >= lo) & (parent_uv <= hi))
+                        and np.all((uv >= parent_lo) & (uv <= parent_hi))
+                        and gmsh.model.isInside(*face, parent_uv.ravel(), parametric=True) == len(parent_uv)
+                        and gmsh.model.isInside(*parent, uv.ravel(), parametric=True) == len(uv)
+                        and signature(face, parent_uv) == source[parent]
+                        and signature(parent, uv) == key):
+                    by_signature.setdefault(source[parent], []).append(face)
     mapping = {}
     for face, key in source.items():
         candidates = by_signature.get(key, [])
@@ -266,6 +293,8 @@ def _sew_roles(roles: dict[str, list[tuple[int, int]]]) -> dict[str, list[tuple[
             mapping[face] = candidates[0]
         else:
             raise ValueError("FREEFORM corner sewing has ambiguous face ancestry")
+    if len(set(mapping.values())) != len(mapping):
+        raise ValueError("FREEFORM corner sewing has ambiguous face ancestry")
     if set(mapping.values()) - set(faces) != children:
         raise ValueError("FREEFORM corner sewing lost face ancestry")
     obsolete = [face for face in faces if face not in mapping.values()]

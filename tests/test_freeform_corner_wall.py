@@ -59,6 +59,158 @@ def raw_geometry(config):
         enclosure=HornEnclosure(depth_mm=150, edge_mm=0) if mode == 'enclosure' else None)
 
 
+def rounded_enclosure_config(case='c', edge_mm=18, quadrants='1234'):
+    config = case_config(case, 'enclosure')
+    config['mesh'].update(throat_res_mm=8, mouth_res_mm=20, rear_res_mm=25,
+                          enc_front_res_mm=12, enc_back_res_mm=30,
+                          scale_to_metres=False, source_shape=0, quadrants=quadrants)
+    config['enclosure'] = {'depth_mm':240, 'space_l_mm':80, 'space_r_mm':80,
+                           'space_t_mm':150, 'space_b_mm':150, 'edge_mm':edge_mm}
+    if edge_mm == 5:
+        # Keep the small roundover in the acoustic mesh, rather than letting
+        # the normal sub-resolution cosmetic-edge suppression hide it.
+        config['mesh']['enc_front_res_mm'] = 5
+    return config
+
+
+@pytest.mark.parametrize('case', ['a', 'c'], ids=['circle', 'rounded-rectangle'])
+@pytest.mark.parametrize('edge_mm', [18, 5])
+@pytest.mark.parametrize('quadrants', ['1234', '12'])
+def test_rounded_corner_enclosure(session, tmp_path, case, edge_mm, quadrants):
+    from hornlab_mesher import write_step_from_config
+    from test_cad_step import _reimported_solids
+
+    config = rounded_enclosure_config(case, edge_mm, quadrants)
+    result = build_from_config(config, tmp_path / 'rounded.msh')
+    assert result.metadata['acousticEnclosureEdgeSuppressed'] is False
+    groups = {tag: set(map(int, gmsh.model.getEntitiesForPhysicalGroup(2, tag)))
+              for _, tag in gmsh.model.getPhysicalGroups(2)}
+    assert set(groups) == {1, 2, 3}
+    assert len(groups[1]) == (8 if quadrants == '1234' else 4)
+    assert len(groups[2]) == 1
+    assert len(groups[3]) == (44 if quadrants == '1234' else 22)
+    assert not (groups[1] & groups[2] or groups[1] & groups[3] or groups[2] & groups[3])
+    assert set.union(*groups.values()) == {tag for _, tag in gmsh.model.getEntities(2)}
+    # Check raw Gmsh triangles before the public postprocessor can weld nodes.
+    xyz, tri = wall_triangles(sorted(set.union(*groups.values())))
+    from hornlab_mesher.edges import build_edge_table
+    edges = build_edge_table(tri)
+    assert not np.any(edges.count > 2)
+    free = np.c_[edges.lo[edges.count == 1], edges.hi[edges.count == 1]]
+    if quadrants == '1234':
+        assert not len(free)
+    else:
+        assert len(free) > 0
+        assert np.all(abs(xyz[free, 1]) < 1e-8)
+    source_xyz, source_tri = wall_triangles(sorted(groups[2]))
+    source_xyz = source_xyz[np.unique(source_tri)]
+    from hornlab_mesher.config_builder import resolve_geometry
+    from hornlab_mesher.builders.point_grid_sources import _source_cap_height
+    geometry = resolve_geometry(config).geometry
+    cap_height = _source_cap_height(12.7, geometry) if geometry.source_shape == 1 else 0
+    assert source_xyz[:, 2].min() == pytest.approx(0, abs=1e-8)
+    assert source_xyz[:, 2].max() <= cap_height + 1e-8
+    assert np.max(np.linalg.norm(source_xyz[:, :2], axis=1)) <= 12.7 + 1e-8
+    inner_xyz, inner_tri = wall_triangles(sorted(groups[1]))
+    inner_xyz = inner_xyz[np.unique(inner_tri)]
+    assert inner_xyz[:, 2].min() == pytest.approx(0, abs=1e-8)
+    assert inner_xyz[:, 2].max() == pytest.approx(120, abs=1e-8)
+    report = result.metadata['freeformReport']['cornerWall']
+    assert len(report['corners']) == 1
+    for corner in report['corners']:
+        assert len(corner['sharedEdgeIncidence']) == (4 if quadrants == '1234' else 2)
+        assert all(edge['wallFaces'] == 2 for edge in corner['sharedEdgeIncidence'])
+        assert max(row['occJumpErrorDeg'] for row in corner['azimuths']) <= .5
+        for plane in ('H', 'V'):
+            assert corner['mesh'][plane]['jumpErrorDeg'] <= .5
+            assert corner['mesh'][plane]['maxRadialDeviationMm'] <= .25
+            assert corner['occMaxRadialDeviationMm'][plane] <= .25
+    path, info = write_step_from_config(config, tmp_path / 'rounded.step')
+    assert info.body == 'solid' and info.volume_mm3 > 0
+    solids = _reimported_solids(path)
+    assert len(solids) == 1 and solids[0][1] > 0
+
+
+@pytest.mark.parametrize('quadrants', ['1234', '12'])
+def test_rounded_corner_enclosure_interface_roles(session, quadrants):
+    from hornlab_mesher.config_builder import resolve_geometry
+    from hornlab_mesher.geometry import HornInterface
+
+    geometry = resolve_geometry(rounded_enclosure_config(quadrants=quadrants)).geometry
+    index = 5
+    wanted_z = geometry.inner_points[0, index, 2]
+    geometry = replace(geometry, interfaces=(HornInterface(slice_index=index, offset_mm=2),))
+    built = build_corner_wall(geometry)
+    roles = built.mesh_surface_groups
+    assert set(roles['enclosure_edges_front']) <= set(roles['enclosure'])
+    assert set(roles['enclosure_edges_back']) <= set(roles['enclosure'])
+    assert len(roles['enclosure_edges_front']) == (12 if quadrants == '1234' else 6)
+    assert len(roles['enclosure_edges_back']) == (12 if quadrants == '1234' else 6)
+    assert built.surface_groups[1] == roles['inner']
+    assert built.surface_groups[2] == roles['throat_disc']
+    assert built.surface_groups[3] == roles['enclosure']
+    assert built.surface_groups[4] == roles['interface']
+    assert not (set(roles['interface']) & set(roles['inner'] + roles['enclosure'] + roles['throat_disc']))
+    curves = gmsh.model.getBoundary([(2, tag) for tag in roles['interface']],
+                                    oriented=False, combined=False)
+    z = []
+    for dim, tag in curves:
+        lo, hi = gmsh.model.getParametrizationBounds(dim, tag)
+        z.extend(gmsh.model.getValue(dim, tag, [u])[2] for u in np.linspace(lo[0], hi[0], 9))
+    assert min(z) == pytest.approx(wanted_z, abs=1e-8)
+    assert max(z) == pytest.approx(wanted_z + 2, abs=1e-8)
+
+
+@pytest.mark.parametrize('failure', ['lost', 'ambiguous'])
+def test_sewing_still_refuses_invalid_face_ancestry(session, monkeypatch, failure):
+    from hornlab_mesher.corner_wall import _sew_roles
+
+    faces = [(2, gmsh.model.occ.addRectangle(x, 0, 0, 1, 1)) for x in (0, 1)]
+    sew = gmsh.model.occ.addSurfaceLoop
+
+    def invalid_sew(*args, **kwargs):
+        shell = sew(*args, **kwargs)
+        if failure == 'lost':
+            gmsh.model.occ.addRectangle(10, 0, 0, 1, 1)
+        else:
+            gmsh.model.occ.copy([faces[0]])
+        return shell
+
+    monkeypatch.setattr(gmsh.model.occ, 'addSurfaceLoop', invalid_sew)
+    with pytest.raises(ValueError, match=f'{failure} face ancestry'):
+        _sew_roles({'wall': faces})
+
+
+def test_sewing_refuses_disjoint_trim_on_same_surface(session, monkeypatch):
+    from hornlab_mesher.corner_wall import _sew_roles
+
+    outer = (2, gmsh.model.occ.addRectangle(0, 0, 0, 4, 4))
+    hole = (2, gmsh.model.occ.addRectangle(.8, .8, 0, 2.4, 2.4))
+    frame, _ = gmsh.model.occ.cut([outer], [hole])
+    other = (2, gmsh.model.occ.addRectangle(10, 0, 0, 1, 1))
+    sew = gmsh.model.occ.addSurfaceLoop
+
+    def disjoint_sew(*args, **kwargs):
+        shell = sew(*args, **kwargs)
+        child = (2, gmsh.model.occ.addRectangle(.8, .8, 0, 2.4, 2.4))
+        gmsh.model.occ.synchronize()
+        # Both parameter rectangles contain both sets of diagonal probes,
+        # and the supporting surfaces agree exactly. The trims are disjoint.
+        parent_lo, parent_hi = map(np.asarray, gmsh.model.getParametrizationBounds(*frame[0]))
+        child_lo, child_hi = map(np.asarray, gmsh.model.getParametrizationBounds(*child))
+        for lo, hi in ((parent_lo, parent_hi), (child_lo, child_hi)):
+            uv = np.array([lo + f * (hi - lo) for f in (.23, .5, .77)])
+            assert np.all((uv >= parent_lo) & (uv <= parent_hi))
+            assert np.all((uv >= child_lo) & (uv <= child_hi))
+            assert np.allclose(gmsh.model.getValue(*frame[0], uv.ravel()),
+                               gmsh.model.getValue(*child, uv.ravel()), rtol=0, atol=1e-12)
+        return shell
+
+    monkeypatch.setattr(gmsh.model.occ, 'addSurfaceLoop', disjoint_sew)
+    with pytest.raises(ValueError, match='lost face ancestry'):
+        _sew_roles({'wall': [*frame, other]})
+
+
 @pytest.fixture
 def session():
     gmsh.initialize(interruptible=False)
