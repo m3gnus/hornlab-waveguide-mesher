@@ -540,6 +540,22 @@ controls that path cannot honor: `surface_fit = "interpolate"`,
 explicit `surface_fit = "approximate"`, which is what the corner path builds,
 are accepted. The no-corner path continues to honor its existing options.
 
+Freestanding corner builds publish the same `outerWallClearance` sizing block
+as the smooth freestanding builders, measured on the mitred shell, so a tight
+outer ring (for example a sharp rectangle morph) is refined instead of crossing
+the bore. The mouth rim and the rear return are separate ruled strips about one
+wall thickness wide; each is meshed at no more than twice its measured width and
+grades back to the mouth/rear resolution over one resolution length. A steep
+freestanding corner horn can therefore need more triangles than its smooth
+counterpart; the existing triangle-budget refusal names the remedy.
+
+Corner builds are qualified at production density (throat 5 mm, mouth 10-20 mm,
+default segments) in bare, enclosure and freestanding modes, quadrants 1, 12 and
+14, crease walls of +-60-70 degrees and a sharp rectangle morph. The bound is
+relative to the same profile built smooth: no triangle below
+`SLIVER_ANGLE_DEG` (10 degrees) and a minimum radius ratio of at least half the
+smooth build's. Steep apexes meet it, so no apex angle is refused.
+
 Mesh metadata includes `freeformReport.cornerWall`: each interior corner's
 OCC slopes/jump/error at 0,45,...,315 degrees, shared-edge incidence, H/V mesh
 slopes/jump/error and maximum sampled fixed-z radial deviation. These are

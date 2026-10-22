@@ -314,7 +314,9 @@ refinement cap refuse with the corner z named. Corner walls always use
 approximating split patches, so a profile with any corner refuses
 `mesh.surface_fit = "interpolate"`, `mesh.topology = "legacy"` and
 `mesh.preserve_grid = true` instead of ignoring them; the defaults and an
-explicit `surface_fit = "approximate"` are accepted. Smooth profiles with
+explicit `surface_fit = "approximate"` are accepted. Freestanding corner builds
+refine the thin mouth-rim and rear-return strips and the tight outer rings, so
+a steep corner horn may need a larger `max_triangles`. Smooth profiles with
 handles retain the existing wall path. See the FREEFORM joins subsection
 in [geometry-contract.md](geometry-contract.md) for the curve-query and exact
 insertion APIs.
