@@ -327,6 +327,46 @@ def test_rectangle_morph_through_the_axis_is_still_rejected() -> None:
     with pytest.raises(
         ValueError,
         match="morph to the rectangle target collapses the outline through the axis",
+    ) as error:
+        build_freeform_geometry(params)
+    assert "morphAllowShrinkage" in str(error.value)
+
+
+@pytest.mark.parametrize("station_t", [1.0, 0.2])
+def test_sharp_rectangle_morph_over_rounded_rectangle_station_is_refused(
+    station_t: float,
+) -> None:
+    """The acoustic fit cannot follow a station corner into a sharp target."""
+
+    params = _flared_rectangle_morph_params(0.0)
+    if station_t == 1.0:
+        params["crossSections"] = [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 8.0},
+        ]
+    else:
+        params["crossSections"] = [
+            {"t": 0.0, "shape": "circle"},
+            {"t": 0.2, "shape": "rounded_rectangle", "cornerRadiusMm": 10.0},
+            {"t": 0.4, "shape": "ellipse"},
+            {"t": 1.0, "shape": "ellipse"},
+        ]
+
+    with pytest.raises(
+        ValueError, match="cannot be combined with a sharp rectangle morph target"
+    ):
+        build_freeform_geometry(params)
+    # Any positive corner radius samples, and so builds.
+    params["morphCorner"] = 0.01
+    assert build_freeform_geometry(params)._nonconvex_rect_morph
+
+
+def test_non_convex_superellipse_morph_is_still_refused() -> None:
+    params = _ellipse_rectangle_morph_params()
+    params.update(morphTarget=3, morphExponent=16.0)
+
+    with pytest.raises(
+        ValueError, match="morph to the superellipse target produces a non-convex"
     ):
         build_freeform_geometry(params)
 

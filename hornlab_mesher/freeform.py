@@ -1860,8 +1860,10 @@ def validate_outer_offset_grid(
                 f"near azimuth row {i}"
             )
 
-    # Each input ring is convex. Its regular outward offset must retain one
-    # consistent turn direction; a sign reversal names the earliest bad ring.
+    # Each input ring is star-shaped about the axis but need not be convex (a
+    # rectangle morph dents its flat sides). Its outward offset must still not
+    # cross itself: rings the vectorised proof cannot clear get the exact
+    # sweep, and the earliest crossing ring is named.
     rings = np.ascontiguousarray(np.transpose(outer[:, :, :2], (1, 0, 2)))
     cleared = _polylines_cannot_self_intersect(rings, closed=full_circle)
     for j in np.flatnonzero(~cleared):
@@ -2419,7 +2421,26 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
                 raise ValueError(
                     "FREEFORM morph to the rectangle target collapses the outline "
                     f"through the axis near t={collapsed_t:g}; reduce how far the "
-                    "target departs from the drawn mouth"
+                    "target departs from the drawn mouth, or set "
+                    "morphAllowShrinkage to 0 so the target cannot be smaller "
+                    "than the mouth"
+                )
+            # A sharp corner cannot be sampled on top of a rounded-rectangle
+            # station: the corner-tangency azimuths the station pins jump to
+            # the target's vertex at the mouth ring, and the acoustic fit
+            # cannot follow that twist. Any positive corner radius samples.
+            sharp_target = (
+                eval_param(geometry._morph_params.get("morphCorner"), 0.0, 0.0)
+                <= 1.0e-9
+            )
+            if sharp_target and any(
+                station["shape"] == "rounded_rectangle" for station in stations
+            ):
+                raise ValueError(
+                    "FREEFORM rounded-rectangle crossSections stations cannot be "
+                    "combined with a sharp rectangle morph target; use ellipse "
+                    "or circle stations, or give the morph a corner radius "
+                    "(morphCorner > 0)"
                 )
             geometry._nonconvex_rect_morph = True
         elif morph_induced:
