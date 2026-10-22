@@ -628,6 +628,8 @@ def _enclosure_from_config(
 
     return HornEnclosure(
         depth_mm=depth,
+        dim_mm=enclosure.get("dim_mm"),
+        ath_lf_envelope=_bool(enclosure, names=("ath_lf_envelope",), default=False),
         woofers=tuple(woofer_from_config(row) for row in enclosure.get("woofers", [])),
         space_l_mm=_float(
             enclosure, names=("space_l_mm", "space_l", "left_margin_mm"), default=25.0
@@ -922,6 +924,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     enc_depth = 0.0
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
     if enclosure_obj is not None:
+        if enclosure_obj.dim_mm is not None:
+            from .profile_common import _normalise_quadrants
+            quadrants = _normalise_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
+            px, py, nx, ny = enclosure_obj.dim_mm
+            if (quadrants in {"1", "14"} and px != nx) or (quadrants in {"1", "12"} and py != ny):
+                raise ConfigError("reduced domain requires symmetric enclosure Dim on every cut axis")
         enc_depth = enclosure_obj.depth_mm
     elif mode == "enclosure":
         raise ConfigError("enclosure mode requires enclosure.depth_mm > 0")

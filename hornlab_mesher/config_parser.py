@@ -27,6 +27,74 @@ logger = logging.getLogger(__name__)
 class ConfigError(ValueError):
     pass
 
+
+ATH_LF_BLOCKS = frozenset({"LFSource.A", "LFSource.B", "LFSource.Below"})
+ATH_LF_MEMBERS = frozenset({"Radius", "Spacing", "Resolution", "DrivingWeight", "SID"})
+ATH_ENCLOSURE_LF_KEYS = frozenset(
+    {"Dim", *ATH_LF_BLOCKS}
+    | {f"{block}.{key}" for block in ATH_LF_BLOCKS for key in ATH_LF_MEMBERS}
+)
+
+
+def ath_enclosure_dim(value):
+    """Four overall side distances; no width/height/depth interpretation."""
+    parts = str(value).split(",")
+    try:
+        values = tuple(float(part) for part in parts)
+    except (ValueError, OverflowError) as exc:
+        raise ConfigError("Mesh.Enclosure.Dim must contain four positive finite distances (+X, +Y, -X, -Y)") from exc
+    if len(values) != 4 or any(not np.isfinite(v) or v <= 0 for v in values):
+        raise ConfigError("Mesh.Enclosure.Dim must contain four positive finite distances (+X, +Y, -X, -Y)")
+    return values
+
+
+def ath_enclosure_sources(items):
+    """Read LF metadata once for the ATH parser and WG's existing importer.
+
+    Rows have no identity: WG's open migration owns UUIDs. Notes use WG's
+    existing (key, value, note) import-report shape. Native parsing preserves
+    ATH's omitted-weight rigid state; WG deliberately drives by default.
+    """
+    rows, notes = [], []
+    if any(k == "LFSource.Below" or k.startswith("LFSource.Below.") for k in items):
+        notes.append(("Mesh.Enclosure.LFSource.Below", "", "LFSource.Below is ignored by ATH V2026-09a; no woofer imported."))
+    for key, anchor in (("A", "above"), ("B", "below")):
+        prefix = f"LFSource.{key}"
+        if not any(k == prefix or k.startswith(prefix + ".") for k in items):
+            continue
+        def number(field, default):
+            raw = items.get(prefix + "." + field, default)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ConfigError(f"{prefix}.{field} must be finite") from exc
+            if not np.isfinite(value):
+                raise ConfigError(f"{prefix}.{field} must be finite")
+            return value
+        radius = number("Radius", 0)
+        if radius == 0:
+            notes.append(("Mesh.Enclosure." + prefix + ".Radius", str(radius), "Radius is omitted or zero; no woofer imported."))
+            continue
+        resolution = number("Resolution", 10)
+        if radius < 0 or resolution <= 0:
+            raise ConfigError(f"{prefix} Radius and Resolution must be positive")
+        ath = {"key": key}
+        weight = number("DrivingWeight", 1)
+        if prefix + ".DrivingWeight" in items:
+            ath["weight"] = weight
+        else:
+            notes.append(("Mesh.Enclosure." + prefix + ".DrivingWeight", "", "Imported as prescribed, 0 dB; ATH treats an omitted weight as 0."))
+        if prefix + ".SID" in items:
+            sid = number("SID", 0)
+            if sid != int(sid) or sid < 1:
+                raise ConfigError(f"{prefix}.SID must be a positive integer; omit an unassigned SID")
+            ath["sid"] = int(sid)
+        rows.append(dict(label="LF " + key, enabled=True, radius_mm=radius,
+                         shape={"kind": "ath_cone"}, resolution_mm=resolution,
+                         placement={"anchor": anchor, "gap_mm": number("Spacing", 10)},
+                         drive={"kind": "rigid" if weight == 0 else "prescribed"}, ath=ath))
+    return rows, notes
+
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
     suffix = config_path.suffix.lower()
@@ -64,10 +132,9 @@ def _parse_ath_blocks(
     """Split an ATH text config into top-level blocks, top-level keys and nested blocks.
 
     ``blocks`` maps each top-level block name to its own ``key = value`` lines.
-    ``nested`` lists the full ancestry of every block opened inside another
-    one; the contents of a nested block are not kept, because
-    no supported item has any -- the caller refuses the nested block by name
-    unless its outermost block is one it ignores as a whole.
+    ``nested`` lists the ancestry of nested blocks. Supported enclosure LF
+    members are flattened into their parent; other nested contents remain
+    unread and are refused unless their outermost block is ignored.
     """
     blocks: dict[str, dict[str, str]] = {}
     flat: dict[str, str] = {}
@@ -83,6 +150,8 @@ def _parse_ath_blocks(
             name = start[0].strip()
             if stack:
                 nested.append((*stack, name))
+                if stack == ["Mesh.Enclosure"] and name in ATH_LF_BLOCKS:
+                    blocks[stack[0]][name] = ""
             else:
                 if name in _PROFILE_BLOCKS and name in blocks:
                     raise ConfigError(
@@ -116,6 +185,8 @@ def _parse_ath_blocks(
             flat[key] = value
         elif len(stack) == 1:
             blocks[stack[0]][key] = value
+        elif len(stack) == 2 and stack[0] == "Mesh.Enclosure" and stack[1] in ATH_LF_BLOCKS:
+            blocks[stack[0]][f"{stack[1]}.{key}"] = value
     if stack:
         raise ConfigError(f"block {stack[-1]!r} is never closed")
     return blocks, flat, nested
@@ -186,7 +257,7 @@ _ENCLOSURE_KEY_MAP: tuple[tuple[str, str], ...] = (
     ("FrontResolution", "enc_front_resolution"),
     ("BackResolution", "enc_back_resolution"),
 )
-_ENCLOSURE_KEYS = frozenset({src for src, _dst in _ENCLOSURE_KEY_MAP} | {"Spacing"})
+_ENCLOSURE_KEYS = frozenset({src for src, _dst in _ENCLOSURE_KEY_MAP} | {"Spacing"} | ATH_ENCLOSURE_LF_KEYS)
 _SOURCE_KEY_MAP: tuple[tuple[str, str], ...] = (
     ("Shape", "sourceShape"),
     ("Radius", "sourceRadius"),
@@ -213,7 +284,6 @@ _UNSUPPORTED_ATH_REASONS: dict[str, str] = {
         "use supported top-level Mesh.Enclosure.* keys or a separate Mesh.Enclosure = {...} block"
     ),
     "Plan": "user-defined enclosure plans are not implemented",
-    "Dim": "enclosure dimensions by Dim are not implemented; use Spacing",
     "BEE": "the LF enclosure is not implemented",
     "Source.Array": "source arrays are not implemented",
     "FusionRotaryProfile": "the rotary profile with flange and joint is not implemented",
@@ -434,7 +504,7 @@ def _reject_unrecognised_ath_items(
         )
 
     for path in nested:
-        if _ath_nested_ignored(path):
+        if _ath_nested_ignored(path) or (len(path) == 2 and path[0] == "Mesh.Enclosure" and path[1] in ATH_LF_BLOCKS):
             continue
         unknown.append((f"{'.'.join(path)} = {{...}}", _ath_base_name(path[-1])))
 
@@ -992,6 +1062,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
     enclosure: dict[str, Any] = {}
     if enc_items:
         enclosure = mapped(enc_items, _ENCLOSURE_KEY_MAP)
+        if "Dim" in enc_items:
+            enclosure["dim_mm"] = ath_enclosure_dim(enc_items["Dim"])
         spacing = enc_items.get("Spacing")
         if spacing:
             parts = [part.strip() for part in spacing.split(",")]
@@ -1040,7 +1112,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
                 "use 1 (normal to the element surface)"
             )
 
-    nested_names = {path[-1]: {} for path in nested if not _ath_nested_ignored(path)}
+    nested_names = {path[-1]: {} for path in nested if not _ath_nested_ignored(path)
+                    and not (len(path) == 2 and path[0] == "Mesh.Enclosure" and path[1] in ATH_LF_BLOCKS)}
     _reject_unsupported_ath_keys(flat, profile_items, mesh_items, {**nested_names, **blocks})
 
     validate_stretch_composition(
@@ -1159,6 +1232,34 @@ def parse_text_config(content: str) -> dict[str, Any]:
         config["gcurve"] = gcurve
     if enclosure:
         config["enclosure"] = enclosure
+    lf_rows, lf_notes = ath_enclosure_sources(enc_items)
+    for key, value, note in lf_notes:
+        logger.warning("%s: %s", key, note.replace("Imported as prescribed, 0 dB; ", ""))
+    if lf_rows:
+        from copy import deepcopy
+        from .config_builder import resolve_geometry
+        from .enclosure_woofers import mouth_y_edges, resolve_woofer_placements
+        if str(config["mesh"].get("quadrants")) in {"1", "12"}:
+            logger.warning("ATH drops B and mirrors A in quadrants 1/12; importing independent A/B in full domain")
+            config["mesh"]["quadrants"] = 1234
+        probe = deepcopy(config)
+        probe["mesh"]["quadrants"] = 1234
+        if "depth_mm" not in enclosure:
+            # Measured ATH default: axial horn extent plus 100 mm. Resolve
+            # the horn before attaching its enclosure; no recursive parsing.
+            probe.pop("enclosure", None)
+        geometry = resolve_geometry(probe).geometry
+        enclosure.setdefault("depth_mm", float(geometry.inner_points[:,-1,2].max() - geometry.inner_points[:,0,2].min() + 100))
+        for name in ("space_l_mm", "space_t_mm", "space_r_mm", "space_b_mm"):
+            enclosure.setdefault(name, 10.0)
+        enclosure.setdefault("edge_mm", 0.0)
+        enclosure["ath_lf_envelope"] = True
+        config["enclosure"] = enclosure
+        bottom, top = mouth_y_edges(geometry.inner_points)
+        for row in lf_rows:
+            row["radiator_id"] = "ath-lf-" + row["ath"]["key"]
+            row["drive"] = {"kind": "prescribed" if row["ath"].get("weight", 0) != 0 else "rigid"}
+        enclosure["woofers"] = resolve_woofer_placements(lf_rows, mouth_bottom_mm=bottom, mouth_top_mm=top)
     if source:
         config["source"] = source
     if active:

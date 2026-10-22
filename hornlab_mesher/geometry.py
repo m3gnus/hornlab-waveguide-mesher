@@ -150,10 +150,18 @@ class HornEnclosure:
     depth_margin_mm: float = 1.0
     front_mesh_size_mm: float | None = None
     back_mesh_size_mm: float | None = None
+    # Axis-to-side distances in ATH order: +X, +Y, -X, -Y; overrides margins.
+    dim_mm: tuple[float, float, float, float] | None = None
+    ath_lf_envelope: bool = False
     # Resolved geometry only; placement relations belong to the caller.
     woofers: tuple[EnclosureWoofer, ...] = ()
 
     def __post_init__(self):
+        if self.dim_mm is not None:
+            values = tuple(self.dim_mm)
+            if len(values) != 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in values):
+                raise ValueError("enclosure dim_mm must contain four positive finite distances (+X, +Y, -X, -Y)")
+            object.__setattr__(self, "dim_mm", values)
         object.__setattr__(self, "woofers", tuple(self.woofers))
         if any(not isinstance(w, EnclosureWoofer) for w in self.woofers):
             raise ValueError("enclosure woofers must be EnclosureWoofer values")

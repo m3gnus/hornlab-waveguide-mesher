@@ -6,6 +6,8 @@ The ordinary enclosure builder remains the only owner of the box and baffle.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping, Sequence
+from typing import Any
 from dataclasses import dataclass, replace
 import math
 from typing import Literal
@@ -76,6 +78,82 @@ class EnclosureWoofer:
                 raise ValueError("woofer resolution_mm must be positive")
 
 
+def resolve_woofer_placements(
+    woofers: Sequence[Mapping[str, Any]], *, mouth_bottom_mm: float, mouth_top_mm: float
+) -> list[dict[str, Any]]:
+    """Resolve in the horn-throat pre-placement frame, independent of list order.
+
+    A spacing relation uses the ray from its resolved target towards this
+    woofer's anchor position. Coincident anchors have no defined direction.
+    Disabled targets still own placement; only enabled woofers are emitted.
+    """
+    by_id = {w["radiator_id"]: w for w in woofers}
+    if len(by_id) != len(woofers):
+        raise ValueError("duplicate radiator identity")
+    resolved: dict[str, tuple[float, float]] = {}
+    visiting: set[str] = set()
+
+    def position(key: str) -> tuple[float, float]:
+        if key in resolved:
+            return resolved[key]
+        if key in visiting:
+            raise ValueError("cyclic spacing_to relation")
+        if key not in by_id:
+            raise ValueError("spacing_to target is missing")
+        visiting.add(key)
+        w = by_id[key]
+        p = w["placement"]
+        if p["anchor"] == "free":
+            x, y = p["x_mm"], p["y_mm"]
+        elif p["anchor"] == "below":
+            x, y = 0.0, mouth_bottom_mm - p["gap_mm"] - w["radius_mm"]
+        elif p["anchor"] == "above":
+            x, y = 0.0, mouth_top_mm + p["gap_mm"] + w["radius_mm"]
+        else:
+            raise ValueError("unknown woofer anchor")
+        if spacing := p.get("spacing_to"):
+            tx, ty = position(spacing["radiator_id"])
+            dx, dy = x - tx, y - ty
+            length = math.hypot(dx, dy)
+            if length == 0:
+                raise ValueError("spacing_to requires a nonzero direction from target")
+            distance = spacing["distance_mm"]
+            if not math.isfinite(distance) or distance <= 0:
+                raise ValueError("spacing_to distance must be finite and positive")
+            x, y = tx + distance * dx / length, ty + distance * dy / length
+        if not all(math.isfinite(v) for v in (x, y)):
+            raise ValueError("placement must be finite")
+        visiting.remove(key)
+        resolved[key] = (x, y)
+        return x, y
+
+    for key, woofer in by_id.items():
+        if woofer["enabled"]:
+            position(key)
+    return [
+        dict(
+            radiator_id=w["radiator_id"],
+            x_mm=resolved[w["radiator_id"]][0],
+            y_mm=resolved[w["radiator_id"]][1],
+            radius_mm=w["radius_mm"],
+            shape=dict(w["shape"]),
+            active=w["drive"]["kind"] != "rigid",
+            **({"resolution_mm": w["resolution_mm"]} if w.get("resolution_mm") else {}),
+        )
+        for w in woofers
+        if w["enabled"]
+    ]
+
+
+
+def mouth_y_edges(inner_points):
+    """Final cardinal samples, including the lip; never spline overshoot."""
+    ring = np.asarray(inner_points)[:, -1, :]
+    lower, upper = ring[ring[:, 1] < 0], ring[ring[:, 1] > 0]
+    return (float(lower[np.argmin(abs(lower[:, 0])), 1]),
+            float(upper[np.argmin(abs(upper[:, 0])), 1]))
+
+
 def woofer_from_config(row):
     try:
         values = dict(row)
@@ -136,6 +214,12 @@ def _certify_occ_partition(built, gmsh):
         patch["area_mm2"] = area
 
 
+def _symmetric_enclosure_x(enclosure):
+    if enclosure.dim_mm is not None:
+        return enclosure.dim_mm[0] == enclosure.dim_mm[2]
+    return enclosure.space_l_mm == enclosure.space_r_mm
+
+
 def validate_woofer_domain(params, enclosure):
     """A reduction must preserve the complete requested horn and enclosure."""
     from .profile_common import _normalise_quadrants
@@ -146,7 +230,7 @@ def validate_woofer_domain(params, enclosure):
         return
     if quadrants != "14" or any(w.x_mm != 0 for w in enclosure.woofers):
         raise ValueError("woofers require full domain or x=0 half with every woofer centred on x=0")
-    if enclosure.space_l_mm != enclosure.space_r_mm:
+    if not _symmetric_enclosure_x(enclosure):
         raise ValueError("woofer x=0 half requires symmetric left/right enclosure margins")
     from scipy.spatial import cKDTree
     from .profile_sampling import build_point_grid_arrays
@@ -168,7 +252,7 @@ def cut_woofers(built, geometry):
     half = not geometry.closed
     if half and (geometry.symmetry_planes != ("x",) or any(w.x_mm != 0 for w in woofers)):
         raise ValueError("woofers require full domain or x=0 half with every woofer centred on x=0")
-    if half and geometry.enclosure.space_l_mm != geometry.enclosure.space_r_mm:
+    if half and not _symmetric_enclosure_x(geometry.enclosure):
         raise ValueError("woofer x=0 half requires symmetric left/right enclosure margins")
     if set(built.surface_groups) - {1, 2, 3}:
         raise ValueError("woofer assembly does not support subdomain interfaces")
@@ -278,6 +362,10 @@ def cut_woofers(built, geometry):
             size = w.resolution_mm or 10.0
             if segment == "cap":
                 size = min(size, math.sqrt(8*contour.arc(0)[0]*.025))
+            if isinstance(w.shape, AthConeShape) and geometry.enclosure.ath_lf_envelope:
+                # Imported ATH cones also bound circumferential chord error.
+                # Keep generic assembly density and its budgets unchanged.
+                size = min(size, math.sqrt(8*ATH_JOIN_RADIUS*w.radius_mm*.025))
             records.append({"patch_id": patch_id, "radiator_id": w.radiator_id,
                             "segment_id": segment, "role": "secondary" if w.active else "rigid",
                             "physical_tag": physical, "surface_tags": sorted(faces),

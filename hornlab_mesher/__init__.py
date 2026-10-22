@@ -23,7 +23,9 @@ from .geometry import (
     OsseHornGeometry,
     RosseHornGeometry,
 )
-from .enclosure_woofers import AthConeShape, EnclosureWoofer, PistonShape
+from .enclosure_woofers import (
+    AthConeShape, EnclosureWoofer, PistonShape, mouth_y_edges, resolve_woofer_placements,
+)
 from .freeform import (
     freeform_compare_profiles,
     freeform_evaluate_profile,
@@ -146,6 +148,8 @@ __all__ = [
     "Enclosure",
     "HornEnclosure",
     "EnclosureWoofer",
+    "mouth_y_edges",
+    "resolve_woofer_placements",
     "PistonShape",
     "AthConeShape",
     "MeshDensity",

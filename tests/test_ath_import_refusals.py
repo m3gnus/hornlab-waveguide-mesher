@@ -185,7 +185,7 @@ def test_stretch_composition_message_precedes_unknown_enclosure(enclosure: str) 
         parse_text_config(text)
 
 
-@pytest.mark.parametrize("key", ["Plan", "Dim", "Width"])
+@pytest.mark.parametrize("key", ["Plan", "Width"])
 def test_unknown_enclosure_item_is_refused(key: str) -> None:
     block = f"Mesh.Enclosure = {{\n  {key} = 115,125,115,125\n  Depth = 200\n  Spacing = 30,30,30,200\n}}\n"
     with pytest.raises(ConfigError, match=rf"Mesh\.Enclosure\.{key}\b"):
@@ -206,10 +206,20 @@ def test_nested_block_inside_the_enclosure_is_refused_by_path() -> None:
         parse_text_config(FLAT_OSSE + block)
 
 
-def test_nested_lf_source_keeps_the_multi_source_refusal() -> None:
+def test_nested_lf_source_is_imported_into_enclosure() -> None:
     block = "Mesh.Enclosure = {\n  Depth = 200\n  LFSource.B = {\n    Radius = 80\n  }\n}\n"
-    with pytest.raises(ConfigError, match="multi-source.*LFSource.B"):
-        parse_text_config(FLAT_OSSE + block)
+    woofer, = parse_text_config(FLAT_OSSE + block)["enclosure"]["woofers"]
+    assert woofer["radius_mm"] == 80
+    assert woofer["x_mm"] == 0 and woofer["y_mm"] < 0
+    assert woofer["shape"] == {"kind": "ath_cone"}
+    assert woofer["active"] is False
+
+
+def test_enclosure_dim_overrides_spacing() -> None:
+    block = "Mesh.Enclosure = {\n  Dim = 115,125,115,125\n  Depth = 200\n  Spacing = 30,30,30,200\n}\n"
+    assert parse_text_config(FLAT_OSSE + block)["enclosure"]["dim_mm"] == (115,125,115,125)
+    with pytest.raises(ConfigError, match=r"Mesh\.Enclosure\.Dim"):
+        parse_text_config(FLAT_OSSE + "Mesh.Enclosure.Depth = 200\nMesh.Enclosure.Dim = 1\n")
 
 
 def test_nested_block_does_not_end_its_parent() -> None:

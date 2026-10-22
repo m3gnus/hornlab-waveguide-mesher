@@ -77,7 +77,7 @@ def _clamp_edge_roundover(
     return clamped
 
 
-def _round_extent_outward_mm(value: float) -> float:
+def _round_extent_outward_mm(value: float, positive_tolerance: float = 1.0e-9) -> float:
     """Round a mouth extent outward to a whole millimetre, ATH-style.
 
     ATH sizes the enclosure box from the mouth extents rounded outward to whole
@@ -87,7 +87,7 @@ def _round_extent_outward_mm(value: float) -> float:
     1e-9 guard keeps float noise like 140.0000001 from rounding to 141.
     """
     if value >= 0.0:
-        return float(math.ceil(value - 1.0e-9))
+        return float(math.ceil(value - positive_tolerance))
     return float(math.floor(value + 1.0e-9))
 
 
@@ -142,9 +142,19 @@ def enclosure_box_bounds(
     # Open cut planes are exact (no spacing, no rounding); wall sides take the
     # outward-rounded extent plus the spacing.
     bx0 = 0.0 if x_open else _round_extent_outward_mm(x_min) - float(enclosure.space_l_mm)
-    bx1 = _round_extent_outward_mm(x_max) + float(enclosure.space_r_mm)
+    # Measured LFSource ATH output retains positive-side floating point
+    # ceil at integral morphed cardinals (+220 -> +221), while its negative
+    # side remains -220. Keep this compatibility rule opt-in; native and
+    # horn-only enclosure bytes retain the established guarded rounding.
+    positive_tolerance = 0.0 if enclosure.ath_lf_envelope else 1.0e-9
+    bx1 = _round_extent_outward_mm(x_max, positive_tolerance) + float(enclosure.space_r_mm)
     by0 = y_min if y_open else _round_extent_outward_mm(y_min - off) + off - float(enclosure.space_b_mm)
-    by1 = _round_extent_outward_mm(y_max - off) + off + float(enclosure.space_t_mm)
+    by1 = _round_extent_outward_mm(y_max - off, positive_tolerance) + off + float(enclosure.space_t_mm)
+
+    if enclosure.dim_mm is not None:
+        px, py, nx, ny = enclosure.dim_mm
+        bx0, bx1 = (0.0 if x_open else -nx), px
+        by0, by1 = (off if y_open else off - ny), off + py
 
     # Roundover limits must describe the *physical* (mirror-completed) box:
     # on reduced domains the cut plane at x=0 / y=0 is not a wall, so the
@@ -161,6 +171,13 @@ def enclosure_box_bounds(
     if not y_open:
         applied_spacings.append(float(enclosure.space_b_mm))
     margin_edge_limit = max(0.0, min(applied_spacings))
+    if enclosure.dim_mm is not None:
+        applied_spacings = [bx1 - x_max, by1 - y_max]
+        if not x_open:
+            applied_spacings.append(x_min - bx0)
+        if not y_open:
+            applied_spacings.append(y_min - by0)
+        margin_edge_limit = max(0.0, min(applied_spacings))
     requested_edge = float(enclosure.edge_mm)
     clamped_edge = _clamp_edge_roundover(requested_edge, margin_edge_limit, half_w, half_h)
     if requested_edge > clamped_edge + 1.0e-9:

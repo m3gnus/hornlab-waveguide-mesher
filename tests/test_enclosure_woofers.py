@@ -103,11 +103,8 @@ def horn_only_base(tmp_path_factory):
         except subprocess.CalledProcessError:
             base = git('merge-base', 'HEAD', 'dev')
     base = git('rev-parse', '--verify', f'{base}^{{commit}}')
-    head = git('rev-parse', 'HEAD')
     reason = None
-    if base == head:
-        reason = 'horn-only identity base equals HEAD; nothing to compare'
-    elif not git('diff', '--name-only', base, 'HEAD', '--', 'hornlab_mesher/'):
+    if not git('diff', '--name-only', base, '--', 'hornlab_mesher/'):
         reason = 'no mesher production code changed since horn-only identity base'
     if reason:
         if os.environ.get('HORNLAB_HORN_ONLY_IDENTITY') == 'required':
@@ -306,11 +303,20 @@ def corpus_config(case):
 @pytest.mark.parametrize('case', REFERENCE['cases'], ids=lambda c:c['case_id'])
 def test_corpus_apertures(tmp_path,case):
     result = build_from_config(corpus_config(case),tmp_path/'corpus.msh')
+    assert_corpus_apertures(result, case)
+
+
+def assert_corpus_apertures(result, case, radiator_prefix="lf-"):
     _, points, triangles, tags, surfaces = arrays(result)
-    assert points.min(axis=0) == pytest.approx(case['enclosure_extents_mm'][0],abs=.1)
+    if result.native_symmetry_plane == 'yz':
+        points_min = points.min(axis=0).copy()
+        points_min[0] = -points[:,0].max()
+    else:
+        points_min = points.min(axis=0)
+    assert points_min == pytest.approx(case['enclosure_extents_mm'][0],abs=.1)
     assert points.max(axis=0) == pytest.approx(case['enclosure_extents_mm'][1],abs=.1)
     for expected in case['woofers']:
-        patches = [p for p in result.metadata['assembly']['patches'] if p['radiator_id']=='lf-'+expected['source']]
+        patches = [p for p in result.metadata['assembly']['patches'] if p['radiator_id']==radiator_prefix+expected['source']]
         selected = np.isin(surfaces,[s for p in patches for s in p['surface_tags']])
         vertices = points[np.unique(triangles[selected])]
         rim = vertices[abs(vertices[:,2]-case['baffle_plane_z_mm'])<1e-6]
@@ -326,6 +332,10 @@ def test_corpus_apertures(tmp_path,case):
         ref = REFERENCE['q14_meridian_mm']
         for patch in result.metadata['assembly']['patches']:
             xyz = points[triangles[np.isin(surfaces,patch['surface_tags'])]]-patch['center_mm']
+            if result.native_symmetry_plane == 'yz':
+                reflected = xyz.copy()
+                reflected[:,:,0] *= -1
+                xyz = np.concatenate((xyz, reflected))
             assert xyz[:,:,0].min()<0 and xyz[:,:,0].max()>0
             join = (ref['join_radius'],ref['join_z']-ref['rim_z'])
             if patch['segment_id']=='cone':
