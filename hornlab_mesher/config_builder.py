@@ -2542,7 +2542,13 @@ def build_from_config(
     output_path: str | Path,
     *,
     allow_large_mesh: bool | None = None,
+    measure_profile_deviation: bool = False,
 ) -> BuildResult:
+    """Build a mesh, optionally measuring the fitted FREEFORM wall deviation.
+
+    ``measure_profile_deviation`` is a per-build diagnostic option; it defaults
+    to off and does not participate in geometry resolution or STEP export.
+    """
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
     geometry = resolved.geometry
     chose_automatically = (
@@ -2562,6 +2568,7 @@ def build_from_config(
             resolved.density,
             output_path,
             scale_to_metres=resolved.scale_to_metres,
+            measure_profile_deviation=measure_profile_deviation,
         )
     except TriangleBudgetExceeded:
         # A budget refusal is not a fit failure: the other fit meshes about the
@@ -2591,6 +2598,7 @@ def build_from_config(
             resolved.density,
             output_path,
             scale_to_metres=resolved.scale_to_metres,
+            measure_profile_deviation=measure_profile_deviation,
         )
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     freeform_report = resolved.freeform_report

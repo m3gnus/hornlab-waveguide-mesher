@@ -31,7 +31,8 @@ config = load_config("examples/osse-freestanding.toml")
 result = build_from_config(config, "waveguide.msh")
 ```
 
-`build_from_config(config, output_path, *, allow_large_mesh=None)` accepts a
+`build_from_config(config, output_path, *, allow_large_mesh=None,
+measure_profile_deviation=False)` accepts a
 mapping and writes a tagged Gmsh `.msh` file. It returns `BuildResult`
 (`hornlab_mesher.config_builder.BuildResult`, also re-exported from
 `hornlab_mesher.cli`) with `mesh_path`, `formula`, `mode`, `n_vertices`,
@@ -39,6 +40,12 @@ mapping and writes a tagged Gmsh `.msh` file. It returns `BuildResult`
 `native_symmetry_plane`, `native_check_open_edges`, `mesh_report` and
 `solve_cost`. `BuildResult.as_dict()` serializes the same fields with
 `mesh_path` and physical-group keys converted to strings.
+
+The per-build option `measure_profile_deviation=True` enables the expensive
+FREEFORM acoustic OCC closest-point probe and adds
+`metadata["freeformProfileDeviationMm"]` when applicable. It is off by default;
+the key is omitted when the probe is disabled or inapplicable. The option does
+not change mesh bytes, other stats, geometry resolution, or STEP export.
 
 `load_config(path)` reads `.toml`, `.tml`, `.json`, `.cfg` and `.txt`
 (ATH-style) configs. The config schema, including every accepted alias, is in
@@ -277,7 +284,8 @@ path = build_mesh(
 )
 ```
 
-`build_mesh(geometry, density=None, output_path=None, scale_to_metres=True)`
+`build_mesh(geometry, density=None, output_path=None, scale_to_metres=True, *,
+measure_profile_deviation=False)`
 writes a tagged, validated Gmsh `.msh` file and returns its path.
 `build_mesh_with_info(...)` returns `(path, MeshInfo)`, collected at write
 time. `MeshDensity.max_triangles` applies the same full-domain-equivalent

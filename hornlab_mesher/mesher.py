@@ -197,6 +197,8 @@ def build_mesh(
     density: MeshDensity | str | Path | None = None,
     output_path: str | Path | None = None,
     scale_to_metres: bool = True,
+    *,
+    measure_profile_deviation: bool = False,
 ) -> Path:
     """Build a tagged, validated Gmsh ``.msh`` file."""
 
@@ -205,6 +207,7 @@ def build_mesh(
         density,
         output_path,
         scale_to_metres=scale_to_metres,
+        measure_profile_deviation=measure_profile_deviation,
     )[0]
 
 
@@ -214,12 +217,19 @@ def build_mesh_with_info(
     output_path: str | Path | None = None,
     scale_to_metres: bool = True,
     quality_gate: str = "report",
+    *,
+    measure_profile_deviation: bool = False,
 ) -> tuple[Path, MeshInfo]:
     """Build a ``.msh`` file and return it with the inspection info.
 
     Equivalent to ``build_mesh`` followed by ``load_mesh``, but the info is
     collected from the post-processed arrays at write time so the file is not
     read back.
+
+    ``measure_profile_deviation=True`` opts into the expensive FREEFORM OCC
+    closest-point diagnostic in ``info.metadata["freeformProfileDeviationMm"]``.
+    By default the probe is skipped and that metadata key is omitted. It does
+    not change the mesh or any other inspection result.
 
     ``quality_gate`` selects what happens to the element-shape and chord
     deviation measures in ``info.metadata["quality"]``. ``"report"``, the
@@ -323,9 +333,10 @@ def build_mesh_with_info(
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
             if isinstance(acoustic_geometry, PointGridHornGeometry):
-                deviation = _freeform_profile_deviation_mm(acoustic_geometry, built)
-                if deviation is not None:
-                    built.metadata["freeformProfileDeviationMm"] = deviation
+                if measure_profile_deviation:
+                    deviation = _freeform_profile_deviation_mm(acoustic_geometry, built)
+                    if deviation is not None:
+                        built.metadata["freeformProfileDeviationMm"] = deviation
                 if acoustic_geometry.freeform_report is not None:
                     built.metadata["freeformReport"] = acoustic_geometry.freeform_report
 
