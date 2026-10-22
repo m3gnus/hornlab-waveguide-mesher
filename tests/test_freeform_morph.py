@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import math
-import re
 import warnings
 
 import numpy as np
 import pytest
 
-from hornlab_mesher.config_builder import build_geometry_params
+from hornlab_mesher.config_builder import (
+    _build_acoustic_sampling_grid,
+    _mesh_density_from_config,
+    build_geometry_params,
+)
 from hornlab_mesher.config_parser import ConfigError
-from hornlab_mesher.freeform import build_freeform_geometry
+from hornlab_mesher.freeform import build_freeform_geometry, convexity_violations
 from hornlab_mesher.profile_morph import _rounded_rect_radius
 from hornlab_mesher.profiles import build_point_grid
 
@@ -291,16 +294,41 @@ def test_rectangle_morph_sampler_tracks_emerging_corner_tangencies() -> None:
     )
 
 
-def test_sharp_rectangle_morph_is_rejected_as_non_convex() -> None:
-    """The convexity guard rejects the singular radial blend before meshing."""
+def test_sharp_rectangle_morph_builds_through_non_convex_outlines() -> None:
+    """A sharp rectangle is reached the way OSSE reaches it.
 
-    with pytest.raises(ValueError) as error:
-        build_freeform_geometry(_ellipse_rectangle_morph_params(corner=0.0))
-    message = str(error.value)
+    The radial blend dents each flat side inside its forming corner, so the
+    intermediate outlines are not convex; that alone no longer refuses it.
+    """
 
-    assert "morph to the rectangle target" in message
-    assert "morphCorner" in message
-    assert "crossSections" not in message
+    geometry = build_freeform_geometry(_ellipse_rectangle_morph_params(corner=0.0))
+
+    assert geometry._nonconvex_rect_morph
+    assert convexity_violations(geometry, np.linspace(0.0, 1.0, 33), n_phi=None)
+    phi = np.linspace(0.0, math.tau, 721)
+    for t in np.linspace(0.0, 1.0, 33):
+        assert np.all(geometry.cross_section_radius(phi, float(t)) > 0.0)
+    mouth = geometry.cross_section_radius(phi, 1.0)
+    expected = [_rounded_rect_radius(float(angle), 40.0, 25.0, 0.0) for angle in phi]
+    np.testing.assert_allclose(mouth, expected, rtol=0.0, atol=1.0e-12)
+
+
+def test_convex_rectangle_morph_keeps_its_original_path() -> None:
+    geometry = build_freeform_geometry(_ellipse_rectangle_morph_params(corner=15.0))
+    assert not geometry._nonconvex_rect_morph
+
+
+def test_rectangle_morph_through_the_axis_is_still_rejected() -> None:
+    params = _ellipse_rectangle_morph_params(corner=0.0)
+    params.update(
+        morphWidth=2.0, morphHeight=2.0, morphRate=0.0, morphAllowShrinkage=1
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="morph to the rectangle target collapses the outline through the axis",
+    ):
+        build_freeform_geometry(params)
 
 
 def test_nonconvex_station_with_active_morph_is_attributed_to_cross_sections() -> None:
@@ -385,24 +413,32 @@ def _flared_rectangle_morph_params(corner: float) -> dict:
     }
 
 
-def test_rectangle_morph_corner_hint_is_a_corner_ingest_accepts() -> None:
-    # The hint used to round the feasible corner down: it printed ~12.2 mm,
-    # and entering 12.2 mm failed with the same hint.
-    with pytest.raises(ValueError) as error:
-        build_freeform_geometry(_flared_rectangle_morph_params(0.0))
-    match = re.search(
-        r"minimum feasible morphCorner is ~([0-9]+\.[0-9]+) mm", str(error.value)
+def test_sharp_rectangle_morph_acoustic_fit_converges() -> None:
+    # Before, angular sagitta refined toward the forming vertex, whose sagitta
+    # falls only as 1/n, until the control grid exceeded its cap.
+    params = _flared_rectangle_morph_params(0.0)
+    config = {
+        "formula": "FREEFORM",
+        "mode": "bare",
+        "profile": {
+            key: params[key] for key in ("profileH", "profileV", "crossSections")
+        },
+        "morph": {key: params[key] for key in ("morphTarget", "morphCorner", "morphFixed")},
+        "mesh": {
+            "angularSegments": 40,
+            "lengthSegments": 20,
+            "throatResolution": 6.0,
+            "mouthResolution": 15.0,
+        },
+    }
+    geometry_params, formula, _mode = build_geometry_params(config)
+    assert formula == "FREEFORM"
+    density = _mesh_density_from_config(config, allow_large_mesh=True)
+    grid, _metadata = _build_acoustic_sampling_grid(
+        geometry_params, density, topology_mode="acoustic"
     )
-    assert match is not None, str(error.value)
-    hinted = float(match.group(1))
 
-    assert (
-        build_freeform_geometry(_flared_rectangle_morph_params(hinted)).length_mm
-        == 120.0
-    )
-    # The hint is also the smallest accepted corner at the precision it prints.
-    with pytest.raises(ValueError, match="morph to the rectangle target"):
-        build_freeform_geometry(_flared_rectangle_morph_params(round(hinted - 0.1, 1)))
+    assert int(grid["grid_n_phi"]) < 200
 
 
 def test_walled_rectangle_morph_builds_without_outer_offset_fold() -> None:

@@ -371,9 +371,11 @@ FREEFORM uses the shared mesh sampling keys, with these additional rules:
   limits derived from `throat_res_mm` and `mouth_res_mm`; it does not rewrite
   the requested mesh element sizes.
 
-Ingest rejects non-convex station blends. Freestanding builds with positive
-`wall_thickness_mm` also run a full-surface principal-curvature guard and then
-check the generated outer offset for normal flips and self-intersections. A
+Ingest rejects non-convex station blends; a rectangle morph target may pass
+through non-convex outlines, as it does for OSSE (see the geometry contract).
+Freestanding builds with positive `wall_thickness_mm` also run a full-surface
+principal-curvature guard and then check the generated outer offset for normal
+flips and self-intersections. A
 positive rounded-cap `source.source_radius_mm` must be at least the FREEFORM
 throat radius. Active morph targets use the shared morph evaluator on the
 `crossSections` outline. Guiding curves are rejected; FREEFORM likewise
