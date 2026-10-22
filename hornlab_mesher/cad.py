@@ -23,6 +23,8 @@ follows the cap's own face, a flat disc and a domed cap yield the same solid.
 
 from __future__ import annotations
 
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
+
 import hashlib
 import json
 import math
@@ -541,7 +543,7 @@ def write_step(
         raise MesherError("STEP export of Mesh.Roundover / Mesh.RearShape = 3 imports is unsupported: GEO spline/Coons patches cannot be exported by the OCC STEP writer; faithful OCC ring patches, rear fan and shared-seam solid sewing are not implemented")
 
     if sum(getattr(geometry, name, None) is not None
-           for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")) > 1:
+           for name in NATIVE_MODEL_ATTRIBUTES) > 1:
         raise MesherError("combined active native geometry features are not supported")
     controls=getattr(geometry,"controls_meridian",None)
     if controls is not None:

@@ -33,32 +33,17 @@ def _number(value, name):
 
 def configuration(config, resolver):
     """Inspect original intent before delegating the bounded ordinary body."""
-    pending, payloads, seen = [config], [], set()
-    while pending:
-        section = pending.pop()
-        if not isinstance(section, Mapping) or id(section) in seen:
-            continue
-        seen.add(id(section))
-        for key, value in section.items():
-            if str(key).replace("_", "").lower() == "terminatingarc":
-                payloads.append((section, key))
-            if isinstance(value, Mapping):
-                pending.append(value)
+    from .native_boundary import native_features, validate_native_boundary
+    marker = validate_native_boundary(config)
+    features = native_features(config)
+    if marker != FORMULA and "arc" not in features:
+        return None
+    if KEY not in config:
+        _fail(f"{KEY} requires the exact root key and formula {FORMULA}.")
     profile = config.get("profile", {})
     profile = profile if isinstance(profile, Mapping) else {}
-    names = [section[key] for section in (config, profile) for key in ("formula", "type") if key in section]
-    active = any(isinstance(name, str) and name.upper() == FORMULA for name in names)
-    if not active and not payloads:
-        return None
-    if not active or not payloads or any(section is not config or key != KEY for section, key in payloads):
-        _fail(f"{KEY} requires the exact root key and formula {FORMULA}.")
-    for name in names:
-        if not isinstance(name, str) or name.upper() != FORMULA:
-            _fail(f"every supplied formula and type must be {FORMULA}.")
     if set(profile)-{"formula","type","L_mm","r0_mm","a_deg","a0_deg","k","s"}:
         _fail("only canonical scalar unterminated profile controls are qualified.")
-    if "axial_scale" in config:
-        _fail("independent axial scaling cannot be combined with this construction.")
     value = config[KEY]
     if not isinstance(value, Mapping) or set(value) != {"contract_revision", "join_t", "end_tangent_deg"}:
         _fail("terminating_arc requires exactly contract_revision, join_t and end_tangent_deg.")
@@ -66,8 +51,8 @@ def configuration(config, resolver):
         _fail("contract_revision must be integer 1.")
     payload = {"contract_revision": 1, "join_t": _number(value["join_t"], "join_t"),
                "end_tangent_deg": _number(value["end_tangent_deg"], "end_tangent_deg")}
-    # Reuse the strict scalar body's original-intent boundary, with equal
-    # radial and axial factors. This temporary parser request never escapes.
+    # Reuse the strict scalar body boundary; map the body before the circle.
+    # This temporary parser request never escapes.
     from .axial_scale import configuration as axial_configuration
     clean = copy.deepcopy(dict(config))
     clean.pop(KEY)
@@ -75,15 +60,16 @@ def configuration(config, resolver):
     clean.pop("type", None)
     for key in ("formula", "type"):
         clean.setdefault("profile", {}).pop(key, None)
-    clean["axial_scale"] = config.get("scale", 1)
+    clean["axial_scale"] = config["axial_scale"] if "axial" in features else config.get("scale", 1)
     params, _, mode = axial_configuration(clean, resolver)
-    params.pop("absoluteAxialScale")
+    if marker != "OSSE-NATIVE":
+        params.pop("absoluteAxialScale")
     params.pop("axialScaleFingerprint", None)
     params["terminatingArc"] = payload
-    params["type"] = FORMULA
+    params["type"] = marker
     model = ArcMeridian.from_params(params)
     params["terminatingArcFingerprint"] = model.fingerprint
-    return params, FORMULA, mode
+    return params, marker, mode
 
 
 @dataclass(frozen=True)
@@ -112,7 +98,7 @@ class ArcMeridian:
     @classmethod
     def from_params(cls, params):
         from .axial_scale import AxialModel
-        p = dict(params, absoluteAxialScale=params.get("scale", 1))
+        p = dict(params, absoluteAxialScale=params.get("absoluteAxialScale", params.get("scale", 1)))
         body = AxialModel.from_params(p)
         payload = params["terminatingArc"]
         t = _number(payload["join_t"], "join_t")
@@ -170,6 +156,9 @@ class ArcMeridian:
                     "slope":ta,"throatSlope":t0},
             "arc":{"joinT":t,"endTangentDeg":float(payload["end_tangent_deg"])},
             "verticalOffsetMm":body.offset,"source":"flat-throat-rim-v1"}
+        if params.get("type") == "OSSE-NATIVE":
+            identity["formula"] = "OSSE-NATIVE"
+            identity["authoredBody"]["axial_scale"] = body.axial_scale
         return cls(body.length,body.r0,body.k,ta,t0,t,end,body.offset,radius,beta,cz,cr,
             poles.tobytes(),weights.tobytes(),json.dumps(identity,sort_keys=True,separators=(",",":"),allow_nan=False))
 
@@ -249,7 +238,7 @@ def resolve(config,params,allow_large_mesh=None):
         source_radius_mm=-1,source_curv=0,source_auto_angle_deg=math.degrees(math.atan(model.throat_slope)),
         closed=True,symmetry_planes=(),vertical_offset_mm=model.offset,arc_meridian=model)
     return ResolvedGeometry(geometry,_mesh_density_from_config(config,allow_large_mesh=allow_large_mesh),
-        FORMULA,"bare","1234",None,config.get("mesh",{}).get("scale_to_metres",True),model.metadata())
+        model.identity["formula"],"bare","1234",None,config.get("mesh",{}).get("scale_to_metres",True),model.metadata())
 
 
 def validate_density(density):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
+
 import math
 import tempfile
 import threading
@@ -427,7 +429,7 @@ def build_mesh_with_info(
                 # duplicate-node removal above is sufficient. Approximate
                 # welding would collapse valid nearby dense-mesh vertices.
                 weld_near_duplicates=not isinstance(geometry,StandaloneSourceGeometry) and all(getattr(geometry, name, None) is None
-                    for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")),
+                    for name in NATIVE_MODEL_ATTRIBUTES),
                 controls_meridian=controls,
                 controls_branch_tags=built.metadata.get("controlsBranchSurfaceTags"),
                 physical_name_overrides=built.metadata.get("assemblyPhysicalNames"),

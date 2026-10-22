@@ -4,6 +4,8 @@ The exact circular revolution intentionally removes the old tensor patch's
 angular circle approximation. It never replaces the nonlinear meridian by a cone.
 """
 
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
+
 import math
 from dataclasses import dataclass
 from functools import cached_property
@@ -82,7 +84,7 @@ class GeneralHornWall:
         resolved = resolve_geometry(config)
         g = resolved.geometry
         if (not isinstance(g, PointGridHornGeometry) or not g.closed
-                or any(getattr(g, name, None) is not None for name in ("adapter_meridian", "axial_model", "roundover", "terminating_arc"))
+                or any(getattr(g, name, None) is not None for name in NATIVE_MODEL_ATTRIBUTES)
                 or g.outer_points is not None or g.enclosure is not None
                 or g.infinite_baffle or g.interfaces or g.vertical_offset_mm
                 or g.topology_mode != "acoustic"):
