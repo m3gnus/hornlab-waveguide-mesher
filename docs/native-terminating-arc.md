@@ -45,8 +45,9 @@ including null and empty objects. Only the exact root spelling is accepted.
 
 The first domain is scalar circular OSSE with `s = 0`, bare mode, zero wall
 thickness, full-circle coverage and a flat native source. Only canonical
-profile controls in the example are accepted. Authored throat adapters,
-independent axial scaling, mouth shells, source bodies, guides, morphs,
+profile controls in the example are accepted. Independent axial scaling is
+accepted only as the `OSSE-NATIVE` composite below. Authored throat adapters,
+mouth shells, source bodies, guides, morphs,
 extensions, slots, stretch, rotation, enclosures, baffles, sectors, curved
 sources, lookup profiles and imported text designs are refused. Every
 supplied formula/type selector must agree. Duplicate placement values must
@@ -131,8 +132,25 @@ positive integer triangle budget and actual boolean large-mesh override;
 unsupported active density controls refuse. Direct preview inclusion flags
 also require booleans, and its hard vertex ceiling is one million.
 
-Construction identity includes original body and arc controls, uniform scale
-and finished placement. Density, preview LOD, routing and output units do not
+## Arc with axial scale
+
+`formula = "OSSE-NATIVE"` with root `terminating_arc` and root `axial_scale`
+composes the arc with the absolute axial override, see the
+[composition contract](native-osse-composition.md). Z is multiplied by
+`axial_scale` and radius by `scale`; both factors and their ratio keep the
+[absolute axial scale](absolute-axial-scale.md) domain. The body is mapped
+first and the circle is constructed in finished millimetres against the
+mapped conic: `join_t` retains that fraction of the mapped body length, and
+the circle matches the mapped conic's point, tangent and curvature. The
+circle is never mapped, so it stays a true circle. The mapped join tangent
+is usually steeper than the unmapped one, so `end_tangent_deg` must exceed
+it. `OSSE-ARC` with an `axial_scale` key is refused with a pointer to
+`OSSE-NATIVE`. The resolved formula, preview metadata and STEP recipe
+report `OSSE-NATIVE`, and the recipe's `authoredBody` carries `axial_scale`.
+Mesher readers at or below 0.2.6 refuse this design.
+
+Construction identity includes original body and arc controls, uniform scale,
+the axial factor of a composite and finished placement. Density, preview LOD, routing and output units do not
 change it. The immutable meridian owns detached recipe data and immutable
 arrays. Body-only formula/grid helpers and linked bundles refuse this feature
 until they can transport the complete analytic authority.

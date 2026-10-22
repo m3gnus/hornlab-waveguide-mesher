@@ -1,8 +1,6 @@
 """Literal native cubic controls followed by a full exact circular OSSE body."""
 from __future__ import annotations
 
-from .native_boundary import NATIVE_MODEL_ATTRIBUTES
-
 import copy
 from dataclasses import dataclass, fields
 from decimal import Decimal, localcontext
@@ -14,6 +12,7 @@ from typing import Mapping
 import numpy as np
 
 from .config_parser import ConfigError
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .throat_adapter import _conic_residual_bound
 
 FORMULA = "OSSE-ADAPTER-CONTROLS"

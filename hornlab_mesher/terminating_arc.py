@@ -38,10 +38,12 @@ def configuration(config, resolver):
     features = native_features(config)
     if marker != FORMULA and "arc" not in features:
         return None
-    if KEY not in config:
-        _fail(f"{KEY} requires the exact root key and formula {FORMULA}.")
     profile = config.get("profile", {})
     profile = profile if isinstance(profile, Mapping) else {}
+    # The shared boundary strips markers; this construction never accepted padding.
+    names = [section[key] for section in (config, profile) for key in ("formula", "type") if key in section]
+    if KEY not in config or any(not isinstance(name, str) or name.upper() != marker for name in names):
+        _fail(f"{KEY} requires the exact root key and formula {marker or FORMULA}.")
     if set(profile)-{"formula","type","L_mm","r0_mm","a_deg","a0_deg","k","s"}:
         _fail("only canonical scalar unterminated profile controls are qualified.")
     value = config[KEY]

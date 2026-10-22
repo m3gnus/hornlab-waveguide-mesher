@@ -7,22 +7,30 @@ from typing import Mapping
 
 from .config_parser import ConfigError
 
+
 @dataclass(frozen=True)
 class NativeFeature:
     slot: str
     path: tuple[str, ...]
     legacy_marker: str
     mode: str | None = None
+    aliases: tuple[tuple[str, ...], ...] = ()
+    # Strict payloads are found in any spelling at any depth and must sit at
+    # their exact path; others count only at their path or documented aliases.
+    # Every payload is strict under OSSE-NATIVE, which has no legacy readers.
+    strict: bool = False
 
+
+_ADAPTER_ALIASES = (("profile", "throat_adapter"),)
 
 # The table owns payload locations, slot occupancy and legacy spellings.
 FEATURES = {
-    "adapter": NativeFeature("throat", ("throat_adapter",), "OSSE-ADAPTER", "authored"),
-    "controls": NativeFeature("throat", ("throat_adapter",), "OSSE-ADAPTER-CONTROLS", "controls"),
-    "arc": NativeFeature("mouth", ("terminating_arc",), "OSSE-ARC"),
+    "adapter": NativeFeature("throat", ("throat_adapter",), "OSSE-ADAPTER", "authored", _ADAPTER_ALIASES),
+    "controls": NativeFeature("throat", ("throat_adapter",), "OSSE-ADAPTER-CONTROLS", "controls", _ADAPTER_ALIASES),
+    "arc": NativeFeature("mouth", ("terminating_arc",), "OSSE-ARC", strict=True),
     "roundover": NativeFeature("mouth", ("mesh", "mouth_roundover_radius_mm"), "OSSE-ROUNDOVER"),
     "axial": NativeFeature("axial", ("axial_scale",), "OSSE-AXIAL"),
-    "source_disk": NativeFeature("source", ("source_body",), "SOURCE-DISK"),
+    "source_disk": NativeFeature("source", ("source_body",), "SOURCE-DISK", strict=True),
 }
 LEGACY_MARKERS = {frozenset({name}): feature.legacy_marker for name, feature in FEATURES.items()}
 LEGACY_MARKERS[frozenset({"adapter", "axial"})] = "OSSE-ADAPTER-AXIAL"
@@ -60,6 +68,9 @@ def _native_intent(config):
             if not isinstance(value, str) or value.strip().upper() != marker:
                 _fail("every supplied formula and type must agree with the native formula marker.")
 
+    def strict(feature):
+        return feature.strict or marker == "OSSE-NATIVE"
+
     payloads = []
     pending = [(config, ())]
     seen = set()
@@ -72,6 +83,8 @@ def _native_intent(config):
             spelling = str(key).replace("_", "").lower()
             for name, feature in FEATURES.items():
                 if spelling != feature.path[-1].replace("_", "").lower():
+                    continue
+                if not strict(feature) and path+(key,) not in (feature.path, *feature.aliases):
                     continue
                 if feature.mode is not None and (not isinstance(value, Mapping) or value.get("mode") != feature.mode):
                     continue
@@ -93,33 +106,34 @@ def _native_intent(config):
 
     if ("source_disk" in features or marker == "SOURCE-DISK") and (features-{"source_disk"} or marker != "SOURCE-DISK"):
         _fail("SOURCE-DISK must stay alone and cannot compose with native features.")
-    if marker == "OSSE-NATIVE":
-        slots = {}
-        for name in sorted(features):
-            slot = FEATURES[name].slot
-            if slot in slots:
-                _fail(f"conflict: {slots[slot]} and {name} both own the {slot}.")
-            slots[slot] = name
+    # Declared legacy sets never conflict, so this only ever names an extra feature.
+    slots = {}
+    for name in sorted(features):
+        slot = FEATURES[name].slot
+        if slot in slots:
+            _fail(f"conflict: {slots[slot]} and {name} both own the {slot}.")
+        slots[slot] = name
 
     for name, path in payloads:
         feature = FEATURES[name]
-        if path != feature.path:
+        if strict(feature) and path != feature.path:
             key = feature.path[-1]
             location = "root" if len(feature.path) == 1 else ".".join(feature.path[:-1])
             _fail(f"{key} requires the exact {location} {key} key.")
 
-    if marker == "OSSE-NATIVE":
-        legacy = LEGACY_MARKERS.get(features)
-        if legacy is not None:
-            _fail(f"write {legacy} for this feature set.")
-        if len(features) < 2:
-            _fail("OSSE-NATIVE requires at least two active features.")
-        if features not in IMPLEMENTED_COMPOSITES:
-            _fail(f"{', '.join(sorted(features))} is not supported yet.")
-    else:
+    if marker != "OSSE-NATIVE":
         declared = next(names for names, spelling in LEGACY_MARKERS.items() if spelling == marker)
-        if features-declared:
-            _fail(f"{marker} carries additional native features; write OSSE-NATIVE for compositions without a legacy marker.")
+        if not features-declared:
+            return marker, features
+    legacy = LEGACY_MARKERS.get(features)
+    if legacy is not None and legacy != marker:
+        _fail(f"write {legacy} for this feature set.")
+    if len(features) < 2:
+        _fail("OSSE-NATIVE requires at least two active features.")
+    if features not in IMPLEMENTED_COMPOSITES:
+        _fail(f"{', '.join(sorted(features))} is not supported yet.")
+    if marker != "OSSE-NATIVE":
+        _fail(f"{marker} carries additional native features; write OSSE-NATIVE for compositions without a legacy marker.")
     return marker, features
 
 

@@ -23,8 +23,6 @@ follows the cap's own face, a flat disc and a domed cap yield the same solid.
 
 from __future__ import annotations
 
-from .native_boundary import NATIVE_MODEL_ATTRIBUTES
-
 import hashlib
 import json
 import math
@@ -55,6 +53,7 @@ from .geometry import (
     StandaloneSourceGeometry,
 )
 from .mesher import _GMSH_LOCK, MesherError, _dispatch_builder
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .native_env import preserve_native_windows_path
 
 CadBody = Literal["solid", "surface"]

@@ -1,8 +1,9 @@
 # Native OSSE composition
 
 This contract defines the release-line path toward composable native OSSE.
-Slice 0 adds this contract and the legacy identity gate; it does not enable
-new combinations. An unimplemented pair must refuse with a clear message.
+Slice 0 added this contract and the legacy identity gate. Slice 1 replaces
+the one-feature lock with one rule table in `native_boundary.py` and enables
+Arc × Axial. An unimplemented pair must refuse with a clear message.
 
 ## Slots
 
@@ -51,7 +52,7 @@ Every existing design and its outputs must stay byte-identical.
 
 | Combination | Status |
 | --- | --- |
-| Arc × Axial | Slice 1; refused until implemented |
+| Arc × Axial | Implemented as `OSSE-NATIVE`; see [terminating arc](native-terminating-arc.md#arc-with-axial-scale) |
 | Adapter × Arc (× Axial) | Later; refused until implemented |
 | Roundover × Axial | Later; refused until implemented |
 | Adapter × Roundover (× Axial) | Later; refused until implemented |
@@ -63,10 +64,18 @@ Adapter here includes either throat choice where applicable; this table does
 not authorize combinations beyond their implemented, validated domains.
 Authored Adapter × Axial is already supported as `OSSE-ADAPTER-AXIAL`.
 
+Refusals name the rule they hit: a slot `conflict`, `write <marker>` when a
+legacy marker exists, `write OSSE-NATIVE` for a legacy marker carrying an
+extra feature, `not supported yet` for an unimplemented composite, and
+`SOURCE-DISK must stay alone`. The authored and controls adapters share the
+`throat_adapter` key, so they cannot both be supplied.
+[The composition tests](../tests/test_native_composition.py) run this rule
+matrix over every pair and triple in both spellings.
+
 ## Identity gate
 
 [The single-feature identity harness](../tests/test_native_single_feature_identity.py)
-compares each legacy native family against tag `v0.2.6` in fresh processes:
+compares each legacy native family, from frozen literal fixtures, against tag `v0.2.6` in fresh processes:
 canonical JSON of the full geometry-parameter tuple and resolved metadata
 (including construction fingerprints), MSH bytes, STEP bytes with a pinned
 timestamp and only the translator counter normalized, and deterministic

@@ -4,8 +4,6 @@ The exact circular revolution intentionally removes the old tensor patch's
 angular circle approximation. It never replaces the nonlinear meridian by a cone.
 """
 
-from .native_boundary import NATIVE_MODEL_ATTRIBUTES
-
 import math
 from dataclasses import dataclass
 from functools import cached_property
@@ -13,6 +11,8 @@ from functools import cached_property
 import numpy as np
 from scipy.interpolate import BSpline, make_interp_spline
 from scipy.spatial import cKDTree
+
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 
 FEATURE = "native-general-horn-attachment-v1"
 CHORD_TOLERANCE_MM = 1e-7

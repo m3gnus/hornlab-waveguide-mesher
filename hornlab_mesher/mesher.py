@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from .native_boundary import NATIVE_MODEL_ATTRIBUTES
-
 import math
 import tempfile
 import threading
@@ -36,6 +34,7 @@ from .geometry import (
     StandaloneSourceGeometry,
     validate_mesh_density,
 )
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .native_env import preserve_native_windows_path
 from .normals import (
     MeshOrientationError,

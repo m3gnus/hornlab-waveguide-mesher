@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from ..native_boundary import NATIVE_MODEL_ATTRIBUTES
-
 """Dispatcher for point-grid topology build modes."""
 
 import numpy as np
@@ -12,6 +10,7 @@ from ..geometry import (
     PointGridBuildMode,
     PointGridHornGeometry,
 )
+from ..native_boundary import NATIVE_MODEL_ATTRIBUTES
 from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
