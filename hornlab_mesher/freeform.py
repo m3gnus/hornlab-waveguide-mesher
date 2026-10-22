@@ -146,6 +146,10 @@ class FreeformGeometry:
     _inflection_spans: dict[str, tuple[_InflectionSpan, ...]] = field(
         default_factory=dict, repr=False
     )
+    # Set at ingest when a rectangle morph's radial blend leaves the convex
+    # outlines (see build_freeform_geometry); acoustic fitting then samples it
+    # the way it samples an OSSE morph.
+    _nonconvex_rect_morph: bool = field(default=False, repr=False)
     _curvature_reports: dict[tuple[float, float], dict[str, Any]] = field(
         default_factory=dict, repr=False
     )
@@ -1974,8 +1978,10 @@ def validate_outer_offset_grid(
                 f"near azimuth row {i}"
             )
 
-    # Each input ring is convex. Its regular outward offset must retain one
-    # consistent turn direction; a sign reversal names the earliest bad ring.
+    # Each input ring is star-shaped about the axis but need not be convex (a
+    # rectangle morph dents its flat sides). Its outward offset must still not
+    # cross itself: rings the vectorised proof cannot clear get the exact
+    # sweep, and the earliest crossing ring is named.
     rings = np.ascontiguousarray(np.transpose(outer[:, :, :2], (1, 0, 2)))
     cleared = _polylines_cannot_self_intersect(rings, closed=full_circle)
     for j in np.flatnonzero(~cleared):
@@ -2074,6 +2080,20 @@ def _ingest_convexity_violations(
     """
 
     return convexity_violations(geometry, t_samples, n_phi=None)
+
+
+def _first_non_positive_radius_t(
+    geometry: FreeformGeometry, t_samples: np.ndarray
+) -> float | None:
+    """Return the first ``t`` whose outline reaches the axis, on ingest's grid."""
+
+    for t in t_samples:
+        phi = _curvature_phi_samples(
+            geometry, float(t), uniform_n=128, tangency_samples=2
+        )
+        if not np.all(geometry.cross_section_radius(phi, float(t)) > 0.0):
+            return float(t)
+    return None
 
 
 def _station_span_name(stations: list[dict[str, Any]], t: float) -> str:
@@ -2214,21 +2234,6 @@ def _geometry_without_morph(geometry: FreeformGeometry) -> FreeformGeometry:
     )
 
 
-def _geometry_with_morph_corner(
-    geometry: FreeformGeometry, value: float
-) -> FreeformGeometry:
-    morph_params = dict(geometry._morph_params)
-    morph_params["morphCorner"] = float(value)
-    return FreeformGeometry(
-        geometry._profile_h,
-        geometry._profile_v,
-        geometry.stations,
-        _morph_target=geometry._morph_target,
-        _morph_params=MappingProxyType(morph_params),
-        _inflection_spans=geometry._inflection_spans,
-    )
-
-
 def _smallest_accepted_hint_value(
     accepts: Callable[[float], bool], lower: float, upper: float
 ) -> str | None:
@@ -2262,45 +2267,6 @@ def _smallest_accepted_hint_value(
                 rejected = midpoint
         return f"{accepted / scale:.{decimals}f}"
     return None
-
-
-def _minimum_feasible_morph_corner_hint(
-    geometry: FreeformGeometry,
-    t_samples: np.ndarray,
-) -> str:
-    """Suggest the smallest scalar rectangle morph corner that ingest accepts."""
-
-    if geometry._morph_target != 1 or not all(
-        geometry._morph_params.get(key) is None
-        or isinstance(geometry._morph_params.get(key), (int, float))
-        for key in _FREEFORM_SCALAR_MORPH_KEYS
-    ):
-        return ""
-
-    mouth_z = float(geometry._profile_h.anchors[-1, 0])
-    mouth_h, mouth_v = geometry.evaluate_radii(np.asarray(mouth_z))
-    mouth_a = float(mouth_h)
-    mouth_b = float(mouth_v)
-    half_width, half_height = _resolve_morph_half_dimensions(
-        geometry._morph_params, 0.0, mouth_a, mouth_b, round_implicit_up=False
-    )
-
-    lower = max(
-        0.0,
-        eval_param(geometry._morph_params.get("morphCorner"), 0.0, 0.0),
-    )
-    upper = min(half_width, half_height)
-    if lower >= upper:
-        return ""
-
-    def accepts(value: float) -> bool:
-        trial = _geometry_with_morph_corner(geometry, value)
-        return not _ingest_convexity_violations(trial, t_samples)
-
-    feasible = _smallest_accepted_hint_value(accepts, lower, upper)
-    if feasible is None:
-        return ""
-    return f"; minimum feasible morphCorner is ~{feasible} mm"
 
 
 def _minimum_feasible_corner_radius_hint(
@@ -2560,38 +2526,62 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
         morph_induced = (
             geometry._morph_target in {1, 2, 3} and not unmorphed_violations
         )
-        if morph_induced:
-            target_name = {1: "rectangle", 2: "circle", 3: "superellipse"}[
-                geometry._morph_target
-            ]
-            if geometry._morph_target == 1:
-                morph_corner_hint = _minimum_feasible_morph_corner_hint(
-                    geometry, convexity_samples
+        if morph_induced and geometry._morph_target == 1:
+            # A rectangle target cannot be reached through convex outlines:
+            # the radial blend shared with OSSE and R-OSSE dents each flat side
+            # just inside its corner while the corner is still forming. Those
+            # formulas build such outlines, and nothing downstream needs
+            # convexity -- a polar outline with a positive radius is a simple
+            # ring, and walled shells keep their own curvature and offset
+            # guards. What still has to hold is that positive radius.
+            collapsed_t = _first_non_positive_radius_t(geometry, convexity_samples)
+            if collapsed_t is not None:
+                raise ValueError(
+                    "FREEFORM morph to the rectangle target collapses the outline "
+                    f"through the axis near t={collapsed_t:g}; reduce how far the "
+                    "target departs from the drawn mouth, or set "
+                    "morphAllowShrinkage to 0 so the target cannot be smaller "
+                    "than the mouth"
                 )
-                remedy = (
-                    "increase morphCorner or reduce how far the target departs "
-                    "from the drawn mouth"
+            # A sharp corner cannot be sampled on top of a rounded-rectangle
+            # station: the corner-tangency azimuths the station pins jump to
+            # the target's vertex at the mouth ring, and the acoustic fit
+            # cannot follow that twist. Any positive corner radius samples.
+            sharp_target = (
+                eval_param(geometry._morph_params.get("morphCorner"), 0.0, 0.0)
+                <= 1.0e-9
+            )
+            if sharp_target and any(
+                station["shape"] == "rounded_rectangle" for station in stations
+            ):
+                raise ValueError(
+                    "FREEFORM rounded-rectangle crossSections stations cannot be "
+                    "combined with a sharp rectangle morph target; use ellipse "
+                    "or circle stations, or give the morph a corner radius "
+                    "(morphCorner > 0)"
                 )
-            else:
-                morph_corner_hint = ""
-                remedy = "reduce how far the target departs from the drawn mouth"
+            geometry._nonconvex_rect_morph = True
+        elif morph_induced:
+            target_name = {2: "circle", 3: "superellipse"}[geometry._morph_target]
             raise ValueError(
                 f"FREEFORM morph to the {target_name} target produces a non-convex "
-                f"outline near t={offending_t:g}; {remedy}{morph_corner_hint}"
+                f"outline near t={offending_t:g}; reduce how far the target "
+                "departs from the drawn mouth"
             )
-        diagnostic_geometry = geometry
-        if unmorphed_violations:
-            offending_t = unmorphed_violations[0]
-            diagnostic_geometry = unmorphed
-        span = _station_span_name(stations, offending_t)
-        corner_hint = _minimum_feasible_corner_radius_hint(
-            diagnostic_geometry, convexity_samples, offending_t
-        )
-        raise ValueError(
-            f"FREEFORM crossSections span {span} produces a non-convex outline "
-            f"near t={offending_t:g}; adjust its shape, aspect, or corner setting"
-            f"{corner_hint}"
-        )
+        else:
+            diagnostic_geometry = geometry
+            if unmorphed_violations:
+                offending_t = unmorphed_violations[0]
+                diagnostic_geometry = unmorphed
+            span = _station_span_name(stations, offending_t)
+            corner_hint = _minimum_feasible_corner_radius_hint(
+                diagnostic_geometry, convexity_samples, offending_t
+            )
+            raise ValueError(
+                f"FREEFORM crossSections span {span} produces a non-convex outline "
+                f"near t={offending_t:g}; adjust its shape, aspect, or corner setting"
+                f"{corner_hint}"
+            )
 
     for plane in (geometry._profile_h, geometry._profile_v):
         for array in (

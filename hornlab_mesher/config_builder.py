@@ -2011,9 +2011,15 @@ def _build_acoustic_sampling_grid(
     # where the target is smooth. A morph target can carry a genuine vertex (a
     # sharp rectangle is the default WG corner setting) whose sagitta decays as
     # 1/n rather than 1/n^2; enforcing it there stalls against the segment cap
-    # instead of converging. See docs/builder-invariants.md.
+    # instead of converging. See docs/builder-invariants.md. A FREEFORM
+    # rectangle morph accepted through non-convex outlines is the same
+    # radial blend as an OSSE morph, sharp corner included, so it is fitted
+    # the same way.
     enforce_angular_sagitta = (
-        formula == "FREEFORM"
+        (
+            formula == "FREEFORM"
+            and not build_freeform_geometry(working)._nonconvex_rect_morph
+        )
         or (
             _static_float_or_none(working.get("morphTarget", 0)) == 0.0
             and _static_float_or_none(working.get("gcurveType", 0)) == 0.0

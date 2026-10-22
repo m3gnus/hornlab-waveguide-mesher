@@ -569,6 +569,14 @@ Cross-section blends are sampled for polygon convexity at ingest. A failure
 identifies the station span and offending normalized position and, for a
 rounded-rectangle blend, reports an estimated feasible corner-radius hint.
 
+A rectangle morph target is the exception. Its radial blend, the same one
+OSSE and R-OSSE use, dents each flat side inside the forming corner, so a
+sharp or small-corner rectangle passes through non-convex outlines. When the
+`crossSections` schedule alone is convex, such a morph is accepted provided
+every sampled radius stays positive, and its acoustic fit skips the angular
+sagitta limit exactly as an OSSE morph does. Circle and superellipse targets
+that leave the convex outlines are still rejected.
+
 For a freestanding shell, the inner loft is checked over all azimuths with a
 finite-difference first/second fundamental-form calculation. The analytic
 normal points toward the acoustic axis and the wall is offset in the opposite

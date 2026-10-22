@@ -12,7 +12,6 @@ resolve, at any density.
 from __future__ import annotations
 
 import math
-import re
 
 import numpy as np
 import pytest
@@ -150,16 +149,13 @@ def test_rectangle_morph_triangle_count_is_not_inflated_by_the_corner(tmp_path) 
 
 
 @pytest.mark.parametrize("mode", ["freestanding", "infinite-baffle", "enclosure"])
-def test_sharp_ui_default_names_a_corner_that_builds(tmp_path, mode) -> None:
-    """Corner 0 is the singular radial blend and stays refused; its hint builds."""
+def test_sharp_ui_default_builds(tmp_path, mode) -> None:
+    """Corner 0 builds through non-convex outlines, as an OSSE morph does."""
 
-    with pytest.raises(ConfigError) as error:
-        _triangles(tmp_path, _config(mode, {**UI_MORPH, "morphCorner": 0.0}))
-    match = re.search(r"morphCorner is ~([0-9.]+) mm", str(error.value))
-    assert match is not None, str(error.value)
+    triangles = _triangles(tmp_path, _config(mode, {**UI_MORPH, "morphCorner": 0.0}))
+    baseline = _triangles(tmp_path, _config(mode))
 
-    hinted = {**UI_MORPH, "morphCorner": float(match.group(1))}
-    assert _triangles(tmp_path, _config(mode, hinted)) > 0
+    assert 0 < triangles < 2.0 * baseline
 
 
 def test_twist_note_names_the_jump_and_not_the_resolution() -> None:
