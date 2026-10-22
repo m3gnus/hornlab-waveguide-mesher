@@ -310,8 +310,12 @@ all FREEFORM wall modes. Endpoint corners need no interior split. Interior
 corner positions (the union of H and V) must be at least 1 mm apart; this
 fixed geometric floor is independent of mesh density. Unsafe
 freestanding mitres and a built OCC slope error above 0.5 degrees at the
-refinement cap refuse with the corner z named. Smooth profiles with handles
-retain the existing wall path. See the FREEFORM joins subsection
+refinement cap refuse with the corner z named. Corner walls always use
+approximating split patches, so a profile with any corner refuses
+`mesh.surface_fit = "interpolate"`, `mesh.topology = "legacy"` and
+`mesh.preserve_grid = true` instead of ignoring them; the defaults and an
+explicit `surface_fit = "approximate"` are accepted. Smooth profiles with
+handles retain the existing wall path. See the FREEFORM joins subsection
 in [geometry-contract.md](geometry-contract.md) for the curve-query and exact
 insertion APIs.
 

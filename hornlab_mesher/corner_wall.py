@@ -39,7 +39,36 @@ def corner_geometry_class(base: type, recipe: CornerWall | None = None) -> type:
     A class property survives dataclasses.replace without entering asdict (the
     profile contains deliberately immutable mapping proxies).
     """
-    return type(f"Corner{base.__name__}", (base,), {"freeform_wall": property(lambda self: recipe)})
+    def __post_init__(self):
+        if recipe is not None:
+            _refuse_ignored_controls(self, recipe)
+        base.__post_init__(self)
+
+    return type(f"Corner{base.__name__}", (base,), {"freeform_wall": property(lambda self: recipe),
+                                                    "__post_init__": __post_init__})
+
+
+def _refuse_ignored_controls(geometry, recipe: CornerWall) -> None:
+    """Refuse explicit controls the split-patch corner builder would ignore.
+
+    Runs before the base resolves ``surface_fit``: ``auto`` and ``approximate``
+    describe what the corner builder does, ``interpolate`` does not.
+    """
+    ignored = []
+    if geometry.surface_fit == "interpolate":
+        ignored.append("mesh.surface_fit='interpolate'")
+    if geometry.topology_mode == "legacy":
+        ignored.append("mesh.topology='legacy'")
+    if geometry.preserve_grid:
+        ignored.append("mesh.preserve_grid")
+    if getattr(geometry, "outer_clearance_points_mm", None) is not None:
+        ignored.append("outer_clearance_points_mm")
+    if ignored:
+        corners = ", ".join(f"{z:g}" for z in freeform_corner_z(recipe.profile))
+        raise ValueError(
+            f"FREEFORM corner z={corners} mm: corner walls always build approximating "
+            f"split patches and do not support {', '.join(ignored)}; "
+            "remove the setting or make the corners smooth")
 
 
 @dataclass

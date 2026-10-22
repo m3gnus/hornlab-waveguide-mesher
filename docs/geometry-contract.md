@@ -531,12 +531,14 @@ a concave mitre are trimmed and the retained polyline is resampled with the
 same cut identities before the outer-grid validation. Unsafe mitres and folded
 outer grids are refused with corner z in the error.
 
-The corner path always uses approximating split patches. The existing
-FREEFORM refusal of explicit `surface_fit = "interpolate"` still applies.
-The corner builder ignores the resolved `surface_fit`, `preserve_grid`,
-legacy `topology_mode`, and
-`outer_clearance_points_mm`; these options do not change its construction.
-The no-corner path continues to honor its existing options.
+The corner path always uses approximating split patches. A profile with any
+corner (endpoint or interior) therefore refuses, with every corner z named,
+controls that path cannot honor: `surface_fit = "interpolate"`,
+`topology = "legacy"`, `preserve_grid = true`, and the
+`outer_clearance_points_mm` mouth-clearance probe. The defaults (`surface_fit`
+`auto`, `topology` `acoustic`, `preserve_grid` `false`, no probe) and an
+explicit `surface_fit = "approximate"`, which is what the corner path builds,
+are accepted. The no-corner path continues to honor its existing options.
 
 Mesh metadata includes `freeformReport.cornerWall`: each interior corner's
 OCC slopes/jump/error at 0,45,...,315 degrees, shared-edge incidence, H/V mesh
