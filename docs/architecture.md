@@ -39,6 +39,7 @@ Related reference docs:
 - [change-guide.md](change-guide.md): safe edit workflow by change type.
 - [public-api.md](public-api.md): stable API and internal helper boundary.
 - [geometry-contract.md](geometry-contract.md): mathematical and topology rules.
+- [native-osse-composition.md](native-osse-composition.md): native feature slots, composition order and identity gate.
 
 ## Module Responsibilities
 
