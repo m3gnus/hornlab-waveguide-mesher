@@ -18,7 +18,11 @@ to 3 mm to certify the complete triangle interiors within 0.1 mm. Other cases
 keep their measured LF resolution, including 6 mm for `b-resolution`.
 
 `horn_only.json` stores six representative configs and mesh hashes captured on
-base `e35f9da`, Python 3.13 / Gmsh 4.15.0. Tests additionally export that base and
-the current revision in fresh processes using the same runtime, compare bytes,
-and compare absent versus empty `woofers`. Historical hashes are provenance;
-the live comparison remains valid across supported native runtimes.
+base `e35f9da`, Python 3.13 / Gmsh 4.15.0. Tests export the base selected by
+`HORNLAB_HORN_ONLY_BASE` (default: `git merge-base HEAD origin/dev`, falling back
+to `dev`) and the current revision in fresh processes using the same runtime,
+compare mesh and STEP bytes, and compare absent versus empty `woofers`.
+Only a base equal to HEAD or no production changes under `hornlab_mesher/`
+since the base skips the comparison; `HORNLAB_HORN_ONLY_IDENTITY=required`
+makes either condition fail. Historical hashes are provenance; the live
+comparison remains valid across supported native runtimes.

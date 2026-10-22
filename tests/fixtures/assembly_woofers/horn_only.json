@@ -1,5 +1,4 @@
 {
-  "base": "e35f9da",
   "gmsh": "4.15.0",
   "cases": {
     "osse": {

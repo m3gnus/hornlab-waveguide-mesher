@@ -5,7 +5,9 @@ import copy
 from dataclasses import FrozenInstanceError, replace
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 
 import meshio
 import numpy as np
@@ -88,8 +90,30 @@ def test_formula_assembly(tmp_path, case, shape, recess):
 
 @pytest.fixture(scope='module')
 def horn_only_base(tmp_path_factory):
-    from test_freeform_wall_identity import archive_base
-    return archive_base(tmp_path_factory, BASELINE['base'])
+    from test_freeform_wall_identity import ROOT, archive_tree
+
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=ROOT, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    base = os.environ.get('HORNLAB_HORN_ONLY_BASE')
+    if base is None:
+        try:
+            base = git('merge-base', 'HEAD', 'origin/dev')
+        except subprocess.CalledProcessError:
+            base = git('merge-base', 'HEAD', 'dev')
+    base = git('rev-parse', '--verify', f'{base}^{{commit}}')
+    head = git('rev-parse', 'HEAD')
+    reason = None
+    if base == head:
+        reason = 'horn-only identity base equals HEAD; nothing to compare'
+    elif not git('diff', '--name-only', base, 'HEAD', '--', 'hornlab_mesher/'):
+        reason = 'no mesher production code changed since horn-only identity base'
+    if reason:
+        if os.environ.get('HORNLAB_HORN_ONLY_IDENTITY') == 'required':
+            pytest.fail(reason)
+        pytest.skip(reason)
+    return archive_tree(tmp_path_factory, base)
 
 
 @pytest.mark.parametrize('case', CASES)

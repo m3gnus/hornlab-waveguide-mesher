@@ -75,6 +75,10 @@ def archive_base(tmp_path_factory, base):
                               cwd=ROOT, capture_output=True)
     if ancestry.returncode != 0:
         pytest.skip(f'S1-wall slice gate applies only while {base[:7]} is an ancestor of HEAD')
+    return archive_tree(tmp_path_factory, base)
+
+
+def archive_tree(tmp_path_factory, base):
     archive = subprocess.run(['git','archive',base], cwd=ROOT, check=True, capture_output=True).stdout
     tree = tmp_path_factory.mktemp('wall-identity-base')
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
