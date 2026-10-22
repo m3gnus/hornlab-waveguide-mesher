@@ -57,6 +57,7 @@ def ath_enclosure_sources(items, *, quadrants=None):
     The third result is an optional full-domain quadrant override.
     """
     rows, notes = [], []
+    sid_sources = {}
     if any(k == "LFSource.Below" or k.startswith("LFSource.Below.") for k in items):
         notes.append(("Mesh.Enclosure.LFSource.Below", "", "LFSource.Below is ignored by ATH V2026-09a; no woofer imported."))
     for key, anchor in (("A", "above"), ("B", "below")):
@@ -92,8 +93,12 @@ def ath_enclosure_sources(items, *, quadrants=None):
             if sid == 0:
                 notes.append(("Mesh.Enclosure." + prefix + ".SID", "0",
                               "SID 0 is reserved for the waveguide; LF SID is left unset. ATH SID=0 polars select HF."))
+            elif sid in sid_sources:
+                notes.append(("Mesh.Enclosure." + prefix + ".SID", str(int(sid)),
+                              f"SID {int(sid)} already selects {sid_sources[sid]} (ATH's first match); {prefix} SID is left unset."))
             else:
                 ath["sid"] = int(sid)
+                sid_sources[sid] = prefix
         rows.append(dict(label="LF " + key, enabled=True, radius_mm=radius,
                          shape={"kind": "ath_cone"}, resolution_mm=resolution,
                          placement={"anchor": anchor, "gap_mm": number("Spacing", 10)},

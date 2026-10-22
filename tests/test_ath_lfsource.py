@@ -81,6 +81,33 @@ def test_sid_zero_imports_unassigned_with_note(caplog):
     assert "SID 0 is reserved for the waveguide; LF SID is left unset" in caplog.text
 
 
+@pytest.mark.parametrize("reverse_blocks", [False, True])
+def test_mtm_sids_keeps_first_ath_source(reverse_blocks, caplog):
+    text = (FIXTURES/"ath_cfg/mtm-sids.cfg").read_text()
+    if reverse_blocks:
+        text = text.replace("LFSource.A", "LFSource.TEMP").replace("LFSource.B", "LFSource.A").replace("LFSource.TEMP", "LFSource.B")
+    # Mapping/declaration order must not override ATH's A-before-B order.
+    rows, notes, _ = ath_enclosure_sources({
+        "LFSource.B.Radius": "50", "LFSource.B.SID": "1",
+        "LFSource.A.Radius": "50", "LFSource.A.SID": "1",
+    })
+    assert [row["ath"] for row in rows] == [{"key": "A", "sid": 1}, {"key": "B"}]
+    note, = [note for note in notes if note[0].endswith(".SID")]
+    assert note == ("Mesh.Enclosure.LFSource.B.SID", "1",
+                    "SID 1 already selects LFSource.A (ATH's first match); LFSource.B SID is left unset.")
+    config = parse_text_config(text)
+    assert len(config["enclosure"]["woofers"]) == 2
+    assert len(resolve_geometry(config).geometry.enclosure.woofers) == 2
+    assert note[2] in caplog.text
+
+
+@pytest.mark.parametrize("sid", ["-1", "1.5", "nan", "inf", "bad"])
+def test_invalid_sid_has_named_refusal(sid):
+    text = (FIXTURES/"ath_cfg/mtm-sids.cfg").read_text().replace("SID = 1", f"SID = {sid}", 1)
+    with pytest.raises(ConfigError, match=r"^LFSource\.A\.SID must be (finite|a nonnegative integer)"):
+        parse_text_config(text)
+
+
 @pytest.mark.parametrize("q", [1, 12, "1.0"])
 def test_quadrants_keep_independent_sources(q, caplog):
     text = (FIXTURES/"ath_cfg/mtm-q14.cfg").read_text().replace("Mesh.Quadrants = 14", f"Mesh.Quadrants = {q}")
