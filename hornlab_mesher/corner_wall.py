@@ -39,13 +39,43 @@ def corner_geometry_class(base: type, recipe: CornerWall | None = None) -> type:
     A class property survives dataclasses.replace without entering asdict (the
     profile contains deliberately immutable mapping proxies).
     """
-    return type(f"Corner{base.__name__}", (base,), {"freeform_wall": property(lambda self: recipe)})
+    def __post_init__(self):
+        if recipe is not None:
+            _refuse_ignored_controls(self, recipe)
+        base.__post_init__(self)
+
+    return type(f"Corner{base.__name__}", (base,), {"freeform_wall": property(lambda self: recipe),
+                                                    "__post_init__": __post_init__})
+
+
+def _refuse_ignored_controls(geometry, recipe: CornerWall) -> None:
+    """Refuse explicit controls the split-patch corner builder would ignore.
+
+    Runs before the base resolves ``surface_fit``: ``auto`` and ``approximate``
+    describe what the corner builder does, ``interpolate`` does not.
+    """
+    ignored = []
+    if geometry.surface_fit == "interpolate":
+        ignored.append("mesh.surface_fit='interpolate'")
+    if geometry.topology_mode == "legacy":
+        ignored.append("mesh.topology='legacy'")
+    if geometry.preserve_grid:
+        ignored.append("mesh.preserve_grid")
+    if getattr(geometry, "outer_clearance_points_mm", None) is not None:
+        ignored.append("outer_clearance_points_mm")
+    if ignored:
+        corners = ", ".join(f"{z:g}" for z in freeform_corner_z(recipe.profile))
+        raise ValueError(
+            f"FREEFORM corner z={corners} mm: corner walls always build approximating "
+            f"split patches and do not support {', '.join(ignored)}; "
+            "remove the setting or make the corners smooth")
 
 
 @dataclass
 class _BuiltCornerGeometry(BuiltGeometry):
     freeform_wall_points_mm: np.ndarray | None = None
     freeform_wall_recipe: CornerWall | None = None
+    freeform_strip_widths_mm: dict[str, float] | None = None
 
 
 def cut_indices(points: np.ndarray, cuts: tuple[float, ...]) -> list[int]:
@@ -492,6 +522,7 @@ def build_corner_wall(geometry):
     wall = [face for faces in segment_roles.values() for face in faces]
     roles = {'inner': wall, 'throat_disc': _cap(geometry, points, first)}
     enclosure_bounds = None
+    strip_widths = clearance = None
     if mode is PointGridBuildMode.INFINITE_BAFFLE:
         roles['mouth_aperture'] = make_planar_fill_from_boundary(last, use_min=False, closed=geometry.closed)
     elif mode is PointGridBuildMode.ENCLOSURE:
@@ -503,17 +534,23 @@ def build_corner_wall(geometry):
         roles['enclosure_edges_back'] = [(2, int(tag)) for tag in data['back_edges']]
         enclosure_bounds = dict(data['bounds'])
     elif mode is PointGridBuildMode.FREESTANDING:
+        from .builders.point_grid_freestanding import _wall_clearance_metadata
         from .rear_compatibility import geometry_rear_ring
         cuts = recipe.cuts(points)
         outer = mitred_outer_grid(points, geometry.wall_thickness_mm, full_circle=geometry.closed, corner_z=cuts)
         outer = _snap_open_symmetry_grid(outer, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
         ends = cut_indices(points, cuts)
         outer_patches = _patches(outer, (), groups, identities=ends)
+        # The smooth builders' outer-shell clearance sizing, from the mitred shell.
+        clearance = _wall_clearance_metadata(geometry, outer)
         # The rear return is its own linear patch and cannot round a profile crease.
         rear = geometry_rear_ring(geometry, points, outer)
         rear = _snap_open_symmetry_grid(rear[:, None, :], closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)[:, 0]
         extension = np.stack((rear, outer[:, 0]), axis=1)
         rear_patches = _patches(extension, (), groups)
+        # Both ruled strips span only about one wall thickness.
+        strip_widths = {'mouth': float(np.min(np.linalg.norm(outer[:, -1] - points[:, -1], axis=-1))),
+                        'rear': float(np.min(np.linalg.norm(extension[:, 1] - extension[:, 0], axis=-1)))}
         outer_roles = {f'{span}:{sector}': [face] for span, sector, face in outer_patches}
         outer_roles.update({f'rear:{sector}': [face] for _, sector, face in rear_patches})
         outer_roles = _sew_roles(outer_roles)
@@ -580,6 +617,8 @@ def build_corner_wall(geometry):
     if mode is PointGridBuildMode.BARE:
         reference_points, reference_normals = open_shell_wall_orientation_references(points, closed=geometry.closed)
     metadata = {'cornerWall': {'corners': records, 'refinements': attempt, 'axialRings': points.shape[1]}}
+    if clearance is not None:
+        metadata['outerWallClearance'] = clearance
     if mode is PointGridBuildMode.INFINITE_BAFFLE:
         metadata.update(apertureTag=int(PhysicalGroup.MOUTH_APERTURE), apertureZMm=0.,
                         cavityDepthMm=float(points[0, -1, 2] - points[0, 0, 2]))
@@ -587,7 +626,8 @@ def build_corner_wall(geometry):
                          source_axis='z', mesh_surface_groups=tags, enclosure_bounds=enclosure_bounds,
                          symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
                          open_shell_wall_points_mm=reference_points, open_shell_wall_normals=reference_normals,
-                         mesh_algorithm=MESH_ALGORITHM_MESHADAPT, metadata=metadata, freeform_wall_points_mm=points, freeform_wall_recipe=recipe)
+                         mesh_algorithm=MESH_ALGORITHM_MESHADAPT, metadata=metadata, freeform_wall_points_mm=points, freeform_wall_recipe=recipe,
+                         freeform_strip_widths_mm=strip_widths)
 
 
 MAX_MERIDIAN_NODES = 4097
@@ -650,6 +690,25 @@ def corner_size_fields(built, density):
                   combined=False, oriented=False) if dim == 1}
         gmsh.model.mesh.field.setNumbers(restrict, 'CurvesList', list(curves))
         fields.append(restrict)
+        sizes.append(size)
+    # A freestanding mouth rim or rear return is one wall thickness wide. Sized
+    # by mouth/rear resolution alone, its triangles become slivers; an element
+    # no longer than twice the strip width keeps them near atan(1/2). The size
+    # grades back over neighbouring faces so they do not sliver instead.
+    for role, width in (built.freeform_strip_widths_mm or {}).items():
+        local_size = density.mouth_res_mm if role == 'mouth' else density.rear_res_mm
+        size = 2 * width
+        if size >= local_size:
+            continue
+        distance_field = gmsh.model.mesh.field.add('Distance')
+        gmsh.model.mesh.field.setNumbers(distance_field, 'SurfacesList', built.mesh_surface_groups[role])
+        gmsh.model.mesh.field.setNumber(distance_field, 'Sampling', 100)
+        field = gmsh.model.mesh.field.add('Threshold')
+        for option, value in {'InField': distance_field, 'SizeMin': size,
+                              'SizeMax': local_size, 'DistMin': size,
+                              'DistMax': local_size, 'StopAtDistMax': 1}.items():
+            gmsh.model.mesh.field.setNumber(field, option, value)
+        fields.append(field)
         sizes.append(size)
     return fields, sizes
 
