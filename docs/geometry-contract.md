@@ -461,6 +461,51 @@ number of samples including endpoints; shared anchors appear once.
 Legacy controls are the Hermite-to-Bézier conversion and legacy samples are
 computed on the original Hermite curve.
 
+`freeform_evaluate_profile(config_or_params, plane, z, *,
+default_throat_angle_deg=None) -> np.ndarray` returns production radii in mm,
+at absolute axial positions in mm. `plane` is `H` or `V`; the returned array
+has the same shape as `z`, including a zero-dimensional array for a scalar.
+Non-finite positions and positions outside that plane's closed axial range
+are refused. It calls the resolved plane's production `radii_at_z` directly:
+legacy inputs retain their sampled inverse, and extended inputs use the
+existing exact Bézier inversion and saved-anchor boundary handling.
+
+All curve queries accept either profile params (`profileH`, `profileV`, optional
+`a0`, etc.) or a config containing those params under `profile`. For a nested
+config, `a0_deg`, when present, supplies `a0`, as in the existing curves query.
+The evaluator's optional throat default supplies an absent `a0`; otherwise
+the default is 15.5 degrees. Explicit profile/anchor endpoint angles retain
+precedence. Queries do not mutate inputs, import Gmsh, or construct a grid.
+
+`freeform_compare_profiles(before, after, *, samples=16385) -> dict` accepts
+those same config/params forms and returns `H` and `V` comparison objects:
+
+- `curve_deviation_mm` and `curve_at_z_mm` estimate the largest absolute radius
+  difference between mathematical resolved cubics at common z. Legacy cubics
+  use their Hermite-to-Bézier controls; extended cubics reuse the production
+  inversion, including its corner affine-z shortcut and saved anchors.
+- `evaluator_deviation_mm` and `evaluator_at_z_mm` compare both production
+  evaluators on that same grid. An exact insertion may preserve the cubic
+  within `1e-9` mm while producing a nonzero evaluator deviation when it
+  switches away from the legacy sampled inverse.
+- `extents` contains `before` and `after` as `[z0, z1]`, `extents_equal`,
+  `overlap`, and `comparison_domain` (`full`, `overlap_only`, or `no_overlap`).
+  Different extents compare only their overlap, without raising. Disjoint
+  extents return null overlap, deviations and locations, with an empty grid;
+  touching extents compare their single common position.
+- `samples` is the actual sorted common-z grid: the requested uniform samples
+  over the overlap, both profiles' anchors/span boundaries in that overlap,
+  and every peak-refinement probe. Both metrics are finally evaluated on this
+  union, so each reported location belongs to `samples`.
+- `method` records the requested uniform count, grid construction, and bounded
+  refinement of up to eight largest sampled interior local peaks per metric
+  above `1e-10` mm (`xatol=1e-12` mm, at most 64 iterations per peak).
+
+This is a **sampled estimate, not a certified maximum**; narrow unsampled
+features may be missed. It compares authored H/V meridians, not morphs,
+off-axis sections, scaled geometry, tessellation or STEP bytes. Both public
+functions are exported from `hornlab_mesher`.
+
 An explicit `join: corner` selects the FREEFORM corner-wall builder in bare,
 enclosure, infinite-baffle and freestanding modes. Interior H/V corner z
 positions are merged into one semantic cut set. Each axial segment is an

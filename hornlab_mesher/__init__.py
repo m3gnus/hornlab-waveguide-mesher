@@ -24,7 +24,12 @@ from .geometry import (
     RosseHornGeometry,
 )
 from .enclosure_woofers import AthConeShape, EnclosureWoofer, PistonShape
-from .freeform import freeform_insert_anchor, freeform_profile_curves
+from .freeform import (
+    freeform_compare_profiles,
+    freeform_evaluate_profile,
+    freeform_insert_anchor,
+    freeform_profile_curves,
+)
 from .source_body import StandaloneSourceGeometry
 from .cost import (
     SolveCostEstimate,
@@ -175,6 +180,8 @@ __all__ = [
     "graded_size_mm",
     "role_size_mm",
     "valid_f_max_hz",
+    "freeform_compare_profiles",
+    "freeform_evaluate_profile",
     "freeform_insert_anchor",
     "freeform_profile_curves",
     "build_from_config",

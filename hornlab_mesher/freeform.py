@@ -1016,20 +1016,30 @@ class _BezierPlane(_PlaneSpline):
     validation_warnings: tuple[str, ...]
 
     def radii_at_z(self, z: np.ndarray) -> np.ndarray:
-        query = np.asarray(z, dtype=float)
-        flat = query.reshape(-1)
-        indices = np.clip(np.searchsorted(self.anchors[:, 0], flat, side="right") - 1,
-                          0, len(self.beziers) - 1)
-        controls = self.beziers[indices]
-        if "corner" in self.joins:
-            parameters = _corner_bezier_parameters_at_z(controls, flat)
-        else:
-            parameters = _bezier_parameters_at_z(controls, flat)
-        values = _bezier_values(controls, parameters)[:, 1]
-        # Return saved anchors exactly, including at a span boundary.
-        for anchor in self.anchors:
-            values[flat == anchor[0]] = anchor[1]
-        return values.reshape(query.shape)
+        return _resolved_curve_radii_at_z(self, z, controls=self.beziers)
+
+
+def _plane_span_indices(plane: _PlaneSpline, z: np.ndarray) -> np.ndarray:
+    return np.clip(np.searchsorted(plane.anchors[:, 0], z, side="right") - 1,
+                   0, len(plane.anchors) - 2)
+
+
+def _resolved_curve_radii_at_z(
+    plane: _PlaneSpline, z: np.ndarray, *, controls: np.ndarray,
+) -> np.ndarray:
+    """Exact resolved cubics, shared with the production Bézier evaluator."""
+    query = np.asarray(z, dtype=float)
+    flat = query.reshape(-1)
+    selected = controls[_plane_span_indices(plane, flat)]
+    if isinstance(plane, _BezierPlane) and "corner" in plane.joins:
+        parameters = _corner_bezier_parameters_at_z(selected, flat)
+    else:
+        parameters = _bezier_parameters_at_z(selected, flat)
+    values = _bezier_values(selected, parameters)[:, 1]
+    # Return saved anchors exactly, including at a span boundary.
+    for anchor in plane.anchors:
+        values[flat == anchor[0]] = anchor[1]
+    return values.reshape(query.shape)
 
 
 def _bezier_values(controls: np.ndarray, s: np.ndarray) -> np.ndarray:
@@ -1413,10 +1423,10 @@ def _resolved_anchor_report(plane: _PlaneSpline) -> list[dict[str, Any]]:
     return anchors
 
 
-def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_span: int = 64) -> dict:
-    """Return JSON curve data without importing Gmsh or constructing a grid."""
-    if isinstance(samples_per_span, bool) or not isinstance(samples_per_span, (int, np.integer)) or samples_per_span < 2:
-        raise ValueError("FREEFORM samples_per_span must be an integer >= 2")
+def _freeform_query_geometry(
+    config_or_params: Mapping[str, Any], *, default_throat_angle_deg: float | None = None,
+) -> FreeformGeometry:
+    """One config/default resolution path for all public profile queries."""
     if not isinstance(config_or_params, Mapping):
         raise ValueError("FREEFORM params must be a mapping")
     params = dict(config_or_params)
@@ -1424,9 +1434,117 @@ def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_
         params.update(params.pop("profile"))
         if "a0_deg" in params:
             params["a0"] = params["a0_deg"]
+    if default_throat_angle_deg is not None:
+        default = _finite_float(default_throat_angle_deg, "default_throat_angle_deg")
+        params.setdefault("a0", default)
+    return build_freeform_geometry(params)
+
+
+def freeform_evaluate_profile(
+    config_or_params: Mapping[str, Any], plane: str, z: Any, *,
+    default_throat_angle_deg: float | None = None,
+) -> np.ndarray:
+    """Return production meridian radii at absolute z (mm), preserving z's shape.
+
+    Accept the same config/params as ``freeform_profile_curves``. The optional
+    throat default applies only when the input omits a0 (otherwise 15.5 degrees).
+    Profile endpoint angles retain their usual precedence. No grid is built.
+    """
+    if plane not in ("H", "V"):
+        raise ValueError("FREEFORM plane must be 'H' or 'V'")
+    geometry = _freeform_query_geometry(
+        config_or_params, default_throat_angle_deg=default_throat_angle_deg)
+    resolved = geometry._profile_h if plane == "H" else geometry._profile_v
+    query = np.asarray(z, dtype=float)
+    if not np.all(np.isfinite(query)):
+        raise ValueError("FREEFORM z queries must all be finite")
+    z0, z1 = resolved.anchors[[0, -1], 0]
+    if np.any(query < z0) or np.any(query > z1):
+        raise ValueError(f"FREEFORM profile{plane} z queries must lie in [{z0:g}, {z1:g}] mm")
+    return resolved.radii_at_z(query)
+
+
+def _refine_deviation_samples(z: np.ndarray, difference: Callable) -> list[float]:
+    """Probe the eight largest sampled local peaks; retain every probe."""
+    from scipy.optimize import minimize_scalar
+
+    delta = difference(z)
+    candidates = np.flatnonzero(
+        (delta[1:-1] >= delta[:-2]) & (delta[1:-1] >= delta[2:]) &
+        (delta[1:-1] > 1e-10)) + 1
+    candidates = candidates[np.argsort(delta[candidates], kind="stable")[-8:]]
+    probes = []
+    for index in candidates:
+        def objective(value: float) -> float:
+            probes.append(float(value))
+            return -float(difference(np.asarray([value]))[0])
+        minimize_scalar(objective, bounds=(z[index-1], z[index+1]), method="bounded",
+                        options={"xatol": 1e-12, "maxiter": 64})
+    return probes
+
+
+def freeform_compare_profiles(
+    before: Mapping[str, Any], after: Mapping[str, Any], *, samples: int = 16385,
+) -> dict:
+    """Estimate per-plane cubic and production-evaluator deviations in mm.
+
+    Comparisons use common absolute z over the overlap, with a uniform grid,
+    both sets of anchors/span boundaries and bounded local peak refinement.
+    The result is JSON data and a sampled estimate, not a certified maximum.
+    """
+    if isinstance(samples, bool) or not isinstance(samples, (int, np.integer)) or samples < 2:
+        raise ValueError("FREEFORM samples must be an integer >= 2")
+    first, second = _freeform_query_geometry(before), _freeform_query_geometry(after)
+    result = {}
+    for name, a, b in (("H", first._profile_h, second._profile_h),
+                       ("V", first._profile_v, second._profile_v)):
+        extent_a = a.anchors[[0, -1], 0].tolist()
+        extent_b = b.anchors[[0, -1], 0].tolist()
+        start, stop = max(extent_a[0], extent_b[0]), min(extent_a[1], extent_b[1])
+        equal = extent_a == extent_b
+        extents = {"before": extent_a, "after": extent_b, "extents_equal": equal,
+                   "overlap": [start, stop] if start <= stop else None,
+                   "comparison_domain": "full" if equal else
+                       ("overlap_only" if start <= stop else "no_overlap")}
+        controls_a, controls_b = _plane_beziers(a), _plane_beziers(b)
+
+        def curve_difference(z: np.ndarray) -> np.ndarray:
+            return np.abs(_resolved_curve_radii_at_z(a, z, controls=controls_a) -
+                          _resolved_curve_radii_at_z(b, z, controls=controls_b))
+
+        def evaluator_difference(z: np.ndarray) -> np.ndarray:
+            return np.abs(a.radii_at_z(z) - b.radii_at_z(z))
+
+        z = np.empty(0)
+        if start <= stop:
+            boundaries = np.concatenate((a.anchors[:, 0], b.anchors[:, 0]))
+            boundaries = boundaries[(boundaries >= start) & (boundaries <= stop)]
+            z = np.unique(np.concatenate((np.linspace(start, stop, samples), boundaries)))
+            probes = (_refine_deviation_samples(z, curve_difference) +
+                      _refine_deviation_samples(z, evaluator_difference))
+            z = np.unique(np.concatenate((z, probes)))
+        comparison = {"extents": extents, "samples": z.tolist(), "method": {
+            "estimate": "sampled estimate, not a certified maximum",
+            "uniform_samples": int(samples),
+            "grid": "uniform over overlap plus both profiles' anchors/span boundaries and all refinement probes",
+            "peak_refinement": "bounded minimization of negative absolute deviation at up to 8 largest sampled interior local peaks per metric above 1e-10 mm; xatol=1e-12 mm, maxiter=64",
+        }}
+        for metric, difference in (("curve", curve_difference), ("evaluator", evaluator_difference)):
+            delta = difference(z) if z.size else np.empty(0)
+            index = int(np.argmax(delta)) if z.size else None
+            comparison[f"{metric}_deviation_mm"] = float(delta[index]) if index is not None else None
+            comparison[f"{metric}_at_z_mm"] = float(z[index]) if index is not None else None
+        result[name] = comparison
+    return result
+
+
+def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_span: int = 64) -> dict:
+    """Return JSON curve data without importing Gmsh or constructing a grid."""
+    if isinstance(samples_per_span, bool) or not isinstance(samples_per_span, (int, np.integer)) or samples_per_span < 2:
+        raise ValueError("FREEFORM samples_per_span must be an integer >= 2")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", UserWarning)
-        geometry = build_freeform_geometry(params)
+        geometry = _freeform_query_geometry(config_or_params)
     result = {"warnings": [str(w.message) for w in caught]}
     for name, plane in (("H", geometry._profile_h), ("V", geometry._profile_v)):
         if isinstance(plane, _BezierPlane):
