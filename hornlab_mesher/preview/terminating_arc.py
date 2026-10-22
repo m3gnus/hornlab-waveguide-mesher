@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 
-from ..terminating_arc import ArcMeridian,FORMULA
+from ..terminating_arc import ArcMeridian
 from .contract import PreviewGeometryV1,PreviewSurfaceV1
 from .primitives import _grid_indices,_orient_indices_to_normals,_flat_cap
 
@@ -113,7 +113,7 @@ def build(params,options):
         "normal_bound_method":"sum-of-principal-direction-angle-ranges"}
     box=np.asarray(model.bounds)
     metadata={**model.metadata(),"api_version":"hornlab.preview/1","metadata_version":"hornlab.preview/1.4",
-        "formula":FORMULA,"mode":"bare","units":"mm","boundsMm":model.bounds,"lod":options.lod,
+        "formula":model.identity["formula"],"mode":"bare","units":"mm","boundsMm":model.bounds,"lod":options.lod,
         "dimensions_status":"current","coordinate_frame":"mesher-xyz",
         "dimensions_sampling":{"method":"analytic-full-envelope","lod_independent":True},
         "dimensions_mm":{"mouth_opening":[2*model.reach]*2,"horn_overall":(box[1]-box[0]).tolist()},

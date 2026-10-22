@@ -12,6 +12,7 @@ from typing import Mapping
 import numpy as np
 
 from .config_parser import ConfigError
+from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .throat_adapter import _conic_residual_bound
 
 FORMULA = "OSSE-ADAPTER-CONTROLS"
@@ -448,7 +449,7 @@ def validate_geometry(g):
     m.__post_init__()
     for key in ("wall_thickness_mm","source_shape","source_radius_mm","source_curv","source_auto_angle_deg","interface_offset_mm","vertical_offset_mm"):
         number(getattr(g,key),key)
-    if any(getattr(g,key,None) is not None for key in ("adapter_meridian","roundover","axial_model","arc_meridian")):
+    if sum(getattr(g,key,None) is not None for key in NATIVE_MODEL_ATTRIBUTES) > 1:
         fail("combined active native geometry features are not supported.")
     if (g.topology_mode!="acoustic" or g.surface_fit not in {"auto","interpolate"} or g.preserve_grid is not False
         or g.closed is not True or g.outer_points is not None or g.wall_thickness_mm!=0

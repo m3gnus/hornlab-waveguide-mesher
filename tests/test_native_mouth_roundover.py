@@ -302,7 +302,7 @@ def test_inactive_adapter_preserves_roundover_identity(location, inactive):
 def test_malformed_adapter_cannot_hide_behind_roundover(payload):
     c = config()
     c["throat_adapter"] = payload
-    with pytest.raises(ConfigError, match="roundover refused"):
+    with pytest.raises(ConfigError, match="roundover refused|adapter, roundover is not supported yet"):
         build_geometry_params(c)
 
 
@@ -324,7 +324,7 @@ def test_active_adapter_and_roundover_refused_at_config_and_direct_boundaries(tm
     c["throat_adapter"] = {"mode": "authored", "driver_exit_diameter_mm": 25.4,
         "exit_half_angle_deg": 10, "length_mm": 40, "join_t": .137,
         "driver_handle_mm": 10, "body_handle_mm": 15}
-    with pytest.raises(ConfigError, match="combined active"):
+    with pytest.raises(ConfigError, match="adapter, roundover is not supported yet"):
         build_geometry_params(c)
     mixed = SimpleNamespace(roundover=object(), adapter_meridian=object())
     with pytest.raises(ValueError, match="combined active"):

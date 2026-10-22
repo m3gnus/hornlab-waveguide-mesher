@@ -10,6 +10,7 @@ from ..geometry import (
     PointGridBuildMode,
     PointGridHornGeometry,
 )
+from ..native_boundary import NATIVE_MODEL_ATTRIBUTES
 from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 from ._occ import (
@@ -287,7 +288,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         from ..corner_wall import build_corner_wall
         return build_corner_wall(geometry)
     if sum(getattr(geometry, name, None) is not None
-           for name in ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")) > 1:
+           for name in NATIVE_MODEL_ATTRIBUTES) > 1:
         raise ValueError("combined active native geometry features are not supported")
     if getattr(geometry, "controls_meridian", None) is not None:
         from .adapter_controls import build_controls

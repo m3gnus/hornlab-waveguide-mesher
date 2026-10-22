@@ -51,7 +51,7 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
         model=ControlsMeridian.from_params(native_params[0])
         return {"source_diameter":[2*model.source_radius]*2,"join_diameter":[2*model.r0]*2,
                 "mouth_opening":[2*float(model.body(1)[0][1])]*2,"horn_overall":[2*model.reach,2*model.reach,model.depth]}
-    if native == "OSSE-ARC":
+    if native_params is not None and "terminatingArc" in native_params[0]:
         from ..terminating_arc import ArcMeridian
         model=ArcMeridian.from_params(native_params[0])
         box=np.asarray(model.bounds)
