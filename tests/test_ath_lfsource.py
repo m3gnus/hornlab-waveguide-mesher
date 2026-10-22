@@ -1,7 +1,9 @@
 """ATH LFSource import against the measured ten-case corpus (3a oracle)."""
+import re
+
 import pytest
 from hornlab_mesher import build_from_config
-from hornlab_mesher.config_parser import parse_text_config, ConfigError
+from hornlab_mesher.config_parser import parse_text_config, ath_enclosure_sources, ConfigError
 from hornlab_mesher.config_builder import resolve_geometry
 from test_enclosure_woofers import FIXTURES, REFERENCE, assert_corpus_apertures
 
@@ -50,3 +52,39 @@ def test_asymmetric_dim_without_lf_refused(q):
     config["mesh"]["quadrants"] = q
     with pytest.raises(ConfigError, match="symmetric enclosure Dim"):
         resolve_geometry(config)
+
+
+@pytest.mark.parametrize("sides", ["Dim = 250,400,270,450", "Spacing = 40,40,40,220"])
+def test_enclosure_without_lf_or_depth_uses_measured_default(sides):
+    text = (FIXTURES/"ath_cfg/b-dim4.cfg").read_text()
+    text = re.sub(r"LFSource.B = \{.*?\}\n", "", text, flags=re.S)
+    for line in ("Depth = 200", "Spacing = 40,40,40,220", "Dim = 250,400,270,450"):
+        text = text.replace(line + "\n", "")
+    text = text.replace("Mesh.Enclosure = {", "Mesh.Enclosure = {\n" + sides)
+    config = parse_text_config(text)
+    enclosure = resolve_geometry(config).geometry.enclosure
+    assert enclosure is not None
+    assert enclosure.depth_mm == pytest.approx(220)
+    assert not enclosure.woofers
+    if sides.startswith("Dim"):
+        assert enclosure.dim_mm == (250, 400, 270, 450)
+
+
+def test_sid_zero_imports_unassigned_with_note(caplog):
+    text = (FIXTURES/"ath_cfg/b-dim4.cfg").read_text().replace("SID = 1", "SID = 0")
+    config = parse_text_config(text)
+    assert len(config["enclosure"]["woofers"]) == 1
+    rows, notes, override = ath_enclosure_sources({"LFSource.B.Radius": "50", "LFSource.B.SID": "0"})
+    assert "sid" not in rows[0]["ath"]
+    assert any("SID 0 is reserved" in note for _, _, note in notes)
+    assert override is None
+    assert "SID 0 is reserved for the waveguide; LF SID is left unset" in caplog.text
+
+
+@pytest.mark.parametrize("q", [1, 12, "1.0"])
+def test_quadrants_keep_independent_sources(q, caplog):
+    text = (FIXTURES/"ath_cfg/mtm-q14.cfg").read_text().replace("Mesh.Quadrants = 14", f"Mesh.Quadrants = {q}")
+    config = parse_text_config(text)
+    assert config["mesh"]["quadrants"] == 1234
+    assert len(config["enclosure"]["woofers"]) == 2
+    assert "ATH drops B and mirrors A" in caplog.text

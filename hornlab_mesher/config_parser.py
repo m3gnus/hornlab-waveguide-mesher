@@ -48,12 +48,13 @@ def ath_enclosure_dim(value):
     return values
 
 
-def ath_enclosure_sources(items):
+def ath_enclosure_sources(items, *, quadrants=None):
     """Read LF metadata once for the ATH parser and WG's existing importer.
 
     Rows have no identity: WG's open migration owns UUIDs. Notes use WG's
     existing (key, value, note) import-report shape. Native parsing preserves
     ATH's omitted-weight rigid state; WG deliberately drives by default.
+    The third result is an optional full-domain quadrant override.
     """
     rows, notes = [], []
     if any(k == "LFSource.Below" or k.startswith("LFSource.Below.") for k in items):
@@ -86,14 +87,23 @@ def ath_enclosure_sources(items):
             notes.append(("Mesh.Enclosure." + prefix + ".DrivingWeight", "", "Imported as prescribed, 0 dB; ATH treats an omitted weight as 0."))
         if prefix + ".SID" in items:
             sid = number("SID", 0)
-            if sid != int(sid) or sid < 1:
-                raise ConfigError(f"{prefix}.SID must be a positive integer; omit an unassigned SID")
-            ath["sid"] = int(sid)
+            if sid != int(sid) or sid < 0:
+                raise ConfigError(f"{prefix}.SID must be a nonnegative integer; omit an unassigned SID")
+            if sid == 0:
+                notes.append(("Mesh.Enclosure." + prefix + ".SID", "0",
+                              "SID 0 is reserved for the waveguide; LF SID is left unset. ATH SID=0 polars select HF."))
+            else:
+                ath["sid"] = int(sid)
         rows.append(dict(label="LF " + key, enabled=True, radius_mm=radius,
                          shape={"kind": "ath_cone"}, resolution_mm=resolution,
                          placement={"anchor": anchor, "gap_mm": number("Spacing", 10)},
                          drive={"kind": "rigid" if weight == 0 else "prescribed"}, ath=ath))
-    return rows, notes
+    override = None
+    if rows and _maybe_number(quadrants) in {1, 12}:
+        override = 1234
+        notes.append(("Mesh.Quadrants", str(quadrants),
+                      "ATH drops B and mirrors A in quadrants 1/12; imported A and B remain independent woofers in full domain."))
+    return rows, notes, override
 
 def load_config(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
@@ -1232,16 +1242,16 @@ def parse_text_config(content: str) -> dict[str, Any]:
         config["gcurve"] = gcurve
     if enclosure:
         config["enclosure"] = enclosure
-    lf_rows, lf_notes = ath_enclosure_sources(enc_items)
+    lf_rows, lf_notes, quadrant_override = ath_enclosure_sources(
+        enc_items, quadrants=config["mesh"].get("quadrants"))
+    if quadrant_override is not None:
+        config["mesh"]["quadrants"] = quadrant_override
     for key, value, note in lf_notes:
         logger.warning("%s: %s", key, note.replace("Imported as prescribed, 0 dB; ", ""))
-    if lf_rows:
+    if lf_rows or "Dim" in enc_items or "Spacing" in enc_items:
         from copy import deepcopy
         from .config_builder import resolve_geometry
         from .enclosure_woofers import mouth_y_edges, resolve_woofer_placements
-        if str(config["mesh"].get("quadrants")) in {"1", "12"}:
-            logger.warning("ATH drops B and mirrors A in quadrants 1/12; importing independent A/B in full domain")
-            config["mesh"]["quadrants"] = 1234
         probe = deepcopy(config)
         probe["mesh"]["quadrants"] = 1234
         if "depth_mm" not in enclosure:
@@ -1253,13 +1263,14 @@ def parse_text_config(content: str) -> dict[str, Any]:
         for name in ("space_l_mm", "space_t_mm", "space_r_mm", "space_b_mm"):
             enclosure.setdefault(name, 10.0)
         enclosure.setdefault("edge_mm", 0.0)
-        enclosure["ath_lf_envelope"] = True
         config["enclosure"] = enclosure
-        bottom, top = mouth_y_edges(geometry.inner_points)
-        for row in lf_rows:
-            row["radiator_id"] = "ath-lf-" + row["ath"]["key"]
-            row["drive"] = {"kind": "prescribed" if row["ath"].get("weight", 0) != 0 else "rigid"}
-        enclosure["woofers"] = resolve_woofer_placements(lf_rows, mouth_bottom_mm=bottom, mouth_top_mm=top)
+        if lf_rows:
+            enclosure["ath_lf_envelope"] = True
+            bottom, top = mouth_y_edges(geometry.inner_points)
+            for row in lf_rows:
+                row["radiator_id"] = "ath-lf-" + row["ath"]["key"]
+                row["drive"] = {"kind": "prescribed" if row["ath"].get("weight", 0) != 0 else "rigid"}
+            enclosure["woofers"] = resolve_woofer_placements(lf_rows, mouth_bottom_mm=bottom, mouth_top_mm=top)
     if source:
         config["source"] = source
     if active:
