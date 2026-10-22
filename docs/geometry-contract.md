@@ -627,8 +627,12 @@ default and retains it as a diagnostic. There is no `"allow"` policy.
 - `inflectionSpans`: per-plane `zStartMm`, `zEndMm`, and `tangentDropDeg`.
 
 The report is carried into build metadata as `freeformReport`. Acoustic OCC
-builds additionally report `freeformProfileDeviationMm`, the fitted wall's
-maximum deviation from the analytic H/V axis samples.
+builds can additionally report `freeformProfileDeviationMm`, the fitted wall's
+maximum radial deviation from the analytic H/V axis samples. This expensive
+closest-point probe is off by default and the key is omitted. Pass the per-build
+Python option `measure_profile_deviation=True` to `build_from_config`,
+`build_mesh`, or `build_mesh_with_info` to enable it. The option changes only
+this diagnostic metadata; mesh bytes, other stats, and STEP export are unchanged.
 
 ## Guiding Curve
 

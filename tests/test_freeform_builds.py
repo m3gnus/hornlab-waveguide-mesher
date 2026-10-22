@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import meshio
 import numpy as np
@@ -83,6 +84,36 @@ def _assert_closed_valid_mesh(result, *, require_positive_volume: bool) -> None:
     assert report.inconsistent_edges == 0
 
 
+def _build_with_deviation_identity(config, tmp_path, monkeypatch):
+    import hornlab_mesher.mesher as mesher
+
+    def unexpected_probe(*args, **kwargs):
+        pytest.fail("the default build must not call the deviation probe")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mesher, "_freeform_profile_deviation_mm", unexpected_probe)
+        default = build_from_config(config, tmp_path / "default.msh")
+    assert "freeformProfileDeviationMm" not in default.metadata
+
+    measured = build_from_config(
+        config, tmp_path / "measured.msh", measure_profile_deviation=True
+    )
+    assert 0.0 <= measured.metadata["freeformProfileDeviationMm"] < 0.25
+    assert default.mesh_path.read_bytes() == measured.mesh_path.read_bytes()
+    default_stats = default.as_dict()
+    measured_stats = measured.as_dict()
+    for stats in (default_stats, measured_stats):
+        stats.pop("mesh_path")
+        # as_dict retains the metadata mapping; copy it before removing the
+        # sole permitted difference so the returned result keeps the probe.
+        stats["metadata"] = dict(stats["metadata"])
+        stats["metadata"].pop("freeformProfileDeviationMm", None)
+    assert json.dumps(default_stats, sort_keys=True) == json.dumps(
+        measured_stats, sort_keys=True
+    )
+    return measured
+
+
 @pytest.mark.parametrize(
     "mode,extra,require_positive_volume",
     [
@@ -92,7 +123,7 @@ def _assert_closed_valid_mesh(result, *, require_positive_volume: bool) -> None:
     ],
 )
 def test_owner_freeform_closed_acoustic_builds_are_watertight(
-    tmp_path, mode, extra, require_positive_volume
+    tmp_path, monkeypatch, mode, extra, require_positive_volume
 ):
     config = _owner_config()
     config["mode"] = mode
@@ -101,7 +132,7 @@ def test_owner_freeform_closed_acoustic_builds_are_watertight(
     if mode == "enclosure":
         config["enclosure"] = {"depth": 150.0}
 
-    result = build_from_config(config, tmp_path / f"freeform-{mode}.msh")
+    result = _build_with_deviation_identity(config, tmp_path, monkeypatch)
 
     _assert_closed_valid_mesh(
         result, require_positive_volume=require_positive_volume
@@ -110,11 +141,11 @@ def test_owner_freeform_closed_acoustic_builds_are_watertight(
     assert result.metadata["freeformReport"]["throatRadiusMm"] == pytest.approx(12.7)
 
 
-def test_owner_freeform_bare_build_has_open_mouth_and_expected_groups(tmp_path):
+def test_owner_freeform_bare_build_has_open_mouth_and_expected_groups(tmp_path, monkeypatch):
     config = _owner_config()
     config["mesh"].update(throat_res_mm=40.0, mouth_res_mm=40.0)
 
-    result = build_from_config(config, tmp_path / "freeform-bare.msh")
+    result = _build_with_deviation_identity(config, tmp_path, monkeypatch)
 
     mesh = meshio.read(result.mesh_path)
     points = np.asarray(mesh.points, dtype=np.float64)
@@ -154,12 +185,12 @@ def test_freeform_acoustic_refinement_retargets_full_sample_zmap(tmp_path):
     assert result.n_triangles > 0
 
 
-def test_owner_freeform_quadrant_reduced_freestanding_build_succeeds(tmp_path):
+def test_owner_freeform_quadrant_reduced_freestanding_build_succeeds(tmp_path, monkeypatch):
     config = _owner_config(quadrants="1")
     config["mode"] = "freestanding"
     config["mesh"]["wall_thickness_mm"] = 1.0
 
-    result = build_from_config(config, tmp_path / "freeform-quarter.msh")
+    result = _build_with_deviation_identity(config, tmp_path, monkeypatch)
 
     assert result.n_triangles > 0
     assert result.native_symmetry_plane == "yz+xz"

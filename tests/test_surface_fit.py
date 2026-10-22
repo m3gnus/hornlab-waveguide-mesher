@@ -410,7 +410,10 @@ def test_interpolating_mesh_preserves_callers_curve_sampling_option(tmp_path):
         gmsh.finalize()
 
 
-def test_auto_fit_recovers_from_failure_but_explicit_fit_propagates(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize("measure_profile_deviation", [False, True])
+def test_auto_fit_recovers_from_failure_but_explicit_fit_propagates(
+    tmp_path, monkeypatch, caplog, measure_profile_deviation
+):
     pytest.importorskip("gmsh")
     import hornlab_mesher.config_builder as builder
     from hornlab_mesher.mesher import MesherError
@@ -419,18 +422,25 @@ def test_auto_fit_recovers_from_failure_but_explicit_fit_propagates(tmp_path, mo
     attempts = []
 
     def fail_interpolation(geometry, *args, **kwargs):
+        assert kwargs["measure_profile_deviation"] is measure_profile_deviation
         attempts.append(geometry.surface_fit)
         if geometry.surface_fit == "interpolate":
             raise MesherError("injected interpolation failure")
         return original(geometry, *args, **kwargs)
 
     monkeypatch.setattr(builder, "build_mesh_with_info", fail_interpolation)
-    result = builder.build_from_config(_small_shell_config(), tmp_path / "recovered.msh")
+    result = builder.build_from_config(
+        _small_shell_config(), tmp_path / "recovered.msh",
+        measure_profile_deviation=measure_profile_deviation,
+    )
     assert result.n_triangles > 0
     assert attempts == ["interpolate", "approximate"]
     assert "falling back" in caplog.text
     attempts.clear()
     with pytest.raises(MesherError, match="injected interpolation failure"):
-        builder.build_from_config(_small_shell_config("interpolate"), tmp_path / "explicit.msh")
+        builder.build_from_config(
+            _small_shell_config("interpolate"), tmp_path / "explicit.msh",
+            measure_profile_deviation=measure_profile_deviation,
+        )
     assert attempts == ["interpolate"]
     assert not (tmp_path / "explicit.msh").exists()
