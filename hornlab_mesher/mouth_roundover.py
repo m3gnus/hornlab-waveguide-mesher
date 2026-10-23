@@ -16,6 +16,9 @@ from .config_parser import ConfigError
 FORMULA = "OSSE-ROUNDOVER"
 KEY = "mouth_roundover_radius_mm"
 FIT_TOL_MM = 0.0001
+# Feature sets of the OSSE-NATIVE composites this construction owns.
+COMPOSITES = frozenset({frozenset({"roundover", "axial"}), frozenset({"adapter", "roundover"}),
+                        frozenset({"adapter", "roundover", "axial"})})
 
 
 def _fail(message):
@@ -41,8 +44,9 @@ def configuration(config, resolver):
     formula = str(config.get("formula", config.get("type", profile.get("formula", profile.get("type", "OSSE"))))).upper()
     radius = _number(mesh.get(KEY, 0), KEY)
     from .native_boundary import native_features
-    # Roundover x Axial is the one composite this construction owns.
-    composite = formula == "OSSE-NATIVE" and native_features(config) == {"roundover", "axial"}
+    # This construction owns Roundover x Axial and Adapter x Roundover (x Axial).
+    features = native_features(config) if formula == "OSSE-NATIVE" else frozenset()
+    composite = features in COMPOSITES
     marker = "OSSE-NATIVE" if composite else FORMULA
     supplied_marker = any(
         isinstance(section.get(key), str) and section[key].upper() == FORMULA
@@ -60,16 +64,17 @@ def configuration(config, resolver):
     if "throat_adapter" in config and "throat_adapter" in profile:
         _fail("throat_adapter must be supplied in only one location.")
     from .throat_adapter import normalize_adapter
+    adapter = None
     for section in (config, profile):
         if "throat_adapter" in section:
             try:
                 adapter = normalize_adapter(section["throat_adapter"])
             except ValueError as exc:
                 _fail(str(exc))
-            if adapter is not None:
+            if adapter is not None and "adapter" not in features:
                 _fail("combined active throat adapter and mouth roundover are not supported.")
     allowed = {
-        "root": {"formula", "type", "profile", "mesh", "source", "mode", "scale", "quadrants", "vertical_offset_mm", "throat_adapter"}|({"axial_scale"} if composite else set()),
+        "root": {"formula", "type", "profile", "mesh", "source", "mode", "scale", "quadrants", "vertical_offset_mm", "throat_adapter"}|({"axial_scale"} if "axial" in features else set()),
         "profile": {"formula", "type", "L_mm", "r0_mm", "a_deg", "a0_deg", "k", "s", "n", "q", "throat_adapter"},
         "mesh": {KEY, "wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "scale_to_metres", "topology_mode", "surface_fit", "max_triangles", "allow_large_mesh", "quadrants", "vertical_offset_mm"},
         "source": {"source_shape", "source_radius_mm", "source_curv"},
@@ -135,8 +140,11 @@ def configuration(config, resolver):
     if mesh.get("topology_mode", "acoustic") != "acoustic" or mesh.get("surface_fit", "auto") not in {"auto", "interpolate"}:
         _fail("the analytic construction requires acoustic topology and an interpolating fit.")
     params["mouthRoundoverRadiusMm"] = radius
-    if composite:
+    if "axial" in features:
         params["absoluteAxialScale"] = _number(config["axial_scale"], "axial_scale")
+    if adapter is not None:
+        params["throat_adapter"] = adapter
+    if composite:
         params["type"] = marker
     model = Roundover.from_params(params)
     params["mouthRoundoverFingerprint"] = model.fingerprint
@@ -155,13 +163,19 @@ class Roundover:
     offset: float = 0.0
 
     formula = FORMULA
+    # Class constants, not fields: the legacy record and fingerprint keep their
+    # field set. A throat composite overrides them with its own fields.
+    start = 0.0
+    throat = None
 
     @classmethod
     def from_params(cls, p):
         scale = _number(p.get("scale", 1), "scale")
         if not 0.01 <= scale <= 10:
             _fail("scale must be in [0.01, 10].")
-        if "absoluteAxialScale" not in p:
+        if p.get("throat_adapter"):
+            model = AdapterRoundover.construct(p)
+        elif "absoluteAxialScale" not in p:
             model = cls(float(p["L"])*scale, float(p["r0"])*scale,
                         math.radians(float(p["a"])), math.radians(float(p["a0"])),
                         float(p["k"]), float(p["wallThickness"]),
@@ -183,10 +197,12 @@ class Roundover:
             _fail("radius must exceed the positive wall thickness by at least 0.1 mm.")
         if abs(model.offset) > 10000:
             _fail("vertical placement exceeds 10000 mm.")
-        if model.wall*model.second_bound(0, model.length, False) >= 0.4:
+        if model.wall*model.second_bound(model.start, model.length, False) >= 0.4:
             _fail("the outer offset approaches a body curvature fold.")
         if model.center[0] <= 0.1:
             _fail("the lip folds or intersects the rear closure.")
+        if model.throat is not None:
+            model.certify_throat()
         return model
 
     @property
@@ -241,8 +257,21 @@ class Roundover:
     def fingerprint(self):
         return hashlib.sha256(json.dumps({"contract":1, **self.__dict__}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
+    @property
+    def source_radius(self):
+        return self.r0
+
+    @property
+    def rear_start(self):
+        """Outer wall at the throat plane, where the flat rear return starts."""
+        return self.body(0, True)[0]
+
+    @property
+    def fit_tolerance(self):
+        return FIT_TOL_MM
+
     def stations(self, tolerance, outer=False):
-        result = [0.0]
+        result = [self.start]
         def split(lo, hi):
             if self.second_bound(lo, hi, outer)*(hi-lo)**2/2 <= tolerance:
                 result.append(hi)
@@ -250,7 +279,7 @@ class Roundover:
                 mid = (lo+hi)/2
                 split(lo, mid)
                 split(mid, hi)
-        split(0, self.length)
+        split(self.start, self.length)
         if len(result) > 8192:
             _fail("the body fit exceeds the station budget.")
         return np.asarray(result)
@@ -279,15 +308,16 @@ class Roundover:
         return math.hypot(z4,r4)
 
     def fit_stations(self, outer=False):
-        result = [0.0]
+        result = [self.start]
+        tolerance = self.fit_tolerance
         def split(lo,hi):
-            if self.fourth_bound(lo,hi,outer)*(hi-lo)**4/384 <= FIT_TOL_MM:
+            if self.fourth_bound(lo,hi,outer)*(hi-lo)**4/384 <= tolerance:
                 result.append(hi)
             else:
                 mid = (lo+hi)/2
                 split(lo,mid)
                 split(mid,hi)
-        split(0,self.length)
+        split(self.start,self.length)
         if len(result) > 8192:
             _fail("the body fit exceeds the station budget.")
         return np.asarray(result)
@@ -338,17 +368,205 @@ class AxialRoundover(Roundover):
         return {"construction_fingerprint":self.fingerprint, **super().metadata()}
 
 
+def _hull(coefficients, lo, hi):
+    """Bernstein hull of a power-basis polynomial on [lo,hi], widened for roundoff."""
+    from .adapter_axial import restrict_controls
+    a = np.atleast_1d(np.asarray(coefficients, dtype=np.float64))
+    n = len(a)-1
+    b = [sum(math.comb(j, i)/math.comb(n, i)*a[i] for i in range(j+1)) for j in range(n+1)]
+    b = restrict_controls(b, lo, hi)
+    guard = 1e-12*float(np.sum(np.abs(a)))
+    return float(np.min(b))-guard, float(np.max(b))+guard
+
+
+@dataclass(frozen=True)
+class AdapterRoundover(AxialRoundover):
+    """Adapter x Roundover (x Axial): the authored throat cubic, then the lip.
+
+    The throat is the OSSE-ADAPTER-AXIAL PhysicalAdapter: its cubic on
+    u in [0,1] from the driver rim at z=0 to the adapter join at ``start``.
+    The retained conic is AxialModel's mapped body from the adapter join,
+    translated by ``shift`` into composite z (see ``coefficients``), so every
+    inherited body, offset, fit and lip expression applies unchanged and the
+    lip is built in finished mm at the body mouth ``length``. The wall offset
+    of the cubic is new: a cubic Hermite fit certified by a whole-interval
+    fourth-derivative bound, as for the conic.
+    """
+    start: float = 0.0
+    shift: float = 0.0
+    features: tuple = ()
+    throat: object = None
+
+    @classmethod
+    def construct(cls, p):
+        from .adapter_axial import KEY, PhysicalAdapter
+        authored = "absoluteAxialScale" in p
+        axial = p["absoluteAxialScale"] if authored else p.get("scale", 1)
+        body = AxialModel.from_params(dict(p, absoluteAxialScale=axial))
+        # The same mapped cubic and checks as OSSE-ADAPTER-AXIAL; the wall is the lip's.
+        throat = PhysicalAdapter.from_params(dict(p, type="OSSE", wallThickness=0, **{KEY: axial}))
+        start = float(throat.cubic[-1, 0])
+        shift = start-body.length*throat.payload["join_t"]
+        return cls(shift+body.length, body.r0, math.radians(float(p["a"])), math.radians(float(p["a0"])),
+                   body.k, float(p["wallThickness"]), float(p["mouthRoundoverRadiusMm"]), body.offset,
+                   body.xy_scale, body.axial_scale, body.slope, body.throat_slope, start, shift,
+                   ("adapter", "axial", "roundover") if authored else ("adapter", "roundover"), throat)
+
+    @property
+    def coefficients(self):
+        # The mapped conic in composite z = u+shift; C*A-B*B is unchanged.
+        A, B, C = AxialModel.coefficients.fget(self)
+        s = self.shift
+        return A+s*(C*s-2*B), B-C*s, C
+
+    @property
+    def identity(self):
+        controls = {key: value for key, value in self.__dict__.items() if key not in ("throat", "features")}
+        return {"contractRevision":1, "formula":self.formula, "construction":"circular-cubic-conic-lip-v1",
+                "features":list(self.features), "adapter":dict(self.throat.payload),
+                "body":self.throat.identity["body"], "controls":controls}
+
+    @property
+    def source_radius(self):
+        return float(self.throat.cubic[0, 1])
+
+    @property
+    def rear_start(self):
+        return self.cubic(0., True)[0]
+
+    @property
+    def join_gap(self):
+        """Largest roundoff gap between the cubic and conic ends at the join."""
+        inner = np.linalg.norm(self.body(self.start)[0]-self.throat.cubic[-1])
+        outer = np.linalg.norm(self.body(self.start, True)[0]-self.cubic(1., True)[0])
+        return float(max(inner, outer))
+
+    @property
+    def fit_tolerance(self):
+        # Builders share one point at the join, so each fit spends its gap.
+        return FIT_TOL_MM-self.join_gap-1e-10*max(1., self.length, self.center[1]+self.radius)
+
+    def cubic(self, u, outer=False):
+        """Throat cubic points and d/du derivatives; outer is the wall offset.
+
+        The offset o = c+wall*n has o' = c'*(1-wall*kappa), with kappa the
+        curvature signed towards the outer normal.
+        """
+        p, d, dd = self.throat.cubic_values(u)
+        if not outer:
+            return p, d
+        speed = np.linalg.norm(d, axis=-1)
+        kappa = (d[..., 0]*dd[..., 1]-d[..., 1]*dd[..., 0])/speed**3
+        normal = np.stack((-d[..., 1], d[..., 0]), axis=-1)/speed[..., None]
+        return p+self.wall*normal, d*(1-self.wall*kappa)[..., None]
+
+    def _polynomials(self):
+        """Power-basis z', r', z'', r'', speed squared g and curvature numerator."""
+        P = np.polynomial.polynomial
+        c = self.throat.cubic
+        power = np.array([c[0], 3*(c[1]-c[0]), 3*(c[0]-2*c[1]+c[2]), -c[0]+3*c[1]-3*c[2]+c[3]])
+        dz, dr = P.polyder(power[:, 0]), P.polyder(power[:, 1])
+        ddz, ddr = P.polyder(dz), P.polyder(dr)
+        return (dz, dr, ddz, ddr, P.polyadd(P.polymul(dz, dz), P.polymul(dr, dr)),
+                P.polysub(P.polymul(dz, ddr), P.polymul(dr, ddz)))
+
+    def offset_bounds(self, lo, hi):
+        """Upper bounds of the second and fourth derivative norms of the outer
+        cubic offset on [lo,hi].
+
+        o = c+wall*N*h with N = (-r',z') quadratic, h = g**-1/2 and g = |c'|**2
+        quartic. Faa di Bruno bounds the derivatives of h from the Bernstein
+        hulls of g and its derivatives on the interval; the cubic's fourth
+        derivative and N's third derivative vanish.
+        """
+        P = np.polynomial.polynomial
+        dz, dr, ddz, ddr, g, _ = self._polynomials()
+        gmin, gmax = _hull(g, lo, hi)
+        if gmin <= 0:
+            _fail("the throat cubic speed could not be bounded away from zero.")
+        G = [max(abs(v) for v in _hull(P.polyder(g, j), lo, hi)) for j in range(1, 5)]
+        f = [.5*gmin**-1.5, .75*gmin**-2.5, 1.875*gmin**-3.5, 6.5625*gmin**-4.5]
+        h0 = gmin**-.5
+        h1 = f[0]*G[0]
+        h2 = f[1]*G[0]**2+f[0]*G[1]
+        h3 = f[2]*G[0]**3+3*f[1]*G[0]*G[1]+f[0]*G[2]
+        h4 = f[3]*G[0]**4+6*f[2]*G[0]**2*G[1]+3*f[1]*G[1]**2+4*f[1]*G[0]*G[2]+f[0]*G[3]
+        n0 = math.sqrt(gmax)
+        n1 = math.sqrt(max(0., _hull(P.polyadd(P.polymul(ddz, ddz), P.polymul(ddr, ddr)), lo, hi)[1]))
+        n2 = math.hypot(float(P.polyder(ddz)[0]), float(P.polyder(ddr)[0]))
+        second = n1+self.wall*(n2*h0+2*n1*h1+n0*h2)
+        fourth = self.wall*(n0*h4+4*n1*h3+6*n2*h2)
+        return second, fourth
+
+    def cubic_fit_stations(self):
+        result = [0.0]
+        tolerance = self.fit_tolerance
+        def split(lo, hi):
+            if self.offset_bounds(lo, hi)[1]*(hi-lo)**4/384 <= tolerance:
+                result.append(hi)
+                if len(result) > 8192:
+                    _fail("the throat offset fit exceeds the station budget.")
+            else:
+                mid = (lo+hi)/2
+                split(lo, mid)
+                split(mid, hi)
+        split(0., 1.)
+        return np.asarray(result)
+
+    def certify_throat(self):
+        """Refuse a throat whose offset wall could fold or touch another face.
+
+        Inner and outer walls are graphs over z (positive axial hodograph,
+        offset factor 1-wall*kappa >= 0.6). If every wall tangent angle lies
+        in a range narrower than 90 degrees, every outer point lies above the
+        inner graph at its own z, so the walls cannot cross. The cubic and
+        its offset stay inside z <= start+wall and r <= reach+wall, which must
+        clear the lip (z >= centre, r >= mouth radius) by 0.1 mm.
+        """
+        if not abs(self.throat.source_angle) <= 75:
+            _fail("the adapter exit angle must be within 75 degrees of the axis.")
+        hodograph = 3*np.diff(self.throat.cubic, axis=0)
+        angles = np.arctan2(hodograph[:, 1], hodograph[:, 0])
+        join = math.atan(float(self.body(self.start)[1][1]))
+        if max(float(np.max(angles)), self.beta)-min(float(np.min(angles)), join) >= math.radians(85):
+            _fail("the wall tangent turns 85 degrees or more; the outer offset cannot be certified clear of the inner wall.")
+        _, _, _, _, g, X = self._polynomials()
+        def regular(lo, hi, depth):
+            numerator, speed = _hull(X, lo, hi)[1], _hull(g, lo, hi)[0]
+            if numerator <= 0 or (speed > 0 and self.wall*numerator/speed**1.5 < 0.4):
+                return True
+            mid = (lo+hi)/2
+            return depth > 0 and regular(lo, mid, depth-1) and regular(mid, hi, depth-1)
+        if not regular(0., 1., 12):
+            _fail("the outer offset approaches a throat curvature fold.")
+        reach = self.throat.cubic_reach+self.wall
+        if not (self.start+self.wall <= self.center[0]-.1 or reach <= float(self.body(self.length)[0][1])-.1):
+            _fail("the lip must clear the throat adapter by 0.1 mm.")
+        if reach > self.center[1]+self.radius:
+            _fail("the throat adapter must stay within the lip's outer reach.")
+        if self.join_gap > 1e-6:
+            _fail("the adapter join could not be certified.")
+        self.cubic_fit_stations()
+
+    def _composite_metadata(self):
+        return {**super()._composite_metadata(), "adapterJoinMm":self.throat.cubic[-1].tolist(),
+                "sourceRadiusMm":self.source_radius, "sourceAngleDeg":self.throat.source_angle,
+                "throatAdapter":dict(self.throat.payload)}
+
+
 def resolve(config, params, allow_large_mesh=None):
     from .config_builder import ResolvedGeometry, _mesh_density_from_config, _bool
     from .geometry import _RoundoverPointGridHornGeometry
     if allow_large_mesh is not None and type(allow_large_mesh) is not bool:
         _fail("allow_large_mesh override must be a boolean or None.")
     model = Roundover.from_params(params)
-    z = np.linspace(0, model.length, 33)
+    z = np.linspace(model.start, model.length, 33)
     phi = np.linspace(0, model.sweep, 65)
     az = np.linspace(0, 2*math.pi, 64, endpoint=False)
     def grid(outer):
         meridian = np.vstack((model.body(z, outer)[0], model.arc(phi, outer)[1:]))
+        if model.throat is not None:
+            meridian = np.vstack((model.cubic(np.linspace(0, 1, 17)[:-1], outer)[0], meridian))
         return np.stack((np.cos(az)[:,None]*meridian[:,1], np.sin(az)[:,None]*meridian[:,1],
                          np.broadcast_to(meridian[:,0], (len(az),len(meridian)))), axis=-1)
     geometry = _RoundoverPointGridHornGeometry(inner_points=grid(False), outer_points=grid(True),

@@ -31,6 +31,21 @@ def _number(value, name):
     return float(value)
 
 
+def restrict_controls(controls, lo, hi):
+    """Bezier controls of the same curve restricted to [lo,hi], by de Casteljau."""
+    def split(rows, value):
+        rows = [np.asarray(rows, dtype=float)]
+        while len(rows[-1]) > 1:
+            rows.append((1-value)*rows[-1][:-1]+value*rows[-1][1:])
+        return np.array([r[0] for r in rows]), np.array([r[-1] for r in rows[::-1]])
+    controls = np.asarray(controls, dtype=float)
+    if lo:
+        controls = split(controls, lo)[1]
+    if hi < 1:
+        controls = split(controls, (hi-lo)/(1-lo))[0]
+    return controls
+
+
 def configuration(config, resolver):
     sections = [config]+[config[k] for k in ("profile", "parameters") if isinstance(config.get(k), Mapping)]
     names = [section[k] for section in sections for k in ("formula", "type") if k in section]

@@ -4,8 +4,9 @@ This contract defines the release-line path toward composable native OSSE.
 Slice 0 added this contract and the legacy identity gate. Slice 1 replaces
 the one-feature lock with one rule table in `native_boundary.py` and enables
 Arc × Axial. Slice 2 adds Adapter × Arc (× Axial) on one shared composite
-meridian, and slice 3 adds Roundover × Axial. An unimplemented pair must
-refuse with a clear message.
+meridian, slice 3 adds Roundover × Axial, and slice 4 adds Adapter ×
+Roundover (× Axial) as a closed solid. An unimplemented pair must refuse
+with a clear message.
 
 ## Slots
 
@@ -58,7 +59,7 @@ Every existing design and its outputs must stay byte-identical.
 | Arc × Axial | Implemented as `OSSE-NATIVE`; see [terminating arc](native-terminating-arc.md#arc-with-axial-scale) |
 | Adapter × Arc (× Axial) | Implemented as `OSSE-NATIVE`, authored adapter only; see [terminating arc](native-terminating-arc.md#arc-with-a-throat-adapter) |
 | Roundover × Axial | Implemented as `OSSE-NATIVE`; see [mouth roundover](native-mouth-roundover.md#roundover-with-axial-scale) |
-| Adapter × Roundover (× Axial) | Later; refused until implemented |
+| Adapter × Roundover (× Axial) | Implemented as `OSSE-NATIVE`, authored adapter only; see [mouth roundover](native-mouth-roundover.md#roundover-with-a-throat-adapter) |
 | Roundover × Arc | Same mouth slot conflict; always refused |
 | Adapter × Controls | Same throat slot conflict; always refused |
 | Anything with SOURCE-DISK | Always refused |
@@ -94,7 +95,12 @@ bound than v0.2.6. A composite's STEP file carries one
 `native-composite` header recipe; the legacy markers keep their existing
 emitters and bytes. Roundover × Axial keeps the freestanding lip
 construction (`mouth_roundover.py`), whose body coefficients come from the
-mapped conic; its STEP file carries the same header recipe.
+mapped conic; its STEP file carries the same header recipe. Adapter ×
+Roundover (× Axial) extends that construction (`AdapterRoundover`): the
+throat is the same `PhysicalAdapter` cubic as Adapter × Arc, the retained
+conic is the mapped body from the adapter join translated into composite
+coordinates, and the roundover builder adds the cubic and its certified
+wall offset ahead of the conic. The lip certificate is unchanged.
 
 ## Identity gate
 

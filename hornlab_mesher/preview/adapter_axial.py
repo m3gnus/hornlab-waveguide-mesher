@@ -4,27 +4,16 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from ..adapter_axial import PhysicalAdapter, FORMULA
+from ..adapter_axial import PhysicalAdapter, FORMULA, restrict_controls
 from .contract import PreviewGeometryV1, PreviewSurfaceV1
 from .primitives import _grid_indices, _orient_indices_to_normals, _flat_cap
-
-
-def _split(controls, value):
-    rows = [np.asarray(controls,dtype=float)]
-    while len(rows[-1]) > 1:
-        rows.append((1-value)*rows[-1][:-1]+value*rows[-1][1:])
-    return np.array([r[0] for r in rows]),np.array([r[-1] for r in rows[::-1]])
 
 
 def _cubic_bounds(model, lo, hi):
     # Restrict derivative controls to this interval by de Casteljau. Positive
     # axial coefficients make every tangent slope a positive weighted average
     # of the control slopes, including unobserved interior extrema.
-    controls = 3*np.diff(model.cubic,axis=0)
-    if lo:
-        controls = _split(controls,lo)[1]
-    if hi < 1:
-        controls = _split(controls,(hi-lo)/(1-lo))[0]
+    controls = restrict_controls(3*np.diff(model.cubic,axis=0), lo, hi)
     angles = np.arctan2(controls[:,1],controls[:,0])
     second = model.cubic_values(np.array([lo,hi]))[2]
     return float(np.max(np.linalg.norm(second,axis=1)))*(hi-lo)**2/8,float(np.ptp(angles))

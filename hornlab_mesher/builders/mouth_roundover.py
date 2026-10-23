@@ -27,12 +27,31 @@ def build_roundover(geometry):
         for j, h in enumerate(np.diff(z)):
             controls.extend((positions[j]+h*derivatives[j]/3,
                              positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+        if model.throat is not None and not outer:
+            # One shared join point, the cubic's exact end; the fit spends the gap.
+            controls[0] = model.throat.cubic[-1]
         # Cubic Hermite spans share exact endpoint positions and tangents.
         # The fourth-derivative Hermite bound covers the complete interval.
         tags = [point(p) for p in controls]
         curve = occ.addBSpline(tags, degree=3, knots=z.tolist(),
                                multiplicities=[4]+[3]*(len(z)-2)+[4])
-        return revolve(curve)
+        if model.throat is None:
+            return revolve(curve)
+        if outer:
+            # The certified Hermite fit of the offset cubic ends on the outer
+            # conic's first point; the fit spends that gap too.
+            u = model.cubic_fit_stations()
+            positions, derivatives = model.cubic(u, True)
+            positions[-1] = controls[0]
+            spans = [positions[0]]
+            for j, h in enumerate(np.diff(u)):
+                spans.extend((positions[j]+h*derivatives[j]/3,
+                              positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+            throat = occ.addBSpline([point(p) for p in spans[:-1]]+tags[:1], degree=3, knots=u.tolist(),
+                                    multiplicities=[4]+[3]*(len(u)-2)+[4])
+        else:
+            throat = occ.addBezier([point(p) for p in model.throat.cubic[:-1]]+tags[:1])
+        return revolve(throat)+revolve(curve)
     def lip(outer):
         split = math.pi/2-model.beta
         angles = [0, split, model.sweep]
@@ -47,11 +66,11 @@ def build_roundover(geometry):
     inner_lip = lip(False)
     outer_lip = lip(True)
     rim = revolve(occ.addLine(point(model.arc(model.sweep)), point(model.arc(model.sweep, True))))
-    outer_throat = model.body(0, True)[0]
+    outer_throat = model.rear_start
     rear_point = np.array([-model.wall, outer_throat[1]])
     rear_return = revolve(occ.addLine(point(outer_throat), point(rear_point)))
     rear = [(2, occ.addDisk(0,0,-model.wall, float(rear_point[1]),float(rear_point[1])))]
-    source = [(2, occ.addDisk(0,0,0,model.r0,model.r0))]
+    source = [(2, occ.addDisk(0,0,0,model.source_radius,model.source_radius))]
     groups = [inner, outer, inner_lip, outer_lip, rim, rear_return+rear, source]
     flat = [item for group in groups for item in group]
     _, mapping = occ.fragment(flat[:-1], flat[-1:])

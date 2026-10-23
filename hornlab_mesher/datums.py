@@ -192,6 +192,9 @@ def derive_datums(
     }
     if mouth_planar:
         datums["WG_MOUTH_PLANE"] = {**mouth_plane, "exact": True}
+    if roundover is not None and roundover.throat is not None:
+        datums["WG_ADAPTER_JOIN_PLANE"] = {**_axis_plane("z", roundover.start),
+            "origin_mm": [0.0, offset, roundover.start], "nominal": False}
 
     if mode is PointGridBuildMode.FREESTANDING:
         if geometry.outer_points is None:

@@ -6,6 +6,7 @@ import time
 import numpy as np
 
 from ..mouth_roundover import Roundover
+from .adapter_axial import _cubic_bounds, refine_meridian
 from .contract import PreviewGeometryV1, PreviewSurfaceV1
 from .primitives import _grid_indices, _orient_indices_to_normals, _flat_cap, _flat_strip
 
@@ -82,6 +83,24 @@ def build(params, options):
     for outer in (False, True):
         sampling_started = time.perf_counter()
         enabled = options.include_outer if outer else options.include_inner
+        if model.throat is not None:
+            # The throat cubic (or its offset) first: the adapter preview's
+            # derivative-hull refinement, with the offset's second-derivative
+            # bound for the outer wall. Tangent directions are shared.
+            def cubic_bounds(lo, hi):
+                chord, angle = _cubic_bounds(model.throat, lo, hi)
+                return (model.offset_bounds(lo, hi)[0]*(hi-lo)**2/8 if outer else chord), angle
+            u, cubic_bound, _ = refine_meridian(0., 1., cubic_bounds, budget, math.radians(normal))
+            max_meridian_bound = max(max_meridian_bound, cubic_bound)
+            points, derivative = model.cubic(u, outer)
+            second = model.throat.cubic_values(u)[1:]
+            curvature = ((second[0][:,0]*second[1][:,1]-second[0][:,1]*second[1][:,0])
+                         /np.linalg.norm(second[0], axis=1)**3)
+            if outer:
+                curvature = curvature/(1-model.wall*curvature)
+            throat_intervals = len(u)-1
+            if enabled:
+                surface("horn.outer" if outer else "horn.inner", points, derivative, not outer, curvature)
         z = model.stations(4*budget, outer)
         refined = [z[0]]
         def refine_normal(lo,hi):
@@ -105,11 +124,10 @@ def build(params, options):
             curvature = curvature/(1-model.wall*curvature)
         bound = max(model.second_bound(lo,hi,outer)*(hi-lo)**2/8 for lo,hi in zip(z[:-1],z[1:]))
         max_meridian_bound = max(max_meridian_bound,bound)
-        body_intervals = len(z)-1
+        body_intervals = len(z)-1+(0 if model.throat is None else throat_intervals)
         canonical_seconds += time.perf_counter()-sampling_started
         if enabled:
-            body_points = surface("horn.outer" if outer else "horn.inner", meridian, derivative, not outer, curvature)
-            ends[(outer,"throat")] = body_points[0]
+            surface("horn.outer" if outer else "horn.inner", meridian, derivative, not outer, curvature)
         sampling_started = time.perf_counter()
         rad = model.radius-model.wall if outer else model.radius
         intervals = max(6, math.ceil(model.sweep/math.sqrt(8*budget/rad)), math.ceil(2*math.degrees(model.sweep)/normal))
@@ -130,18 +148,18 @@ def build(params, options):
     # The rear disk is the existing closed acoustic back plate. CAD cuts the
     # source membrane through it when opening the material bore.
     if options.include_outer:
-        throat = model.body(0,True)[0]
+        throat = model.rear_start
         return_meridian = np.array([[-model.wall,throat[1]],throat])
         surface("wall.rear_return",return_meridian,np.tile([1.,0.],(2,1)),False,np.zeros(2))
     if options.include_rear_cap:
         reserve(nphi+1)
-        r = float(model.body(0,True)[0][1])
+        r = float(model.rear_start[1])
         ring = np.column_stack((r*np.cos(az),r*np.sin(az)+model.offset,np.full(nphi,-model.wall)))
         surfaces.append(_flat_cap("wall.rear_cap",ring,(0,0,-1),closed_phi=True,
                                   include_curvature=options.include_curvature))
     if options.include_source_cap:
         reserve(nphi+1)
-        r = model.r0
+        r = model.source_radius
         ring = np.column_stack((r*np.cos(az),r*np.sin(az)+model.offset,np.zeros(nphi)))
         surfaces.append(_flat_cap("source_cap",ring,(0,0,1),closed_phi=True,
                                   include_curvature=options.include_curvature))
@@ -200,7 +218,9 @@ def build(params, options):
             "exact-planar":"the exact constant normal of an emitted planar face"},
         "fidelity":{s.role:dict(fidelity, silhouette_segments_requested=int(options.min_silhouette_segments or 0),
             silhouette_segments_achieved=nphi) for s in surfaces}, "mouthRoundoverChordBoundMm":bound,
-        "source_shape":0,"source_radius_mm":model.r0,"source_cap_height_mm":0.0,
-        "source_throat_radius_mm":model.r0, "warnings":[],
+        "source_shape":0,"source_radius_mm":model.source_radius,"source_cap_height_mm":0.0,
+        "source_throat_radius_mm":model.source_radius, "warnings":[],
         "surface_metadata":{s.role:dict(s.metadata) for s in surfaces}}
+    if model.throat is not None:
+        metadata["source_auto_angle_deg"] = model.throat.source_angle
     return PreviewGeometryV1(surfaces,metadata)

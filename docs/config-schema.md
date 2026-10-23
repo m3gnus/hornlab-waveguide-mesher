@@ -5,8 +5,9 @@ Native circular terminating arcs use `OSSE-ARC` and the required root
 for the explicit attachment, tangent and curvature match, supported domain,
 complete bounds and terminal fidelity. `OSSE-NATIVE` composes two or more
 native features that have no legacy marker; arc plus `axial_scale`, an
-authored adapter plus arc with or without `axial_scale`, and a mouth
-roundover plus `axial_scale` are implemented. See [native OSSE composition](native-osse-composition.md).
+authored adapter plus arc with or without `axial_scale`, a mouth
+roundover plus `axial_scale`, and an authored adapter plus mouth roundover
+with or without `axial_scale` are implemented. See [native OSSE composition](native-osse-composition.md).
 
 Native circular lips use the fail-closed `OSSE-ROUNDOVER` formula marker and
 `mesh.mouth_roundover_radius_mm` (zero or absent is off for ordinary formulas).
@@ -405,7 +406,9 @@ are evaluated later by the profile layer where supported.
 Native JSON and TOML accept `throat_adapter` at the top level or inside
 `profile`, but refuse duplicate locations. Active mode requires
 `formula = "OSSE-ADAPTER"`, `mode = "bare"`, and an explicit flat source
-(`source.source_shape = 0`). The initial construction supports circular
+(`source.source_shape = 0`). Under `OSSE-NATIVE` the adapter must be at the
+root; with a mouth roundover it takes the lip's freestanding wall (see
+[mouth roundover](native-mouth-roundover.md#roundover-with-a-throat-adapter)). The initial construction supports circular
 scalar OSSE profile 1 with zero termination strength.
 
 | Key | Required value or meaning |

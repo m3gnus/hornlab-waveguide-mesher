@@ -41,8 +41,8 @@ an outer offset approaching a fold, and the complete lip must clear the rear.
 Termination, non-circular sections, symmetry sectors, guiding curves, morphs,
 rollback, throat extensions, slots, stretch, adapters, enclosures, baffles,
 bare surfaces and curved sources are explicitly refused. An absent or validated
-`off` throat adapter preserves the lip identity; active adapters cannot be combined
-with the lip, and duplicate adapter locations are refused. Only canonical keys
+`off` throat adapter preserves the lip identity; an active adapter requires
+`OSSE-NATIVE` (see below), and duplicate adapter locations are refused. Only canonical keys
 shown in this document and the supported mesh density controls are accepted.
 The text import option remains refused. This is a bounded native geometry
 feature, with broader combinations reserved for separate qualification.
@@ -122,3 +122,52 @@ and mesh metadata carries `construction_fingerprint`. STEP writes the
 composite `native-composite` header recipe instead of the
 `hornlab-mouth-roundover` trailer. Mesher readers 0.2.6 and 0.2.7 refuse
 this design.
+
+## Roundover with a throat adapter
+
+`formula = "OSSE-NATIVE"` with an active root `throat_adapter` (authored
+mode) and an active `mesh.mouth_roundover_radius_mm`, with or without root
+`axial_scale`, gives a compression-driver throat and a rolled mouth on one
+closed solid. See the [composition contract](native-osse-composition.md).
+Construction order: the intrinsic conic, the authored adapter cubic, the
+axial map (`axial_scale`, or `scale` when absent), then the offset wall,
+lip, rim and rear closure in finished millimetres, then placement. The
+throat is the same mapped cubic, with the same checks and refusal prefix, as
+`OSSE-ADAPTER-AXIAL`; the retained conic starts on its exact end point, so
+the inner wall is G1 at the join. The lip is built at the body mouth exactly
+as above.
+
+The outer wall offsets the cubic by the wall thickness along its normal.
+Mesh and STEP use a cubic Hermite fit of that offset with exact endpoint
+positions and tangents, certified by a whole-interval bound on its fourth
+derivative (Faa di Bruno over Bernstein hulls of the cubic's speed) to the
+same 0.0001 mm as the conic's fit. Inner and outer walls each share one
+point at the join, and both fits spend the roundoff gap there within that
+bound. The inner cubic is the exact Bezier. The source disk sits on the
+driver rim, and the rear return starts at the outer wall's throat point.
+
+Extra refusals guard the offset and the closed solid:
+
+- the adapter exit angle must be within 75 degrees of the axis;
+- the wall tangent, over the cubic's derivative hull and the retained conic
+  up to the mouth, must turn by less than 85 degrees. With a narrower range
+  than 90 degrees, every outer-wall point lies above the inner wall at its
+  own z, so the walls cannot cross;
+- `wall * curvature` must stay below 0.4 over the whole cubic, certified on
+  Bernstein hulls (the conic's existing fold guard is unchanged);
+- the cubic and its offset must clear the lip by 0.1 mm, either axially (the
+  adapter ends before the lip centre) or radially (the throat stays inside
+  the mouth radius), and must stay within the lip's outer reach, so the
+  roundover bounds stay the full envelope.
+
+The construction is `circular-cubic-conic-lip-v1`. Its identity records
+the adapter payload, the authored body, the feature set and every physical
+control, so an authored `axial_scale` equal to `scale` builds the same horn
+under a different identity. The fingerprint is the SHA-256 of that identity,
+which the STEP `native-composite` header recipe carries. `mouthRoundover`
+metadata adds `adapterJoinMm`, `sourceRadiusMm`, `sourceAngleDeg` and
+`throatAdapter`; datums add `WG_ADAPTER_JOIN_PLANE`. The mesh is a closed,
+consistently oriented body with the rigid-wall and source groups, as for
+every lip; STEP is the opened solid. Controls adapters, terminating arcs and
+standalone sources stay refused, and mesher readers 0.2.6 and 0.2.7 refuse
+the design.

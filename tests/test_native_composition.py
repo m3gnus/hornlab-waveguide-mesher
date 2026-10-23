@@ -103,7 +103,8 @@ def test_rule_matrix_in_every_spelling(names):
 
 def test_implemented_composites_are_exactly_this_release_line():
     assert IMPLEMENTED_COMPOSITES == {frozenset(s) for s in (
-        {"arc","axial"},{"adapter","arc"},{"adapter","arc","axial"},{"roundover","axial"})}
+        {"arc","axial"},{"adapter","arc"},{"adapter","arc","axial"},{"roundover","axial"},
+        {"adapter","roundover"},{"adapter","roundover","axial"})}
 
 
 @pytest.mark.parametrize("name",sorted(PAYLOADS))
@@ -319,17 +320,23 @@ def physical_adapter(c):
     from hornlab_mesher.adapter_axial import PhysicalAdapter
     params=build_geometry_params(c)[0]
     axis=c.get("axial_scale",c["scale"])
-    return PhysicalAdapter.from_params(dict(params,type="OSSE",adapterAxialScale=axis))
+    # A roundover's wall is its own; the adapter is the bare OSSE-ADAPTER-AXIAL cubic.
+    return PhysicalAdapter.from_params(dict(params,type="OSSE",wallThickness=0,adapterAxialScale=axis))
+
+
+def monotone_residual(curve,z,r,lo=0.,hi=1.):
+    """Radial distance to a z-monotone parametric curve (z,r)=curve(t) at the same z."""
+    lo,hi=np.full_like(z,lo),np.full_like(z,hi)
+    for _ in range(80):
+        mid=(lo+hi)/2
+        below=curve(mid)[:,0] < z
+        lo,hi=np.where(below,mid,lo),np.where(below,hi,mid)
+    return np.abs(curve((lo+hi)/2)[:,1]-r)
 
 
 def cubic_residual(m,z,r):
     """Radial distance to the throat cubic at the same z; z is monotone in u."""
-    lo,hi=np.zeros_like(z),np.ones_like(z)
-    for _ in range(80):
-        mid=(lo+hi)/2
-        below=m.throat.cubic_values(mid)[0][:,0] < z
-        lo,hi=np.where(below,mid,lo),np.where(below,hi,mid)
-    return np.abs(m.throat.cubic_values((lo+hi)/2)[0][:,1]-r)
+    return monotone_residual(lambda u:m.throat.cubic_values(u)[0],z,r)
 
 
 def meridian_residual(m,z,r):
@@ -610,7 +617,7 @@ def test_roundover_axial_refusals():
     c=roundover_axial();c["profile"]["axial_scale"]=c.pop("axial_scale")
     with pytest.raises(ConfigError,match="exact root axial_scale"):
         build_geometry_params(c)
-    c=roundover_axial();c["throat_adapter"]=copy.deepcopy(PAYLOADS["adapter"]["throat_adapter"])
+    c=roundover_axial();c["throat_adapter"]=copy.deepcopy(PAYLOADS["controls"]["throat_adapter"])
     with pytest.raises(ConfigError,match="not supported yet"):
         build_geometry_params(c)
     c=roundover_axial();c["profile"]["formula"]="OSSE-ROUNDOVER"
@@ -688,3 +695,328 @@ def test_roundover_axial_step_header_recipe(tmp_path):
 
 def test_released_readers_refuse_roundover_axial(old_reader_tree,tmp_path):
     assert_old_reader_refuses(old_reader_tree,roundover_axial(),tmp_path)
+
+
+# Slice 4: Adapter x Roundover (x Axial). The OSSE-ADAPTER-AXIAL cubic, the
+# mapped conic from its join, then the offset wall, lip, rim and rear closure
+# in finished mm; a closed solid.
+LIP_SETS={"adapter+roundover":None,"adapter+roundover+axial":AXIAL}
+LIP_ADAPTER={"mode":"authored","contract_revision":1,"driver_exit_diameter_mm":2.,"exit_half_angle_deg":5.,
+    "length_mm":3.,"join_t":.1,"driver_handle_mm":.8,"body_handle_mm":1.2}
+
+
+def adapter_roundover(axial=AXIAL,scale=1.):
+    """A small design that meshes quickly; dimensions follow slice 3's."""
+    c=roundover_axial(axial,scale)
+    if axial is None:
+        c.pop("axial_scale")
+    c["throat_adapter"]=dict(LIP_ADAPTER)
+    return c
+
+
+def large_adapter_roundover(axial=AXIAL):
+    c={"formula":"OSSE-NATIVE","mode":"freestanding","scale":SCALE,"axial_scale":axial,
+        "profile":dict(composite()["profile"]),"throat_adapter":dict(PAYLOADS["adapter"]["throat_adapter"]),
+        "mesh":{"wall_thickness_mm":5.,"mouth_roundover_radius_mm":25.,"vertical_offset_mm":7.}}
+    if axial is None:
+        c.pop("axial_scale")
+    return c
+
+
+def lip_residual(m,z,r):
+    """Distance in (z,r) to the closed meridian of the opened solid.
+
+    Throat cubic, its offset, retained conic and its offset are z-monotone;
+    the lips are circles; the rim, rear return, rear plate and opened bore
+    are segments. The fitted walls are within FIT_TOL_MM of these curves.
+    """
+    z,r=np.atleast_1d(z).astype(float),np.atleast_1d(r).astype(float)
+    ro=float(m.rear_start[1]);rd=m.source_radius;cz,cr=m.center
+    pieces=[monotone_residual(lambda u:m.cubic(u)[0],z,r),
+        monotone_residual(lambda u:m.cubic(u,True)[0],z,r),
+        np.where((z >= m.start-1e-9)&(z <= m.length+1e-9),np.abs(m.body(np.clip(z,m.start,m.length))[0][:,1]-r),np.inf),
+        monotone_residual(lambda t:m.body(t,True)[0],z,r,m.start,m.length),
+        np.where(z >= cz-1e-9,np.abs(np.hypot(z-cz,r-cr)-m.radius),np.inf),
+        np.where(z >= cz-1e-9,np.abs(np.hypot(z-cz,r-cr)-(m.radius-m.wall)),np.inf),
+        np.where((r >= cr+m.radius-m.wall-1e-9)&(r <= cr+m.radius+1e-9),np.abs(z-cz),np.inf),
+        np.where((z >= -m.wall-1e-9)&(z <= m.rear_start[0]+1e-9),np.abs(r-ro),np.inf),
+        np.where(r <= ro+1e-9,np.abs(z+m.wall),np.inf),
+        np.where((z >= -m.wall-1e-9)&(z <= 1e-9),np.abs(r-rd),np.inf),
+        np.where(r <= rd+1e-9,np.abs(z),np.inf)]
+    return np.min(pieces,axis=0)
+
+
+def solid_volume(m,opened=True):
+    """2*pi times the first moment of the closed meridian loop (Green's theorem)."""
+    u=np.linspace(0,1,20001);z=np.linspace(m.start,m.length,20001);phi=np.linspace(0,m.sweep,20001)
+    rear=[[-m.wall,m.rear_start[1]]]+([[-m.wall,m.source_radius],[0.,m.source_radius]] if opened else [[-m.wall,0.],[0.,0.]])
+    P=np.vstack((m.cubic(u)[0],m.body(z)[0][1:],m.arc(phi)[1:],m.arc(phi[::-1],True),
+        m.body(z[::-1],True)[0][1:],m.cubic(u[::-1],True)[0][1:],rear))
+    zz,rr=P[:,0],P[:,1]
+    return abs(2*math.pi*np.sum((rr[:-1]**2+rr[:-1]*rr[1:]+rr[1:]**2)/6*np.diff(zz)))
+
+
+@pytest.mark.parametrize("axial",[None,AXIAL,SCALE],ids=["plain","axial","uniform-axial"])
+@pytest.mark.parametrize("size",["small","large"])
+def test_adapter_roundover_meridian_certificates(size,axial):
+    from hornlab_mesher.mouth_roundover import FIT_TOL_MM,AdapterRoundover
+    c=adapter_roundover(axial) if size == "small" else large_adapter_roundover(axial)
+    scale=c["scale"];axis=scale if axial is None else axial
+    m=roundover_model(c);ref=physical_adapter(c)
+    assert validate_native_boundary(c) == "OSSE-NATIVE" and type(m) is AdapterRoundover
+    assert (m.xy_scale,m.axial_scale) == (ref.xy_scale,ref.axial_scale) == (scale,axis)
+    # The throat is the OSSE-ADAPTER-AXIAL cubic; the conic starts on its exact end.
+    np.testing.assert_array_equal(m.throat.cubic,ref.cubic)
+    assert m.start == ref.cubic[-1,0] == pytest.approx(c["throat_adapter"]["length_mm"]*axis,rel=1e-15)
+    assert m.source_radius == c["throat_adapter"]["driver_exit_diameter_mm"]/2*scale
+    # The retained conic is the mapped adapter body, adapter join to body mouth.
+    t=np.linspace(c["throat_adapter"]["join_t"],1,201)
+    p,d,dd=ref.body_values(t)
+    np.testing.assert_allclose(m.body(p[:,0])[0],p,rtol=0,atol=1e-11)
+    assert m.length == pytest.approx(float(p[-1,0]),rel=1e-14)
+    profile=c["profile"];u=(p[:,0]-m.shift)/axis;r0=profile["r0_mm"]
+    A,B,C=r0**2,r0*math.tan(math.radians(profile["a0_deg"])),math.tan(math.radians(profile["a_deg"]))**2
+    np.testing.assert_allclose(m.body(p[:,0])[0][:,1],scale*np.sqrt(A+2*B*u+C*u*u),rtol=1e-13,atol=1e-12)
+    # G1 at the adapter join, on the inner wall and on its offset.
+    cd=m.cubic(np.array([1.]))[1][0];bd=m.body(m.start)[1]
+    assert math.atan2(cd[1],cd[0]) == pytest.approx(math.atan2(bd[1],bd[0]),abs=1e-9)
+    np.testing.assert_allclose(m.cubic(np.array([1.]),True)[0][0],m.body(m.start,True)[0],rtol=0,atol=1e-9)
+    od=m.cubic(np.array([1.]),True)[1][0];obd=m.body(m.start,True)[1]
+    assert math.atan2(od[1],od[0]) == pytest.approx(math.atan2(obd[1],obd[0]),abs=1e-9)
+    # The outer cubic is the exact normal offset: distance wall, along the normal,
+    # with derivative c'*(1-wall*kappa) and the fold guard's margin.
+    s=np.linspace(0,1,4001);inner,tangent=m.cubic(s);outer,outer_tangent=m.cubic(s,True)
+    np.testing.assert_allclose(np.linalg.norm(outer-inner,axis=1),m.wall,rtol=1e-12)
+    np.testing.assert_allclose(np.sum((outer-inner)*tangent,axis=1),0,atol=1e-12*m.length)
+    factor=np.sum(outer_tangent*tangent,axis=1)/np.sum(tangent*tangent,axis=1)
+    assert factor.min() >= .6
+    cross=outer_tangent[:,0]*tangent[:,1]-outer_tangent[:,1]*tangent[:,0]
+    np.testing.assert_allclose(cross,0,atol=1e-9*np.max(np.abs(tangent))**2)
+    # Each offset derivative is the exact derivative of the offset point.
+    h=1e-6;numeric=(m.cubic(s[1:-1]+h,True)[0]-m.cubic(s[1:-1]-h,True)[0])/(2*h)
+    np.testing.assert_allclose(numeric,outer_tangent[1:-1],rtol=0,atol=1e-6*np.max(np.abs(outer_tangent)))
+    # The lip: radius in finished mm, tangent to the mapped mouth, half a turn.
+    mouth,mouth_tangent=m.body(m.length)
+    np.testing.assert_allclose(m.arc(0),mouth,rtol=0,atol=1e-12*m.length)
+    assert m.beta == pytest.approx(math.atan(mouth_tangent[1]),abs=1e-15)
+    assert np.hypot(*(m.center-mouth)) == pytest.approx(m.radius,rel=1e-13)
+    np.testing.assert_allclose(m.arc(m.sweep,True),m.center+[0,m.radius-m.wall],rtol=0,atol=1e-12*m.length)
+    # The certified Hermite fit of the offset cubic stays within FIT_TOL_MM,
+    # and its whole-interval fourth-derivative bound dominates the curve's.
+    stations=m.cubic_fit_stations()
+    P,D=m.cubic(stations,True)
+    worst=0.
+    for j,(lo,hi) in enumerate(zip(stations[:-1],stations[1:])):
+        w=np.linspace(0,1,65)[:,None];h=hi-lo
+        hermite=((2*w**3-3*w**2+1)*P[j]+(w**3-2*w**2+w)*h*D[j]+(-2*w**3+3*w**2)*P[j+1]+(w**3-w**2)*h*D[j+1])
+        worst=max(worst,float(np.max(np.linalg.norm(hermite-m.cubic(lo+w[:,0]*h,True)[0],axis=1))))
+        e=h/8;q=lo+np.linspace(2*e,h-2*e,5)
+        fourth=(m.cubic(q-2*e,True)[0]-4*m.cubic(q-e,True)[0]+6*m.cubic(q,True)[0]
+                -4*m.cubic(q+e,True)[0]+m.cubic(q+2*e,True)[0])/e**4
+        assert np.max(np.linalg.norm(fourth,axis=1)) <= m.offset_bounds(lo,hi)[1]*1.001
+    assert worst <= m.fit_tolerance <= FIT_TOL_MM
+
+
+def test_adapter_roundover_identity_and_uniform_axial_spelling():
+    import hashlib
+    plain=roundover_model(adapter_roundover(None));uniform=roundover_model(adapter_roundover(1.))
+    axial=roundover_model(adapter_roundover())
+    assert plain.identity["construction"] == "circular-cubic-conic-lip-v1"
+    assert plain.identity["formula"] == axial.identity["formula"] == "OSSE-NATIVE"
+    assert plain.identity["adapter"] == {**LIP_ADAPTER,"contract_revision":1}
+    assert (plain.identity["features"],axial.identity["features"]) == (["adapter","roundover"],["adapter","axial","roundover"])
+    assert plain.identity["body"] == {"L":12.,"r0":1.27,"a":45.,"a0":10.,"k":1.}
+    # An authored axial factor equal to scale builds the same horn as a
+    # different feature set, so it keeps its own identity.
+    np.testing.assert_array_equal(plain.throat.cubic,uniform.throat.cubic)
+    assert plain.coefficients == uniform.coefficients and plain.center.tolist() == uniform.center.tolist()
+    assert len({plain.fingerprint,uniform.fingerprint,axial.fingerprint}) == 3
+    for m in (plain,axial):
+        assert m.fingerprint == hashlib.sha256(json.dumps(m.identity,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    # Without the adapter the same body is Roundover x Axial, another design.
+    assert roundover_model(roundover_axial()).fingerprint != axial.fingerprint
+    params=build_geometry_params(adapter_roundover())[0]
+    assert params["type"] == "OSSE-NATIVE" and params["mouthRoundoverFingerprint"] == axial.fingerprint
+    assert params["throat_adapter"] == {**LIP_ADAPTER,"contract_revision":1}
+    r=resolve_geometry(adapter_roundover());meta=r.sampling_metadata
+    assert r.formula == "OSSE-NATIVE" and meta["construction_fingerprint"] == axial.fingerprint
+    lip=meta["mouthRoundover"]
+    assert (lip["formula"],lip["xyScale"],lip["axialScale"]) == ("OSSE-NATIVE",1.,AXIAL)
+    assert lip["adapterJoinMm"] == axial.throat.cubic[-1].tolist() and lip["sourceRadiusMm"] == 1.
+    assert lip["sourceAngleDeg"] == axial.throat.source_angle and lip["mouthZMm"] == axial.length
+
+
+def test_slice_one_to_three_composites_keep_their_identity():
+    # Frozen from the slice 3 tip (eac530c); slice 4 must not move them.
+    assert {"arc+axial":model(composite()).fingerprint,"adapter+arc":model(adapter_arc(None)).fingerprint,
+            "adapter+arc+axial":model(adapter_arc()).fingerprint,
+            "roundover+axial":roundover_model(roundover_axial()).fingerprint} == {
+        "arc+axial":"ee69a0a6866023eed0e16874ab87342dd8a9c1011e7a1da323a9d99b881e5bd1",
+        "adapter+arc":"1644b14cc12357c59ad668fdd437024e85b7d44137ba5e9a03eac4bab0357880",
+        "adapter+arc+axial":"198eb40e34df01963ef279d79aee516b2d300f88ad0eacd7b25a7536fa9fadce",
+        "roundover+axial":"9f9d8e94d3c0e513aedb5572adc777db28fa3bf79e95888bdbea59f15c95444e"}
+
+
+def test_adapter_roundover_refusals():
+    for marker in ("OSSE-ROUNDOVER","OSSE-ADAPTER","OSSE-ADAPTER-AXIAL","OSSE-AXIAL"):
+        c=adapter_roundover();c["formula"]=marker
+        with pytest.raises(ConfigError,match="write OSSE-NATIVE"):
+            build_geometry_params(c)
+    c=adapter_roundover();c["throat_adapter"]=copy.deepcopy(PAYLOADS["controls"]["throat_adapter"])
+    with pytest.raises(ConfigError,match="not supported yet"):
+        build_geometry_params(c)
+    c=adapter_roundover();c["terminating_arc"]=copy.deepcopy(PAYLOADS["arc"]["terminating_arc"])
+    with pytest.raises(ConfigError,match="conflict"):
+        build_geometry_params(c)
+    c=adapter_roundover();c["profile"]["throat_adapter"]=c.pop("throat_adapter")
+    with pytest.raises(ConfigError,match="exact root throat_adapter"):
+        build_geometry_params(c)
+    c=adapter_roundover();c["mode"]="bare"
+    with pytest.raises(ConfigError,match="freestanding"):
+        build_geometry_params(c)
+    # The adapter keeps its own domain and refusal prefix.
+    c=adapter_roundover();c["throat_adapter"]["driver_handle_mm"]=10.
+    with pytest.raises(ConfigError,match="Adapter axial scale refused"):
+        build_geometry_params(c)
+    # A driver as wide as the mouth, with the lip's centre behind the adapter join.
+    c=adapter_roundover()
+    c["throat_adapter"].update(driver_exit_diameter_mm=24.,exit_half_angle_deg=0.,length_mm=8.,join_t=.95,
+        driver_handle_mm=2.,body_handle_mm=2.)
+    with pytest.raises(ConfigError,match="clear the throat adapter"):
+        build_geometry_params(c)
+    # A converging exit and a wide mouth turn the wall too far to certify the offset.
+    c=adapter_roundover();c["throat_adapter"]["exit_half_angle_deg"]=-20.;c["profile"]["a_deg"]=75.
+    with pytest.raises(ConfigError,match="85 degrees"):
+        build_geometry_params(c)
+    # A tight throat bend inside a thick wall.
+    c=adapter_roundover(None);c["mesh"]["mouth_roundover_radius_mm"]=1.5
+    c["throat_adapter"].update(exit_half_angle_deg=-20.,driver_handle_mm=.5,body_handle_mm=.5)
+    with pytest.raises(ConfigError,match="throat curvature fold"):
+        build_geometry_params(c)
+    c=adapter_roundover();c["throat_adapter"]["exit_half_angle_deg"]=80.
+    with pytest.raises(ConfigError,match="within 75 degrees"):
+        build_geometry_params(c)
+
+
+@pytest.mark.parametrize("name",sorted(LIP_SETS))
+def test_adapter_roundover_design_file_round_trip(name):
+    c=adapter_roundover(LIP_SETS[name]);text=json.dumps(c,sort_keys=True)
+    again=json.loads(text)
+    assert json.dumps(build_geometry_params(again),sort_keys=True) == json.dumps(build_geometry_params(c),sort_keys=True)
+    assert roundover_model(again).fingerprint == roundover_model(c).fingerprint
+    assert validate_native_boundary(again) == "OSSE-NATIVE"
+
+
+@pytest.mark.parametrize("name",sorted(LIP_SETS))
+def test_adapter_roundover_preview_dimensions_and_datums(name):
+    from types import SimpleNamespace
+    c=adapter_roundover(LIP_SETS[name]);m=roundover_model(c);g=resolve_geometry(c).geometry
+    preview=build_preview_geometry(c)
+    assert preview.metadata["formula"] == "OSSE-NATIVE"
+    assert preview.metadata["mouthRoundover"]["fingerprint"] == m.fingerprint
+    assert preview.metadata["source_radius_mm"] == m.source_radius
+    assert preview.metadata["source_auto_angle_deg"] == m.throat.source_angle
+    for s in preview.surfaces:
+        assert preview.metadata["fidelity"][s.role]["max_chord_error_mm"] <= .008
+    for role in ("horn.inner","horn.outer","mouth_rim","wall.rear_return","wall.rear_cap"):
+        pts=np.asarray(next(s for s in preview.surfaces if s.role == role).positions,dtype=np.float64)
+        # Every rendered vertex lies on the closed meridian within binary32 placement.
+        assert np.max(lip_residual(m,pts[:,2],np.hypot(pts[:,0],pts[:,1]))) <= 1e-5,role
+    inner=np.asarray(next(s for s in preview.surfaces if s.role == "horn.inner").positions,dtype=np.float64)
+    radius=np.hypot(inner[:,0],inner[:,1])
+    assert inner[:,2].min() == 0 and radius[inner[:,2] == 0] == pytest.approx(m.source_radius,rel=1e-6)
+    throat=inner[:,2] < m.start
+    assert throat.sum() > 100
+    assert np.max(monotone_residual(lambda u:m.cubic(u)[0],inner[throat,2],radius[throat])) <= 1e-5
+    for role,r in (("source_cap",m.source_radius),("wall.rear_cap",float(m.rear_start[1]))):
+        cap=np.asarray(next(s for s in preview.surfaces if s.role == role).positions)
+        assert np.hypot(cap[:,0],cap[:,1]).max() == pytest.approx(r,rel=1e-6)
+    dims=canonical_dimensions(c);box=np.asarray(m.bounds)
+    assert dims["mouth_opening"] == [2*float(m.body(m.length)[0][1])]*2
+    np.testing.assert_allclose(dims["horn_overall"],box[1]-box[0])
+    d=derive_datums(g,SimpleNamespace(source_axis="z"))
+    assert d["WG_ADAPTER_JOIN_PLANE"]["origin_mm"] == [0.,0.,m.start]
+    assert d["WG_THROAT_PLANE"]["origin_mm"][2] == 0
+    mouth=np.asarray(d["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
+    np.testing.assert_allclose(np.hypot(mouth[:,0],mouth[:,1]),m.body(m.length)[0][1],rtol=1e-12)
+    np.testing.assert_allclose(mouth[:,2],m.length)
+
+
+@pytest.mark.parametrize("name",sorted(LIP_SETS))
+def test_adapter_roundover_msh_closed_body_oracle_and_certificate(name,tmp_path):
+    meshio=pytest.importorskip("meshio");pytest.importorskip("gmsh")
+    from hornlab_mesher.config_builder import build_from_config
+    from hornlab_mesher.edges import build_edge_table
+    from hornlab_mesher.mouth_roundover import FIT_TOL_MM
+    c=adapter_roundover(LIP_SETS[name]);m=roundover_model(c)
+    result=build_from_config(c,tmp_path/"adapter-roundover.msh")
+    assert result.metadata["construction_fingerprint"] == m.fingerprint
+    assert result.metadata["mouthRoundoverMeshChordBoundMm"] <= .01
+    mesh=meshio.read(result.mesh_path);p=np.asarray(mesh.points)
+    tri=mesh.get_cells_type("triangle");tags=mesh.get_cell_data("gmsh:physical","triangle")
+    assert set(tags) == {1,2}
+    # A closed, consistently oriented body (what the BEMPP closed-body path solves).
+    edges=build_edge_table(tri)
+    assert set(edges.count) == {2}
+    assert len(np.unique(tri))-edges.n_edges+len(tri) == 2
+    directed={tuple(e) for e in np.concatenate((tri[:,[0,1]],tri[:,[1,2]],tri[:,[2,0]]))}
+    assert len(directed) == 3*len(tri) and all((b,a) in directed for a,b in directed)
+    v=p[tri];signed=np.sum(np.einsum("ij,ij->i",v[:,0],np.cross(v[:,1],v[:,2])))/6
+    assert signed == pytest.approx(solid_volume(m,opened=False),rel=1e-2)
+    r=np.hypot(p[:,0],p[:,1]);nodes=np.unique(tri)
+    assert np.max(lip_residual(m,p[nodes,2],r[nodes])) <= FIT_TOL_MM+1e-9
+    # The exact throat cubic (an OCC Bezier) and the exact lips carry vertices.
+    wall=np.unique(tri[tags == 1])
+    on_cubic=wall[(p[wall,2] > 1e-6)&(p[wall,2] < m.start-1e-6)&(r[wall] < m.throat.cubic_reach+1e-6)]
+    exact=cubic_residual(m,p[on_cubic,2],r[on_cubic]) <= 1e-9
+    assert exact.sum() > 50
+    distance=np.hypot(p[wall,2]-m.center[0],r[wall]-m.center[1])
+    for radius in (m.radius,m.radius-m.wall):
+        assert np.sum(np.abs(distance-radius) < 1e-9) > 50
+    # The source disk sits on the driver rim the cubic starts from.
+    source=tri[tags == 2];rim=build_edge_table(source)
+    np.testing.assert_allclose(p[source][:,:,2],0,atol=1e-12)
+    np.testing.assert_allclose(r[rim.lo[rim.count == 1]],m.source_radius,atol=1e-10,rtol=0)
+
+
+@pytest.mark.parametrize("name",sorted(LIP_SETS))
+def test_adapter_roundover_step_closed_solid_recipe_and_reopened_faces(name,tmp_path):
+    gmsh=pytest.importorskip("gmsh")
+    from hornlab_mesher.cad import write_step_from_config
+    from hornlab_mesher.mouth_roundover import FIT_TOL_MM
+    c=adapter_roundover(LIP_SETS[name]);m=roundover_model(c)
+    path,info=write_step_from_config(c,tmp_path/"adapter-roundover.step")
+    text=path.read_text()
+    recipe=json.loads(text.split("HEADER;\n/* native-composite ",1)[1].split(" */")[0])
+    assert recipe == {"construction_fingerprint":m.fingerprint,**m.identity}
+    assert text.count("/* native-") == 1 and "hornlab-mouth-roundover" not in text
+    assert info.body == "solid" and info.throat_opened and info.construction_fingerprint == m.fingerprint
+    assert info.mouth_roundover["formula"] == "OSSE-NATIVE" and info.mouth_roundover["fingerprint"] == m.fingerprint
+    np.testing.assert_array_equal(info.bounding_box_mm,m.bounds)
+    assert info.volume_mm3 == pytest.approx(solid_volume(m),rel=1e-5)
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal",0);gmsh.open(str(path))
+        assert len(gmsh.model.getEntities(3)) == 1
+        volume=gmsh.model.getEntities(3)[0][1]
+        assert gmsh.model.occ.getMass(3,volume) == pytest.approx(info.volume_mm3,rel=1e-9)
+        faces=gmsh.model.getEntities(2)
+        assert len(faces) == info.n_faces
+        for _,face in faces:
+            # A plane's parameter box is untrimmed; its boundary curves are not.
+            points=[]
+            if gmsh.model.getType(2,face) != "Plane":
+                lo,hi=(np.asarray(v) for v in gmsh.model.getParametrizationBounds(2,face))
+                points+=[gmsh.model.getValue(2,face,(lo+w*(hi-lo)).tolist()) for w in (.25,.5,.75)]
+            for _,curve in gmsh.model.getBoundary([(2,face)],oriented=False):
+                lo,hi=gmsh.model.getParametrizationBounds(1,abs(curve))
+                points+=[gmsh.model.getValue(1,abs(curve),[lo[0]+w*(hi[0]-lo[0])]) for w in (0.,.3,.7,1.)]
+            x,y,z=np.asarray(points).T
+            assert np.max(lip_residual(m,z,np.hypot(x,y))) <= FIT_TOL_MM+1e-9
+    finally:
+        gmsh.finalize()
+
+
+@pytest.mark.parametrize("name",sorted(LIP_SETS))
+def test_released_readers_refuse_adapter_roundover(name,old_reader_tree,tmp_path):
+    assert_old_reader_refuses(old_reader_tree,adapter_roundover(LIP_SETS[name]),tmp_path)
