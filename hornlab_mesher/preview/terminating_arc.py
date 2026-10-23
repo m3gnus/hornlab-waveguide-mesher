@@ -4,7 +4,7 @@ import math
 import numpy as np
 
 from ..composite_meridian import CompositeMeridian
-from .adapter_axial import _cubic_bounds
+from .adapter_axial import _cubic_bounds,refine_meridian
 from .contract import PreviewGeometryV1,PreviewSurfaceV1
 from .primitives import _grid_indices,_orient_indices_to_normals,_flat_cap
 
@@ -50,23 +50,12 @@ def build(params,options):
         math.ceil(720/normal),silhouette)/4)
     if nphi > 4096:
         raise ValueError("preview angular sampling exceeds its certified budget")
-    # An adapter cubic is refined by its derivative-control hull, as in the
-    # OSSE-ADAPTER-AXIAL preview; the conic then starts on its exact join.
-    u=[0.];cubic_error=cubic_angle=0.
-    def split_cubic(lo,hi,depth=0):
-        nonlocal cubic_error,cubic_angle
-        error,angle=_cubic_bounds(model.throat,lo,hi)
-        if error <= budget and math.degrees(angle) <= normal/2:
-            u.append(hi);cubic_error=max(cubic_error,error);cubic_angle=max(cubic_angle,angle)
-            if len(u) > 8192:
-                raise ValueError("preview meridian sampling exceeds its certified budget")
-        else:
-            mid=(lo+hi)/2
-            if depth >= 32 or mid in (lo,hi):
-                raise ValueError("preview meridian tolerance could not be resolved")
-            split_cubic(lo,mid,depth+1);split_cubic(mid,hi,depth+1)
+    # An adapter cubic is refined by its derivative-control hull, exactly as
+    # in the OSSE-ADAPTER-AXIAL preview; the conic then starts on its join.
+    u,cubic_error,cubic_angle=[0.],0.,0.
     if model.throat is not None:
-        split_cubic(0.,1.)
+        u,cubic_error,cubic_angle=refine_meridian(0.,1.,lambda lo,hi:_cubic_bounds(model.throat,lo,hi),
+            budget,math.radians(normal))
     z=[model.conic_start_z]
     def split(lo,hi,depth=0):
         derivative=model.body(np.array([lo,hi]))[1][:,1]

@@ -4,7 +4,7 @@ import math
 import numpy as np
 
 from ._occ import require_gmsh
-from .circle_certificate import CircleArc,certify_circle_facets
+from .circle_certificate import certify_circle_facets
 from ..geometry import BuiltGeometry,MESH_ALGORITHM_FRONTAL_DELAUNAY
 from ..tags import PhysicalGroup
 
@@ -103,8 +103,7 @@ def certify_arc_mesh(model,built):
     This is a facet-to-surface certificate, not a coverage claim and not a
     certificate for the separately tessellated retained conic or throat cubic.
     """
-    largest,count=certify_circle_facets([(CircleArc(model.center_z,model.center_r,model.radius,model.beta,model.end),
-        built.mesh_surface_groups["arc"])],"terminating arc")
+    largest,count=certify_circle_facets([(model.circle,built.mesh_surface_groups["arc"])],"terminating arc")
     if not count or largest > .01:
         raise ValueError(f"terminating arc mesh cannot certify 0.01 mm facet-to-surface error (bound {largest:.6g} mm); reduce mouth resolution")
     built.metadata["terminatingArcMeshChordBoundMm"]=largest

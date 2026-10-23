@@ -5,7 +5,8 @@ import math
 import numpy as np
 
 from ._occ import require_gmsh
-from .circle_certificate import CircleArc, certify_circle_facets
+from .circle_certificate import certify_circle_facets
+from ..composite_meridian import CircleArc
 from ..geometry import BuiltGeometry, MESH_ALGORITHM_FRONTAL_DELAUNAY
 from ..mouth_roundover import FIT_TOL_MM
 from ..tags import PhysicalGroup

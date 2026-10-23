@@ -163,6 +163,11 @@ join and starts on the cubic's exact end point, with the same tangent. Both
 intrinsic conic, so the arc's `join_t` must exceed the adapter's and keep at
 least 0.1 mm of conic. The circle is then built in finished millimetres
 against the mapped conic, as above. The source disk sits on the driver rim.
+The adapter's own checks still see its full mapped body to `L` (and refuse
+with the `Adapter axial scale refused:` prefix, also without an axial
+feature), so a design whose full body would leave that domain is refused
+even when the arc joins well inside it. A returning circle that dips below
+the adapter join must clear the cubic's largest radius by 0.1 mm there.
 
 The construction is `circular-cubic-conic-osculating-arc-v1`; identity adds
 the normalized adapter payload and records `axial_scale` only when that

@@ -10,6 +10,7 @@ from typing import Mapping
 
 import numpy as np
 
+from .axial_scale import AxialModel
 from .config_parser import ConfigError
 
 FORMULA = "OSSE-ROUNDOVER"
@@ -51,7 +52,7 @@ def configuration(config, resolver):
     if radius <= 0:
         _fail("radius must be finite and positive.")
     if formula != marker:
-        _fail(f"an active radius requires formula {FORMULA} so older readers refuse it.")
+        _fail(f"an active radius requires formula {marker} so older readers refuse it.")
     for name in ("profile", "mesh", "source"):
         if name in config and not isinstance(config[name], Mapping):
             _fail(f"{name} must be an object.")
@@ -166,16 +167,15 @@ class Roundover:
                         float(p["k"]), float(p["wallThickness"]),
                         float(p["mouthRoundoverRadiusMm"]), float(p.get("verticalOffset", 0)))
         else:
-            axis = _number(p["absoluteAxialScale"], "axial_scale")
-            if not (0.01 <= axis <= 10 and 0.1 <= axis/scale <= 10):
-                _fail("both scales must be in [0.01, 10], with axial_scale/scale in [0.1, 10].")
-            # Contract order: map the body (Z by axial_scale, radius by scale),
-            # then build the offset wall and lip in finished millimetres.
-            model = AxialRoundover(float(p["L"])*axis, float(p["r0"])*scale,
+            # Contract order: the axial feature maps the body (its own model,
+            # domain and mouth limit), then the offset wall and lip are built
+            # in finished millimetres against it.
+            body = AxialModel.from_params(p)
+            model = AxialRoundover(body.length, body.r0,
                         math.radians(float(p["a"])), math.radians(float(p["a0"])),
-                        float(p["k"]), float(p["wallThickness"]),
-                        float(p["mouthRoundoverRadiusMm"]), float(p.get("verticalOffset", 0)),
-                        scale, axis)
+                        body.k, float(p["wallThickness"]),
+                        float(p["mouthRoundoverRadiusMm"]), body.offset,
+                        body.xy_scale, body.axial_scale, body.slope, body.throat_slope)
         if not (1 <= model.length <= 2000 and 1 <= model.r0 <= 200 and 0.5 <= model.k <= 10
                 and 0 <= model.a0 < model.a <= math.radians(75) and model.a >= math.radians(5)):
             _fail("body coefficients are outside the qualified circular domain.")
@@ -309,22 +309,27 @@ class Roundover:
 class AxialRoundover(Roundover):
     """Roundover x Axial: the same lip on a body mapped by Z and radius factors.
 
-    Length and throat radius are already physical; the conic slopes are the
-    authored ones times scale/axial_scale. Wall and lip stay in finished mm.
+    Length, throat radius and conic slopes are AxialModel's physical values;
+    the authored angles stay for the record. Wall and lip stay in finished mm.
     """
     xy_scale: float = 1.0
     axial_scale: float = 1.0
+    slope: float = 0.0
+    throat_slope: float = 0.0
     formula = "OSSE-NATIVE"
-
-    @property
-    def coefficients(self):
-        ratio = self.xy_scale/self.axial_scale
-        return (self.k*self.r0)**2, self.k*self.r0*math.tan(self.a0)*ratio, (math.tan(self.a)*ratio)**2
+    # The mapped conic is AxialModel's: same fields, same coefficients.
+    coefficients = AxialModel.coefficients
 
     @property
     def identity(self):
         return {"contractRevision":1, "formula":self.formula, "construction":"circular-osse-axial-lip-v1",
                 "controls":dict(self.__dict__)}
+
+    @property
+    def fingerprint(self):
+        # As for every composite: the hash of the recipe the STEP header carries.
+        return hashlib.sha256(json.dumps(self.identity, sort_keys=True, separators=(",", ":"),
+                                         allow_nan=False).encode()).hexdigest()
 
     def _composite_metadata(self):
         return {"formula":self.formula, "xyScale":self.xy_scale, "axialScale":self.axial_scale}

@@ -106,13 +106,15 @@ first: Z by `axial_scale`, radius by `scale`, with both factors and their
 ratio in the [absolute axial scale](absolute-axial-scale.md) domain. The
 outer wall offset, the lip radius, the rim and the rear closure are then
 built in finished millimetres against the mapped body, so the lip stays a
-true circle tangent to the mapped mouth. Every other control, domain check,
-fit bound and certificate is the single-feature lip's. `OSSE-ROUNDOVER` with
+true circle tangent to the mapped mouth. The mapped body is the axial
+feature's own model, with its domain and 10000 mm mouth limit. Every other
+control, domain check, fit bound and certificate is the single-feature lip's. `OSSE-ROUNDOVER` with
 `axial_scale`, or `OSSE-AXIAL` with an active radius, is refused with a
 pointer to `OSSE-NATIVE`.
 
-The construction is `circular-osse-axial-lip-v1`. Its fingerprint covers the
-physical length and throat radius, authored angles and `k`, wall, radius,
+The construction is `circular-osse-axial-lip-v1`. Its fingerprint is the
+SHA-256 of the identity the STEP header carries, which records the physical
+length, throat radius and slopes, authored angles and `k`, wall, radius,
 placement and both factors, so an axial factor equal to `scale` builds the
 same horn under a different identity. Resolved formula, preview metadata and
 `mouthRoundover` metadata report `OSSE-NATIVE`, `xyScale` and `axialScale`,

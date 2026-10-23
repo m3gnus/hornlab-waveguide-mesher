@@ -2,29 +2,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-
 import numpy as np
 
 from ._occ import require_gmsh
-
-
-@dataclass(frozen=True)
-class CircleArc:
-    """Meridian circle (z,r) = center+radius*(sin phi,-cos phi), phi in [start,end].
-
-    Radius grows with phi on [start,end] within [0,pi]; both the terminating
-    arc and the mouth lip satisfy this, and the local reach below relies on it.
-    """
-    center_z: float
-    center_r: float
-    radius: float
-    start: float
-    end: float
-
-    def points(self, phi):
-        phi = np.asarray(phi, dtype=np.float64)
-        return np.stack((self.center_z+self.radius*np.sin(phi), self.center_r-self.radius*np.cos(phi)), axis=-1)
+from ..composite_meridian import CircleArc
 
 
 def certify_circle_facets(groups, label):
@@ -44,8 +25,10 @@ def certify_circle_facets(groups, label):
     largest = 0.
     count = 0
     for circle, faces in groups:
-        # Unwrap around the arc's middle: the arc spans less than 2*pi, so a
-        # terminal at +/-pi (a lip ending at pi) keeps one continuous chart.
+        # A triangle's chart starts at its first vertex; the whole triangle is
+        # then moved by whole turns so that vertex lies in the window around
+        # the arc's middle. A terminal at +/-pi (a lip ending at pi) keeps one
+        # continuous chart, and other triangles are left exactly as they are.
         middle = (circle.start+circle.end)/2
         reach = float(circle.points(circle.end)[1])
         guard = 1e-10*max(1., circle.radius, abs(circle.center_z), circle.center_r, reach)
@@ -58,7 +41,8 @@ def certify_circle_facets(groups, label):
                 vertices = xyz[indexes].reshape(-1, 3, 3)
                 r = np.hypot(vertices[:, :, 0], vertices[:, :, 1])
                 phi = np.arctan2(vertices[:, :, 2]-circle.center_z, circle.center_r-r)
-                phi = middle+(phi-middle+math.pi) % (2*math.pi)-math.pi
+                phi = phi[:, :1]+(phi-phi[:, :1]+math.pi) % (2*math.pi)-math.pi
+                phi = phi+2*math.pi*np.floor((middle+math.pi-phi[:, :1])/(2*math.pi))
                 phi = np.clip(phi, circle.start, circle.end)
                 az = np.arctan2(vertices[:, :, 1], vertices[:, :, 0])
                 az = az[:, :1]+(az-az[:, :1]+math.pi) % (2*math.pi)-math.pi

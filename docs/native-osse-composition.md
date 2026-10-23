@@ -83,7 +83,10 @@ retained conic as a rational quadratic, and the osculating circle. One
 builder (`builders/terminating_arc.py`) emits it for MSH and STEP, and one
 preview owns its render geometry. The arc and lip mesh certificates share
 one facet-to-surface bound over a circle descriptor
-(`builders/circle_certificate.py`). A composite's STEP file carries one
+(`builders/circle_certificate.py`). For the lip it bounds each triangle
+with its local reach, so the reported `mouthRoundoverMeshChordBoundMm` can be
+smaller than v0.2.6 reported for the identical mesh; the arc bound is
+unchanged. A composite's STEP file carries one
 `native-composite` header recipe; the legacy markers keep their existing
 emitters and bytes. Roundover × Axial keeps the freestanding lip
 construction (`mouth_roundover.py`), whose body coefficients come from the
@@ -97,5 +100,6 @@ canonical JSON of the full geometry-parameter tuple and resolved metadata
 (including construction fingerprints), MSH bytes, STEP bytes with a pinned
 timestamp and only the translator counter normalized, and deterministic
 preview serialization with its timing clock pinned. Preview arrays retain
-dtype and shape plus a SHA-256 digest of their raw bytes. The existing
-adapter-plus-axial marker is included.
+dtype and shape plus a SHA-256 digest of their raw bytes. Build-result
+metadata is compared too; only the lip certificate bound may differ, and
+only downward. The existing adapter-plus-axial marker is included.

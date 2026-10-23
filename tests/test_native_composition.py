@@ -416,6 +416,13 @@ def test_adapter_arc_refusals():
     controls=adapter_arc();controls["throat_adapter"]=copy.deepcopy(PAYLOADS["controls"]["throat_adapter"])
     with pytest.raises(ConfigError,match="not supported yet"):
         build_geometry_params(controls)
+    # A returning circle that would reach back into a wide throat cubic.
+    wide=adapter_arc(None,180.,1.)
+    wide["profile"].update(L_mm=30.,a_deg=60.,k=2.)
+    wide["throat_adapter"].update(driver_exit_diameter_mm=400.,length_mm=80.,join_t=.3)
+    wide["terminating_arc"]["join_t"]=.4
+    with pytest.raises(ConfigError,match="clear the throat adapter"):
+        build_geometry_params(wide)
     wall=adapter_arc();wall["mesh"]["wall_thickness_mm"]=1
     with pytest.raises(ConfigError):
         build_geometry_params(wall)
@@ -583,6 +590,9 @@ def test_roundover_axial_identity_and_uniform_spelling():
     m=r.geometry.roundover
     assert m.identity == {"contractRevision":1,"formula":"OSSE-NATIVE","construction":"circular-osse-axial-lip-v1",
         "controls":dict(m.__dict__)}
+    # As for the arc composites, the fingerprint is the hash of the header recipe identity.
+    import hashlib
+    assert m.fingerprint == hashlib.sha256(json.dumps(m.identity,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 
 def test_roundover_axial_refusals():
@@ -592,6 +602,10 @@ def test_roundover_axial_refusals():
             build_geometry_params(c)
     c=roundover_axial(.05)
     with pytest.raises(ConfigError,match="axial_scale/scale"):
+        build_geometry_params(c)
+    # The mapped body keeps the axial feature's own domain, mouth limit included.
+    c=roundover_axial(1.,10.);c["profile"].update(L_mm=2000.,r0_mm=10.)
+    with pytest.raises(ConfigError,match="mouth radius exceeds 10000"):
         build_geometry_params(c)
     c=roundover_axial();c["profile"]["axial_scale"]=c.pop("axial_scale")
     with pytest.raises(ConfigError,match="exact root axial_scale"):

@@ -27,6 +27,24 @@ def _number(value, name):
 
 
 @dataclass(frozen=True)
+class CircleArc:
+    """Meridian circle (z,r) = center+radius*(sin phi,-cos phi), phi in [start,end].
+
+    Radius grows with phi on [start,end] within [0,pi]; both the terminating
+    arc and the mouth lip satisfy this, and the local reach below relies on it.
+    """
+    center_z: float
+    center_r: float
+    radius: float
+    start: float
+    end: float
+
+    def points(self, phi):
+        phi = np.asarray(phi, dtype=np.float64)
+        return np.stack((self.center_z+self.radius*np.sin(phi), self.center_r-self.radius*np.cos(phi)), axis=-1)
+
+
+@dataclass(frozen=True)
 class CompositeMeridian:
     """Immutable physical meridian; arrays are backed by immutable bytes.
 
@@ -115,6 +133,13 @@ class CompositeMeridian:
         size = max(1., body.length, radius, abs(cz), cr, end_r, abs(body.offset)+end_r)
         if throat is not None:
             size = max(size, float(np.max(np.abs(throat.cubic))), abs(body.offset)+throat.cubic_reach)
+            # A returning circle below the adapter join has phi past the
+            # crossing of that plane, so its radius is at least the radius
+            # there; every cubic point is within its reach.
+            if end_z < float(start[0]):
+                crossing = math.pi-math.asin(min(1., (float(start[0])-cz)/radius))
+                if cr-radius*math.cos(crossing)-throat.cubic_reach < .1:
+                    _fail("the returning arc must clear the throat adapter by 0.1 mm.")
         margin=1e-10*size
         if min(z-z0,radius*(end-beta),end_z) <= .1+margin:
             _fail("the retained span, arc or source-plane clearance could not be certified above 0.1 mm.")
@@ -205,9 +230,12 @@ class CompositeMeridian:
         lo=lo-self.shift
         return (A*C-B*B)/(A+2*B*lo+C*lo*lo)**1.5
 
+    @property
+    def circle(self):
+        return CircleArc(self.center_z,self.center_r,self.radius,self.beta,self.end)
+
     def arc(self,phi):
-        phi=np.asarray(phi,dtype=np.float64)
-        return np.stack((self.center_z+self.radius*np.sin(phi),self.center_r-self.radius*np.cos(phi)),axis=-1)
+        return self.circle.points(phi)
 
     @property
     def opening(self):

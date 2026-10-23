@@ -155,10 +155,14 @@ class _CompositeCadInfo(CadInfo):
     datums: Mapping[str, Any] | None = None
 
 
-def _composite_header(text: str, fingerprint: str, identity: Mapping[str, Any]) -> str:
-    """Write the one composite recipe; legacy markers keep their own emitters."""
+def _header_recipe(text: str, fingerprint: str, identity: Mapping[str, Any], tag: str = "native-composite") -> str:
+    """Write one construction recipe into the STEP HEADER.
+
+    Composites use ``native-composite``; the adapter and controls markers keep
+    their ``native-construction`` tag and bytes.
+    """
     recipe = {"construction_fingerprint": fingerprint, **identity}
-    comment = "/* native-composite " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
+    comment = "/* " + tag + " " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
     return text.replace("HEADER;", "HEADER;\n" + comment, 1)
 
 
@@ -721,20 +725,17 @@ def write_step(
             )
             if controls is not None:
                 text=_controls_surface_shell_transport(text,n_faces=n_faces,open_throat=open_throat)
-                recipe={"construction_fingerprint":controls.fingerprint,**controls.identity}
-                text=text.replace("HEADER;","HEADER;\n/* native-construction "+json.dumps(recipe,sort_keys=True,separators=(",",":"),allow_nan=False)+" */\n",1)
+                text=_header_recipe(text,controls.fingerprint,controls.identity,"native-construction")
             if arc_surface:
                 text=_arc_surface_shell_transport(text,n_faces=n_faces,open_throat=open_throat)
             adapter = getattr(geometry, "adapter_meridian", None)
             roundover = getattr(geometry, "roundover", None)
             composite = None
             if adapter is not None:
-                recipe = {"construction_fingerprint": adapter.fingerprint, **adapter.identity}
-                comment = "/* native-construction " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
-                text = text.replace("HEADER;", "HEADER;\n" + comment, 1)
+                text = _header_recipe(text, adapter.fingerprint, adapter.identity, "native-construction")
             if roundover is not None and roundover.formula == "OSSE-NATIVE":
                 composite = roundover
-                text = _composite_header(text, roundover.fingerprint, roundover.identity)
+                text = _header_recipe(text, roundover.fingerprint, roundover.identity)
             elif roundover is not None:
                 recipe = {"contractRevision":1, "formula":"OSSE-ROUNDOVER", "controls":roundover.__dict__,
                           **roundover.metadata()}
@@ -746,7 +747,7 @@ def write_step(
             arc=getattr(geometry,"arc_meridian",None)
             if arc is not None and arc.identity["formula"] == "OSSE-NATIVE":
                 composite=arc
-                text=_composite_header(text,composite.fingerprint,composite.identity)
+                text=_header_recipe(text,composite.fingerprint,composite.identity)
             elif arc is not None:
                 recipe=arc.metadata()["terminatingArc"]
                 text=text.replace("END-ISO-10303-21;","/* hornlab-terminating-arc "+json.dumps(recipe,sort_keys=True,separators=(",",":"),allow_nan=False)+" */\nEND-ISO-10303-21;")

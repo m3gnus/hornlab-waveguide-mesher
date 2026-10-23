@@ -30,6 +30,34 @@ def _cubic_bounds(model, lo, hi):
     return float(np.max(np.linalg.norm(second,axis=1)))*(hi-lo)**2/8,float(np.ptp(angles))
 
 
+def refine_meridian(lo, hi, bounds, budget, normal_rad):
+    """Split [lo,hi] until every interval's chord and normal bounds fit.
+
+    ``bounds(left,right)`` returns (chord error mm, normal range rad). Returns
+    the stations and the largest accepted error and normal range.
+    """
+    values = [lo]
+    worst = [0., 0.]
+
+    def refine(left, right):
+        error, angle = bounds(left, right)
+        if error <= budget and angle <= normal_rad/2:
+            values.append(right)
+            worst[0] = max(worst[0], error)
+            worst[1] = max(worst[1], angle)
+            if len(values) > 8192:
+                raise ValueError("preview meridian sampling exceeds its certified budget")
+        else:
+            mid = (left+right)/2
+            if mid == left or mid == right:
+                raise ValueError("preview cannot resolve a meridian interval")
+            refine(left, mid)
+            refine(mid, right)
+
+    refine(lo, hi)
+    return np.array(values), worst[0], worst[1]
+
+
 def _finite_number(value):
     try:
         return type(value) in (int,float) and math.isfinite(value)
@@ -68,35 +96,17 @@ def build(params, options):
         raise ValueError("preview angular sampling exceeds its certified budget")
     angular_error = reach*(2*math.pi/nphi)**2/8
     angular_normal = 2*math.pi/nphi
-    max_meridian_error = max_meridian_normal = 0.
+    def body_bounds(left, right):
+        _, d, dd = model.body_values(np.array([left, right]))
+        return float(np.linalg.norm(dd[0]))*(right-left)**2/8, float(np.ptp(np.arctan2(d[:,1], d[:,0])))
     branches = []
-    for cubic in (True,False):
-        lo = 0. if cubic else model.payload["join_t"]
-        values = [lo]
-
-        def refine(left,right):
-            nonlocal max_meridian_error,max_meridian_normal
-            if cubic:
-                error,angle = _cubic_bounds(model,left,right)
-            else:
-                _,d,dd = model.body_values(np.array([left,right]))
-                error = float(np.linalg.norm(dd[0]))*(right-left)**2/8
-                angle = float(np.ptp(np.arctan2(d[:,1],d[:,0])))
-            if error <= budget and angle <= math.radians(normal)/2:
-                values.append(right)
-                max_meridian_error = max(max_meridian_error,error)
-                max_meridian_normal = max(max_meridian_normal,angle)
-                if len(values) > 8192:
-                    raise ValueError("preview meridian sampling exceeds its certified budget")
-            else:
-                mid = (left+right)/2
-                if mid == left or mid == right:
-                    raise ValueError("preview cannot resolve a meridian interval")
-                refine(left,mid)
-                refine(mid,right)
-
-        refine(lo,1.)
-        branches.append(np.array(values))
+    max_meridian_error = max_meridian_normal = 0.
+    for lo, bounds in ((0., lambda left, right: _cubic_bounds(model, left, right)),
+                       (model.payload["join_t"], body_bounds)):
+        values, error, angle = refine_meridian(lo, 1., bounds, budget, math.radians(normal))
+        branches.append(values)
+        max_meridian_error = max(max_meridian_error, error)
+        max_meridian_normal = max(max_meridian_normal, angle)
     # One shared join ring. Curvature there is the retained-body one-sided
     # value; the two branches are G1 and need not have equal curvature.
     cp,cd,cdd = model.cubic_values(branches[0][:-1])

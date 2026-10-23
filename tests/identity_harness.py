@@ -92,7 +92,9 @@ try:
         # deterministic. Default preview options have no refinement deadline.
         with patch("time.perf_counter", return_value=0.0):
             write_json("preview.json", preview_fields(build_preview_geometry(config)))
-    build_from_config(config, destination / 'out.msh')
+    result = build_from_config(config, destination / 'out.msh')
+    if len(sys.argv) > 4 and sys.argv[4] == "native":
+        write_json("build.json", preview_fields(result.metadata))
     write_step_from_config(config, destination / 'out.step')
 finally:
     gmsh.finalize()
@@ -110,6 +112,11 @@ def run_worker(tree, source, target, *, native=False):
             command, cwd=tree, env={**os.environ, 'PYTHONPATH': str(tree)},
             stdout=log, stderr=subprocess.STDOUT, check=True, timeout=50,
         )
+
+
+# The shared circle certificate (composition slice 2) bounds lip triangles with
+# their local reach, so this reported bound can only shrink for the same mesh.
+BUILD_METADATA_ALLOWED_TIGHTER = ('mouthRoundoverMeshChordBoundMm',)
 
 
 def normalize_step(value):
@@ -138,3 +145,13 @@ def assert_mesh_and_step_bytes(base_tree, tmp_path, name, config, *, native=Fals
             assert (base / artifact).read_bytes() == (current / artifact).read_bytes(), (
                 name, artifact,
             )
+        base_build = json.loads((base / 'build.json').read_text())
+        current_build = json.loads((current / 'build.json').read_text())
+        for key in BUILD_METADATA_ALLOWED_TIGHTER:
+            # A tighter certificate over the identical mesh is the only
+            # documented build-metadata change; it may never loosen.
+            if key in base_build:
+                assert key in current_build and current_build[key] <= base_build[key], (name, key)
+                base_build.pop(key)
+                current_build.pop(key)
+        assert base_build == current_build, (name, 'build.json')
