@@ -26,6 +26,36 @@ def _number(value, name):
     return float(value)
 
 
+def composite_identity(params, construction):
+    """Canonical recipe JSON for composites, using normalized authored inputs only.
+
+    Never copy model fields here: even a tangent's last bit can vary by libm.
+    Legacy single-feature recipes retain their existing identity owners.
+    """
+    features = []
+    identity = {"contractRevision":1, "formula":"OSSE-NATIVE", "construction":construction,
+        "authoredBody":{key:float(params[key]) for key in ("L", "r0", "a", "a0", "k")},
+        "verticalOffsetMm":float(params.get("verticalOffset", 0)), "source":"flat-throat-rim-v1"}
+    identity["authoredBody"]["scale"] = float(params.get("scale", 1))
+    if params.get("throat_adapter"):
+        features.append("adapter")
+        identity["adapter"] = dict(params["throat_adapter"])
+        identity["source"] = "flat-driver-rim-v1"
+    if "terminatingArc" in params:
+        features.append("arc")
+        payload = params["terminatingArc"]
+        identity["arc"] = {"joinT":float(payload["join_t"]), "endTangentDeg":float(payload["end_tangent_deg"])}
+    if "absoluteAxialScale" in params:
+        features.append("axial")
+        identity["authoredBody"]["axial_scale"] = float(params["absoluteAxialScale"])
+    if "mouthRoundoverRadiusMm" in params:
+        features.append("roundover")
+        identity["roundover"] = {"radiusMm":float(params["mouthRoundoverRadiusMm"]),
+                                 "wallThicknessMm":float(params["wallThickness"])}
+    identity["features"] = features
+    return json.dumps(identity, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
 def mapped_throat(params):
     """The mapped body, the composite's throat cubic and its composite-z shift.
 
@@ -171,18 +201,14 @@ class CompositeMeridian:
                     "slope":ta,"throatSlope":t0},
             "arc":{"joinT":t,"endTangentDeg":float(payload["end_tangent_deg"])},
             "verticalOffsetMm":body.offset,"source":"flat-throat-rim-v1"}
-        if params.get("type") == "OSSE-NATIVE":
-            identity["formula"] = "OSSE-NATIVE"
-            # Only an authored axial feature names its factor; otherwise the
-            # map is the uniform scale already recorded with the body.
-            if "absoluteAxialScale" in params:
-                identity["authoredBody"]["axial_scale"] = body.axial_scale
         if throat is not None:
             identity["construction"] = "circular-cubic-conic-osculating-arc-v1"
             identity["adapter"] = dict(throat.payload)
             identity["source"] = "flat-driver-rim-v1"
+        recipe = (composite_identity(params, identity["construction"]) if params.get("type") == "OSSE-NATIVE"
+                  else json.dumps(identity,sort_keys=True,separators=(",",":"),allow_nan=False))
         return cls(body.length,body.r0,body.k,ta,t0,t,end,body.offset,radius,beta,cz,cr,
-            poles.tobytes(),weights.tobytes(),json.dumps(identity,sort_keys=True,separators=(",",":"),allow_nan=False),
+            poles.tobytes(),weights.tobytes(),recipe,
             shift,throat)
 
     @property

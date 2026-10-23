@@ -5,13 +5,14 @@ import copy
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
 import numpy as np
 
 from .axial_scale import AxialModel
 from .config_parser import ConfigError
+from .composite_meridian import composite_identity
 
 FORMULA = "OSSE-ROUNDOVER"
 KEY = "mouth_roundover_radius_mm"
@@ -187,7 +188,8 @@ class Roundover:
                         math.radians(float(p["a"])), math.radians(float(p["a0"])),
                         body.k, float(p["wallThickness"]),
                         float(p["mouthRoundoverRadiusMm"]), body.offset,
-                        body.xy_scale, body.axial_scale, body.slope, body.throat_slope)
+                        body.xy_scale, body.axial_scale, body.slope, body.throat_slope,
+                        _identity=composite_identity(p, "circular-osse-axial-lip-v1"))
         if not (1 <= model.length <= 2000 and 1 <= model.r0 <= 200 and 0.5 <= model.k <= 10
                 and 0 <= model.a0 < model.a <= math.radians(75) and model.a >= math.radians(5)):
             _fail("body coefficients are outside the qualified circular domain.")
@@ -344,20 +346,19 @@ class AxialRoundover(Roundover):
     axial_scale: float = 1.0
     slope: float = 0.0
     throat_slope: float = 0.0
+    _identity: str = field(default="", kw_only=True, repr=False)
     formula = "OSSE-NATIVE"
     # The mapped conic is AxialModel's: same fields, same coefficients.
     coefficients = AxialModel.coefficients
 
     @property
     def identity(self):
-        return {"contractRevision":1, "formula":self.formula, "construction":"circular-osse-axial-lip-v1",
-                "controls":dict(self.__dict__)}
+        return json.loads(self._identity)
 
     @property
     def fingerprint(self):
         # As for every composite: the hash of the recipe the STEP header carries.
-        return hashlib.sha256(json.dumps(self.identity, sort_keys=True, separators=(",", ":"),
-                                         allow_nan=False).encode()).hexdigest()
+        return hashlib.sha256(self._identity.encode()).hexdigest()
 
     def _composite_metadata(self):
         return {"formula":self.formula, "xyScale":self.xy_scale, "axialScale":self.axial_scale}
@@ -392,7 +393,6 @@ class AdapterRoundover(AxialRoundover):
     """
     start: float = 0.0
     shift: float = 0.0
-    features: tuple = ()
     throat: object = None
 
     @classmethod
@@ -401,11 +401,10 @@ class AdapterRoundover(AxialRoundover):
         # The same body, cubic, checks and shift as Adapter x Arc; the wall is the lip's.
         body, throat, _, shift = mapped_throat(p)
         start = float(throat.cubic[-1, 0])
-        authored = "absoluteAxialScale" in p
         return cls(shift+body.length, body.r0, math.radians(float(p["a"])), math.radians(float(p["a0"])),
                    body.k, float(p["wallThickness"]), float(p["mouthRoundoverRadiusMm"]), body.offset,
                    body.xy_scale, body.axial_scale, body.slope, body.throat_slope, start, shift,
-                   ("adapter", "axial", "roundover") if authored else ("adapter", "roundover"), throat)
+                   throat, _identity=composite_identity(p, "circular-cubic-conic-lip-v1"))
 
     @property
     def coefficients(self):
@@ -416,13 +415,6 @@ class AdapterRoundover(AxialRoundover):
         A, B, C = AxialModel.coefficients.fget(self)
         s = self.shift
         return A+s*(C*s-2*B), B-C*s, C
-
-    @property
-    def identity(self):
-        controls = {key: value for key, value in self.__dict__.items() if key not in ("throat", "features")}
-        return {"contractRevision":1, "formula":self.formula, "construction":"circular-cubic-conic-lip-v1",
-                "features":list(self.features), "adapter":dict(self.throat.payload),
-                "body":self.throat.identity["body"], "controls":controls}
 
     @property
     def source_radius(self):

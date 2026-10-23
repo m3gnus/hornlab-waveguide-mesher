@@ -325,13 +325,15 @@ def physical_adapter(c):
 
 
 def monotone_residual(curve,z,r,lo=0.,hi=1.):
-    """Radial distance to a z-monotone parametric curve (z,r)=curve(t) at the same z."""
+    """Radial residual within the axial domain; endpoint distance outside it."""
+    z,r=np.broadcast_arrays(np.atleast_1d(z).astype(float),np.atleast_1d(r).astype(float))
     lo,hi=np.full_like(z,lo),np.full_like(z,hi)
     for _ in range(80):
         mid=(lo+hi)/2
         below=curve(mid)[:,0] < z
         lo,hi=np.where(below,mid,lo),np.where(below,hi,mid)
-    return np.abs(curve((lo+hi)/2)[:,1]-r)
+    point=curve((lo+hi)/2)
+    return np.hypot(point[:,0]-z,point[:,1]-r)
 
 
 def cubic_residual(m,z,r):
@@ -596,7 +598,9 @@ def test_roundover_axial_identity_and_uniform_spelling():
     assert (meta["mouthRoundover"]["formula"],meta["mouthRoundover"]["axialScale"]) == ("OSSE-NATIVE",AXIAL)
     m=r.geometry.roundover
     assert m.identity == {"contractRevision":1,"formula":"OSSE-NATIVE","construction":"circular-osse-axial-lip-v1",
-        "controls":dict(m.__dict__)}
+        "features":["axial","roundover"],"authoredBody":{"L":12.,"r0":1.27,"a":45.,"a0":10.,"k":1.,
+            "scale":1.,"axial_scale":AXIAL},"verticalOffsetMm":0.,"source":"flat-throat-rim-v1",
+        "roundover":{"radiusMm":1.,"wallThicknessMm":.2}}
     # As for the arc composites, the fingerprint is the hash of the header recipe identity.
     import hashlib
     assert m.fingerprint == hashlib.sha256(json.dumps(m.identity,sort_keys=True,separators=(",",":")).encode()).hexdigest()
@@ -838,7 +842,7 @@ def test_adapter_roundover_identity_and_uniform_axial_spelling():
     assert plain.identity["formula"] == axial.identity["formula"] == "OSSE-NATIVE"
     assert plain.identity["adapter"] == {**LIP_ADAPTER,"contract_revision":1}
     assert (plain.identity["features"],axial.identity["features"]) == (["adapter","roundover"],["adapter","axial","roundover"])
-    assert plain.identity["body"] == {"L":12.,"r0":1.27,"a":45.,"a0":10.,"k":1.}
+    assert plain.identity["authoredBody"] == {"L":12.,"r0":1.27,"a":45.,"a0":10.,"k":1.,"scale":1.}
     # An authored axial factor equal to scale builds the same horn as a
     # different feature set, so it keeps its own identity.
     np.testing.assert_array_equal(plain.throat.cubic,uniform.throat.cubic)
@@ -859,15 +863,64 @@ def test_adapter_roundover_identity_and_uniform_axial_spelling():
     assert lip["sourceAngleDeg"] == axial.throat.source_angle and lip["mouthZMm"] == axial.length
 
 
-def test_slice_one_to_three_composites_keep_their_identity():
-    # Frozen from the slice 3 tip (eac530c); slice 4 must not move them.
+def test_composite_authored_fingerprints():
+    # Only normalized authored numbers enter these recipes, never libm results
+    # or mapped geometry. These goldens therefore apply on every platform.
     assert {"arc+axial":model(composite()).fingerprint,"adapter+arc":model(adapter_arc(None)).fingerprint,
             "adapter+arc+axial":model(adapter_arc()).fingerprint,
-            "roundover+axial":roundover_model(roundover_axial()).fingerprint} == {
-        "arc+axial":"ee69a0a6866023eed0e16874ab87342dd8a9c1011e7a1da323a9d99b881e5bd1",
-        "adapter+arc":"1644b14cc12357c59ad668fdd437024e85b7d44137ba5e9a03eac4bab0357880",
-        "adapter+arc+axial":"198eb40e34df01963ef279d79aee516b2d300f88ad0eacd7b25a7536fa9fadce",
-        "roundover+axial":"9f9d8e94d3c0e513aedb5572adc777db28fa3bf79e95888bdbea59f15c95444e"}
+            "roundover+axial":roundover_model(roundover_axial()).fingerprint,
+            "adapter+roundover":roundover_model(adapter_roundover(None)).fingerprint,
+            "adapter+roundover+axial":roundover_model(adapter_roundover()).fingerprint,
+            "large+adapter+roundover+axial":roundover_model(large_adapter_roundover()).fingerprint} == {
+        "arc+axial":"a8c66f0dc5e026f13a68524e8c3a752f14f0b39a623397a70a31974a14d2f847",
+        "adapter+arc":"a8e47944f065418e3c4453e66aba77debdd1b157fff9613fa7f20a74a5797d9b",
+        "adapter+arc+axial":"86285a52ae5879a9bc00effab0fa00d836c71b5873fd3d94e5090771667ef85d",
+        "roundover+axial":"51c4094ef8686eaeabb4749c75d13a02c8ed9a5afd6567e03c41c3d27ba7011a",
+        "adapter+roundover":"015d08118f1a627ed45d9b7fecfd8523dc777819491c1ceb96f5c06ed5c08061",
+        "adapter+roundover+axial":"086b246a81eae2f34a225b997309a50ee2611d8e1f39b8169b4cd1bb057b6301",
+        "large+adapter+roundover+axial":"f1a1830f7458be8f4384b0236d3854bb6aa5d882d9b14096dff75b3a9cddb060"}
+
+
+@pytest.mark.parametrize("config",[composite(),adapter_arc(None),adapter_arc(),roundover_axial(),
+    adapter_roundover(None),adapter_roundover(),large_adapter_roundover()])
+@pytest.mark.parametrize("function",["tan","radians"])
+def test_composite_identity_ignores_libm_roundoff(config,function,monkeypatch):
+    from dataclasses import replace
+    resolve=roundover_model if "mouth_roundover_radius_mm" in config["mesh"] else model
+    before=resolve(config)
+    original=getattr(math,function)
+    calls=[]
+    def perturbed(value):
+        calls.append(value)
+        return math.nextafter(original(value),math.inf)
+    monkeypatch.setattr(math,function,perturbed)
+    after=resolve(config)
+    assert calls
+    assert after.identity == before.identity
+    assert after.fingerprint == before.fingerprint
+    # The physical map can round away a one-ULP libm change. Also inject the
+    # reported final-slope difference directly, independent of that rounding.
+    changed=replace(before,throat_slope=math.nextafter(before.throat_slope,math.inf))
+    assert changed.fingerprint == before.fingerprint
+
+
+def test_monotone_residual_measures_outside_endpoint_distance():
+    # A non-default interval also exercises the retained outer conic's domain.
+    curve=lambda t:np.stack((t,2*t),axis=-1)
+    z=np.array([-100.,2.,3.,4.,100.]);r=np.array([4.,4.,6.,8.,8.])
+    np.testing.assert_allclose(monotone_residual(curve,z,r,2.,4.),[102.,0.,0.,0.,96.],atol=1e-12)
+
+
+@pytest.mark.parametrize("name",sorted(LIP_CASES))
+def test_lip_residual_rejects_points_outside_axial_domain(name):
+    m=roundover_model(LIP_CASES[name]())
+    # Matching an endpoint radius must never hide a thousand mm of axial error.
+    curves=[lambda t:m.cubic(t)[0],lambda t:m.cubic(t,True)[0],
+            lambda t:m.body(m.start+t*(m.length-m.start))[0],
+            lambda t:m.body(m.start+t*(m.length-m.start),True)[0]]
+    radii=np.concatenate([curve(np.array([0.,1.]))[:,1] for curve in curves])
+    for z in (-1013.8,1013.8):
+        assert np.min(lip_residual(m,np.full_like(radii,z),radii)) > 900.
 
 
 def test_adapter_roundover_refusals():

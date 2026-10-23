@@ -104,6 +104,14 @@ wall offset ahead of the conic. The lip certificate is unchanged.
 
 ## Identity gate
 
+Composite recipes share one authored-input identity owner in
+`composite_meridian.py`: normalized body controls in degrees and intrinsic mm,
+the explicit feature list, construction name, feature payloads, scale factors
+and finished placement. No computed slope, mapped dimension, join shift or
+other geometry enters their hash. The composite fingerprints are therefore
+independent of platform math libraries. This replaces the unreleased slice 1–4
+composite recipes; legacy single-feature recipes and geometry stay unchanged.
+
 [The single-feature identity harness](../tests/test_native_single_feature_identity.py)
 compares each legacy native family, from frozen literal fixtures, against tag `v0.2.6` in fresh processes:
 canonical JSON of the full geometry-parameter tuple and resolved metadata
