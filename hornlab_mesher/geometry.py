@@ -387,8 +387,8 @@ class _ArcPointGridHornGeometry(PointGridHornGeometry):
 
     def __post_init__(self):
         super().__post_init__()
-        from .terminating_arc import ArcMeridian
-        if type(self.arc_meridian) is not ArcMeridian:
+        from .composite_meridian import CompositeMeridian
+        if type(self.arc_meridian) is not CompositeMeridian:
             raise ValueError("terminating arc geometry requires its immutable exact meridian")
 
 

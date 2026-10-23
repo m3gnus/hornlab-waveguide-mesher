@@ -45,9 +45,9 @@ including null and empty objects. Only the exact root spelling is accepted.
 
 The first domain is scalar circular OSSE with `s = 0`, bare mode, zero wall
 thickness, full-circle coverage and a flat native source. Only canonical
-profile controls in the example are accepted. Independent axial scaling is
-accepted only as the `OSSE-NATIVE` composite below. Authored throat adapters,
-mouth shells, source bodies, guides, morphs,
+profile controls in the example are accepted. Independent axial scaling and
+authored throat adapters are accepted only as the `OSSE-NATIVE` composites
+below. Controls adapters, mouth shells, source bodies, guides, morphs,
 extensions, slots, stretch, rotation, enclosures, baffles, sectors, curved
 sources, lookup profiles and imported text designs are refused. Every
 supplied formula/type selector must agree. Duplicate placement values must
@@ -147,7 +147,37 @@ is usually steeper than the unmapped one, so `end_tangent_deg` must exceed
 it. `OSSE-ARC` with an `axial_scale` key is refused with a pointer to
 `OSSE-NATIVE`. The resolved formula, preview metadata and STEP recipe
 report `OSSE-NATIVE`, and the recipe's `authoredBody` carries `axial_scale`.
-Mesher readers at or below 0.2.6 refuse this design.
+Mesher readers 0.2.6 and 0.2.7 refuse this design.
+
+## Arc with a throat adapter
+
+`formula = "OSSE-NATIVE"` with root `throat_adapter` (authored mode), root
+`terminating_arc` and optionally root `axial_scale` composes all three in
+the contract's order. The adapter keeps its
+[OSSE-ADAPTER-AXIAL](native-adapter-axial-scale.md) construction, domain and
+checks: the cubic and body are built intrinsically, then mapped with Z times
+`axial_scale` (or `scale` when no axial feature is supplied) and radius
+times `scale`. The retained conic runs from the adapter join to the circle
+join and starts on the cubic's exact end point, with the same tangent. Both
+`join_t` values are fractions of the authored body length `L` on the same
+intrinsic conic, so the arc's `join_t` must exceed the adapter's and keep at
+least 0.1 mm of conic. The circle is then built in finished millimetres
+against the mapped conic, as above. The source disk sits on the driver rim.
+
+The construction is `circular-cubic-conic-osculating-arc-v1`; identity adds
+the normalized adapter payload and records `axial_scale` only when that
+feature was authored, so an axial factor equal to `scale` builds the same
+horn under a different identity. Datums add `WG_ADAPTER_JOIN_PLANE`, and
+`WG_BODY_MOUTH_REFERENCE_PLANE` sits where the full mapped body would end
+after the adapter. Metadata adds `adapterJoinMm`, `sourceRadiusMm` and
+`sourceAngleDeg`. The mesh certificate covers the circle facets only, as
+for every arc; the cubic and conic are exact OCC curves.
+
+Every `OSSE-NATIVE` composite writes one STEP header recipe,
+`/* native-composite {...} */`, holding the construction fingerprint and
+identity, and returns them as `construction_fingerprint` and `construction`
+with the arc metadata and datums. The `hornlab-terminating-arc` trailer is
+written for `OSSE-ARC` only.
 
 Construction identity includes original body and arc controls, uniform scale,
 the axial factor of a composite and finished placement. Density, preview LOD, routing and output units do not

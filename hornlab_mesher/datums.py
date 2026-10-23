@@ -114,12 +114,15 @@ def derive_datums(
         mouth=np.column_stack((r*np.cos(az),r*np.sin(az)+arc.offset,np.full(64,z)))
         def plane(z):
             return {**_axis_plane("z",z),"origin_mm":[0.,arc.offset,float(z)]}
-        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,arc.offset,0.],"direction":[0.,0.,1.]},
+        datums={"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,arc.offset,0.],"direction":[0.,0.,1.]},
             "WG_THROAT_PLANE":{**plane(0),"nominal":False},"WG_ARC_JOIN_PLANE":plane(arc.join_z),
             "WG_MOUTH_PLANE":plane(z),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
-            "WG_BODY_MOUTH_REFERENCE_PLANE":{**plane(arc.length),"nominal":True,"reference":True},
+            "WG_BODY_MOUTH_REFERENCE_PLANE":{**plane(arc.body_mouth_z),"nominal":True,"reference":True},
             "WG_GEOM_MIDPLANE_Y":_axis_plane("y",arc.offset),"WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),
             "WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
+        if arc.throat is not None:
+            datums["WG_ADAPTER_JOIN_PLANE"]={**plane(arc.conic_start_z),"nominal":False}
+        return datums
     from .adapter_axial import PhysicalAdapter
     adapter = getattr(geometry, "adapter_meridian", None)
     if isinstance(adapter, PhysicalAdapter):

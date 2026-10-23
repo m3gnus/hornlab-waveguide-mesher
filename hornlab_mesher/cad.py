@@ -145,6 +145,24 @@ class _ArcCadInfo(CadInfo):
 
 
 @dataclass(frozen=True)
+class _CompositeCadInfo(CadInfo):
+    """An OSSE-NATIVE composite: one construction recipe plus its mouth feature."""
+
+    construction_fingerprint: str = ""
+    construction: Mapping[str, Any] | None = None
+    terminating_arc: Mapping[str, Any] | None = None
+    mouth_roundover: Mapping[str, Any] | None = None
+    datums: Mapping[str, Any] | None = None
+
+
+def _composite_header(text: str, fingerprint: str, identity: Mapping[str, Any]) -> str:
+    """Write the one composite recipe; legacy markers keep their own emitters."""
+    recipe = {"construction_fingerprint": fingerprint, **identity}
+    comment = "/* native-composite " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
+    return text.replace("HEADER;", "HEADER;\n" + comment, 1)
+
+
+@dataclass(frozen=True)
 class WgLinkIdentity:
     """Caller-owned identity/provenance sections emitted without augmentation."""
 
@@ -722,7 +740,10 @@ def write_step(
                 recipe = {"contractRevision":1,"formula":"OSSE-AXIAL","controls":axial.__dict__,**axial.metadata()}
                 text = text.replace("END-ISO-10303-21;", "/* hornlab-absolute-axial-scale " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
             arc=getattr(geometry,"arc_meridian",None)
-            if arc is not None:
+            composite=arc if arc is not None and arc.identity["formula"] == "OSSE-NATIVE" else None
+            if composite is not None:
+                text=_composite_header(text,composite.fingerprint,composite.identity)
+            elif arc is not None:
                 recipe=arc.metadata()["terminatingArc"]
                 text=text.replace("END-ISO-10303-21;","/* hornlab-terminating-arc "+json.dumps(recipe,sort_keys=True,separators=(",",":"),allow_nan=False)+" */\nEND-ISO-10303-21;")
             source_body = geometry if type(geometry) is StandaloneSourceGeometry else None
@@ -738,6 +759,7 @@ def write_step(
             staged_path = None
             wrote = True
             info_cls = (_SourceBodyCadInfo if source_body is not None else
+                        _CompositeCadInfo if composite is not None else
                         _ControlsCadInfo if controls is not None else
                         _ArcCadInfo if arc is not None else
                         _AdapterCadInfo if adapter is not None else
@@ -749,6 +771,8 @@ def write_step(
             if controls is not None:
                 identity_fields={"construction_fingerprint":controls.fingerprint,"construction":controls.identity,"datums":derive_datums(geometry,built)}
                 box=(*controls.bounds[0],*controls.bounds[1])
+            if composite is not None:
+                identity_fields={"construction_fingerprint":composite.fingerprint,"construction":composite.identity}
             if roundover is not None:
                 box = (*roundover.bounds[0], *roundover.bounds[1])
             from .adapter_axial import PhysicalAdapter

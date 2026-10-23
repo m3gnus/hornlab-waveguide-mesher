@@ -4,8 +4,8 @@ Native circular terminating arcs use `OSSE-ARC` and the required root
 `terminating_arc` object. See [the terminating arc contract](native-terminating-arc.md)
 for the explicit attachment, tangent and curvature match, supported domain,
 complete bounds and terminal fidelity. `OSSE-NATIVE` composes two or more
-native features that have no legacy marker; only arc plus `axial_scale` is
-implemented. See [native OSSE composition](native-osse-composition.md).
+native features that have no legacy marker; arc plus `axial_scale`, and an
+authored adapter plus arc with or without `axial_scale`, are implemented. See [native OSSE composition](native-osse-composition.md).
 
 Native circular lips use the fail-closed `OSSE-ROUNDOVER` formula marker and
 `mesh.mouth_roundover_radius_mm` (zero or absent is off for ordinary formulas).

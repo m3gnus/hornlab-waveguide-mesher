@@ -1,9 +1,10 @@
-"""Exact OCC conic and circular surfaces with shared acoustic interfaces."""
+"""The composite builder: exact OCC throat cubic, conic and circle surfaces."""
 import math
 
 import numpy as np
 
 from ._occ import require_gmsh
+from .circle_certificate import CircleArc,certify_circle_facets
 from ..geometry import BuiltGeometry,MESH_ALGORITHM_FRONTAL_DELAUNAY
 from ..tags import PhysicalGroup
 
@@ -13,7 +14,7 @@ def build_arc(geometry):
     if (geometry.vertical_offset_mm != model.offset or not geometry.closed or geometry.symmetry_planes
             or geometry.build_mode.value != "bare" or geometry.wall_thickness_mm != 0
             or geometry.source_shape != 0 or geometry.source_curv != 0 or geometry.source_radius_mm != -1
-            or geometry.source_auto_angle_deg != math.degrees(math.atan(model.throat_slope))):
+            or geometry.source_auto_angle_deg != model.source_angle_deg):
         raise ValueError("terminating arc geometry must preserve its canonical placement, bare coverage and flat source")
     if (geometry.interfaces or geometry.interface_offset_mm != 0 or geometry.topology_mode != "acoustic"
             or geometry.preserve_grid is not False or geometry.surface_fit != "interpolate" or geometry.wg_topology is not True
@@ -27,6 +28,8 @@ def build_arc(geometry):
         if key not in cache:
             cache[key]=occ.addPoint(key[1],0,key[0])
         return cache[key]
+    # An adapter cubic ends on the conic's exact first pole: one shared point.
+    throat=[] if model.throat is None else [occ.addBezier([point(row) for row in model.throat.cubic])]
     body=occ.addBSpline([point(row) for row in model.poles],degree=2,weights=model.weights.tolist(),
         knots=[0.,1.],multiplicities=[3,3])
     angles=[model.beta]
@@ -39,7 +42,7 @@ def build_arc(geometry):
     endpoints=[point(model.poles[-1])]+[point(model.arc(phi)) for phi in angles[1:]]
     arcs=[occ.addCircleArc(endpoints[i],center,endpoints[i+1]) for i in range(len(angles)-1)]
     groups=[]
-    for curves in ([body],arcs):
+    for curves in ([*throat,body],arcs):
         surfaces=[]
         for quadrant in range(4):
             copied=occ.copy([(1,c) for c in curves])
@@ -47,8 +50,8 @@ def build_arc(geometry):
                 occ.rotate(copied,0,0,0,0,0,1,quadrant*math.pi/2)
             surfaces.extend((d,t) for d,t in occ.revolve(copied,0,0,0,0,0,1,math.pi/2) if d == 2)
         groups.append(surfaces)
-    occ.remove([(1,c) for c in [body,*arcs]],recursive=True)
-    source=[(2,occ.addDisk(0,0,0,model.r0,model.r0))]
+    occ.remove([(1,c) for c in [*throat,body,*arcs]],recursive=True)
+    source=[(2,occ.addDisk(0,0,0,model.source_radius,model.source_radius))]
     groups.append(source)
     flat=[item for group in groups for item in group]
     _,mapping=occ.fragment(flat[:-1],flat[-1:],removeObject=True,removeTool=True)
@@ -62,11 +65,16 @@ def build_arc(geometry):
     occ.synchronize()
     # Orientation references come directly from the immutable analytic
     # authority, even if a direct API caller replaces a compatibility grid.
-    z=(np.arange(8)+.5)*model.join_z/8
+    start=model.conic_start_z
+    z=start+(np.arange(8)+.5)*(model.join_z-start)/8
     body_points,derivatives=model.body(z)
     phi=model.beta+(np.arange(24)+.5)*(model.end-model.beta)/24
     meridian=np.vstack((body_points,model.arc(phi)))
     tangent=np.concatenate((np.arctan(derivatives[:,1]),phi))
+    if model.throat is not None:
+        cubic_points,cubic_derivatives,_=model.throat.cubic_values((np.arange(8)+.5)/8)
+        meridian=np.vstack((cubic_points,meridian))
+        tangent=np.concatenate((np.arctan2(cubic_derivatives[:,1],cubic_derivatives[:,0]),tangent))
     az=(np.arange(8)+.5)*2*math.pi/8
     refs=np.stack((meridian[:,1,None]*np.cos(az),meridian[:,1,None]*np.sin(az),
         np.broadcast_to(meridian[:,0,None],(len(meridian),len(az)))),axis=-1).reshape(-1,3)
@@ -90,45 +98,13 @@ def build_arc(geometry):
 
 
 def certify_arc_mesh(model,built):
-    """Bound each actual circle facet's distance to its analytic surface.
+    """Certify the actual circle facets against their analytic surface.
 
-    The surface Hessian bounds interpolation over each unwrapped parameter
-    triangle. This is a facet-to-surface certificate, not a coverage claim
-    and not a certificate for the separately tessellated retained conic.
+    This is a facet-to-surface certificate, not a coverage claim and not a
+    certificate for the separately tessellated retained conic or throat cubic.
     """
-    gmsh=require_gmsh()
-    tags,xyz,_=gmsh.model.mesh.getNodes()
-    xyz=np.asarray(xyz).reshape(-1,3)
-    lookup={int(tag):i for i,tag in enumerate(tags)}
-    largest=0.;count=0
-    for face in built.mesh_surface_groups["arc"]:
-        types,_,nodes=gmsh.model.mesh.getElements(2,face)
-        for kind,element_nodes in zip(types,nodes):
-            if int(kind) != 2:
-                raise ValueError("terminating arc requires first-order triangle elements")
-            indexes=np.fromiter((lookup[int(tag)] for tag in element_nodes),dtype=np.int64)
-            vertices=xyz[indexes].reshape(-1,3,3)
-            r=np.hypot(vertices[:,:,0],vertices[:,:,1])
-            phi=np.arctan2(vertices[:,:,2]-model.center_z,model.center_r-r)
-            phi=phi[:,:1]+(phi-phi[:,:1]+math.pi)%(2*math.pi)-math.pi
-            # Project onto this finite suffix, rather than its extended circle.
-            # Endpoint OCC roundoff then contributes to the actual residual.
-            phi=np.clip(phi,model.beta,model.end)
-            az=np.arctan2(vertices[:,:,1],vertices[:,:,0])
-            az=az[:,:1]+(az-az[:,:1]+math.pi)%(2*math.pi)-math.pi
-            dp,da=np.ptp(phi,axis=1),np.ptp(az,axis=1)
-            if np.any(dp>=math.pi) or np.any(da>=math.pi):
-                raise ValueError("terminating arc triangle has an ambiguous angular parameter chart; reduce mouth resolution")
-            projected=model.arc(phi)
-            guard=1e-10*max(1.,model.radius,abs(model.center_z),model.center_r,model.reach)
-            residual=np.max(np.hypot(vertices[:,:,2]-projected[:,:,0],r-projected[:,:,1]),axis=1)+guard
-            # Radius increases on [beta,end] within [0,pi]. Every convex
-            # parameter triangle therefore has r <= r(max(phi)). Its angular
-            # Hessian norm uses this local supremum, including upward roundoff.
-            local_reach=np.nextafter(model.center_r-model.radius*np.cos(np.max(phi,axis=1))+guard,np.inf)
-            bound=(model.radius*dp*dp+2*model.radius*dp*da+local_reach*da*da)/8+residual
-            largest=max(largest,float(np.max(bound,initial=0)))
-            count+=len(vertices)
+    largest,count=certify_circle_facets([(CircleArc(model.center_z,model.center_r,model.radius,model.beta,model.end),
+        built.mesh_surface_groups["arc"])],"terminating arc")
     if not count or largest > .01:
         raise ValueError(f"terminating arc mesh cannot certify 0.01 mm facet-to-surface error (bound {largest:.6g} mm); reduce mouth resolution")
     built.metadata["terminatingArcMeshChordBoundMm"]=largest

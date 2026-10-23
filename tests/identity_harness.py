@@ -23,6 +23,27 @@ def archive_tree(tmp_path_factory, base):
     return tree
 
 
+def release_tree(tmp_path_factory, tag):
+    """Archive a release tag's tree, skipping only when the tag is absent."""
+    import pytest
+    if not (ROOT / '.git').exists():
+        pytest.skip(f'Native identity gate requires a Git checkout and tag {tag}')
+    found = subprocess.run(
+        ['git', 'rev-parse', '--verify', f'{tag}^{{commit}}'], cwd=ROOT,
+        capture_output=True, text=True, check=False,
+    )
+    if found.returncode != 0:
+        # Distinguish an absent tag from a broken/unreadable existing ref.
+        absent = subprocess.run(
+            ['git', 'show-ref', '--verify', '--quiet', f'refs/tags/{tag}'], cwd=ROOT,
+            check=False,
+        )
+        if absent.returncode == 1:
+            pytest.skip(f'Native identity gate requires tag {tag}, which is absent')
+        found.check_returncode()
+    return archive_tree(tmp_path_factory, found.stdout.strip())
+
+
 WORKER = '''
 import dataclasses
 import hashlib

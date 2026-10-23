@@ -1,10 +1,8 @@
 """Byte identity for every legacy native marker against the v0.2.6 release."""
 from __future__ import annotations
 
-import subprocess
-
 import pytest
-from identity_harness import ROOT, archive_tree, assert_mesh_and_step_bytes
+from identity_harness import assert_mesh_and_step_bytes, release_tree
 
 # Literal fixtures: editing a feature's own test module must not move the gate.
 # Small finished dimensions keep the native facet certificates affordable;
@@ -64,22 +62,7 @@ def identity_cases():
 
 @pytest.fixture(scope='module')
 def native_base_tree(tmp_path_factory):
-    if not (ROOT / '.git').exists():
-        pytest.skip('Native identity gate requires a Git checkout and tag v0.2.6')
-    tag = subprocess.run(
-        ['git', 'rev-parse', '--verify', 'v0.2.6^{commit}'], cwd=ROOT,
-        capture_output=True, text=True, check=False,
-    )
-    if tag.returncode != 0:
-        # Distinguish an absent tag from a broken/unreadable existing ref.
-        absent = subprocess.run(
-            ['git', 'show-ref', '--verify', '--quiet', 'refs/tags/v0.2.6'], cwd=ROOT,
-            check=False,
-        )
-        if absent.returncode == 1:
-            pytest.skip('Native identity gate requires tag v0.2.6, which is absent')
-        tag.check_returncode()
-    return archive_tree(tmp_path_factory, tag.stdout.strip())
+    return release_tree(tmp_path_factory, 'v0.2.6')
 
 
 @pytest.mark.parametrize('name,config', identity_cases(), ids=[name for name, _ in identity_cases()])

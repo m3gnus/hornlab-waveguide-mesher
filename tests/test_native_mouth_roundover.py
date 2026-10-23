@@ -400,12 +400,21 @@ def test_dense_native_source_and_final_lip_keep_shared_topology_and_certificate(
         on_lip = np.all(np.abs(circle_distance - radius) < 1e-9, axis=1)
         assert on_lip.sum() > 100
         v, r = vertices[on_lip], radial[on_lip]
+        # The lip arc spans [beta, pi]; project onto it and use the triangle's
+        # largest radius for the angular term, as the shared certificate does.
+        middle = (m.beta + math.pi) / 2
         phi = np.arctan2(v[:, :, 2] - m.center[0], m.center[1] - r)
+        phi = np.clip(middle + (phi - middle + math.pi) % (2 * math.pi) - math.pi, m.beta, math.pi)
         az = np.arctan2(v[:, :, 1], v[:, :, 0])
         az = az[:, :1] + (az - az[:, :1] + math.pi) % (2 * math.pi) - math.pi
         dp, da = np.ptp(phi, axis=1), np.ptp(az, axis=1)
-        residual = np.max(np.abs(circle_distance[on_lip] - radius), axis=1)
-        bound = (radius * dp**2 + 2 * radius * dp * da + (m.center[1] + radius) * da**2) / 8 + residual
+        guard = 1e-10 * max(1., radius, abs(m.center[0]), m.center[1], m.center[1] + radius)
+        projected_z = m.center[0] + radius * np.sin(phi)
+        projected_r = m.center[1] - radius * np.cos(phi)
+        residual = np.max(np.hypot(v[:, :, 2] - projected_z, r - projected_r), axis=1) + guard
+        reach = m.center[1] - radius * np.cos(np.max(phi, axis=1)) + guard
+        assert np.all(reach <= m.center[1] + radius + guard)
+        bound = (radius * dp**2 + 2 * radius * dp * da + reach * da**2) / 8 + residual
         largest = max(largest, float(np.max(bound)))
     assert largest <= .01
     assert largest == pytest.approx(result.metadata["mouthRoundoverMeshChordBoundMm"], abs=1e-12)
@@ -476,7 +485,7 @@ def test_native_lip_preview_preserves_metadata_schema_and_signed_curvature():
 
 def test_lip_triangle_certificate_unwraps_terminal_pi_roundoff(monkeypatch):
     from types import SimpleNamespace
-    from hornlab_mesher.builders import mouth_roundover
+    from hornlab_mesher.builders import circle_certificate, mouth_roundover
     m = model()
     theta = np.array([math.pi-0.001, math.pi+1e-13, math.pi-0.001])
     az = np.array([0., 0., .001])
@@ -485,7 +494,7 @@ def test_lip_triangle_certificate_unwraps_terminal_pi_roundoff(monkeypatch):
     mesh = SimpleNamespace(getNodes=lambda: (np.array([1, 2, 3]), xyz.ravel(), []),
         getElements=lambda *_: ([2], [np.array([1])], [np.array([1, 2, 3])]))
     fake = SimpleNamespace(model=SimpleNamespace(mesh=mesh))
-    monkeypatch.setattr(mouth_roundover, "require_gmsh", lambda: fake)
+    monkeypatch.setattr(circle_certificate, "require_gmsh", lambda: fake)
     built = SimpleNamespace(mesh_surface_groups={"lip_inner": [1], "lip_outer": []}, metadata={})
     mouth_roundover.certify_lip_mesh(m, built)
     assert 0 < built.metadata["mouthRoundoverMeshChordBoundMm"] < .001

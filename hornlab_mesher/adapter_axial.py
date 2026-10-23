@@ -210,7 +210,7 @@ class PhysicalAdapter:
         return p,d,dd
 
     @property
-    def reach(self):
+    def cubic_reach(self):
         # Cubic radial extrema are roots of its quadratic derivative. Include
         # all interior extrema, even when the driver is wider than the mouth.
         c = self.cubic[:,1]
@@ -219,7 +219,11 @@ class PhysicalAdapter:
         for root in np.roots(np.trim_zeros(coefficients,"f")):
             if abs(root.imag) < 1e-12 and 0 < root.real < 1:
                 candidates.append(float(root.real))
-        return max(float(np.max(self.cubic_values(candidates)[0][:,1])),float(self.body_poles[-1,1]))
+        return float(np.max(self.cubic_values(candidates)[0][:,1]))
+
+    @property
+    def reach(self):
+        return max(self.cubic_reach,float(self.body_poles[-1,1]))
 
     @property
     def bounds(self):

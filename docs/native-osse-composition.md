@@ -3,7 +3,8 @@
 This contract defines the release-line path toward composable native OSSE.
 Slice 0 added this contract and the legacy identity gate. Slice 1 replaces
 the one-feature lock with one rule table in `native_boundary.py` and enables
-Arc × Axial. An unimplemented pair must refuse with a clear message.
+Arc × Axial. Slice 2 adds Adapter × Arc (× Axial) on one shared composite
+meridian. An unimplemented pair must refuse with a clear message.
 
 ## Slots
 
@@ -35,7 +36,8 @@ The new composite marker is `OSSE-NATIVE`, used only when two or more features
 are active and their feature set has no legacy marker. Features retain their
 existing payload keys: root `throat_adapter`, `terminating_arc` and
 `axial_scale`; roundover retains its existing mesh control. Mesher readers
-at or below 0.2.6 must fail closed on `OSSE-NATIVE`.
+at or below 0.2.7 must fail closed on `OSSE-NATIVE`; the composition tests
+run the released 0.2.6 and 0.2.7 readers in fresh processes.
 
 A feature set with a legacy marker is always written and read with that
 marker. Single features keep `OSSE-ADAPTER`, `OSSE-ADAPTER-CONTROLS`,
@@ -53,7 +55,7 @@ Every existing design and its outputs must stay byte-identical.
 | Combination | Status |
 | --- | --- |
 | Arc × Axial | Implemented as `OSSE-NATIVE`; see [terminating arc](native-terminating-arc.md#arc-with-axial-scale) |
-| Adapter × Arc (× Axial) | Later; refused until implemented |
+| Adapter × Arc (× Axial) | Implemented as `OSSE-NATIVE`, authored adapter only; see [terminating arc](native-terminating-arc.md#arc-with-a-throat-adapter) |
 | Roundover × Axial | Later; refused until implemented |
 | Adapter × Roundover (× Axial) | Later; refused until implemented |
 | Roundover × Arc | Same mouth slot conflict; always refused |
@@ -71,6 +73,18 @@ extra feature, `not supported yet` for an unimplemented composite, and
 `throat_adapter` key, so they cannot both be supplied.
 [The composition tests](../tests/test_native_composition.py) run this rule
 matrix over every pair and triple in both spellings.
+
+## Shared construction
+
+Every arc design, legacy or composite, is one `CompositeMeridian`
+(`composite_meridian.py`): an optional mapped adapter cubic, the exact
+retained conic as a rational quadratic, and the osculating circle. One
+builder (`builders/terminating_arc.py`) emits it for MSH and STEP, and one
+preview owns its render geometry. The arc and lip mesh certificates share
+one facet-to-surface bound over a circle descriptor
+(`builders/circle_certificate.py`). A composite's STEP file carries one
+`native-composite` header recipe; the legacy markers keep their existing
+emitters and bytes.
 
 ## Identity gate
 

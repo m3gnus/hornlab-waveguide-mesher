@@ -1,9 +1,10 @@
-"""Continuous geometric triangle bounds for the exact conic/circle meridian."""
+"""Continuous geometric triangle bounds for the exact composite meridian."""
 import math
 
 import numpy as np
 
-from ..terminating_arc import ArcMeridian
+from ..composite_meridian import CompositeMeridian
+from .adapter_axial import _cubic_bounds
 from .contract import PreviewGeometryV1,PreviewSurfaceV1
 from .primitives import _grid_indices,_orient_indices_to_normals,_flat_cap
 
@@ -19,7 +20,7 @@ def build(params,options):
     for name in ("include_inner","include_outer","include_enclosure","include_source_cap","include_rear_cap","include_curvature"):
         if type(getattr(options,name)) is not bool:
             raise ValueError(f"{name} must be a boolean")
-    model=ArcMeridian.from_params(params)
+    model=CompositeMeridian.from_params(params)
     if options.lod not in {"coarse","fine","inspection"}:
         raise ValueError("lod must be 'coarse', 'fine', or 'inspection'")
     chord=.008 if options.max_chord_error_mm is None else options.max_chord_error_mm
@@ -42,13 +43,31 @@ def build(params,options):
     if budget <= 0:
         raise ValueError("preview tolerance is below binary32 placement precision")
     # Test the angular ceiling without first dividing a tiny tolerance.
-    if budget < model.reach*(2*math.pi/4096)**2/8:
+    reach=model.envelope_radius
+    if budget < reach*(2*math.pi/4096)**2/8:
         raise ValueError("preview angular sampling exceeds its certified budget")
-    nphi=4*math.ceil(max(16,math.ceil(2*math.pi/math.sqrt(8*budget/model.reach)),
+    nphi=4*math.ceil(max(16,math.ceil(2*math.pi/math.sqrt(8*budget/reach)),
         math.ceil(720/normal),silhouette)/4)
     if nphi > 4096:
         raise ValueError("preview angular sampling exceeds its certified budget")
-    z=[0.]
+    # An adapter cubic is refined by its derivative-control hull, as in the
+    # OSSE-ADAPTER-AXIAL preview; the conic then starts on its exact join.
+    u=[0.];cubic_error=cubic_angle=0.
+    def split_cubic(lo,hi,depth=0):
+        nonlocal cubic_error,cubic_angle
+        error,angle=_cubic_bounds(model.throat,lo,hi)
+        if error <= budget and math.degrees(angle) <= normal/2:
+            u.append(hi);cubic_error=max(cubic_error,error);cubic_angle=max(cubic_angle,angle)
+            if len(u) > 8192:
+                raise ValueError("preview meridian sampling exceeds its certified budget")
+        else:
+            mid=(lo+hi)/2
+            if depth >= 32 or mid in (lo,hi):
+                raise ValueError("preview meridian tolerance could not be resolved")
+            split_cubic(lo,mid,depth+1);split_cubic(mid,hi,depth+1)
+    if model.throat is not None:
+        split_cubic(0.,1.)
+    z=[model.conic_start_z]
     def split(lo,hi,depth=0):
         derivative=model.body(np.array([lo,hi]))[1][:,1]
         angle=math.degrees(math.atan(derivative[1])-math.atan(derivative[0]))
@@ -62,12 +81,13 @@ def build(params,options):
             if depth >= 32 or mid in (lo,hi):
                 raise ValueError("preview meridian tolerance could not be resolved")
             split(lo,mid,depth+1);split(mid,hi,depth+1)
-    split(0.,model.join_z)
+    split(model.conic_start_z,model.join_z)
     sweep=model.end-model.beta
     narc=max(1,math.ceil(sweep/math.sqrt(8*budget/model.radius)),math.ceil(math.degrees(sweep)/(normal/2)))
     if narc > 8192:
         raise ValueError("preview arc sampling exceeds its certified budget")
-    count=len(z)+narc
+    ncubic=0 if model.throat is None else len(u)-1
+    count=ncubic+len(z)+narc
     vertices=(count*nphi if options.include_inner else 0)+(nphi+1 if options.include_source_cap else 0)
     if vertices > limit:
         raise ValueError("preview cannot certify the requested tolerance within its vertex budget")
@@ -76,6 +96,10 @@ def build(params,options):
     bp,bd=model.body(z)
     meridian=np.vstack((bp,model.arc(phi)[1:]))
     tangent=np.concatenate((np.arctan(bd[:,1]),phi[1:]))
+    if ncubic:
+        cp,cd,cdd=model.throat.cubic_values(np.asarray(u[:-1]))
+        meridian=np.vstack((cp,meridian))
+        tangent=np.concatenate((np.arctan2(cd[:,1],cd[:,0]),tangent))
     az=np.arange(nphi)*2*math.pi/nphi
     cs,sn=np.cos(az),np.sin(az)
     surfaces=[]
@@ -90,19 +114,22 @@ def build(params,options):
         if options.include_curvature:
             meridian_k=np.concatenate((-model.second_bound(z,z)/(1+bd[:,1]**2)**1.5,
                 np.full(narc,-1/model.radius)))
+            if ncubic:
+                speed=np.linalg.norm(cd,axis=1)
+                meridian_k=np.concatenate((-(cd[:,0]*cdd[:,1]-cd[:,1]*cdd[:,0])/speed**3,meridian_k))
             angular_k=np.cos(tangent)/meridian[:,1]
             mean=np.repeat((meridian_k+angular_k)/2,nphi)
             principal=np.repeat(np.where(abs(meridian_k)>abs(angular_k),meridian_k,angular_k),nphi)
         surfaces.append(PreviewSurfaceV1("horn.inner",positions,oriented.indices,normals,"smooth",
             "analytic-parametric",True,mean,principal))
     if options.include_source_cap:
-        ring=np.column_stack((model.r0*cs,model.r0*sn+model.offset,np.zeros(nphi)))
+        ring=np.column_stack((model.source_radius*cs,model.source_radius*sn+model.offset,np.zeros(nphi)))
         surfaces.append(_flat_cap("source_cap",ring,(0,0,1),closed_phi=True,include_curvature=options.include_curvature))
     body_bound=max(model.second_bound(lo,hi)*(hi-lo)**2/8 for lo,hi in zip(z[:-1],z[1:]))
     arc_bound=model.radius*(sweep/narc)**2/8
-    angular_bound=model.reach*(2*math.pi/nphi)**2/8
-    bound=max(body_bound,arc_bound)+angular_bound+roundoff
-    normal_bound=max(float(np.max(np.diff(np.arctan(bd[:,1])),initial=0)),sweep/narc)*180/math.pi+360/nphi
+    angular_bound=reach*(2*math.pi/nphi)**2/8
+    bound=max(body_bound,arc_bound,cubic_error)+angular_bound+roundoff
+    normal_bound=max(float(np.max(np.diff(np.arctan(bd[:,1])),initial=0)),sweep/narc,cubic_angle)*180/math.pi+360/nphi
     if bound > chord*(1+1e-12) or normal_bound > normal*(1+1e-12):
         raise ValueError("preview could not certify the requested continuous fidelity")
     fidelity={"max_chord_error_mm_requested":chord,"max_chord_error_mm_achieved":bound,
@@ -117,7 +144,9 @@ def build(params,options):
         "dimensions_status":"current","coordinate_frame":"mesher-xyz",
         "dimensions_sampling":{"method":"analytic-full-envelope","lod_independent":True},
         "dimensions_mm":{"mouth_opening":[2*model.reach]*2,"horn_overall":(box[1]-box[0]).tolist()},
-        "fidelity":{s.role:dict(fidelity) for s in surfaces},"source_shape":0,"source_radius_mm":model.r0,
-        "source_cap_height_mm":0.,"source_throat_radius_mm":model.r0,"warnings":[],
+        "fidelity":{s.role:dict(fidelity) for s in surfaces},"source_shape":0,"source_radius_mm":model.source_radius,
+        "source_cap_height_mm":0.,"source_throat_radius_mm":model.source_radius,"warnings":[],
         "surface_metadata":{s.role:dict(s.metadata) for s in surfaces}}
+    if model.throat is not None:
+        metadata["source_auto_angle_deg"]=model.source_angle_deg
     return PreviewGeometryV1(surfaces,metadata)

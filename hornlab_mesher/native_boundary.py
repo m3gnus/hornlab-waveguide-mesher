@@ -34,7 +34,11 @@ FEATURES = {
 }
 LEGACY_MARKERS = {frozenset({name}): feature.legacy_marker for name, feature in FEATURES.items()}
 LEGACY_MARKERS[frozenset({"adapter", "axial"})] = "OSSE-ADAPTER-AXIAL"
-IMPLEMENTED_COMPOSITES = frozenset({frozenset({"arc", "axial"})})
+IMPLEMENTED_COMPOSITES = frozenset({
+    frozenset({"arc", "axial"}),
+    frozenset({"adapter", "arc"}),
+    frozenset({"adapter", "arc", "axial"}),
+})
 NATIVE_MARKERS = frozenset(LEGACY_MARKERS.values()) | {"OSSE-NATIVE"}
 
 # Even a composite has one model object per geometry, owning its finished meridian.

@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from ._occ import require_gmsh
+from .circle_certificate import CircleArc, certify_circle_facets
 from ..geometry import BuiltGeometry, MESH_ALGORITHM_FRONTAL_DELAUNAY
 from ..mouth_roundover import FIT_TOL_MM
 from ..tags import PhysicalGroup
@@ -78,37 +79,11 @@ def build_roundover(geometry):
 
 
 def certify_lip_mesh(model, built):
-    """Bound every actual curved triangle using the torus Hessian.
-
-    Interpolating a twice differentiable surface over a parameter triangle
-    has error at most half its Hessian times the weighted parameter variance.
-    Each coordinate variance is at most range squared / 4. The mixed covariance
-    is at most the product of ranges / 4, giving the bound used below.
-    """
-    gmsh = require_gmsh()
-    tags, xyz, _ = gmsh.model.mesh.getNodes()
-    xyz = np.asarray(xyz).reshape(-1,3)
-    lookup = {int(tag):i for i,tag in enumerate(tags)}
-    largest = 0.0
-    for key, radius in (("lip_inner",model.radius),("lip_outer",model.radius-model.wall)):
-        for face in built.mesh_surface_groups[key]:
-            types, _, nodes = gmsh.model.mesh.getElements(2,face)
-            for element_type, element_nodes in zip(types,nodes):
-                if int(element_type) != 2:
-                    raise ValueError("mouth roundover requires first-order triangle elements")
-                indexes = np.fromiter((lookup[int(tag)] for tag in element_nodes),dtype=np.int64)
-                vertices = xyz[indexes].reshape(-1,3,3)
-                r = np.hypot(vertices[:,:,0],vertices[:,:,1])
-                phi = np.arctan2(vertices[:,:,2]-model.center[0],model.center[1]-r)
-                # At the terminal lip, tiny OCC roundoff can straddle +/-pi.
-                # Use a local continuous parameter, as for azimuth below.
-                phi = phi[:,:1]+(phi-phi[:,:1]+math.pi)%(2*math.pi)-math.pi
-                az = np.arctan2(vertices[:,:,1],vertices[:,:,0])
-                az = az[:,0,None]+(az-az[:,0,None]+math.pi)%(2*math.pi)-math.pi
-                dp,da = np.ptp(phi,axis=1),np.ptp(az,axis=1)
-                residual = np.max(abs(np.hypot(vertices[:,:,2]-model.center[0],r-model.center[1])-radius),axis=1)
-                bound = (radius*dp*dp+2*radius*dp*da+(model.center[1]+radius)*da*da)/8+residual
-                largest = max(largest,float(np.max(bound,initial=0)))
+    """Bound every actual curved lip triangle against its analytic torus."""
+    groups = [(CircleArc(float(model.center[0]), float(model.center[1]), radius, model.beta, math.pi),
+               built.mesh_surface_groups[key])
+              for key, radius in (("lip_inner", model.radius), ("lip_outer", model.radius-model.wall))]
+    largest, _ = certify_circle_facets(groups, "mouth roundover")
     if largest > 0.01:
         raise ValueError(f"mouth roundover mesh cannot certify 0.01 mm chord error (bound {largest:.6g} mm); reduce mouth resolution")
     built.metadata["mouthRoundoverMeshChordBoundMm"] = largest
