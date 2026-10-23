@@ -12,6 +12,7 @@ import sys
 import numpy as np
 import pytest
 from identity_harness import release_tree
+from test_source_contour import arc_distance
 
 from hornlab_mesher.axial_scale import AxialModel
 from hornlab_mesher.config_builder import build_geometry_params, resolve_geometry
@@ -342,16 +343,27 @@ def cubic_residual(m,z,r):
 
 
 def meridian_residual(m,z,r):
-    """Distance to whichever exact segment owns this z (or circle radius)."""
+    """Residual to the retained cubic, conic or finite circular arc."""
     z,r=np.atleast_1d(z).astype(float),np.atleast_1d(r).astype(float)
     out=np.full(z.shape,np.inf)
     cubic=z <= m.conic_start_z+1e-9
     out[cubic]=cubic_residual(m,np.minimum(z[cubic],m.conic_start_z),r[cubic])
     conic=(z >= m.conic_start_z-1e-9)&(z <= m.join_z+1e-9)
     out[conic]=np.minimum(out[conic],np.abs(m.body(z[conic])[0][:,1]-r[conic]))
-    circle=np.abs(np.hypot(z-m.center_z,r-m.center_r)-m.radius)
-    out=np.where(z >= m.join_z-1e-9,np.minimum(out,circle),out)
-    return out
+    circle=arc_distance(m.arc(m.beta),m.arc(m.end),(m.center_z,m.center_r),direction="ccw")
+    return np.minimum(out,circle(z,r))
+
+
+@pytest.mark.parametrize("end",[60.,100.,130.,160.])
+@pytest.mark.parametrize("name",sorted(ADAPTER_SETS))
+def test_meridian_residual_checks_arc_span(name,end):
+    m=model(adapter_arc(ADAPTER_SETS[name],end))
+    points=m.arc(np.linspace(m.beta,m.end,401))
+    # Include both endpoints and, at 160 degrees, the return behind the join.
+    if end == 160. and ADAPTER_SETS[name] is None:
+        assert np.any(points[:,0] < m.join_z)
+    np.testing.assert_allclose(meridian_residual(m,*points.T),0,atol=1e-9,rtol=0)
+    assert meridian_residual(m,*m.arc(m.end+.05))[0] > 1e-4
 
 
 @pytest.mark.parametrize("end",[60.,100.,130.])
@@ -753,8 +765,8 @@ def lip_residual(m,z,r):
         monotone_residual(lambda u:m.cubic(u,True)[0],z,r),
         np.where((z >= m.start-1e-9)&(z <= m.length+1e-9),np.abs(m.body(np.clip(z,m.start,m.length))[0][:,1]-r),np.inf),
         monotone_residual(lambda t:m.body(t,True)[0],z,r,m.start,m.length),
-        np.where(z >= cz-1e-9,np.abs(np.hypot(z-cz,r-cr)-m.radius),np.inf),
-        np.where(z >= cz-1e-9,np.abs(np.hypot(z-cz,r-cr)-(m.radius-m.wall)),np.inf),
+        arc_distance(m.arc(0),m.arc(m.sweep),m.center,direction="ccw")(z,r),
+        arc_distance(m.arc(0,True),m.arc(m.sweep,True),m.center,direction="ccw")(z,r),
         np.where((r >= cr+m.radius-m.wall-1e-9)&(r <= cr+m.radius+1e-9),np.abs(z-cz),np.inf),
         np.where((z >= -m.wall-1e-9)&(z <= m.rear_start[0]+1e-9),np.abs(r-ro),np.inf),
         np.where(r <= ro+1e-9,np.abs(z+m.wall),np.inf),
@@ -909,6 +921,17 @@ def test_monotone_residual_measures_outside_endpoint_distance():
     curve=lambda t:np.stack((t,2*t),axis=-1)
     z=np.array([-100.,2.,3.,4.,100.]);r=np.array([4.,4.,6.,8.,8.])
     np.testing.assert_allclose(monotone_residual(curve,z,r,2.,4.),[102.,0.,0.,0.,96.],atol=1e-12)
+
+
+@pytest.mark.parametrize("name",sorted(LIP_CASES))
+@pytest.mark.parametrize("outer",[False,True],ids=["inner","outer"])
+def test_lip_residual_checks_arc_span(name,outer):
+    m=roundover_model(LIP_CASES[name]())
+    # This point is on the forward semicircle, before the mouth join.
+    assert lip_residual(m,*m.arc(-m.beta,outer))[0] > 1e-4
+    points=m.arc(np.linspace(0,m.sweep,401),outer)
+    # The mouth join and rim endpoints belong to the actual lip span.
+    np.testing.assert_allclose(lip_residual(m,*points.T),0,atol=1e-9,rtol=0)
 
 
 @pytest.mark.parametrize("name",sorted(LIP_CASES))
