@@ -38,6 +38,7 @@ IMPLEMENTED_COMPOSITES = frozenset({
     frozenset({"arc", "axial"}),
     frozenset({"adapter", "arc"}),
     frozenset({"adapter", "arc", "axial"}),
+    frozenset({"roundover", "axial"}),
 })
 NATIVE_MARKERS = frozenset(LEGACY_MARKERS.values()) | {"OSSE-NATIVE"}
 

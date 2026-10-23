@@ -843,14 +843,15 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     composed = adapter_axial_configuration(config, build_geometry_params)
     if composed is not None:
         return composed
-    from .axial_scale import configuration as axial_configuration
-    axial = axial_configuration(config, build_geometry_params)
-    if axial is not None:
-        return axial
+    # The roundover owns Roundover x Axial, so it reads axial_scale first.
     from .mouth_roundover import configuration
     roundover = configuration(config, build_geometry_params)
     if roundover is not None:
         return roundover
+    from .axial_scale import configuration as axial_configuration
+    axial = axial_configuration(config, build_geometry_params)
+    if axial is not None:
+        return axial
     profile = _section(config, "profile", "parameters")
     mesh = _section(config, "mesh")
     enclosure = _section(config, "enclosure")
@@ -2348,11 +2349,11 @@ def resolve_geometry(
     if "adapterAxialScale" in params:
         from .adapter_axial import resolve
         return resolve(config, params, allow_large_mesh)
-    if "absoluteAxialScale" in params:
-        from .axial_scale import resolve
-        return resolve(config, params, allow_large_mesh)
     if "mouthRoundoverRadiusMm" in params:
         from .mouth_roundover import resolve
+        return resolve(config, params, allow_large_mesh)
+    if "absoluteAxialScale" in params:
+        from .axial_scale import resolve
         return resolve(config, params, allow_large_mesh)
     if params.get("athRoundover") or params.get("athRearShape") == 3:
         from .ath_import_surfaces import resolve

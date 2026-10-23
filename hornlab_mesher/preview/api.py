@@ -388,11 +388,11 @@ def build_preview_geometry(
     if "adapterAxialScale" in params:
         from .adapter_axial import build
         return build(params, options)
-    if "absoluteAxialScale" in params:
-        from .axial_scale import build
-        return build(params, options)
     if "mouthRoundoverRadiusMm" in params:
         from .mouth_roundover import build
+        return build(params, options)
+    if "absoluteAxialScale" in params:
+        from .axial_scale import build
         return build(params, options)
     if params.get("athRoundover") or params.get("athRearShape") == 3:
         from .ath_import import build

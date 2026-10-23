@@ -96,3 +96,27 @@ Linked CAD bundles are refused until their analytic recipe transport is
 qualified. Body-only formula/grid entry points refuse active lips, so they
 cannot return a truncated design. With an ordinary formula, a zero or absent
 radius keeps the existing geometry and export paths exactly.
+
+## Roundover with axial scale
+
+`formula = "OSSE-NATIVE"` with an active `mesh.mouth_roundover_radius_mm`
+and root `axial_scale` composes the lip with the absolute axial override, see
+the [composition contract](native-osse-composition.md). The body is mapped
+first: Z by `axial_scale`, radius by `scale`, with both factors and their
+ratio in the [absolute axial scale](absolute-axial-scale.md) domain. The
+outer wall offset, the lip radius, the rim and the rear closure are then
+built in finished millimetres against the mapped body, so the lip stays a
+true circle tangent to the mapped mouth. Every other control, domain check,
+fit bound and certificate is the single-feature lip's. `OSSE-ROUNDOVER` with
+`axial_scale`, or `OSSE-AXIAL` with an active radius, is refused with a
+pointer to `OSSE-NATIVE`.
+
+The construction is `circular-osse-axial-lip-v1`. Its fingerprint covers the
+physical length and throat radius, authored angles and `k`, wall, radius,
+placement and both factors, so an axial factor equal to `scale` builds the
+same horn under a different identity. Resolved formula, preview metadata and
+`mouthRoundover` metadata report `OSSE-NATIVE`, `xyScale` and `axialScale`,
+and mesh metadata carries `construction_fingerprint`. STEP writes the
+composite `native-composite` header recipe instead of the
+`hornlab-mouth-roundover` trailer. Mesher readers 0.2.6 and 0.2.7 refuse
+this design.

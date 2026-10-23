@@ -39,6 +39,10 @@ def configuration(config, resolver):
     mesh = mesh if isinstance(mesh, Mapping) else {}
     formula = str(config.get("formula", config.get("type", profile.get("formula", profile.get("type", "OSSE"))))).upper()
     radius = _number(mesh.get(KEY, 0), KEY)
+    from .native_boundary import native_features
+    # Roundover x Axial is the one composite this construction owns.
+    composite = formula == "OSSE-NATIVE" and native_features(config) == {"roundover", "axial"}
+    marker = "OSSE-NATIVE" if composite else FORMULA
     supplied_marker = any(
         isinstance(section.get(key), str) and section[key].upper() == FORMULA
         for section in (config, profile) for key in ("formula", "type"))
@@ -46,7 +50,7 @@ def configuration(config, resolver):
         return None
     if radius <= 0:
         _fail("radius must be finite and positive.")
-    if formula != FORMULA:
+    if formula != marker:
         _fail(f"an active radius requires formula {FORMULA} so older readers refuse it.")
     for name in ("profile", "mesh", "source"):
         if name in config and not isinstance(config[name], Mapping):
@@ -64,7 +68,7 @@ def configuration(config, resolver):
             if adapter is not None:
                 _fail("combined active throat adapter and mouth roundover are not supported.")
     allowed = {
-        "root": {"formula", "type", "profile", "mesh", "source", "mode", "scale", "quadrants", "vertical_offset_mm", "throat_adapter"},
+        "root": {"formula", "type", "profile", "mesh", "source", "mode", "scale", "quadrants", "vertical_offset_mm", "throat_adapter"}|({"axial_scale"} if composite else set()),
         "profile": {"formula", "type", "L_mm", "r0_mm", "a_deg", "a0_deg", "k", "s", "n", "q", "throat_adapter"},
         "mesh": {KEY, "wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "scale_to_metres", "topology_mode", "surface_fit", "max_triangles", "allow_large_mesh", "quadrants", "vertical_offset_mm"},
         "source": {"source_shape", "source_radius_mm", "source_curv"},
@@ -76,7 +80,7 @@ def configuration(config, resolver):
         if extras:
             _fail(f"unsupported {name} controls: {', '.join(sorted(extras))}.")
         numeric = {
-            "root":{"scale","vertical_offset_mm"},
+            "root":{"scale","vertical_offset_mm","axial_scale"},
             "profile":{"L_mm","r0_mm","a_deg","a0_deg","k","s","n","q"},
             "mesh":{KEY,"wall_thickness_mm","vertical_offset_mm"},
             "source":{"source_shape","source_radius_mm","source_curv"},
@@ -87,8 +91,8 @@ def configuration(config, resolver):
     # can hide a competing geometry request.
     for section in (config, profile):
         for key in ("formula", "type"):
-            if key in section and (not isinstance(section[key], str) or section[key].upper() != FORMULA):
-                _fail(f"every supplied {key} must be {FORMULA}.")
+            if key in section and (not isinstance(section[key], str) or section[key].upper() != marker):
+                _fail(f"every supplied {key} must be {marker}.")
     for section in (config, mesh):
         if "quadrants" in section:
             value = section["quadrants"]
@@ -107,6 +111,7 @@ def configuration(config, resolver):
             _fail(f"{key} must be a boolean.")
     clean = copy.deepcopy(dict(config))
     clean.pop("throat_adapter", None)
+    clean.pop("axial_scale", None)
     clean["formula"] = "OSSE"
     clean.pop("type", None)
     clean.setdefault("profile", {}).pop("formula", None)
@@ -129,9 +134,12 @@ def configuration(config, resolver):
     if mesh.get("topology_mode", "acoustic") != "acoustic" or mesh.get("surface_fit", "auto") not in {"auto", "interpolate"}:
         _fail("the analytic construction requires acoustic topology and an interpolating fit.")
     params["mouthRoundoverRadiusMm"] = radius
+    if composite:
+        params["absoluteAxialScale"] = _number(config["axial_scale"], "axial_scale")
+        params["type"] = marker
     model = Roundover.from_params(params)
     params["mouthRoundoverFingerprint"] = model.fingerprint
-    return params, FORMULA, mode
+    return params, marker, mode
 
 
 @dataclass(frozen=True)
@@ -145,15 +153,29 @@ class Roundover:
     radius: float
     offset: float = 0.0
 
+    formula = FORMULA
+
     @classmethod
     def from_params(cls, p):
         scale = _number(p.get("scale", 1), "scale")
         if not 0.01 <= scale <= 10:
             _fail("scale must be in [0.01, 10].")
-        model = cls(float(p["L"])*scale, float(p["r0"])*scale,
-                    math.radians(float(p["a"])), math.radians(float(p["a0"])),
-                    float(p["k"]), float(p["wallThickness"]),
-                    float(p["mouthRoundoverRadiusMm"]), float(p.get("verticalOffset", 0)))
+        if "absoluteAxialScale" not in p:
+            model = cls(float(p["L"])*scale, float(p["r0"])*scale,
+                        math.radians(float(p["a"])), math.radians(float(p["a0"])),
+                        float(p["k"]), float(p["wallThickness"]),
+                        float(p["mouthRoundoverRadiusMm"]), float(p.get("verticalOffset", 0)))
+        else:
+            axis = _number(p["absoluteAxialScale"], "axial_scale")
+            if not (0.01 <= axis <= 10 and 0.1 <= axis/scale <= 10):
+                _fail("both scales must be in [0.01, 10], with axial_scale/scale in [0.1, 10].")
+            # Contract order: map the body (Z by axial_scale, radius by scale),
+            # then build the offset wall and lip in finished millimetres.
+            model = AxialRoundover(float(p["L"])*axis, float(p["r0"])*scale,
+                        math.radians(float(p["a"])), math.radians(float(p["a0"])),
+                        float(p["k"]), float(p["wallThickness"]),
+                        float(p["mouthRoundoverRadiusMm"]), float(p.get("verticalOffset", 0)),
+                        scale, axis)
         if not (1 <= model.length <= 2000 and 1 <= model.r0 <= 200 and 0.5 <= model.k <= 10
                 and 0 <= model.a0 < model.a <= math.radians(75) and model.a >= math.radians(5)):
             _fail("body coefficients are outside the qualified circular domain.")
@@ -271,12 +293,44 @@ class Roundover:
         return np.asarray(result)
 
     def metadata(self):
-        return {"mouthRoundover": {"contractRevision":1, "radiusMm":self.radius,
+        return {"mouthRoundover": {**self._composite_metadata(), "contractRevision":1, "radiusMm":self.radius,
                 "wallThicknessMm":self.wall, "mouthZMm":self.length,
                 "mouthRadiusMm":float(self.body(self.length)[0][1]),
                 "betaDeg":math.degrees(self.beta), "centerZRmm":self.center.tolist(),
                 "sweepDeg":math.degrees(self.sweep), "boundsMm":self.bounds,
                 "fingerprint":self.fingerprint, "bodyFitBoundMm":FIT_TOL_MM}}
+
+
+    def _composite_metadata(self):
+        return {}
+
+
+@dataclass(frozen=True)
+class AxialRoundover(Roundover):
+    """Roundover x Axial: the same lip on a body mapped by Z and radius factors.
+
+    Length and throat radius are already physical; the conic slopes are the
+    authored ones times scale/axial_scale. Wall and lip stay in finished mm.
+    """
+    xy_scale: float = 1.0
+    axial_scale: float = 1.0
+    formula = "OSSE-NATIVE"
+
+    @property
+    def coefficients(self):
+        ratio = self.xy_scale/self.axial_scale
+        return (self.k*self.r0)**2, self.k*self.r0*math.tan(self.a0)*ratio, (math.tan(self.a)*ratio)**2
+
+    @property
+    def identity(self):
+        return {"contractRevision":1, "formula":self.formula, "construction":"circular-osse-axial-lip-v1",
+                "controls":dict(self.__dict__)}
+
+    def _composite_metadata(self):
+        return {"formula":self.formula, "xyScale":self.xy_scale, "axialScale":self.axial_scale}
+
+    def metadata(self):
+        return {"construction_fingerprint":self.fingerprint, **super().metadata()}
 
 
 def resolve(config, params, allow_large_mesh=None):
@@ -296,4 +350,4 @@ def resolve(config, params, allow_large_mesh=None):
         wall_thickness_mm=model.wall, source_shape=0, source_radius_mm=-1, source_curv=0,
         closed=True, symmetry_planes=(), vertical_offset_mm=model.offset, roundover=model)
     return ResolvedGeometry(geometry, _mesh_density_from_config(config, allow_large_mesh=allow_large_mesh),
-        FORMULA, "freestanding", "1234", None, _bool(config.get("mesh", {}), names=("scale_to_metres",), default=True), model.metadata())
+        model.formula, "freestanding", "1234", None, _bool(config.get("mesh", {}), names=("scale_to_metres",), default=True), model.metadata())

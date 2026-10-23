@@ -102,7 +102,8 @@ def test_rule_matrix_in_every_spelling(names):
 
 
 def test_implemented_composites_are_exactly_this_release_line():
-    assert IMPLEMENTED_COMPOSITES == {frozenset(s) for s in ({"arc","axial"},{"adapter","arc"},{"adapter","arc","axial"})}
+    assert IMPLEMENTED_COMPOSITES == {frozenset(s) for s in (
+        {"arc","axial"},{"adapter","arc"},{"adapter","arc","axial"},{"roundover","axial"})}
 
 
 @pytest.mark.parametrize("name",sorted(PAYLOADS))
@@ -523,3 +524,153 @@ def test_adapter_arc_step_header_recipe_and_reopened_faces(name,tmp_path):
 @pytest.mark.parametrize("name",sorted(ADAPTER_SETS))
 def test_released_readers_refuse_adapter_arc(name,old_reader_tree,tmp_path):
     assert_old_reader_refuses(old_reader_tree,adapter_arc(ADAPTER_SETS[name]),tmp_path)
+
+
+# Slice 3: Roundover x Axial. The body is mapped first; the offset wall and the
+# lip are then built in finished millimetres against the mapped body.
+def roundover_axial(axial=AXIAL,scale=1.):
+    return {"formula":"OSSE-NATIVE","mode":"freestanding","scale":scale,"axial_scale":axial,
+        "profile":{"L_mm":12.,"r0_mm":1.27,"a_deg":45,"a0_deg":10,"k":1,"s":0},
+        "mesh":{"wall_thickness_mm":.2,"mouth_roundover_radius_mm":1.,"scale_to_metres":False,
+            "throat_res_mm":.2,"mouth_res_mm":.4,"rear_res_mm":.4,"max_triangles":100000}}
+
+
+def roundover_model(c):
+    return resolve_geometry(c).geometry.roundover
+
+
+@pytest.mark.parametrize("axial,scale",[(AXIAL,1.),(1.6,1.2),(1.,.8)])
+def test_roundover_axial_maps_the_body_and_builds_the_lip_in_mm(axial,scale):
+    from hornlab_mesher.mouth_roundover import AxialRoundover
+    c=roundover_axial(axial,scale);m=roundover_model(c)
+    assert type(m) is AxialRoundover and (m.xy_scale,m.axial_scale) == (scale,axial)
+    params=build_geometry_params(c)[0]
+    assert params["type"] == "OSSE-NATIVE" and params["mouthRoundoverFingerprint"] == m.fingerprint
+    body=AxialModel.from_params(dict(params,wallThickness=0))
+    assert m.length == body.length == pytest.approx(12*axial,rel=1e-15)
+    z=np.linspace(0,m.length,401)
+    np.testing.assert_allclose(m.body(z)[0],body.body(z)[0],rtol=0,atol=1e-12)
+    np.testing.assert_allclose(m.body(z)[1],body.body(z)[1],rtol=1e-13,atol=0)
+    # Literal mapped conic: authored z = physical z/axial, radius times scale.
+    u=z/axial;A=1.27**2;B=1.27*math.tan(math.radians(10));C=1.
+    np.testing.assert_allclose(m.body(z)[0][:,1],scale*np.sqrt(A+2*B*u+C*u*u),rtol=1e-13,atol=1e-13)
+    # The outer wall is the finished-mm normal offset of the mapped inner wall.
+    inner,tangent=m.body(z);outer=m.body(z,True)[0]
+    normal=np.column_stack((-tangent[:,1],tangent[:,0]))/np.hypot(1,tangent[:,1])[:,None]
+    np.testing.assert_allclose(outer,inner+.2*normal,rtol=0,atol=1e-12)
+    # The lip: radius 1 mm (never mapped), tangent to the mapped mouth, ending
+    # half a turn later on the outer wall's lip circle.
+    mouth=inner[-1];assert m.beta == pytest.approx(math.atan(tangent[-1,1]),abs=1e-15)
+    np.testing.assert_allclose(m.arc(0),mouth,rtol=0,atol=1e-12)
+    assert np.hypot(*(m.center-mouth)) == pytest.approx(1.,rel=1e-14)
+    P=m.arc(np.linspace(0,m.sweep,201))
+    np.testing.assert_allclose(np.hypot(P[:,0]-m.center[0],P[:,1]-m.center[1]),1.,rtol=1e-13)
+    np.testing.assert_allclose(m.arc(m.sweep,True),m.center+[0,.8],rtol=0,atol=1e-12)
+
+
+def test_roundover_axial_identity_and_uniform_spelling():
+    legacy=roundover_axial();legacy.pop("axial_scale");legacy["formula"]="OSSE-ROUNDOVER"
+    plain=roundover_model(legacy);equal=roundover_model(roundover_axial(1.))
+    z=np.linspace(0,plain.length,101)
+    np.testing.assert_allclose(equal.body(z)[0],plain.body(z)[0],rtol=1e-15,atol=1e-15)
+    assert equal.fingerprint != plain.fingerprint and plain.formula == "OSSE-ROUNDOVER"
+    assert roundover_model(roundover_axial(.8)).fingerprint != roundover_model(roundover_axial()).fingerprint
+    r=resolve_geometry(roundover_axial())
+    assert r.formula == "OSSE-NATIVE"
+    meta=r.sampling_metadata
+    assert meta["construction_fingerprint"] == meta["mouthRoundover"]["fingerprint"]
+    assert (meta["mouthRoundover"]["formula"],meta["mouthRoundover"]["axialScale"]) == ("OSSE-NATIVE",AXIAL)
+    m=r.geometry.roundover
+    assert m.identity == {"contractRevision":1,"formula":"OSSE-NATIVE","construction":"circular-osse-axial-lip-v1",
+        "controls":dict(m.__dict__)}
+
+
+def test_roundover_axial_refusals():
+    for marker in ("OSSE-ROUNDOVER","OSSE-AXIAL"):
+        c=roundover_axial();c["formula"]=marker
+        with pytest.raises(ConfigError,match="write OSSE-NATIVE"):
+            build_geometry_params(c)
+    c=roundover_axial(.05)
+    with pytest.raises(ConfigError,match="axial_scale/scale"):
+        build_geometry_params(c)
+    c=roundover_axial();c["profile"]["axial_scale"]=c.pop("axial_scale")
+    with pytest.raises(ConfigError,match="exact root axial_scale"):
+        build_geometry_params(c)
+    c=roundover_axial();c["throat_adapter"]=copy.deepcopy(PAYLOADS["adapter"]["throat_adapter"])
+    with pytest.raises(ConfigError,match="not supported yet"):
+        build_geometry_params(c)
+    c=roundover_axial();c["profile"]["formula"]="OSSE-ROUNDOVER"
+    with pytest.raises(ConfigError,match="must agree"):
+        build_geometry_params(c)
+
+
+def test_roundover_axial_design_file_round_trip():
+    c=roundover_axial();again=json.loads(json.dumps(c,sort_keys=True))
+    assert json.dumps(build_geometry_params(c),sort_keys=True) == json.dumps(build_geometry_params(again),sort_keys=True)
+    assert roundover_model(again).fingerprint == roundover_model(c).fingerprint
+
+
+def test_roundover_axial_preview_dimensions_and_datums():
+    from types import SimpleNamespace
+    c=roundover_axial();m=roundover_model(c);g=resolve_geometry(c).geometry
+    preview=build_preview_geometry(c)
+    assert preview.metadata["formula"] == "OSSE-NATIVE"
+    assert preview.metadata["mouthRoundover"]["fingerprint"] == m.fingerprint
+    for s in preview.surfaces:
+        assert preview.metadata["fidelity"][s.role]["max_chord_error_mm"] <= .008
+    inner=next(s for s in preview.surfaces if s.role == "horn.inner")
+    pts=np.asarray(inner.positions,dtype=np.float64)
+    radius=np.hypot(pts[:,0],pts[:,1])
+    # The lip curls back below the mouth plane, always outside the mouth radius.
+    body=(pts[:,2] <= m.length)&(radius <= float(m.body(m.length)[0][1])+1e-6)
+    assert body.sum() > 100
+    np.testing.assert_allclose(radius[body],m.body(pts[body,2])[0][:,1],atol=1e-5,rtol=0)
+    dims=canonical_dimensions(c);box=np.asarray(m.bounds)
+    assert dims["mouth_opening"] == [2*float(m.body(m.length)[0][1])]*2
+    np.testing.assert_allclose(dims["horn_overall"],box[1]-box[0])
+    d=derive_datums(g,SimpleNamespace(source_axis="z"))
+    mouth=np.asarray(d["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
+    np.testing.assert_allclose(np.hypot(mouth[:,0],mouth[:,1]),m.body(m.length)[0][1],rtol=1e-12)
+    np.testing.assert_allclose(mouth[:,2],m.length)
+    outer=np.asarray(d["WG_MOUTH_OUTLINE_OUTER"]["points_mm"])
+    np.testing.assert_allclose(outer[:,2],m.body(m.length,True)[0][0])
+
+
+def test_roundover_axial_msh_and_lip_certificate(tmp_path):
+    meshio=pytest.importorskip("meshio");pytest.importorskip("gmsh")
+    from hornlab_mesher.config_builder import build_from_config
+    from hornlab_mesher.edges import build_edge_table
+    c=roundover_axial();m=roundover_model(c)
+    result=build_from_config(c,tmp_path/"roundover.msh")
+    assert result.metadata["construction_fingerprint"] == m.fingerprint
+    assert result.metadata["mouthRoundoverMeshChordBoundMm"] <= .01
+    mesh=meshio.read(result.mesh_path);p=np.asarray(mesh.points)
+    tri=mesh.get_cells_type("triangle");tags=mesh.get_cell_data("gmsh:physical","triangle")
+    assert set(tags) == {1,2}
+    assert set(build_edge_table(tri).count) == {2}
+    r=np.hypot(p[:,0],p[:,1]);wall=np.unique(tri[tags == 1])
+    distance=np.hypot(p[wall,2]-m.center[0],r[wall]-m.center[1])
+    for radius in (1.,.8):
+        assert np.sum(np.abs(distance-radius) < 1e-9) > 50
+    inner=wall[(p[wall,2] > 1e-6)&(p[wall,2] < m.length-1e-6)&(r[wall] < m.body(p[wall,2])[0][:,1]+1e-6)]
+    assert len(inner) > 50
+    # The inner body is a certified cubic Hermite fit (FIT_TOL_MM).
+    np.testing.assert_allclose(r[inner],m.body(p[inner,2])[0][:,1],atol=1e-4+1e-9,rtol=0)
+
+
+def test_roundover_axial_step_header_recipe(tmp_path):
+    pytest.importorskip("gmsh")
+    from hornlab_mesher.cad import write_step_from_config
+    c=roundover_axial();m=roundover_model(c)
+    path,info=write_step_from_config(c,tmp_path/"roundover.step")
+    text=path.read_text()
+    recipe=json.loads(text.split("HEADER;\n/* native-composite ",1)[1].split(" */")[0])
+    assert recipe == {"construction_fingerprint":m.fingerprint,**m.identity}
+    assert "hornlab-mouth-roundover" not in text
+    assert info.body == "solid" and info.construction_fingerprint == m.fingerprint
+    assert info.mouth_roundover["formula"] == "OSSE-NATIVE"
+    np.testing.assert_array_equal(info.bounding_box_mm,m.bounds)
+
+
+def test_released_readers_refuse_roundover_axial(old_reader_tree,tmp_path):
+    assert_old_reader_refuses(old_reader_tree,roundover_axial(),tmp_path)

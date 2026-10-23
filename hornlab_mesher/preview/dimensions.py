@@ -63,7 +63,9 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     if native == "OSSE-ADAPTER-AXIAL":
         from ..adapter_axial import PhysicalAdapter
         return PhysicalAdapter.from_params(native_params[0]).dimensions
-    axial = native_params if native == "OSSE-AXIAL" else configuration(full, build_geometry_params)
+    # Other native markers never own an axial-only body (Roundover x Axial
+    # is measured from its resolved roundover below).
+    axial = native_params if native == "OSSE-AXIAL" else None if native is not None else configuration(full, build_geometry_params)
     if axial is not None:
         from ..axial_scale import AxialModel
         model = AxialModel.from_params(axial[0])

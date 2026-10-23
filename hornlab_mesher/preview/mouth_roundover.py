@@ -173,7 +173,7 @@ def build(params, options):
     total_ms = (time.perf_counter()-started)*1000
     canonical_ms = canonical_seconds*1000
     metadata = {**model.metadata(), "api_version":"hornlab.preview/1", "metadata_version":"hornlab.preview/1.4",
-        "formula":"OSSE-ROUNDOVER", "mode":"freestanding", "units":"mm", "boundsMm":model.bounds,
+        "formula":model.formula, "mode":"freestanding", "units":"mm", "boundsMm":model.bounds,
         "dimensions_status":"current", "lod":options.lod, "coordinate_frame":"mesher-xyz",
         "dimensions_sampling":{"method":"analytic-full-envelope", "lod_independent":True},
         "dimensions_mm":{"mouth_opening":[2*float(model.body(model.length)[0][1])]*2,

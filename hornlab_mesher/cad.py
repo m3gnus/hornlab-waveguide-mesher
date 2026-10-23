@@ -727,11 +727,15 @@ def write_step(
                 text=_arc_surface_shell_transport(text,n_faces=n_faces,open_throat=open_throat)
             adapter = getattr(geometry, "adapter_meridian", None)
             roundover = getattr(geometry, "roundover", None)
+            composite = None
             if adapter is not None:
                 recipe = {"construction_fingerprint": adapter.fingerprint, **adapter.identity}
                 comment = "/* native-construction " + json.dumps(recipe, sort_keys=True, separators=(",", ":"), allow_nan=False) + " */\n"
                 text = text.replace("HEADER;", "HEADER;\n" + comment, 1)
-            if roundover is not None:
+            if roundover is not None and roundover.formula == "OSSE-NATIVE":
+                composite = roundover
+                text = _composite_header(text, roundover.fingerprint, roundover.identity)
+            elif roundover is not None:
                 recipe = {"contractRevision":1, "formula":"OSSE-ROUNDOVER", "controls":roundover.__dict__,
                           **roundover.metadata()}
                 text = text.replace("END-ISO-10303-21;", "/* hornlab-mouth-roundover " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
@@ -740,8 +744,8 @@ def write_step(
                 recipe = {"contractRevision":1,"formula":"OSSE-AXIAL","controls":axial.__dict__,**axial.metadata()}
                 text = text.replace("END-ISO-10303-21;", "/* hornlab-absolute-axial-scale " + json.dumps(recipe,sort_keys=True,separators=(",", ":")) + " */\nEND-ISO-10303-21;")
             arc=getattr(geometry,"arc_meridian",None)
-            composite=arc if arc is not None and arc.identity["formula"] == "OSSE-NATIVE" else None
-            if composite is not None:
+            if arc is not None and arc.identity["formula"] == "OSSE-NATIVE":
+                composite=arc
                 text=_composite_header(text,composite.fingerprint,composite.identity)
             elif arc is not None:
                 recipe=arc.metadata()["terminatingArc"]
