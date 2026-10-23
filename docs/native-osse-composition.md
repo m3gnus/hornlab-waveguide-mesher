@@ -86,7 +86,11 @@ one facet-to-surface bound over a circle descriptor
 (`builders/circle_certificate.py`). For the lip it bounds each triangle
 with its local reach, so the reported `mouthRoundoverMeshChordBoundMm` can be
 smaller than v0.2.6 reported for the identical mesh; the arc bound is
-unchanged. A composite's STEP file carries one
+unchanged. The shared certificate adds a size-scaled roundoff guard of
+`1e-10 * max(1, radius, abs(center_z), center_r, rim_reach)` to both the
+vertex residual and the local reach (which is also rounded upward). A
+worst triangle at the rim can therefore report a slightly higher lip
+bound than v0.2.6. A composite's STEP file carries one
 `native-composite` header recipe; the legacy markers keep their existing
 emitters and bytes. Roundover × Axial keeps the freestanding lip
 construction (`mouth_roundover.py`), whose body coefficients come from the
@@ -101,5 +105,22 @@ canonical JSON of the full geometry-parameter tuple and resolved metadata
 timestamp and only the translator counter normalized, and deterministic
 preview serialization with its timing clock pinned. Preview arrays retain
 dtype and shape plus a SHA-256 digest of their raw bytes. Build-result
-metadata is compared too; only the lip certificate bound may differ, and
-only downward. The existing adapter-plus-axial marker is included.
+metadata is compared too; only `mouthRoundoverMeshChordBoundMm` may differ.
+The harness requires `new <= old + 1e-8` mm, an explicit absolute tolerance
+covering the numerical guard while allowing the accepted tighter bound.
+All other build metadata remains exactly equal. The existing
+adapter-plus-axial marker is included.
+
+## Owner decisions (2026-10-23)
+
+1. The arc's `join_t` stays a fraction of the authored body length `L`,
+   including when a throat adapter is present.
+2. Adapter × Arc with an authored `axial_scale == scale` keeps a separate
+   identity from Adapter × Arc without `axial_scale`, even though their
+   geometry is equal. Waveguide Generator will omit `axial_scale` when it
+   equals `scale`.
+3. The tighter `mouthRoundoverMeshChordBoundMm` metadata from the shared
+   certificate is accepted, with the numerical guard allowance described
+   above. Mesh and STEP bytes remain subject to the identity gate.
+4. Adapter checks keep the conservative full-body domain through `L`,
+   even when the terminating arc replaces the body beyond its join.

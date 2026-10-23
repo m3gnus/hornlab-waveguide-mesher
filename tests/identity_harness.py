@@ -115,7 +115,9 @@ def run_worker(tree, source, target, *, native=False):
 
 
 # The shared circle certificate (composition slice 2) bounds lip triangles with
-# their local reach, so this reported bound can only shrink for the same mesh.
+# their local reach instead of the full rim reach used in v0.2.6. This can
+# tighten the bound, but its size-scaled guard on residual and local reach
+# can make a rim triangle's bound slightly higher for the identical mesh.
 BUILD_METADATA_ALLOWED_TIGHTER = ('mouthRoundoverMeshChordBoundMm',)
 
 
@@ -148,10 +150,11 @@ def assert_mesh_and_step_bytes(base_tree, tmp_path, name, config, *, native=Fals
         base_build = json.loads((base / 'build.json').read_text())
         current_build = json.loads((current / 'build.json').read_text())
         for key in BUILD_METADATA_ALLOWED_TIGHTER:
-            # A tighter certificate over the identical mesh is the only
-            # documented build-metadata change; it may never loosen.
+            # This certificate is the only allowed build-metadata change.
+            # Allow 1e-8 mm absolute increase to cover its numerical guard
+            # versus v0.2.6; all other metadata remains exactly equal.
             if key in base_build:
-                assert key in current_build and current_build[key] <= base_build[key], (name, key)
+                assert key in current_build and current_build[key] <= base_build[key] + 1e-8, (name, key)
                 base_build.pop(key)
                 current_build.pop(key)
         assert base_build == current_build, (name, 'build.json')

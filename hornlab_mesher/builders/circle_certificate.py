@@ -31,6 +31,9 @@ def certify_circle_facets(groups, label):
         # continuous chart, and other triangles are left exactly as they are.
         middle = (circle.start+circle.end)/2
         reach = float(circle.points(circle.end)[1])
+        # Add a size-scaled roundoff guard to both residual and local reach.
+        # Unlike the v0.2.6 lip certificate, this can raise a rim triangle's
+        # bound slightly even though local reach tightens bounds elsewhere.
         guard = 1e-10*max(1., circle.radius, abs(circle.center_z), circle.center_r, reach)
         for face in faces:
             types, _, nodes = gmsh.model.mesh.getElements(2, face)
@@ -52,7 +55,8 @@ def certify_circle_facets(groups, label):
                 projected = circle.points(phi)
                 residual = np.max(np.hypot(vertices[:, :, 2]-projected[:, :, 0], r-projected[:, :, 1]), axis=1)+guard
                 # Every convex parameter triangle has r <= r(max(phi)). Its
-                # angular Hessian norm uses this local supremum, rounded up.
+                # angular Hessian norm uses this local supremum plus the
+                # guard, rounded up; the residual above includes the guard too.
                 local_reach = np.nextafter(circle.center_r-circle.radius*np.cos(np.max(phi, axis=1))+guard, np.inf)
                 bound = (circle.radius*dp*dp+2*circle.radius*dp*da+local_reach*da*da)/8+residual
                 largest = max(largest, float(np.max(bound, initial=0)))
