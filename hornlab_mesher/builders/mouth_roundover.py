@@ -5,6 +5,7 @@ import math
 import numpy as np
 
 from ._occ import require_gmsh
+from .axial_scale import hermite_controls
 from .circle_certificate import certify_circle_facets
 from ..composite_meridian import CircleArc
 from ..geometry import BuiltGeometry, MESH_ALGORITHM_FRONTAL_DELAUNAY
@@ -22,11 +23,7 @@ def build_roundover(geometry):
         return [(d,t) for d,t in occ.revolve([(1,curve)], 0,0,0, 0,0,1, 2*math.pi) if d == 2]
     def body(outer):
         z = model.fit_stations(outer)
-        positions, derivatives = model.body(z, outer)
-        controls = [positions[0]]
-        for j, h in enumerate(np.diff(z)):
-            controls.extend((positions[j]+h*derivatives[j]/3,
-                             positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+        controls = hermite_controls(z, *model.body(z, outer))
         if model.throat is not None and not outer:
             # One shared join point, the cubic's exact end; the fit spends the gap.
             controls[0] = model.throat.cubic[-1]
@@ -43,10 +40,7 @@ def build_roundover(geometry):
             u = model.cubic_fit_stations()
             positions, derivatives = model.cubic(u, True)
             positions[-1] = controls[0]
-            spans = [positions[0]]
-            for j, h in enumerate(np.diff(u)):
-                spans.extend((positions[j]+h*derivatives[j]/3,
-                              positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+            spans = hermite_controls(u, positions, derivatives)
             throat = occ.addBSpline([point(p) for p in spans[:-1]]+tags[:1], degree=3, knots=u.tolist(),
                                     multiplicities=[4]+[3]*(len(u)-2)+[4])
         else:

@@ -26,6 +26,26 @@ def _number(value, name):
     return float(value)
 
 
+def mapped_throat(params):
+    """The mapped body, the composite's throat cubic and its composite-z shift.
+
+    The body is AxialModel's, mapped by ``absoluteAxialScale`` (else the
+    uniform ``scale``). The throat is the OSSE-ADAPTER-AXIAL PhysicalAdapter
+    with the same map, or None; its bare cubic ignores any wall. The retained
+    conic starts at body z0 = length*join_t, which sits at composite z
+    z0+shift, the cubic's exact end. Returns (body, throat, z0, shift).
+    """
+    from .axial_scale import AxialModel
+    axial = params.get("absoluteAxialScale", params.get("scale", 1))
+    body = AxialModel.from_params(dict(params, absoluteAxialScale=axial))
+    if not params.get("throat_adapter"):
+        return body, None, 0., 0.
+    from .adapter_axial import KEY, PhysicalAdapter
+    throat = PhysicalAdapter.from_params(dict(params, type="OSSE", wallThickness=0, **{KEY: axial}))
+    z0 = body.length*throat.payload["join_t"]
+    return body, throat, z0, float(throat.cubic[-1, 0])-z0
+
+
 @dataclass(frozen=True)
 class CircleArc:
     """Meridian circle (z,r) = center+radius*(sin phi,-cos phi), phi in [start,end].
@@ -75,16 +95,9 @@ class CompositeMeridian:
 
     @classmethod
     def from_params(cls, params):
-        from .axial_scale import AxialModel
-        axial = params.get("absoluteAxialScale", params.get("scale", 1))
-        p = dict(params, absoluteAxialScale=axial)
-        body = AxialModel.from_params(p)
-        throat = None
-        if params.get("throat_adapter"):
-            from .adapter_axial import KEY, PhysicalAdapter
-            # The same mapped cubic and checks as OSSE-ADAPTER-AXIAL; its
-            # conic is replaced here by the span ending at the circle join.
-            throat = PhysicalAdapter.from_params(dict(params, type="OSSE", **{KEY: axial}))
+        # The same mapped cubic and checks as OSSE-ADAPTER-AXIAL; its conic
+        # is replaced here by the span ending at the circle join.
+        body, throat, z0, shift = mapped_throat(params)
         payload = params["terminatingArc"]
         t = _number(payload["join_t"], "join_t")
         end = math.radians(_number(payload["end_tangent_deg"], "end_tangent_deg"))
@@ -92,11 +105,9 @@ class CompositeMeridian:
             _fail("join_t requires 0 < join_t <= 1 and a retained body of at least 0.1 mm.")
         z = body.length*t
         if throat is None:
-            z0, shift, start, start_slope = 0., 0., np.array([0, body.r0]), body.throat_slope
+            start, start_slope = np.array([0, body.r0]), body.throat_slope
         else:
-            z0 = body.length*throat.payload["join_t"]
             start = np.array(throat.cubic[-1])
-            shift = float(start[0])-z0
             start_slope = float(body.body(z0)[1][1])
             if z-z0 < .1:
                 _fail("join_t must exceed the adapter join_t and retain at least 0.1 mm of conic.")
@@ -205,7 +216,7 @@ class CompositeMeridian:
 
     @property
     def source_radius(self):
-        return self.r0 if self.throat is None else float(self.throat.cubic[0,1])
+        return self.r0 if self.throat is None else self.throat.driver_radius
 
     @property
     def source_angle_deg(self):

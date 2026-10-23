@@ -16,9 +16,6 @@ from .config_parser import ConfigError
 FORMULA = "OSSE-ROUNDOVER"
 KEY = "mouth_roundover_radius_mm"
 FIT_TOL_MM = 0.0001
-# Feature sets of the OSSE-NATIVE composites this construction owns.
-COMPOSITES = frozenset({frozenset({"roundover", "axial"}), frozenset({"adapter", "roundover"}),
-                        frozenset({"adapter", "roundover", "axial"})})
 
 
 def _fail(message):
@@ -44,9 +41,10 @@ def configuration(config, resolver):
     formula = str(config.get("formula", config.get("type", profile.get("formula", profile.get("type", "OSSE"))))).upper()
     radius = _number(mesh.get(KEY, 0), KEY)
     from .native_boundary import native_features
-    # This construction owns Roundover x Axial and Adapter x Roundover (x Axial).
+    # This construction owns every implemented OSSE-NATIVE composite with a
+    # roundover; the rule table has already refused the others.
     features = native_features(config) if formula == "OSSE-NATIVE" else frozenset()
-    composite = features in COMPOSITES
+    composite = "roundover" in features
     marker = "OSSE-NATIVE" if composite else FORMULA
     supplied_marker = any(
         isinstance(section.get(key), str) and section[key].upper() == FORMULA
@@ -399,14 +397,11 @@ class AdapterRoundover(AxialRoundover):
 
     @classmethod
     def construct(cls, p):
-        from .adapter_axial import KEY, PhysicalAdapter
-        authored = "absoluteAxialScale" in p
-        axial = p["absoluteAxialScale"] if authored else p.get("scale", 1)
-        body = AxialModel.from_params(dict(p, absoluteAxialScale=axial))
-        # The same mapped cubic and checks as OSSE-ADAPTER-AXIAL; the wall is the lip's.
-        throat = PhysicalAdapter.from_params(dict(p, type="OSSE", wallThickness=0, **{KEY: axial}))
+        from .composite_meridian import mapped_throat
+        # The same body, cubic, checks and shift as Adapter x Arc; the wall is the lip's.
+        body, throat, _, shift = mapped_throat(p)
         start = float(throat.cubic[-1, 0])
-        shift = start-body.length*throat.payload["join_t"]
+        authored = "absoluteAxialScale" in p
         return cls(shift+body.length, body.r0, math.radians(float(p["a"])), math.radians(float(p["a0"])),
                    body.k, float(p["wallThickness"]), float(p["mouthRoundoverRadiusMm"]), body.offset,
                    body.xy_scale, body.axial_scale, body.slope, body.throat_slope, start, shift,
@@ -415,6 +410,9 @@ class AdapterRoundover(AxialRoundover):
     @property
     def coefficients(self):
         # The mapped conic in composite z = u+shift; C*A-B*B is unchanged.
+        # B' = B-C*shift may be negative, but the conic's vertex (u = -B/C <= 0)
+        # stays at or before start, so the inherited bounds' monotone q and
+        # B'+C*z >= 0 assumptions hold on [start, length].
         A, B, C = AxialModel.coefficients.fget(self)
         s = self.shift
         return A+s*(C*s-2*B), B-C*s, C
@@ -428,7 +426,7 @@ class AdapterRoundover(AxialRoundover):
 
     @property
     def source_radius(self):
-        return float(self.throat.cubic[0, 1])
+        return self.throat.driver_radius
 
     @property
     def rear_start(self):
@@ -452,13 +450,18 @@ class AdapterRoundover(AxialRoundover):
         The offset o = c+wall*n has o' = c'*(1-wall*kappa), with kappa the
         curvature signed towards the outer normal.
         """
-        p, d, dd = self.throat.cubic_values(u)
+        p, d, _ = self.throat.cubic_values(u)
         if not outer:
             return p, d
-        speed = np.linalg.norm(d, axis=-1)
-        kappa = (d[..., 0]*dd[..., 1]-d[..., 1]*dd[..., 0])/speed**3
-        normal = np.stack((-d[..., 1], d[..., 0]), axis=-1)/speed[..., None]
+        kappa = self.cubic_curvature(u)
+        normal = np.stack((-d[..., 1], d[..., 0]), axis=-1)/np.linalg.norm(d, axis=-1)[..., None]
         return p+self.wall*normal, d*(1-self.wall*kappa)[..., None]
+
+    def cubic_curvature(self, u, outer=False):
+        """Meridian curvature of the cubic (or its offset), signed towards the outer normal."""
+        _, d, dd = self.throat.cubic_values(u)
+        kappa = (d[..., 0]*dd[..., 1]-d[..., 1]*dd[..., 0])/np.linalg.norm(d, axis=-1)**3
+        return kappa/(1-self.wall*kappa) if outer else kappa
 
     def _polynomials(self):
         """Power-basis z', r', z'', r'', speed squared g and curvature numerator."""
@@ -520,8 +523,9 @@ class AdapterRoundover(AxialRoundover):
         offset factor 1-wall*kappa >= 0.6). If every wall tangent angle lies
         in a range narrower than 90 degrees, every outer point lies above the
         inner graph at its own z, so the walls cannot cross. The cubic and
-        its offset stay inside z <= start+wall and r <= reach+wall, which must
-        clear the lip (z >= centre, r >= mouth radius) by 0.1 mm.
+        its offset stay inside z <= start+wall and r <= cubic reach+wall
+        (conservative: the offset's z is monotone, so it ends at start), which
+        must clear the lip (z >= centre, r >= mouth radius) by 0.1 mm.
         """
         if not abs(self.throat.source_angle) <= 75:
             _fail("the adapter exit angle must be within 75 degrees of the axis.")

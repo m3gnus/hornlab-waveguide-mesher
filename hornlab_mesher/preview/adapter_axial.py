@@ -9,7 +9,7 @@ from .contract import PreviewGeometryV1, PreviewSurfaceV1
 from .primitives import _grid_indices, _orient_indices_to_normals, _flat_cap
 
 
-def _cubic_bounds(model, lo, hi):
+def cubic_bounds(model, lo, hi):
     # Restrict derivative controls to this interval by de Casteljau. Positive
     # axial coefficients make every tangent slope a positive weighted average
     # of the control slopes, including unobserved interior extrema.
@@ -90,7 +90,7 @@ def build(params, options):
         return float(np.linalg.norm(dd[0]))*(right-left)**2/8, float(np.ptp(np.arctan2(d[:,1], d[:,0])))
     branches = []
     max_meridian_error = max_meridian_normal = 0.
-    for lo, bounds in ((0., lambda left, right: _cubic_bounds(model, left, right)),
+    for lo, bounds in ((0., lambda left, right: cubic_bounds(model, left, right)),
                        (model.payload["join_t"], body_bounds)):
         values, error, angle = refine_meridian(lo, 1., bounds, budget, math.radians(normal))
         branches.append(values)

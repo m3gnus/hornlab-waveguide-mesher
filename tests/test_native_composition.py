@@ -714,6 +714,19 @@ def adapter_roundover(axial=AXIAL,scale=1.):
     return c
 
 
+def converging_adapter_roundover():
+    """A converging driver exit: the outer wall starts in front of the throat
+    plane, so the rear return crosses it. Placed off axis."""
+    c=adapter_roundover(None);c["throat_adapter"]["exit_half_angle_deg"]=-15.
+    c["vertical_offset_mm"]=-12.
+    return c
+
+
+# Designs that are previewed, meshed and exported.
+LIP_CASES={"adapter+roundover":lambda:adapter_roundover(None),"adapter+roundover+axial":adapter_roundover,
+    "converging-placed":converging_adapter_roundover}
+
+
 def large_adapter_roundover(axial=AXIAL):
     c={"formula":"OSSE-NATIVE","mode":"freestanding","scale":SCALE,"axial_scale":axial,
         "profile":dict(composite()["profile"]),"throat_adapter":dict(PAYLOADS["adapter"]["throat_adapter"]),
@@ -907,10 +920,10 @@ def test_adapter_roundover_design_file_round_trip(name):
     assert validate_native_boundary(again) == "OSSE-NATIVE"
 
 
-@pytest.mark.parametrize("name",sorted(LIP_SETS))
+@pytest.mark.parametrize("name",sorted(LIP_CASES))
 def test_adapter_roundover_preview_dimensions_and_datums(name):
     from types import SimpleNamespace
-    c=adapter_roundover(LIP_SETS[name]);m=roundover_model(c);g=resolve_geometry(c).geometry
+    c=LIP_CASES[name]();m=roundover_model(c);g=resolve_geometry(c).geometry
     preview=build_preview_geometry(c)
     assert preview.metadata["formula"] == "OSSE-NATIVE"
     assert preview.metadata["mouthRoundover"]["fingerprint"] == m.fingerprint
@@ -921,34 +934,36 @@ def test_adapter_roundover_preview_dimensions_and_datums(name):
     for role in ("horn.inner","horn.outer","mouth_rim","wall.rear_return","wall.rear_cap"):
         pts=np.asarray(next(s for s in preview.surfaces if s.role == role).positions,dtype=np.float64)
         # Every rendered vertex lies on the closed meridian within binary32 placement.
-        assert np.max(lip_residual(m,pts[:,2],np.hypot(pts[:,0],pts[:,1]))) <= 1e-5,role
+        assert np.max(lip_residual(m,pts[:,2],np.hypot(pts[:,0],pts[:,1]-m.offset))) <= 1e-5,role
     inner=np.asarray(next(s for s in preview.surfaces if s.role == "horn.inner").positions,dtype=np.float64)
-    radius=np.hypot(inner[:,0],inner[:,1])
+    radius=np.hypot(inner[:,0],inner[:,1]-m.offset)
     assert inner[:,2].min() == 0 and radius[inner[:,2] == 0] == pytest.approx(m.source_radius,rel=1e-6)
     throat=inner[:,2] < m.start
     assert throat.sum() > 100
     assert np.max(monotone_residual(lambda u:m.cubic(u)[0],inner[throat,2],radius[throat])) <= 1e-5
     for role,r in (("source_cap",m.source_radius),("wall.rear_cap",float(m.rear_start[1]))):
         cap=np.asarray(next(s for s in preview.surfaces if s.role == role).positions)
-        assert np.hypot(cap[:,0],cap[:,1]).max() == pytest.approx(r,rel=1e-6)
+        assert np.hypot(cap[:,0],cap[:,1]-m.offset).max() == pytest.approx(r,rel=1e-6)
     dims=canonical_dimensions(c);box=np.asarray(m.bounds)
     assert dims["mouth_opening"] == [2*float(m.body(m.length)[0][1])]*2
     np.testing.assert_allclose(dims["horn_overall"],box[1]-box[0])
     d=derive_datums(g,SimpleNamespace(source_axis="z"))
-    assert d["WG_ADAPTER_JOIN_PLANE"]["origin_mm"] == [0.,0.,m.start]
+    assert d["WG_ADAPTER_JOIN_PLANE"]["origin_mm"] == [0.,m.offset,m.start]
     assert d["WG_THROAT_PLANE"]["origin_mm"][2] == 0
     mouth=np.asarray(d["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
-    np.testing.assert_allclose(np.hypot(mouth[:,0],mouth[:,1]),m.body(m.length)[0][1],rtol=1e-12)
+    np.testing.assert_allclose(np.hypot(mouth[:,0],mouth[:,1]-m.offset),m.body(m.length)[0][1],rtol=1e-12)
     np.testing.assert_allclose(mouth[:,2],m.length)
 
 
-@pytest.mark.parametrize("name",sorted(LIP_SETS))
+@pytest.mark.parametrize("name",sorted(LIP_CASES))
 def test_adapter_roundover_msh_closed_body_oracle_and_certificate(name,tmp_path):
     meshio=pytest.importorskip("meshio");pytest.importorskip("gmsh")
     from hornlab_mesher.config_builder import build_from_config
     from hornlab_mesher.edges import build_edge_table
     from hornlab_mesher.mouth_roundover import FIT_TOL_MM
-    c=adapter_roundover(LIP_SETS[name]);m=roundover_model(c)
+    c=LIP_CASES[name]();m=roundover_model(c)
+    if name == "converging-placed":
+        assert m.rear_start[0] > 0 and m.offset == -12.
     result=build_from_config(c,tmp_path/"adapter-roundover.msh")
     assert result.metadata["construction_fingerprint"] == m.fingerprint
     assert result.metadata["mouthRoundoverMeshChordBoundMm"] <= .01
@@ -963,7 +978,7 @@ def test_adapter_roundover_msh_closed_body_oracle_and_certificate(name,tmp_path)
     assert len(directed) == 3*len(tri) and all((b,a) in directed for a,b in directed)
     v=p[tri];signed=np.sum(np.einsum("ij,ij->i",v[:,0],np.cross(v[:,1],v[:,2])))/6
     assert signed == pytest.approx(solid_volume(m,opened=False),rel=1e-2)
-    r=np.hypot(p[:,0],p[:,1]);nodes=np.unique(tri)
+    r=np.hypot(p[:,0],p[:,1]-m.offset);nodes=np.unique(tri)
     assert np.max(lip_residual(m,p[nodes,2],r[nodes])) <= FIT_TOL_MM+1e-9
     # The exact throat cubic (an OCC Bezier) and the exact lips carry vertices.
     wall=np.unique(tri[tags == 1])
@@ -979,12 +994,12 @@ def test_adapter_roundover_msh_closed_body_oracle_and_certificate(name,tmp_path)
     np.testing.assert_allclose(r[rim.lo[rim.count == 1]],m.source_radius,atol=1e-10,rtol=0)
 
 
-@pytest.mark.parametrize("name",sorted(LIP_SETS))
+@pytest.mark.parametrize("name",sorted(LIP_CASES))
 def test_adapter_roundover_step_closed_solid_recipe_and_reopened_faces(name,tmp_path):
     gmsh=pytest.importorskip("gmsh")
     from hornlab_mesher.cad import write_step_from_config
     from hornlab_mesher.mouth_roundover import FIT_TOL_MM
-    c=adapter_roundover(LIP_SETS[name]);m=roundover_model(c)
+    c=LIP_CASES[name]();m=roundover_model(c)
     path,info=write_step_from_config(c,tmp_path/"adapter-roundover.step")
     text=path.read_text()
     recipe=json.loads(text.split("HEADER;\n/* native-composite ",1)[1].split(" */")[0])
@@ -1012,7 +1027,7 @@ def test_adapter_roundover_step_closed_solid_recipe_and_reopened_faces(name,tmp_
                 lo,hi=gmsh.model.getParametrizationBounds(1,abs(curve))
                 points+=[gmsh.model.getValue(1,abs(curve),[lo[0]+w*(hi[0]-lo[0])]) for w in (0.,.3,.7,1.)]
             x,y,z=np.asarray(points).T
-            assert np.max(lip_residual(m,z,np.hypot(x,y))) <= FIT_TOL_MM+1e-9
+            assert np.max(lip_residual(m,z,np.hypot(x,y-m.offset))) <= FIT_TOL_MM+1e-9
     finally:
         gmsh.finalize()
 

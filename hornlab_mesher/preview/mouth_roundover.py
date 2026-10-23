@@ -6,7 +6,7 @@ import time
 import numpy as np
 
 from ..mouth_roundover import Roundover
-from .adapter_axial import _cubic_bounds, refine_meridian
+from .adapter_axial import cubic_bounds, refine_meridian
 from .contract import PreviewGeometryV1, PreviewSurfaceV1
 from .primitives import _grid_indices, _orient_indices_to_normals, _flat_cap, _flat_strip
 
@@ -87,17 +87,13 @@ def build(params, options):
             # The throat cubic (or its offset) first: the adapter preview's
             # derivative-hull refinement, with the offset's second-derivative
             # bound for the outer wall. Tangent directions are shared.
-            def cubic_bounds(lo, hi):
-                chord, angle = _cubic_bounds(model.throat, lo, hi)
+            def throat_bounds(lo, hi):
+                chord, angle = cubic_bounds(model.throat, lo, hi)
                 return (model.offset_bounds(lo, hi)[0]*(hi-lo)**2/8 if outer else chord), angle
-            u, cubic_bound, _ = refine_meridian(0., 1., cubic_bounds, budget, math.radians(normal))
+            u, cubic_bound, _ = refine_meridian(0., 1., throat_bounds, budget, math.radians(normal))
             max_meridian_bound = max(max_meridian_bound, cubic_bound)
             points, derivative = model.cubic(u, outer)
-            second = model.throat.cubic_values(u)[1:]
-            curvature = ((second[0][:,0]*second[1][:,1]-second[0][:,1]*second[1][:,0])
-                         /np.linalg.norm(second[0], axis=1)**3)
-            if outer:
-                curvature = curvature/(1-model.wall*curvature)
+            curvature = model.cubic_curvature(u, outer)
             throat_intervals = len(u)-1
             if enabled:
                 surface("horn.outer" if outer else "horn.inner", points, derivative, not outer, curvature)

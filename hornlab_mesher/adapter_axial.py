@@ -195,6 +195,10 @@ class PhysicalAdapter:
         return hash(self._identity_json)
 
     @property
+    def driver_radius(self):
+        return float(self.cubic[0, 1])
+
+    @property
     def source_angle(self):
         d = self.cubic[1]-self.cubic[0]
         return math.degrees(math.atan2(d[1],d[0]))

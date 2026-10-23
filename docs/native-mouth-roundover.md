@@ -143,8 +143,11 @@ positions and tangents, certified by a whole-interval bound on its fourth
 derivative (Faa di Bruno over Bernstein hulls of the cubic's speed) to the
 same 0.0001 mm as the conic's fit. Inner and outer walls each share one
 point at the join, and both fits spend the roundoff gap there within that
-bound. The inner cubic is the exact Bezier. The source disk sits on the
-driver rim, and the rear return starts at the outer wall's throat point.
+bound. The inner cubic is the exact Bezier. These bound the CAD and mesh
+geometry against the analytic walls; as for Adapter × Arc, the mesh
+facet-to-surface certificate covers the lip only. The source disk sits on
+the driver rim, and the rear return starts at the outer wall's throat point
+(in front of the throat plane for a converging exit angle).
 
 Extra refusals guard the offset and the closed solid:
 

@@ -4,7 +4,7 @@ import math
 import numpy as np
 
 from ..composite_meridian import CompositeMeridian
-from .adapter_axial import _cubic_bounds,refine_meridian
+from .adapter_axial import cubic_bounds,refine_meridian
 from .contract import PreviewGeometryV1,PreviewSurfaceV1
 from .primitives import _grid_indices,_orient_indices_to_normals,_flat_cap
 
@@ -54,7 +54,7 @@ def build(params,options):
     # in the OSSE-ADAPTER-AXIAL preview; the conic then starts on its join.
     u,cubic_error,cubic_angle=[0.],0.,0.
     if model.throat is not None:
-        u,cubic_error,cubic_angle=refine_meridian(0.,1.,lambda lo,hi:_cubic_bounds(model.throat,lo,hi),
+        u,cubic_error,cubic_angle=refine_meridian(0.,1.,lambda lo,hi:cubic_bounds(model.throat,lo,hi),
             budget,math.radians(normal))
     z=[model.conic_start_z]
     def split(lo,hi,depth=0):

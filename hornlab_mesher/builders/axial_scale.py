@@ -10,16 +10,21 @@ from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
 
 
+def hermite_controls(stations, positions, derivatives):
+    """Cubic B-spline controls of the C1 Hermite interpolant through the stations."""
+    controls = [positions[0]]
+    for j, h in enumerate(np.diff(stations)):
+        controls.extend((positions[j]+h*derivatives[j]/3,
+                         positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+    return controls
+
+
 def build_axial(geometry):
     gmsh = require_gmsh()
     occ = gmsh.model.occ
     model = geometry.axial_model
     z = model.stations(FIT_TOL_MM, fit=True)
-    positions, derivatives = model.body(z)
-    controls = [positions[0]]
-    for j, h in enumerate(np.diff(z)):
-        controls.extend((positions[j]+h*derivatives[j]/3,
-                         positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+    controls = hermite_controls(z, *model.body(z))
     tags = [occ.addPoint(float(p[1]), 0, float(p[0])) for p in controls]
     curve = occ.addBSpline(tags, degree=3, knots=z.tolist(), multiplicities=[4]+[3]*(len(z)-2)+[4])
     wall = [(d,t) for d,t in occ.revolve([(1,curve)],0,0,0,0,0,1,2*math.pi) if d == 2]
