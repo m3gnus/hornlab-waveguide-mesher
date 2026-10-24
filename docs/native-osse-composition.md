@@ -138,3 +138,20 @@ adapter-plus-axial marker is included.
    above. Mesh and STEP bytes remain subject to the identity gate.
 4. Adapter checks keep the conservative full-body domain through `L`,
    even when the terminating arc replaces the body beyond its join.
+
+## Owner decisions (2026-10-24, Adapter × Roundover)
+
+Taken after comparing each point with ATH V2026-09a builds.
+
+1. A converging driver exit keeps the current rear: the outer wall starts
+   in front of the throat plane and the flat rear return leaves a thin
+   ring of material around the throat. ATH also fills that corner (with a
+   slanted outer wall to a rear disc a fixed 5 mm behind the throat, which
+   folds for steep exits with thick walls); its depth is not copied.
+2. The conservative refusals stay: wall tangent range below 85°, exit
+   angle within 75°, the offset fold guard `wall × curvature < 0.4`, and
+   the axial lip clearance measured from the adapter join plus one wall.
+   ATH has no such checks and builds folded or flipped geometry instead.
+3. The identity's explicit `features` list is the permanent spelling. ATH
+   has no design identity; its configuration records features only by
+   which keys are present.
