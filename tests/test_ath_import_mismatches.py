@@ -78,7 +78,7 @@ def test_windows_crlf_cfg_text_imports_identically(name):
 
 
 def test_import_spacing_matches_ath_v2026_09a_enclosure_bounds():
-    from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+    from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
     cfg = config('m4_enc')
     geometry = resolve_geometry(cfg).geometry
     points = np.loadtxt(FIXTURES / 'm4_enc-enclosure.csv', delimiter=';', skiprows=1)
@@ -88,7 +88,7 @@ def test_import_spacing_matches_ath_v2026_09a_enclosure_bounds():
     native_text = '; Waveguide Generator geometry-interpretation: native-v1\n' + (FIXTURES / 'm4_enc.cfg').read_text()
     native = parse_text_config(native_text)
     assert (native['enclosure']['space_l_mm'], native['enclosure']['space_r_mm']) == (25, 35)
-    result = enclosure_box_bounds(geometry.inner_points, geometry.enclosure, closed=True)
+    result = measure_enclosure_box_bounds(geometry.inner_points, geometry.enclosure, closed=True)
     assert result['bx0'] == pytest.approx(points[:, 0].min(), abs=2e-3)
     assert result['bx1'] == pytest.approx(points[:, 0].max(), abs=2e-3)
 
@@ -308,9 +308,9 @@ def test_saved_v1_mismatch_geometry_matches_pinned_contract(name, roundtrip):
     for field in ('inner', 'outer'):
         assert_pinned(getattr(geometry, field + '_points'), 'ath-mismatches-v1.npz', name + '/' + field)
     if name == 'm4_enc':
-        from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+        from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
         assert (geometry.enclosure.space_l_mm, geometry.enclosure.space_r_mm) == (25, 35)
-        bounds = enclosure_box_bounds(geometry.inner_points, geometry.enclosure, closed=True)
+        bounds = measure_enclosure_box_bounds(geometry.inner_points, geometry.enclosure, closed=True)
         assert_pinned(np.array([bounds[k] for k in ['bx0', 'bx1', 'by0', 'by1']]),
                       'ath-mismatches-v1.npz', name + '/bounds')
 

@@ -14,6 +14,7 @@ from hornlab_mesher.builders.enclosure import (
     _add_curve_loop_from_curves,
     _clamp_edge_roundover,
     enclosure_box_bounds,
+    measure_enclosure_box_bounds,
     _reject_front_baffle_wall_intersections,
 )
 from hornlab_mesher.builders import point_grid_surfaces as point_grid_surfaces_mod
@@ -3298,7 +3299,7 @@ def test_enclosure_bounds_logs_edge_roundover_clamp(caplog):
         edge_mm=20.0,
     )
     with caplog.at_level("WARNING", logger="hornlab_mesher.builders.enclosure"):
-        bounds = enclosure_box_bounds(inner, enclosure, closed=True)
+        bounds = measure_enclosure_box_bounds(inner, enclosure, closed=True)
 
     assert bounds["clamped_edge"] < 20.0
     assert "enc_edge" in caplog.text
@@ -3632,3 +3633,45 @@ def test_bounds_reject_ring_just_below_minimum():
     enclosure = HornEnclosure(depth_mm=200, space_r_mm=0.1 - 1e-8)
     with pytest.raises(ConfigError, match="on the right"):
         enclosure_box_bounds(points, enclosure, closed=True)
+
+
+@pytest.mark.parametrize("margin", [0.0, 0.05, 0.1, 1.0])
+@pytest.mark.parametrize("dim", [False, True])
+def test_measure_bounds_without_accepting_enclosure(margin, dim):
+    points = np.array([[[-1, -2, 0], [-150, -200, 100]],
+                       [[1, 2, 0], [150, 200, 100]]], dtype=float)
+    enclosure = HornEnclosure(
+        depth_mm=200, edge_mm=0,
+        space_l_mm=margin, space_r_mm=margin,
+        space_t_mm=margin, space_b_mm=margin,
+        dim_mm=(150 + margin, 200 + margin, 150 + margin, 200 + margin) if dim else None,
+    )
+    bounds = measure_enclosure_box_bounds(points, enclosure, closed=True)
+    assert [bounds[k] for k in ("bx0", "bx1", "by0", "by1")] == pytest.approx(
+        [-150 - margin, 150 + margin, -200 - margin, 200 + margin])
+    assert bounds["front_ring_min_mm"] == pytest.approx(margin)
+    if margin < 0.1:
+        with pytest.raises(ConfigError, match="baffle beside the mouth"):
+            enclosure_box_bounds(points, enclosure, closed=True)
+    else:
+        assert enclosure_box_bounds(points, enclosure, closed=True) == bounds
+
+
+@pytest.mark.parametrize("plane", ["x", "y"])
+def test_measure_bounds_does_not_validate_symmetry(plane):
+    points = np.array([[[-1, -2, 0], [-150, -200, 100]],
+                       [[1, 2, 0], [150, 200, 100]]], dtype=float)
+    enclosure = HornEnclosure(depth_mm=200)
+    bounds = measure_enclosure_box_bounds(points, enclosure, closed=False,
+                                         symmetry_planes=(plane,))
+    assert bounds[f"{plane}_min"] < 0
+    with pytest.raises(ValueError, match=f"{plane} symmetry plane requested"):
+        enclosure_box_bounds(points, enclosure, closed=False, symmetry_planes=(plane,))
+
+
+def test_step_export_refuses_inadequate_baffle(tmp_path):
+    from hornlab_mesher.cad import write_step_from_config
+    output = tmp_path / "refused.step"
+    with pytest.raises(MesherError, match="baffle beside the mouth"):
+        write_step_from_config(rectangular_enclosure(margin=0), output)
+    assert not output.exists()

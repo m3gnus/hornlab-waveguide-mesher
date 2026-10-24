@@ -215,9 +215,9 @@ def test_finite_outer_clearance(tmp_path, gap, allowed):
     config = assembly_config()
     # With sharp edges the flat boundary is exactly the mouth envelope + margin.
     config['enclosure']['edge_mm'] = 0
-    from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+    from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
     geometry = resolve_geometry(config).geometry
-    bounds = enclosure_box_bounds(geometry.inner_points,geometry.enclosure,closed=True)
+    bounds = measure_enclosure_box_bounds(geometry.inner_points,geometry.enclosure,closed=True)
     w = config['enclosure']['woofers'][0]
     w['y_mm'] = bounds['by0']+w['radius_mm']+gap
     if allowed:
@@ -280,8 +280,8 @@ def corpus_config(case):
         config['morph'] = dict(morph_target=1,morph_width_mm=440.,morph_height_mm=360.,morph_corner_mm=12.,morph_fixed=.3,morph_rate=3.)
     geometry = resolve_geometry({**config,'enclosure':{k:v for k,v in config['enclosure'].items() if k!='woofers'}}).geometry
     mouth = geometry.inner_points[:,-1]
-    from hornlab_mesher.builders.enclosure import enclosure_box_bounds
-    bounds = enclosure_box_bounds(geometry.inner_points, replace(geometry.enclosure,
+    from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
+    bounds = measure_enclosure_box_bounds(geometry.inner_points, replace(geometry.enclosure,
         space_l_mm=0,space_r_mm=0,space_t_mm=0,space_b_mm=0,edge_mm=0),closed=True)
     lo,hi = case['enclosure_extents_mm']
     # Resolve ATH's measured overall Dim/envelope into the existing mesher

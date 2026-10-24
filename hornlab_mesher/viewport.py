@@ -7,7 +7,9 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from .builders.enclosure import enclosure_box_bounds, sample_enclosure_plan
+from .builders.enclosure import (
+    enclosure_box_bounds, measure_enclosure_box_bounds, sample_enclosure_plan,
+)
 from .config_builder import (
     _enclosure_from_config, _section, build_geometry_params, resolve_enclosure_bounds,
 )
@@ -59,14 +61,14 @@ def build_enclosure_viewport_grid(
     display density cannot introduce another acceptance decision.
     """
 
-    bounds = enclosure_box_bounds(
+    bounds_function = enclosure_box_bounds if validate_baffle else measure_enclosure_box_bounds
+    bounds = bounds_function(
         inner_points,
         enclosure,
         closed=closed,
         symmetry_planes=tuple(symmetry_planes),
         y_origin_offset_mm=float(y_origin_offset_mm),
         warn_prefix="viewport ",
-        validate_baffle=validate_baffle,
     )
     clamped_edge = bounds["clamped_edge"]
     edge_depth = bounds["edge_depth"]

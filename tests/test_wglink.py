@@ -527,6 +527,25 @@ def test_writer_rejects_config_like_enclosure_bounds(monkeypatch, tmp_path):
         write_wglink(geometry, tmp_path / "horn.wglink", built_geometry=built)
 
 
+@pytest.mark.parametrize("supplied_bounds", [False, True])
+def test_writer_rejects_unbuildable_measured_enclosure(monkeypatch, tmp_path, supplied_bounds):
+    from dataclasses import replace
+    from hornlab_mesher.builders.enclosure import (
+        EnclosureBaffleError, measure_enclosure_box_bounds,
+    )
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry()
+    built = _built(geometry) if supplied_bounds else None
+    geometry = replace(geometry, enclosure=replace(geometry.enclosure, space_r_mm=0))
+    if built is not None:
+        built.enclosure_bounds = measure_enclosure_box_bounds(
+            geometry.inner_points, geometry.enclosure, closed=True)
+    output = tmp_path / "refused.wglink"
+    with pytest.raises(EnclosureBaffleError, match="on the right"):
+        write_wglink(geometry, output, built_geometry=built)
+    assert not output.exists()
+
+
 def test_bundle_is_not_staged_in_a_private_temporary_directory(monkeypatch, tmp_path):
     """``mkdtemp`` gives Windows a non-inheriting owner-only DACL that the
     published files keep; the staging directory becomes the bundle."""

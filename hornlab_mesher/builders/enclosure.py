@@ -97,6 +97,21 @@ def _round_extent_outward_mm(value: float, positive_tolerance: float = 1.0e-9) -
     return float(math.floor(value + 1.0e-9))
 
 
+def _front_baffle_rings(
+    bounds: Mapping[str, float], *, closed: bool, symmetry_planes: tuple[str, ...],
+) -> dict[str, float]:
+    """Clearance beside physical walls; symmetry cuts have no baffle."""
+    rings = {
+        "right": bounds["bx1"] - bounds["x_max"],
+        "top": bounds["by1"] - bounds["y_max"],
+    }
+    if closed or "x" not in symmetry_planes:
+        rings["left"] = bounds["x_min"] - bounds["bx0"]
+    if closed or "y" not in symmetry_planes:
+        rings["bottom"] = bounds["y_min"] - bounds["by0"]
+    return rings
+
+
 def enclosure_box_bounds(
     inner_points: NDArray[np.float64],
     enclosure: HornEnclosure,
@@ -105,9 +120,45 @@ def enclosure_box_bounds(
     symmetry_planes: tuple[str, ...] = (),
     y_origin_offset_mm: float = 0.0,
     warn_prefix: str | None = "",
-    validate_baffle: bool = True,
 ) -> dict[str, float]:
-    """Shared enclosure box bounds, roundover clamp, and edge depth.
+    """Measure and validate the enclosure for a build or preview entry point."""
+    bounds = measure_enclosure_box_bounds(
+        inner_points, enclosure, closed=closed, symmetry_planes=symmetry_planes,
+        y_origin_offset_mm=y_origin_offset_mm, warn_prefix=warn_prefix,
+    )
+    if not closed:
+        if "x" in symmetry_planes and bounds["x_min"] < -1.0e-6:
+            raise ValueError("x symmetry plane requested but mouth points cross x=0")
+        if "y" in symmetry_planes and bounds["y_min"] - float(y_origin_offset_mm) < -1.0e-6:
+            raise ValueError("y symmetry plane requested but mouth points cross y=0")
+    rings = _front_baffle_rings(bounds, closed=closed, symmetry_planes=symmetry_planes)
+    side, front_ring_min = min(rings.items(), key=lambda item: item[1])
+    if front_ring_min < _MIN_BAFFLE_CLEARANCE_MM and not math.isclose(
+        front_ring_min, _MIN_BAFFLE_CLEARANCE_MM, rel_tol=0.0, abs_tol=1.0e-12
+    ):
+        minimum = f"{_MIN_BAFFLE_CLEARANCE_MM:g} mm"
+        remedy = (
+            f"increase Mesh.Enclosure.Dim on the {side} to leave at least {minimum}"
+            if enclosure.dim_mm is not None
+            else f"set the {side} margin to at least {minimum}"
+        )
+        raise EnclosureBaffleError(
+            f"The enclosure leaves {front_ring_min:.2f} mm of baffle beside the mouth "
+            f"on the {side}; {remedy}."
+        )
+    return bounds
+
+
+def measure_enclosure_box_bounds(
+    inner_points: NDArray[np.float64],
+    enclosure: HornEnclosure,
+    *,
+    closed: bool,
+    symmetry_planes: tuple[str, ...] = (),
+    y_origin_offset_mm: float = 0.0,
+    warn_prefix: str | None = "",
+) -> dict[str, float]:
+    """Measure mouth-derived box bounds, roundover clamp, and edge depth.
 
     Single source of truth for both the mesh build and the viewport preview
     (the viewport used to re-implement this and drifted on the cut-side
@@ -115,10 +166,10 @@ def enclosure_box_bounds(
     ``y_origin_offset_mm`` is the rigid +y placement already applied to
     ``inner_points`` (the viewport places points before building); extents are
     rounded in the origin frame so a placed preview matches the mesh terminal,
-    which builds at the origin and translates afterwards. Display resampling
-    may use ``validate_baffle=False`` only after validating the original design:
-    size its display box from its display mouth, without a second acceptance
-    decision. This preserves the renderer's established LOD-dependent bounds.
+    which builds at the origin and translates afterwards. This function makes
+    no validity decision: callers measuring an envelope or sizing a resampled
+    display mouth may use it directly. Build/preview entry points must use
+    ``enclosure_box_bounds`` to validate the original design first.
     ``warn_prefix=None`` silences clamp warnings during acceptance-only preflight;
     display sizing will report its own clamps once.
     """
@@ -148,10 +199,6 @@ def enclosure_box_bounds(
     plane_set = set(symmetry_planes)
     x_open = not closed and "x" in plane_set
     y_open = not closed and "y" in plane_set
-    if x_open and x_min < -1.0e-6:
-        raise ValueError("x symmetry plane requested but mouth points cross x=0")
-    if y_open and (y_min - off) < -1.0e-6:
-        raise ValueError("y symmetry plane requested but mouth points cross y=0")
     # Open cut planes are exact (no spacing, no rounding); wall sides take the
     # outward-rounded extent plus the spacing.
     bx0 = 0.0 if x_open else _round_extent_outward_mm(x_min) - float(enclosure.space_l_mm)
@@ -169,29 +216,23 @@ def enclosure_box_bounds(
         bx0, bx1 = (0.0 if x_open else -nx), px
         by0, by1 = (off if y_open else off - ny), off + py
 
-    # Measure the actual ring after outward rounding or imported Dim bounds.
-    # Cut planes have no wall/baffle and must not take part in this refusal.
-    # A zero ring creates zero-length OCC connectors; a sliver can lose its
-    # front face or stall meshing. Keep this in the shared preview/build owner.
-    front_rings = {"right": bx1 - x_max, "top": by1 - y_max}
-    if not x_open:
-        front_rings["left"] = x_min - bx0
-    if not y_open:
-        front_rings["bottom"] = y_min - by0
-    side, front_ring_min = min(front_rings.items(), key=lambda item: item[1])
-    if validate_baffle and front_ring_min < _MIN_BAFFLE_CLEARANCE_MM and not math.isclose(
-        front_ring_min, _MIN_BAFFLE_CLEARANCE_MM, rel_tol=0.0, abs_tol=1.0e-12
-    ):
-        minimum = f"{_MIN_BAFFLE_CLEARANCE_MM:g} mm"
-        remedy = (
-            f"increase Mesh.Enclosure.Dim on the {side} to leave at least {minimum}"
-            if enclosure.dim_mm is not None
-            else f"set the {side} margin to at least {minimum}"
-        )
-        raise EnclosureBaffleError(
-            f"The enclosure leaves {front_ring_min:.2f} mm of baffle beside the mouth "
-            f"on the {side}; {remedy}."
-        )
+    bounds = {
+        "bx0": bx0,
+        "bx1": bx1,
+        "by0": by0,
+        "by1": by1,
+        "z_front": z_front,
+        "z_back": z_back,
+        "cx": 0.5 * (bx0 + bx1),
+        "cy": 0.5 * (by0 + by1),
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+    front_ring_min = min(_front_baffle_rings(
+        bounds, closed=closed, symmetry_planes=symmetry_planes,
+    ).values())
 
     # Roundover limits must describe the *physical* (mirror-completed) box:
     # on reduced domains the cut plane at x=0 / y=0 is not a wall, so the
@@ -226,18 +267,7 @@ def enclosure_box_bounds(
     edge_depth = min(clamped_edge, max(0.0, enc_depth * 0.5))
 
     return {
-        "bx0": bx0,
-        "bx1": bx1,
-        "by0": by0,
-        "by1": by1,
-        "z_front": z_front,
-        "z_back": z_back,
-        "cx": 0.5 * (bx0 + bx1),
-        "cy": 0.5 * (by0 + by1),
-        "x_min": x_min,
-        "x_max": x_max,
-        "y_min": y_min,
-        "y_max": y_max,
+        **bounds,
         "enc_depth": enc_depth,
         "half_w": half_w,
         "half_h": half_h,

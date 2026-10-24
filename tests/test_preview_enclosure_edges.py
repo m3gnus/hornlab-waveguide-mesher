@@ -699,7 +699,7 @@ def test_generated_preview_and_mesh_acceptance_agree(tmp_path, seed):
 @pytest.mark.parametrize("lod", ["coarse", "fine"])
 def test_preview_sizes_display_enclosure_from_display_mouth(lod, monkeypatch):
     import hornlab_mesher.preview.api as api
-    from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+    from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
     cfg = sampling_sensitive_enclosure()
     cfg["enclosure"].update({f"space_{side}": 2 for side in "lrtb"})
     cfg["mesh"]["vertical_offset_mm"] = 0.375
@@ -709,7 +709,7 @@ def test_preview_sizes_display_enclosure_from_display_mouth(lod, monkeypatch):
 
     def capture(*args, **kwargs):
         output = real(*args, **kwargs)
-        expected = enclosure_box_bounds(
+        expected = measure_enclosure_box_bounds(
             output["grid"]["inner_grid"], enclosure, closed=True,
             y_origin_offset_mm=0.375,
         )

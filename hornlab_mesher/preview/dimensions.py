@@ -12,7 +12,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds
-from ..builders.enclosure import EnclosureBaffleError, enclosure_box_bounds
+from ..builders.enclosure import EnclosureBaffleError, measure_enclosure_box_bounds
 from ..profiles import eval_param
 from ..profile_common import _symmetry_planes_for_quadrants
 from .contract import _validate_finite_metadata
@@ -126,7 +126,7 @@ def _geometry_dimensions(
         "horn_overall": np.ptp(np.concatenate(points), axis=0).tolist(),
     }
     if geometry.enclosure is not None:
-        bounds = enclosure_bounds if enclosure_bounds is not None else enclosure_box_bounds(
+        bounds = enclosure_bounds if enclosure_bounds is not None else measure_enclosure_box_bounds(
             inner, geometry.enclosure, closed=True)
         result["enclosure_overall"] = [bounds["bx1"] - bounds["bx0"],
             bounds["by1"] - bounds["by0"], bounds["z_front"] - bounds["z_back"]]

@@ -863,8 +863,8 @@ def _realized_bundle_geometry(geometry: PointGridHornGeometry) -> BuiltGeometry:
     """Build the non-OCC realized metadata needed by a standalone writer.
 
     Normal mesh/export pipelines should pass their actual ``BuiltGeometry``.
-    This fallback uses the enclosure builder's own pure bounds function, so it
-    applies the identical rounding and clamps without constructing OCC twice.
+    This export fallback uses the enclosure builder's validated bounds, so it
+    applies the identical rounding, clamps and refusals without constructing OCC twice.
     """
 
     bounds = None
@@ -1342,7 +1342,7 @@ def write_wglink(
     Bundle/design/export identity is caller-owned: no identifier, sequence,
     timestamp, or content identity is minted here.  Callers with a mesh build
     should pass its ``BuiltGeometry``; direct tests and adapters may use the
-    pure realized-bounds fallback.
+    validated realized-bounds fallback.
 
     ``output_path`` must not exist. The bundle is staged in a sibling
     directory and renamed into place in one step, so a reader never sees a

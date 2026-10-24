@@ -11,7 +11,7 @@ import hornlab_mesher.preview.api as preview_api
 import hornlab_mesher.preview.dimensions as measurement
 from hornlab_mesher.config_builder import resolve_geometry
 from hornlab_mesher.config_parser import ConfigError
-from hornlab_mesher.builders.enclosure import enclosure_box_bounds
+from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
 from test_offset_envelope import _grooved_config
 from test_freeform_morph import _config_with_morph
 from test_preview_morph import ROUNDED_RECT_MORPH
@@ -57,7 +57,7 @@ def independently_resolved(config):
     expected = {'mouth_opening': np.ptp(inner[:, -1, :2], axis=0),
                 'horn_overall': np.ptp(np.concatenate(material), axis=0)}
     if geometry.enclosure is not None:
-        bounds = enclosure_box_bounds(inner, geometry.enclosure, closed=True)
+        bounds = measure_enclosure_box_bounds(inner, geometry.enclosure, closed=True)
         expected['enclosure_overall'] = np.array([bounds['bx1'] - bounds['bx0'],
             bounds['by1'] - bounds['by0'], bounds['z_front'] - bounds['z_back']])
     return expected
