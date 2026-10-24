@@ -45,36 +45,29 @@ def build_enclosure_viewport_grid(
     closed: bool = True,
     symmetry_planes: tuple[str, ...] = (),
     y_origin_offset_mm: float = 0.0,
-    bounds: Mapping[str, float] | None = None,
+    validate_baffle: bool = True,
 ) -> dict[str, Any]:
     """Return lightweight enclosure rings for viewport tessellation.
 
     The output stays in mesher point-grid coordinates: x/y are transverse
     millimetres and z is axial millimetres. It intentionally returns rings
     instead of Gmsh surfaces so callers can use a cheaper viewport tessellator.
-    Bounds, roundover clamp, and edge depth come from the same helper the mesh
-    build uses (``enclosure_box_bounds``) so the preview cannot drift from the
-    mesh; ``y_origin_offset_mm`` is the Mesh.VerticalOffset already applied to
-    the placed preview points. When ``bounds`` is supplied it is the validated
-    enclosure in the build's origin frame; ``inner_points`` then supplies only
-    the display mouth ring.
+    Bounds, roundover clamp, and edge depth come from the mesh's sizing owner,
+    using this display mouth. ``y_origin_offset_mm`` is the Mesh.VerticalOffset
+    already applied to the placed preview points. Resampled callers must first
+    validate the original design and then pass ``validate_baffle=False`` so
+    display density cannot introduce another acceptance decision.
     """
 
-    if bounds is None:
-        bounds = enclosure_box_bounds(
-            inner_points,
-            enclosure,
-            closed=closed,
-            symmetry_planes=tuple(symmetry_planes),
-            y_origin_offset_mm=float(y_origin_offset_mm),
-            warn_prefix="viewport ",
-        )
-    else:
-        # Resolved bounds are in the build's origin frame. Place them once,
-        # without revalidating against the independently sampled display grid.
-        bounds = dict(bounds)
-        for key in ("by0", "by1", "cy", "y_min", "y_max"):
-            bounds[key] += float(y_origin_offset_mm)
+    bounds = enclosure_box_bounds(
+        inner_points,
+        enclosure,
+        closed=closed,
+        symmetry_planes=tuple(symmetry_planes),
+        y_origin_offset_mm=float(y_origin_offset_mm),
+        warn_prefix="viewport ",
+        validate_baffle=validate_baffle,
+    )
     clamped_edge = bounds["clamped_edge"]
     edge_depth = bounds["edge_depth"]
     min_bspline_r = 0.1
@@ -190,7 +183,7 @@ def build_viewport_geometry_from_config(
     point_lists: bool = True,
     defer_osse_offset_repair: bool = False,
     lod: str | None = None,
-    enclosure_bounds: Mapping[str, float] | None = None,
+    enclosure_validated: bool = False,
 ) -> dict[str, Any]:
     """Build point-grid horn and optional enclosure viewport data from config.
 
@@ -200,8 +193,8 @@ def build_viewport_geometry_from_config(
     instead, which is the same data without a list round trip per surface.
     Adaptive previews can defer a folded OSSE offset until they have selected
     their render grid. They must then repair it before exposing the outer wall.
-    ``enclosure_bounds`` carries validated bounds from the original design when
-    this config has already been resampled for display.
+    ``enclosure_validated`` records validation of the original design before
+    display resampling. Its bounds must not be used around this display mouth.
     """
 
     params, formula, mode = build_geometry_params(config)
@@ -210,8 +203,8 @@ def build_viewport_geometry_from_config(
     mesh = _section(config, "mesh")
     enclosure_cfg = _section(config, "enclosure")
     enclosure = _enclosure_from_config(config, mesh, enclosure_cfg)
-    if enclosure is not None and enclosure_bounds is None:
-        enclosure_bounds = resolve_enclosure_bounds(config, warn_prefix="viewport ")
+    if enclosure is not None and not enclosure_validated:
+        resolve_enclosure_bounds(config, warn_prefix=None)
     grid = build_point_grid_arrays(
         params, defer_osse_offset_repair=defer_osse_offset_repair
     )
@@ -219,8 +212,8 @@ def build_viewport_geometry_from_config(
     inner_points = grid["inner_grid"]
     # build_point_grid emits the grid at the origin and reports Mesh.VerticalOffset
     # as metadata; re-apply it here as a rigid +y placement so the preview (grid and
-    # enclosure alike) matches the finished mesh. The enclosure's resolved bounds
-    # are translated by the same offset after rounding in the build's origin frame.
+    # enclosure alike) matches the finished mesh. Display bounds are rounded in
+    # the origin frame, then placed by the same offset as the display mouth.
     vertical_offset_mm = float(grid.get("vertical_offset_mm", 0.0) or 0.0)
     if vertical_offset_mm:
         inner_points[:, :, 1] += vertical_offset_mm
@@ -236,7 +229,7 @@ def build_viewport_geometry_from_config(
             closed=bool(grid.get("full_circle", True)),
             symmetry_planes=tuple(grid.get("symmetry_planes") or ()),
             y_origin_offset_mm=vertical_offset_mm,
-            bounds=enclosure_bounds,
+            validate_baffle=False,
         )
 
     return {

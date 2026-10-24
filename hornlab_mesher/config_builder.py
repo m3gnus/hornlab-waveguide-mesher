@@ -2560,11 +2560,11 @@ def resolve_geometry(
 
 
 def resolve_enclosure_bounds(
-    config: Mapping[str, Any], *, warn_prefix: str = "",
+    config: Mapping[str, Any], *, warn_prefix: str | None = "",
 ) -> dict[str, float] | None:
     """Validate and size an enclosure from the mesh's resolved control grid.
 
-    Preview sampling must not change the design's acceptance or box bounds.
+    Preview sampling must not change the design's acceptance or mesh box bounds.
     Keep the clearance predicate in ``enclosure_box_bounds`` and supply it the
     same geometry as ``build_from_config``, before applying any display LOD.
     """

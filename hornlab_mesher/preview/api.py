@@ -261,7 +261,7 @@ def _sample_master_level(
     corner_intervals: int,
     wall_mm: float,
     deferred_wall: float,
-    enclosure_bounds: Mapping[str, float] | None = None,
+    enclosure_validated: bool = False,
     refinement_deadline: float | None = None,
 ) -> _MasterLevel:
     """Sample the canonical master at ``axial`` rows and choose the render grid."""
@@ -280,7 +280,7 @@ def _sample_master_level(
     sampling_start = time.perf_counter()
     output = build_viewport_geometry_from_config(
         sampling_config, point_lists=False, defer_osse_offset_repair=True,
-        enclosure_bounds=enclosure_bounds,
+        enclosure_validated=enclosure_validated,
     )
     sampling_ms = (time.perf_counter() - sampling_start) * 1000.0
     if formula == "OSSE" and output["grid"].get("outer_offset_fold"):
@@ -468,10 +468,9 @@ def build_preview_geometry(
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
     # Refuse the actual build geometry before replacing its sampling for display.
     # This also runs for coarse/hidden previews, independently of dimensions.
-    enclosure_bounds = (
-        resolve_enclosure_bounds(config, warn_prefix="viewport ")
-        if _parsed_mode == "enclosure" else None
-    )
+    enclosure_validated = _parsed_mode == "enclosure"
+    if enclosure_validated:
+        resolve_enclosure_bounds(config, warn_prefix=None)
     adapter_construction = None
     if parsed_params.get("throat_adapter"):
         from ..throat_adapter import resolve_adapter
@@ -597,7 +596,7 @@ def build_preview_geometry(
             corner_intervals=corner_intervals,
             wall_mm=wall_mm,
             deferred_wall=deferred_wall,
-            enclosure_bounds=enclosure_bounds,
+            enclosure_validated=enclosure_validated,
             refinement_deadline=refinement_deadline,
         )
 

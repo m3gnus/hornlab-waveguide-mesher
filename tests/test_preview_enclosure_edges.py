@@ -604,6 +604,31 @@ def test_display_sampling_cannot_hide_resolved_baffle_refusal(tmp_path, build):
     assert not (tmp_path / "refused.msh").exists()
 
 
+@pytest.mark.parametrize("lod", ["coarse", "fine"])
+def test_dense_display_mouth_keeps_its_own_enclosure_bounds(lod):
+    cfg = sampling_sensitive_enclosure()
+    cfg["enclosure"].update({f"space_{side}": 0.1 for side in "lrtb"})
+    # This mesh is valid, but the fine display mouth extends beyond its box.
+    resolved = resolve_enclosure_bounds(cfg)
+    assert resolved["front_ring_min_mm"] == pytest.approx(0.184242, abs=1e-6)
+    result = build_preview_geometry(cfg, PreviewOptionsV1(lod=lod))
+    surfaces = {surface.role: surface for surface in result.surfaces}
+    assert "enclosure.front" in surfaces
+    assert "enclosure.side" in surfaces
+    mouth = surfaces["horn.inner"].positions.reshape(-1, 3)
+    box = surfaces["enclosure.front"].positions.reshape(-1, 3)
+    assert np.all(mouth[:, :2].min(axis=0) >= box[:, :2].min(axis=0))
+    assert np.all(mouth[:, :2].max(axis=0) <= box[:, :2].max(axis=0))
+    if lod == "fine":
+        assert mouth[:, 0].max() > resolved["bx1"]
+    # Dimensions still describe the resolved physical box, not the display LOD.
+    if lod == "fine":
+        assert result.metadata["dimensions_mm"]["enclosure_overall"] == pytest.approx([
+            resolved["bx1"] - resolved["bx0"], resolved["by1"] - resolved["by0"],
+            resolved["z_front"] - resolved["z_back"],
+        ])
+
+
 def varied_enclosure(seed):
     """A deterministic generated corpus, including both sides of the refusal."""
     rng = np.random.default_rng(seed)
@@ -666,29 +691,32 @@ def test_generated_preview_and_mesh_acceptance_agree(tmp_path, seed):
 
     mesh_error = acceptance(lambda: build_from_config(cfg, tmp_path / "varied.msh"))
     for lod in ("coarse", "fine"):
-        options = PreviewOptionsV1(lod=lod, include_enclosure=bool(seed % 2))
+        # Always render the enclosure: hiding it masks display-mouth crossings.
+        options = PreviewOptionsV1(lod=lod, include_enclosure=True)
         assert acceptance(lambda: build_preview_geometry(cfg, options)) == mesh_error
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine"])
-def test_preview_places_resolved_enclosure_bounds_without_resampling(lod, monkeypatch):
+def test_preview_sizes_display_enclosure_from_display_mouth(lod, monkeypatch):
     import hornlab_mesher.preview.api as api
+    from hornlab_mesher.builders.enclosure import enclosure_box_bounds
     cfg = sampling_sensitive_enclosure()
     cfg["enclosure"].update({f"space_{side}": 2 for side in "lrtb"})
     cfg["mesh"]["vertical_offset_mm"] = 0.375
-    expected = resolve_enclosure_bounds(cfg)
+    enclosure = resolve_geometry(cfg).geometry.enclosure
     actual = []
     real = api.build_viewport_geometry_from_config
 
     def capture(*args, **kwargs):
         output = real(*args, **kwargs)
+        expected = enclosure_box_bounds(
+            output["grid"]["inner_grid"], enclosure, closed=True,
+            y_origin_offset_mm=0.375,
+        )
         actual.append(output["enclosure"]["bounds"])
+        assert actual[-1] == expected
         return output
 
     monkeypatch.setattr(api, "build_viewport_geometry_from_config", capture)
     result = build_preview_geometry(cfg, PreviewOptionsV1(lod=lod))
     assert result.surfaces and actual
-    for bounds in actual:
-        for key, value in expected.items():
-            offset = 0.375 if key in ("by0", "by1", "cy", "y_min", "y_max") else 0
-            assert bounds[key] == pytest.approx(value + offset)

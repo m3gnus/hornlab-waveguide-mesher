@@ -104,7 +104,8 @@ def enclosure_box_bounds(
     closed: bool,
     symmetry_planes: tuple[str, ...] = (),
     y_origin_offset_mm: float = 0.0,
-    warn_prefix: str = "",
+    warn_prefix: str | None = "",
+    validate_baffle: bool = True,
 ) -> dict[str, float]:
     """Shared enclosure box bounds, roundover clamp, and edge depth.
 
@@ -114,7 +115,12 @@ def enclosure_box_bounds(
     ``y_origin_offset_mm`` is the rigid +y placement already applied to
     ``inner_points`` (the viewport places points before building); extents are
     rounded in the origin frame so a placed preview matches the mesh terminal,
-    which builds at the origin and translates afterwards.
+    which builds at the origin and translates afterwards. Display resampling
+    may use ``validate_baffle=False`` only after validating the original design:
+    size its display box from its display mouth, without a second acceptance
+    decision. This preserves the renderer's established LOD-dependent bounds.
+    ``warn_prefix=None`` silences clamp warnings during acceptance-only preflight;
+    display sizing will report its own clamps once.
     """
 
     mouth_pts = inner_points[:, -1, :]
@@ -130,11 +136,12 @@ def enclosure_box_bounds(
     min_enc_depth = horn_length + float(enclosure.depth_margin_mm)
     enc_depth = float(enclosure.depth_mm)
     if enc_depth < min_enc_depth:
-        logger.warning(
-            "[hornlab-mesher] %senc_depth (%.2f mm) < horn length (%.2f mm) + margin (%.2f mm); "
-            "clamping to %.2f mm.",
-            warn_prefix, enc_depth, horn_length, enclosure.depth_margin_mm, min_enc_depth,
-        )
+        if warn_prefix is not None:
+            logger.warning(
+                "[hornlab-mesher] %senc_depth (%.2f mm) < horn length (%.2f mm) + margin (%.2f mm); "
+                "clamping to %.2f mm.",
+                warn_prefix, enc_depth, horn_length, enclosure.depth_margin_mm, min_enc_depth,
+            )
         enc_depth = min_enc_depth
     z_back = z_front - enc_depth
 
@@ -172,7 +179,7 @@ def enclosure_box_bounds(
     if not y_open:
         front_rings["bottom"] = y_min - by0
     side, front_ring_min = min(front_rings.items(), key=lambda item: item[1])
-    if front_ring_min < _MIN_BAFFLE_CLEARANCE_MM and not math.isclose(
+    if validate_baffle and front_ring_min < _MIN_BAFFLE_CLEARANCE_MM and not math.isclose(
         front_ring_min, _MIN_BAFFLE_CLEARANCE_MM, rel_tol=0.0, abs_tol=1.0e-12
     ):
         minimum = f"{_MIN_BAFFLE_CLEARANCE_MM:g} mm"
@@ -205,7 +212,7 @@ def enclosure_box_bounds(
         margin_edge_limit = max(0.0, front_ring_min)
     requested_edge = float(enclosure.edge_mm)
     clamped_edge = _clamp_edge_roundover(requested_edge, margin_edge_limit, half_w, half_h)
-    if requested_edge > clamped_edge + 1.0e-9:
+    if warn_prefix is not None and requested_edge > clamped_edge + 1.0e-9:
         logger.warning(
             "[hornlab-mesher] %senc_edge (%.2f mm) exceeds enclosure limits; "
             "clamping to %.2f mm (spacing limit %.2f mm, half extents %.2f x %.2f mm).",
