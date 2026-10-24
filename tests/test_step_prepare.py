@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 
 import gmsh
 import numpy as np
@@ -707,6 +708,174 @@ def test_the_cut_leaves_no_parent_copies_behind():
         remaining = {tag for _dim, tag in gmsh.model.getEntities(2)}
         assert remaining == set(groups["all"])
         assert len(remaining) == 5
+
+
+@pytest.mark.parametrize("planes", [("x0", "y0"), ("x0",), ("y0",)])
+def test_periodic_cylinder_cut_preserves_each_parent_and_has_no_leaks(planes):
+    # A synthetic closed cylinder with 3D-only STEP curves. The seam starts
+    # on y0 and winds by 1e-5 mm at the other end (radial error < 1e-10 mm).
+    # OCC's analytic boolean loses the entire wall, despite valid full meshing.
+    path = Path(__file__).parent / "fixtures/step_prepare/periodic-cylinder.step"
+    with _gmsh_session():
+        gmsh.model.occ.importShapes(str(path))
+        gmsh.model.occ.synchronize()
+        assert len(gmsh.model.getEntities(3)) == 1
+        surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+        areas = {tag: gmsh.model.occ.getMass(2, tag) for tag in surfaces}
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 4.0)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 6.0)
+        gmsh.model.mesh.generate(2)
+        full_triangles = np.asarray(gmsh.model.mesh.getElementsByType(2)[1]).reshape(-1, 3)
+        full_edges = np.sort(np.concatenate([
+            full_triangles[:, [0, 1]], full_triangles[:, [1, 2]], full_triangles[:, [2, 0]],
+        ]), axis=1)
+        assert np.all(np.unique(full_edges, axis=0, return_counts=True)[1] == 2)
+        gmsh.model.mesh.clear()
+        groups = [
+            OccSurfaceGroup(
+                f"face-{tag}", OccSurfaceSelector([tag]),
+                OccSurfaceRole("wall" if gmsh.model.getType(2, tag) == "Cylinder" else f"source-{tag}"),
+            )
+            for tag in surfaces
+        ]
+
+        result = auto_cut_occ_geometry(groups, planes=planes)
+
+        assert result.planes == planes
+        for index, parent in enumerate(surfaces):
+            children = result.parent_to_children[parent]
+            assert children
+            def area(child):
+                if gmsh.model.getType(2, child) != "Plane":
+                    return gmsh.model.occ.getMass(2, child)
+                # Independently integrate the disk boundary: OCC's mass
+                # quadrature on rational cut curves can be off by > 0.1%.
+                integral = 0.0
+                x, weights = np.polynomial.legendre.leggauss(80)
+                for _dim, curve in gmsh.model.getBoundary(
+                    [(2, child)], combined=False, oriented=True
+                ):
+                    lo, hi = gmsh.model.getParametrizationBounds(1, abs(curve))
+                    params = (lo + (hi - lo) * (x + 1) / 2).tolist()
+                    xyz = np.asarray(gmsh.model.getValue(1, abs(curve), params)).reshape(-1, 3)
+                    derivative = np.asarray(gmsh.model.getDerivative(1, abs(curve), params)).reshape(-1, 3)
+                    integral += np.sign(curve) * float(
+                        np.sum((xyz[:, 0] * derivative[:, 1] - xyz[:, 1] * derivative[:, 0]) * weights)
+                    ) * float(hi[0] - lo[0]) / 4
+                return abs(integral)
+
+            assert sum(area(child) for child in children) == pytest.approx(
+                areas[parent] / 2 ** len(planes), rel=5.0e-4
+            )
+            group = result.group(f"face-{parent}")
+            assert set(group.selector.surface_tags) == set(children)
+            assert group.role == groups[index].role
+            gmsh.model.addPhysicalGroup(2, children, 101 + index)
+        assert {tag for _dim, tag in gmsh.model.getEntities(2)} == {
+            child for children in result.parent_to_children.values() for child in children
+        }
+        assert not gmsh.model.getEntities(3)
+        # Point alignment must survive a caller synchronizing before meshing.
+        gmsh.model.occ.synchronize()
+        gmsh.model.mesh.generate(2)
+        nodes, coords, _ = gmsh.model.mesh.getNodes()
+        points = dict(zip(nodes, np.asarray(coords).reshape(-1, 3)))
+        triangles = np.asarray(gmsh.model.mesh.getElementsByType(2)[1]).reshape(-1, 3)
+        edges = np.sort(np.concatenate([
+            triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]],
+        ]), axis=1)
+        edges, counts = np.unique(edges, axis=0, return_counts=True)
+        assert max(counts) == 2
+        free = edges[counts == 1]
+        assert len(free)
+        for edge in free:
+            assert any(
+                all(abs(points[node][step_prepare.SYMMETRY_AXIS_FOR_PLANE[plane]]) < 1.0e-7 for node in edge)
+                for plane in planes
+            )
+        for index, parent in enumerate(surfaces):
+            assert set(gmsh.model.getEntitiesForPhysicalGroup(2, 101 + index)) == set(
+                result.parent_to_children[parent]
+            )
+
+
+@pytest.mark.parametrize(("name", "call"), [("convertToNURBS", 1), ("intersect", 2)])
+def test_periodic_cut_retry_cleans_up_on_failure(monkeypatch, name, call):
+    with _gmsh_session():
+        path = Path(__file__).parent / "fixtures/step_prepare/periodic-cylinder.step"
+        gmsh.model.occ.importShapes(str(path))
+        gmsh.model.occ.synchronize()
+        surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+        copies = []
+        copy = gmsh.model.occ.copy
+
+        def recording(dimtags):
+            out = copy(dimtags)
+            copies.extend(tag for _dim, tag in out)
+            return out
+
+        monkeypatch.setattr(gmsh.model.occ, "copy", recording)
+        _fail_on_call(monkeypatch, gmsh.model.occ, name, call)
+        with pytest.raises(RuntimeError, match="injected"):
+            auto_cut_occ_geometry([
+                OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))
+            ], planes=("x0", "y0"))
+
+        monkeypatch.undo()
+        gmsh.model.occ.synchronize()
+        present = set(gmsh.model.occ.getEntities())
+        assert not {(2, tag) for tag in copies} & present
+        assert not gmsh.model.getEntities(3)
+
+
+def test_periodic_cut_refuses_a_retry_that_still_loses_the_wall(monkeypatch):
+    with _gmsh_session():
+        path = Path(__file__).parent / "fixtures/step_prepare/periodic-cylinder.step"
+        gmsh.model.occ.importShapes(str(path))
+        gmsh.model.occ.synchronize()
+        surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+        monkeypatch.setattr(gmsh.model.occ, "convertToNURBS", lambda _entities: None)
+        with pytest.raises(RuntimeError, match="lost retained portions"):
+            auto_cut_occ_geometry([
+                OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))
+            ], planes=("x0", "y0"))
+
+
+@pytest.mark.parametrize("carrier_y", [0.0, 0.01])
+@pytest.mark.parametrize("nurbs", [False, True])
+def test_cut_boundary_alignment_requires_a_carrier_on_the_plane(carrier_y, nurbs):
+    with _gmsh_session():
+        face = gmsh.model.occ.addRectangle(0, carrier_y, 0, 1, 1)
+        if nurbs:
+            gmsh.model.occ.convertToNURBS([(2, face)])
+        gmsh.model.occ.synchronize()
+        vertex = next(
+            tag for _dim, tag in gmsh.model.getEntities(0)
+            if np.allclose(gmsh.model.getValue(0, tag, []), [0, carrier_y, 0])
+        )
+        gmsh.model.setCoordinates(vertex, 0, carrier_y - 0.005, 0)
+
+        count = step_prepare._align_cut_boundary_vertices(
+            [face], ("y0",), tolerance=0.1, noise=1.0e-12
+        )
+
+        assert count == (1 if carrier_y == 0 else 0)
+        gmsh.model.occ.synchronize()
+        assert gmsh.model.getValue(0, vertex, [])[1] == pytest.approx(
+            0 if carrier_y == 0 else carrier_y - 0.005
+        )
+
+
+def test_cut_coverage_detects_a_partially_missing_parent():
+    with _gmsh_session():
+        parent = gmsh.model.occ.addRectangle(-1, -1, 0, 2, 2)
+        whole_half = gmsh.model.occ.addRectangle(0, -1, 0, 1, 2)
+        partial_half = gmsh.model.occ.addRectangle(0, 0, 0, 1, 1)
+        gmsh.model.occ.synchronize()
+        for child, missing in [(whole_half, []), (partial_half, [parent])]:
+            assert step_prepare._uncovered_cut_parents(
+                {parent: [child]}, {parent: parent}, ("x0",), tolerance=1.0e-6, grid=7
+            ) == missing
 
 
 def test_snap_band_uses_step_units_conversion():

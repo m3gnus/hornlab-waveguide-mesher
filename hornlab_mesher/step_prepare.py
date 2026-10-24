@@ -506,6 +506,78 @@ def _remove_temporary_geometry(copies: Iterable[int], box: int | None) -> None:
     gmsh.model.occ.synchronize()
 
 
+def _uncovered_cut_parents(
+    mapping: dict[int, list[int]],
+    copies: dict[int, int],
+    planes: tuple[str, ...],
+    *,
+    tolerance: float,
+    grid: int,
+) -> list[int]:
+    """Check coverage in the other direction: retained parent onto children.
+
+    Validating child ancestry alone cannot detect a face silently discarded
+    by OCC. Use trimmed interior samples, clear of the clipping planes, so
+    discarded faces and partially missing parents both trigger recovery.
+    """
+    axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
+    missing = []
+    for parent, copy in copies.items():
+        points = sample_occ_surface_points(copy, grid=grid)
+        points = points[np.all(points[:, axes] > tolerance, axis=1)]
+        children = mapping[parent]
+        bboxes = {
+            child: tuple(gmsh.model.getBoundingBox(2, child)) for child in children
+        }
+        if any(
+            not _closest_on_model(
+                point, candidates=children, bboxes=bboxes, tolerance=tolerance
+            )[2]
+            for point in points
+        ):
+            missing.append(parent)
+    return missing
+
+
+def _align_cut_boundary_vertices(
+    surfaces: list[int], planes: tuple[str, ...], *, tolerance: float, noise: float
+) -> int:
+    """Align tolerance-matched endpoints with their planar section carriers.
+
+    OCC can retain an old vertex slightly outside the half-space while the
+    new section curve lies exactly on the plane. Correct that CAD
+    point before meshing; merely widening a mesh snap band would conceal it.
+    Check interior positions and tangents at floating-point precision. OCC
+    stores even straight sections of converted cylinders as B-splines, so
+    the entity type alone cannot establish whether a section is planar.
+    """
+    aligned = set()
+    for _dim, curve in gmsh.model.getBoundary(
+        [(2, tag) for tag in surfaces], combined=True, oriented=False
+    ):
+        vertices = gmsh.model.getBoundary([(1, curve)], oriented=False)
+        if not vertices:
+            continue
+        lo, hi = gmsh.model.getParametrizationBounds(1, curve)
+        # At the parameter endpoints Gmsh can return the tolerance-matched
+        # topological vertices instead of evaluating the curve's carrier.
+        params = np.linspace(lo[0], hi[0], 11)[1:-1].tolist()
+        carrier = np.asarray(gmsh.model.getValue(1, curve, params)).reshape(-1, 3)
+        tangent = np.asarray(gmsh.model.getDerivative(1, curve, params)).reshape(-1, 3)
+        for plane in planes:
+            axis = SYMMETRY_AXIS_FOR_PLANE[plane]
+            if (np.max(np.abs(carrier[:, axis])) > noise
+                    or np.max(np.abs(tangent[:, axis])) * abs(hi[0] - lo[0]) > noise):
+                continue
+            for _dim, vertex in vertices:
+                point = list(gmsh.model.getValue(0, vertex, []))
+                if noise < abs(point[axis]) <= tolerance:
+                    point[axis] = 0.0
+                    gmsh.model.setCoordinates(vertex, *point)
+                    aligned.add(vertex)
+    return len(aligned)
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -529,36 +601,66 @@ def _cut_occ_geometry_to_positive_side(
     # and must not outlive this call on any path -- a leftover copy would be
     # meshed as part of the model.
     copies: dict[int, int] = {}
+    retry_copies: list[int] = []
     box: int | None = None
     try:
         for surface in surfaces:
             copies[surface] = gmsh.model.occ.copy([(2, surface)])[0][1]
         gmsh.model.occ.synchronize()
-        box = gmsh.model.occ.addBox(
-            lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
-        )
-        gmsh.model.occ.synchronize()
-        _out, out_map = gmsh.model.occ.intersect(
-            [(2, surface) for surface in surfaces],
-            [(3, box)],
-            removeObject=True,
-            removeTool=True,
-        )
-        box = None
-        gmsh.model.occ.synchronize()
-        mapping = {
-            surface: [tag for dim, tag in (out_map[index] if index < len(out_map) else []) if dim == 2]
-            for index, surface in enumerate(surfaces)
-        }
-        copy_tags = set(copies.values())
-        remaining = [
-            tag for _dim, tag in sorted(gmsh.model.getEntities(2)) if tag not in copy_tags
-        ]
-        mapping, undecided, disproved = _verify_cut_parentage(
-            mapping, copies, remaining, tolerance=tolerance, grid=grid
-        )
+        cut_surfaces = surfaces
+        repaired: list[int] = []
+        for attempt in range(2):
+            box = gmsh.model.occ.addBox(
+                lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
+            )
+            gmsh.model.occ.synchronize()
+            _out, out_map = gmsh.model.occ.intersect(
+                [(2, surface) for surface in cut_surfaces],
+                [(3, box)],
+                removeObject=True,
+                removeTool=True,
+            )
+            box = None
+            retry_copies = []  # consumed; their tags can now name real children
+            gmsh.model.occ.synchronize()
+            mapping = {
+                surface: [tag for dim, tag in (out_map[index] if index < len(out_map) else []) if dim == 2]
+                for index, surface in enumerate(surfaces)
+            }
+            copy_tags = set(copies.values())
+            remaining = [
+                tag for _dim, tag in sorted(gmsh.model.getEntities(2)) if tag not in copy_tags
+            ]
+            mapping, undecided, disproved = _verify_cut_parentage(
+                mapping, copies, remaining, tolerance=tolerance, grid=grid
+            )
+            uncovered = _uncovered_cut_parents(
+                mapping, copies, planes, tolerance=tolerance, grid=grid
+            )
+            if not uncovered:
+                break
+            if attempt:
+                raise RuntimeError(f"OCC cut lost retained portions of surfaces {uncovered}")
+            # OCC can lose a periodic analytic face when its seam meets the
+            # clipping plane. Converting that carrier to rational B-splines
+            # avoids the periodic boolean path without approximating the
+            # surface. Retry the whole boundary together to share cut edges;
+            # adding a repaired face alone would leave a disconnected mesh.
+            repaired = uncovered
+            gmsh.model.occ.remove([(2, tag) for tag in remaining], recursive=True)
+            retry_copies = [
+                tag for _dim, tag in gmsh.model.occ.copy(
+                    [(2, copies[parent]) for parent in surfaces]
+                )
+            ]
+            gmsh.model.occ.convertToNURBS([
+                (2, retry_copies[index])
+                for index, parent in enumerate(surfaces) if parent in uncovered
+            ])
+            cut_surfaces = retry_copies
+
     finally:
-        _remove_temporary_geometry(copies.values(), box)
+        _remove_temporary_geometry([*copies.values(), *retry_copies], box)
     stats = {
         "planes": list(planes),
         "half_space_box_step_units": [float(value) for value in lo + hi],
@@ -570,6 +672,12 @@ def _cut_occ_geometry_to_positive_side(
         "parentage_claims_disproved": disproved,
         "parentage_claims_undecided": len(undecided),
     }
+    if repaired:
+        stats["coverage_repaired_parents"] = repaired
+        stats["cut_boundary_vertices_aligned"] = _align_cut_boundary_vertices(
+            remaining, planes, tolerance=tolerance,
+            noise=64 * np.finfo(float).eps * max(span, 1.0),
+        )
     return mapping, undecided, stats
 
 
