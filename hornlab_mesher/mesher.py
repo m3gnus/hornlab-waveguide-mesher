@@ -14,6 +14,7 @@ from .builders import (
     build_point_grid,
 )
 from .builders._occ import add_physical_groups
+from .config_parser import ConfigError
 from .density import (
     CLEARANCE_CAP_BUDGET_ADVICE,
     TriangleBudgetExceeded as _PremeshTriangleBudgetExceeded,
@@ -489,6 +490,10 @@ def build_mesh_with_info(
             info = replace(info, path=out_path)
             build_succeeded = True
             return out_path, info
+        except ConfigError:
+            # Configuration refusals are actionable ValueErrors for callers
+            # (including preview/solve HTTP handlers), not OCC build failures.
+            raise
         except Exception as exc:
             if isinstance(exc, (TriangleBudgetExceeded, _PremeshTriangleBudgetExceeded)):
                 raise TriangleBudgetExceeded(f"mesh build failed: {exc}") from exc

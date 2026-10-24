@@ -3499,3 +3499,136 @@ def test_caller_supplied_endpoints_replace_rather_than_extend_the_registry():
         _reset_curve_endpoints()
         if initialized_here and gmsh.isInitialized():
             gmsh.finalize()
+
+
+# Minimum front-baffle ring: shared bounds and mesh refusal contract.
+def rectangular_enclosure(*, margin=1.0, quadrants="1234", fractional=False):
+    config = {
+        "formula": "ICW", "mode": "enclosure",
+        "cross_section": {"aspectRatio": 1.0, "exponent": 2.0},
+        "enclosure": {"depth": 280.0, "edge": 0.0, "edgeType": 1.0,
+                      "frontMeshSize": 25.0, "backMeshSize": 40.0},
+        "mesh": {"angularSegments": "50", "lengthSegments": "20",
+                 "quadrants": quadrants, "surfaceFit": "interpolate",
+                 "throatResolution": "5", "mouthResolution": "8",
+                 "rearResolution": "25", "wallThickness": 0.0,
+                 "encFrontResolution": 25.0, "encBackResolution": 40.0,
+                 "scaleToMetres": True, "maxTriangles": 88000},
+        "morph": {"morphAllowShrinkage": 1.0, "morphFixed": 0.0,
+                  "morphHeight": 400.0, "morphTarget": 1.0, "morphWidth": 300.0},
+        "profile": {"L": 120.0, "R": 100.0, "_athLengthMode": "total",
+                    "a": 0.0, "a0": "15.5", "depth": 109.0, "formula": "ICW",
+                    "k": 0.0, "n_coeff": 6.0, "q": 0.0, "r0": "12.7",
+                    "termination": "rollback", "theta1_deg": 160.0},
+    }
+    for side in ("l", "r", "t", "b"):
+        config["enclosure"][f"space_{side}"] = margin
+    if fractional:
+        config["morph"].update(morphWidth=300.5, morphHeight=400.5)
+    return config
+
+
+REFUSED_RINGS = [
+    ("all-zero", None, 0.0),
+    ("right-zero", "r", 0.0),
+    ("top-zero", "t", 0.0),
+    ("left-zero", "l", 0.0),
+    ("bottom-zero", "b", 0.0),
+    ("all-sliver", None, 0.05),
+    ("right-sliver", "r", 0.05),
+    ("top-sliver", "t", 0.05),
+    ("left-sliver", "l", 0.05),
+    ("bottom-sliver", "b", 0.05),
+]
+REFUSED_DOMAINS = [
+    (quadrants, case, side, margin)
+    for quadrants in ("1234", "1")
+    for case, side, margin in REFUSED_RINGS
+    if quadrants == "1234" or side not in ("l", "b")
+]
+
+
+def refused_config(side, margin, quadrants):
+    config = rectangular_enclosure(margin=margin if side is None else 1.0,
+                                   quadrants=quadrants)
+    if side is not None:
+        config["enclosure"][f"space_{side}"] = margin
+    return config
+
+
+@pytest.mark.parametrize("quadrants,_case,side,margin", REFUSED_DOMAINS,
+                         ids=[f"{q}-{case}" for q, case, _, _ in REFUSED_DOMAINS])
+def test_mesh_refuses_inadequate_baffle(tmp_path, quadrants, _case, side, margin):
+    config = refused_config(side, margin, quadrants)
+    output = tmp_path / "refused.msh"
+    with pytest.raises(ConfigError, match=r"baffle beside the mouth on the .*at least 0\.1 mm"):
+        build_from_config(config, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("topology,preserve", [("legacy", False), ("legacy", True),
+                                             ("acoustic", False)])
+def test_baffle_refusal_survives_build_modes_and_auto_fit(tmp_path, topology, preserve):
+    config = rectangular_enclosure(margin=0, quadrants="1")
+    config["mesh"].update(topology=topology, preserve_grid=preserve, surfaceFit="auto")
+    with pytest.raises(ConfigError, match="baffle beside the mouth"):
+        build_from_config(config, tmp_path / "mode.msh")
+
+
+@pytest.mark.parametrize("margin,fractional", [(0.0, True), (0.1, False), (1.0, False)])
+def test_mesh_accepts_real_baffle_with_zero_cut_margins(tmp_path, margin, fractional):
+    config = rectangular_enclosure(margin=margin, quadrants="1", fractional=fractional)
+    config["enclosure"].update(space_l=0.0, space_b=0.0)
+    result = build_from_config(config, tmp_path / "valid.msh")
+    assert result.n_triangles > 0
+
+
+@pytest.mark.parametrize("side,axis,positive", [
+    ("right", 0, True), ("top", 1, True),
+    ("left", 0, False), ("bottom", 1, False),
+])
+@pytest.mark.parametrize("dim", [False, True])
+def test_bounds_name_narrowest_wall(side, axis, positive, dim):
+    points = np.array([[[-1, -2, 0], [-150, -200, 100]],
+                       [[1, 2, 0], [150, 200, 100]]], dtype=float)
+    margins = dict(space_l_mm=1, space_r_mm=1, space_t_mm=1, space_b_mm=1)
+    if dim:
+        dims = [151.0, 201.0, 151.0, 201.0]
+        dims[axis + (0 if positive else 2)] -= 0.95
+        enclosure = HornEnclosure(depth_mm=200, dim_mm=tuple(dims), **margins)
+        remedy = "increase Mesh.Enclosure.Dim"
+    else:
+        margins[f"space_{side[0]}_mm"] = 0.05
+        enclosure = HornEnclosure(depth_mm=200, **margins)
+        remedy = f"set the {side} margin"
+    with pytest.raises(ConfigError) as error:
+        enclosure_box_bounds(points, enclosure, closed=True)
+    assert str(error.value).startswith(
+        f"The enclosure leaves 0.05 mm of baffle beside the mouth on the {side};"
+    )
+    assert remedy in str(error.value)
+    assert "at least 0.1 mm" in str(error.value)
+
+
+@pytest.mark.parametrize("planes", [("x",), ("y",), ("x", "y")])
+@pytest.mark.parametrize("dim", [False, True])
+def test_bounds_exclude_cut_walls_and_preserve_offset(planes, dim):
+    points = np.array([[[1, 2, 0], [0, 0, 100]],
+                       [[1, 2, 0], [150, 200, 100]]], dtype=float)
+    points[:, :, 1] += 0.375
+    enclosure = HornEnclosure(
+        depth_mm=200, space_r_mm=0.1, space_t_mm=0.1,
+        space_l_mm=0 if "x" in planes else 1,
+        space_b_mm=0 if "y" in planes else 1,
+        dim_mm=(150.1, 200.1, 150.1, 200.1) if dim else None,
+    )
+    bounds = enclosure_box_bounds(points, enclosure, closed=False,
+                                  symmetry_planes=planes, y_origin_offset_mm=0.375)
+    assert bounds["front_ring_min_mm"] == pytest.approx(0.1)
+
+
+def test_bounds_reject_ring_just_below_minimum():
+    points = np.array([[[1, 2, 0], [150, 200, 100]]], dtype=float)
+    enclosure = HornEnclosure(depth_mm=200, space_r_mm=0.1 - 1e-8)
+    with pytest.raises(ConfigError, match="on the right"):
+        enclosure_box_bounds(points, enclosure, closed=True)

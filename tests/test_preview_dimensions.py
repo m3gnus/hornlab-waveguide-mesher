@@ -151,6 +151,19 @@ def test_enclosure_spacing_and_depth_clamp():
     assert dims['enclosure_overall'][2] > 1
 
 
+@pytest.mark.parametrize("quadrants,cuts", [("1", "lb"), ("12", "b"), ("14", "l")])
+def test_cut_side_zero_margins_keep_physical_dimensions(quadrants, cuts):
+    from test_point_grid_contract import rectangular_enclosure
+    config = rectangular_enclosure(margin=0.1, quadrants=quadrants)
+    for cut in cuts:
+        config["enclosure"][f"space_{cut}"] = 0.0
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod="fine"))
+    assert preview.metadata["dimensions_status"] == "current"
+    assert preview.metadata["dimensions_mm"]["enclosure_overall"] == pytest.approx(
+        [300.2, 400.2, 280.0]
+    )
+
+
 def test_rollback_depth_is_maximum_excursion():
     config = copy.deepcopy(ROSSE_ENCLOSURE)
     config.pop('enclosure')

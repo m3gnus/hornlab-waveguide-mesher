@@ -24,13 +24,14 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
+from ..config_parser import ConfigError
 from ..geometry import HornEnclosure
 from ._occ import require_gmsh
 
 logger = logging.getLogger(__name__)
 
-# Minimum flat-baffle ring (mm) to keep between the outer enclosure wall and the
-# edge roundover. When ``enc_edge`` approaches the smallest enclosure margin the
+# Minimum front-baffle ring (mm), also kept clear of the edge roundover.
+# When ``enc_edge`` approaches the smallest enclosure margin the
 # ring collapses to a sub-millimetre sliver that OCC silently drops, tearing the
 # front-baffle-to-side-wall seam open — an off-symmetry-plane free edge that
 # fails the solver's open-edge guard. The roundover is clamped so at least this
@@ -156,6 +157,30 @@ def enclosure_box_bounds(
         bx0, bx1 = (0.0 if x_open else -nx), px
         by0, by1 = (off if y_open else off - ny), off + py
 
+    # Measure the actual ring after outward rounding or imported Dim bounds.
+    # Cut planes have no wall/baffle and must not take part in this refusal.
+    # A zero ring creates zero-length OCC connectors; a sliver can lose its
+    # front face or stall meshing. Keep this in the shared preview/build owner.
+    front_rings = {"right": bx1 - x_max, "top": by1 - y_max}
+    if not x_open:
+        front_rings["left"] = x_min - bx0
+    if not y_open:
+        front_rings["bottom"] = y_min - by0
+    side, front_ring_min = min(front_rings.items(), key=lambda item: item[1])
+    if front_ring_min < _MIN_BAFFLE_CLEARANCE_MM and not math.isclose(
+        front_ring_min, _MIN_BAFFLE_CLEARANCE_MM, rel_tol=0.0, abs_tol=1.0e-12
+    ):
+        minimum = f"{_MIN_BAFFLE_CLEARANCE_MM:g} mm"
+        remedy = (
+            f"increase Mesh.Enclosure.Dim on the {side} to leave at least {minimum}"
+            if enclosure.dim_mm is not None
+            else f"set the {side} margin to at least {minimum}"
+        )
+        raise ConfigError(
+            f"The enclosure leaves {front_ring_min:.2f} mm of baffle beside the mouth "
+            f"on the {side}; {remedy}."
+        )
+
     # Roundover limits must describe the *physical* (mirror-completed) box:
     # on reduced domains the cut plane at x=0 / y=0 is not a wall, so the
     # mirrored half-extent is bx1 / by1 itself, and the spacings on the cut
@@ -172,12 +197,7 @@ def enclosure_box_bounds(
         applied_spacings.append(float(enclosure.space_b_mm))
     margin_edge_limit = max(0.0, min(applied_spacings))
     if enclosure.dim_mm is not None:
-        applied_spacings = [bx1 - x_max, by1 - y_max]
-        if not x_open:
-            applied_spacings.append(x_min - bx0)
-        if not y_open:
-            applied_spacings.append(y_min - by0)
-        margin_edge_limit = max(0.0, min(applied_spacings))
+        margin_edge_limit = max(0.0, front_ring_min)
     requested_edge = float(enclosure.edge_mm)
     clamped_edge = _clamp_edge_roundover(requested_edge, margin_edge_limit, half_w, half_h)
     if requested_edge > clamped_edge + 1.0e-9:
@@ -210,6 +230,7 @@ def enclosure_box_bounds(
         "half_w": half_w,
         "half_h": half_h,
         "margin_edge_limit": margin_edge_limit,
+        "front_ring_min_mm": front_ring_min,
         "clamped_edge": clamped_edge,
         "edge_depth": edge_depth,
     }

@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import threading
+from dataclasses import replace
 from collections import OrderedDict
 from concurrent.futures import Future
 from typing import Any, Mapping
@@ -14,6 +15,7 @@ import numpy as np
 from ..config_builder import build_geometry_params, resolve_geometry
 from ..builders.enclosure import enclosure_box_bounds
 from ..profiles import eval_param
+from ..profile_common import _symmetry_planes_for_quadrants
 from .contract import _validate_finite_metadata
 
 DIMENSIONS_SAMPLING = {"method": "resolved-design-geometry", "lod_independent": True}
@@ -86,6 +88,18 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
         logger.addFilter(warning_filter)
     try:
         geometry = resolve_geometry(full).geometry
+        if geometry.enclosure is not None:
+            # The full measurement represents the mirror-completed physical
+            # enclosure. Unused cut-side spacings are not walls, even though
+            # we sample the horn over all quadrants for its overall extents.
+            params, _, _ = build_geometry_params(config)
+            cuts = _symmetry_planes_for_quadrants(params.get("quadrants"))
+            enclosure = geometry.enclosure
+            if "x" in cuts:
+                enclosure = replace(enclosure, space_l_mm=enclosure.space_r_mm)
+            if "y" in cuts:
+                enclosure = replace(enclosure, space_b_mm=enclosure.space_t_mm)
+            geometry = replace(geometry, enclosure=enclosure)
         return _geometry_dimensions(geometry)
     finally:
         for logger in loggers:

@@ -16,6 +16,9 @@ import copy
 import numpy as np
 import pytest
 
+from hornlab_mesher.config_parser import ConfigError
+from test_point_grid_contract import REFUSED_DOMAINS, rectangular_enclosure, refused_config
+
 from hornlab_mesher.preview.api import (
     PreviewOptionsV1,
     build_preview_geometry,
@@ -514,3 +517,55 @@ def test_fillet_band_has_no_corner_needles(lod):
     )
     assert np.all(doubled_area > 1.0e-9)
     assert float(np.max((longest**2 / doubled_area)[corner])) < 30.0
+
+
+@pytest.mark.parametrize("quadrants,_case,side,margin", REFUSED_DOMAINS,
+                         ids=[f"{q}-{case}" for q, case, _, _ in REFUSED_DOMAINS])
+def test_preview_refuses_inadequate_baffle(quadrants, _case, side, margin):
+    config = refused_config(side, margin, quadrants)
+    with pytest.raises(ConfigError, match=r"baffle beside the mouth on the .*at least 0\.1 mm"):
+        build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+
+
+@pytest.mark.parametrize("margin,fractional", [(0.0, True), (0.1, False), (1.0, False)])
+@pytest.mark.parametrize("lod", ["coarse", "fine"])
+def test_preview_accepts_real_baffle_with_zero_cut_margins(margin, fractional, lod):
+    config = rectangular_enclosure(margin=margin, quadrants="1", fractional=fractional)
+    config["enclosure"].update(space_l=0.0, space_b=0.0)
+    result = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
+    # Reduced-domain previews intentionally omit enclosure draw surfaces, but
+    # the shared viewport still resolves and validates their physical bounds.
+    assert any(surface.role == "horn.inner" for surface in result.surfaces)
+    bounds = build_viewport_geometry_from_config(config)["enclosure"]["bounds"]
+    assert bounds["front_ring_min_mm"] >= 0.1 - 1e-12
+
+
+@pytest.mark.parametrize("build", ["preview", "mesh"])
+@pytest.mark.parametrize("margin", [0.0, 0.05])
+def test_imported_dim_refuses_in_both_paths(tmp_path, build, margin):
+    from hornlab_mesher.config_builder import build_from_config
+    from hornlab_mesher.config_parser import parse_ath_config
+    config = parse_ath_config(f"""
+OSSE = {{
+  L = 120
+  r0 = 12.7
+  a0 = 15.5
+  a = 55
+}}
+Mesh.Quadrants = 1
+Mesh.Enclosure = {{
+  Depth = 280
+  Dim = {150 + margin}, 201, {150 + margin}, 201
+}}
+Morph.TargetShape = 1
+Morph.TargetWidth = 300
+Morph.TargetHeight = 400
+Morph.CornerRadius = 0
+Morph.FixedPart = 0
+Morph.AllowShrinkage = 1
+""")
+    with pytest.raises(ConfigError, match=r"on the right; increase Mesh\.Enclosure\.Dim.*0\.1 mm"):
+        if build == "preview":
+            build_preview_geometry(config, PreviewOptionsV1(lod="fine"))
+        else:
+            build_from_config(config, tmp_path / "dim.msh")
