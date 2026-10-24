@@ -10,6 +10,7 @@ from hornlab_mesher.preview import PreviewOptionsV1, build_preview_geometry
 import hornlab_mesher.preview.api as preview_api
 import hornlab_mesher.preview.dimensions as measurement
 from hornlab_mesher.config_builder import resolve_geometry
+from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.builders.enclosure import enclosure_box_bounds
 from test_offset_envelope import _grooved_config
 from test_freeform_morph import _config_with_morph
@@ -257,3 +258,13 @@ def test_measurement_does_not_repeat_outer_wall_warning(caplog):
     before = len(caplog.records)
     measurement.canonical_dimensions(_grooved_config())
     assert not [record for record in caplog.records[before:] if 'outer wall' in record.getMessage()]
+
+
+def test_measurement_surfaces_design_refusal_instead_of_caching_unavailable():
+    from test_preview_enclosure_edges import sampling_sensitive_enclosure
+    config = sampling_sensitive_enclosure()
+    for _ in range(2):
+        with pytest.raises(ConfigError, match=r"leaves 0\.08 mm.*on the top"):
+            measurement.dimension_metadata(config, "fine")
+    assert not measurement._DIMENSIONS_CACHE
+    assert not measurement._IN_FLIGHT

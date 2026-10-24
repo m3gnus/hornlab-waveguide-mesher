@@ -30,6 +30,11 @@ from ._occ import require_gmsh
 
 logger = logging.getLogger(__name__)
 
+
+class EnclosureBaffleError(ConfigError):
+    """The resolved mouth leaves insufficient baffle beside a built wall."""
+
+
 # Minimum front-baffle ring (mm), also kept clear of the edge roundover.
 # When ``enc_edge`` approaches the smallest enclosure margin the
 # ring collapses to a sub-millimetre sliver that OCC silently drops, tearing the
@@ -176,7 +181,7 @@ def enclosure_box_bounds(
             if enclosure.dim_mm is not None
             else f"set the {side} margin to at least {minimum}"
         )
-        raise ConfigError(
+        raise EnclosureBaffleError(
             f"The enclosure leaves {front_ring_min:.2f} mm of baffle beside the mouth "
             f"on the {side}; {remedy}."
         )

@@ -5,15 +5,14 @@ import copy
 import json
 import logging
 import threading
-from dataclasses import replace
 from collections import OrderedDict
 from concurrent.futures import Future
 from typing import Any, Mapping
 
 import numpy as np
 
-from ..config_builder import build_geometry_params, resolve_geometry
-from ..builders.enclosure import enclosure_box_bounds
+from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds
+from ..builders.enclosure import EnclosureBaffleError, enclosure_box_bounds
 from ..profiles import eval_param
 from ..profile_common import _symmetry_planes_for_quadrants
 from .contract import _validate_finite_metadata
@@ -87,26 +86,26 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
     for logger in loggers:
         logger.addFilter(warning_filter)
     try:
-        geometry = resolve_geometry(full).geometry
-        if geometry.enclosure is not None:
-            # The full measurement represents the mirror-completed physical
-            # enclosure. Unused cut-side spacings are not walls, even though
-            # we sample the horn over all quadrants for its overall extents.
-            params, _, _ = build_geometry_params(config)
+        params, _, mode = build_geometry_params(config)
+        enclosure_bounds = resolve_enclosure_bounds(config) if mode == "enclosure" else None
+        if enclosure_bounds is not None:
+            # Measure the mirror-completed physical box from the accepted build's
+            # bounds, rather than validating another full-domain mouth sampling.
             cuts = _symmetry_planes_for_quadrants(params.get("quadrants"))
-            enclosure = geometry.enclosure
             if "x" in cuts:
-                enclosure = replace(enclosure, space_l_mm=enclosure.space_r_mm)
+                enclosure_bounds["bx0"] = -enclosure_bounds["bx1"]
             if "y" in cuts:
-                enclosure = replace(enclosure, space_b_mm=enclosure.space_t_mm)
-            geometry = replace(geometry, enclosure=enclosure)
-        return _geometry_dimensions(geometry)
+                enclosure_bounds["by0"] = -enclosure_bounds["by1"]
+        geometry = resolve_geometry(full).geometry
+        return _geometry_dimensions(geometry, enclosure_bounds=enclosure_bounds)
     finally:
         for logger in loggers:
             logger.removeFilter(warning_filter)
 
 
-def _geometry_dimensions(geometry) -> dict[str, Any]:
+def _geometry_dimensions(
+    geometry, *, enclosure_bounds: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
     if getattr(geometry, "roundover", None) is not None:
         model = geometry.roundover
         box = np.asarray(model.bounds)
@@ -127,7 +126,8 @@ def _geometry_dimensions(geometry) -> dict[str, Any]:
         "horn_overall": np.ptp(np.concatenate(points), axis=0).tolist(),
     }
     if geometry.enclosure is not None:
-        bounds = enclosure_box_bounds(inner, geometry.enclosure, closed=True)
+        bounds = enclosure_bounds if enclosure_bounds is not None else enclosure_box_bounds(
+            inner, geometry.enclosure, closed=True)
         result["enclosure_overall"] = [bounds["bx1"] - bounds["bx0"],
             bounds["by1"] - bounds["by0"], bounds["z_front"] - bounds["z_back"]]
     return result
@@ -158,7 +158,7 @@ def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
 
     Resolve an owned snapshot decoded from its immutable content key. Options and
     visibility are deliberately excluded; no preview buffers enter this path.
-    Errors are cached too, so repeated requests for an invalid design are cheap.
+    Measurement errors are cached too. Build refusals propagate to the caller.
     """
     try:
         key = json.dumps(dict(config), sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -174,6 +174,8 @@ def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
                 future = _IN_FLIGHT[key] = Future()
         if not owner:
             return copy.deepcopy(future.result())
+    except EnclosureBaffleError:
+        raise
     except Exception as exc:
         return _unavailable(exc)
     try:
@@ -188,6 +190,8 @@ def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
                 result["dimensions_requested_mm"] = requested
             _validate_finite_metadata(result, "dimensions")
             stored = copy.deepcopy(result)
+        except EnclosureBaffleError:
+            raise
         except Exception as exc:
             result = _unavailable(exc)
             # Even failure-copy errors belong to measurement. A result can be

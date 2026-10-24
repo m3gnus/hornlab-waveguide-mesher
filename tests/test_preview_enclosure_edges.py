@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.config_parser import ConfigError
+from hornlab_mesher.config_builder import build_from_config, resolve_enclosure_bounds, resolve_geometry
 from test_point_grid_contract import REFUSED_DOMAINS, rectangular_enclosure, refused_config
 
 from hornlab_mesher.preview.api import (
@@ -569,3 +570,125 @@ Morph.AllowShrinkage = 1
             build_preview_geometry(config, PreviewOptionsV1(lod="fine"))
         else:
             build_from_config(config, tmp_path / "dim.msh")
+
+
+def sampling_sensitive_enclosure():
+    return {
+        "formula": "OSSE", "mode": "enclosure",
+        "profile": {"L": 120, "r0": 12.7, "a0": 15.5,
+                    "a": "45+10*sin(2*p)", "k": 1, "s": 0},
+        "mesh": {"quadrants": "1234", "topology": "legacy",
+                 "angular_segments": 12, "length_segments": 16,
+                 "wall_thickness_mm": 0},
+        "enclosure": {"depth": 280, "edge": 0,
+                      **{f"space_{side}": 0 for side in "lrtb"}},
+    }
+
+
+@pytest.mark.parametrize("build", ["coarse", "fine", "mesh", "viewport"])
+def test_display_sampling_cannot_hide_resolved_baffle_refusal(tmp_path, build):
+    cfg = sampling_sensitive_enclosure()
+    # Verify the reported defect is the mesh's 0.084242 mm ring, before rounding
+    # the diagnostic to two decimal places; do not encode another cutoff here.
+    roomy = copy.deepcopy(cfg)
+    roomy["enclosure"].update({f"space_{side}": 1 for side in "lrtb"})
+    assert resolve_enclosure_bounds(roomy)["front_ring_min_mm"] - 1 == pytest.approx(
+        0.084242, abs=1e-6)
+    with pytest.raises(ConfigError, match=r"leaves 0\.08 mm.*on the top;.*at least 0\.1 mm"):
+        if build == "mesh":
+            build_from_config(cfg, tmp_path / "refused.msh")
+        elif build == "viewport":
+            build_viewport_geometry_from_config(cfg)
+        else:
+            build_preview_geometry(cfg, PreviewOptionsV1(lod=build, include_enclosure=False))
+    assert not (tmp_path / "refused.msh").exists()
+
+
+def varied_enclosure(seed):
+    """A deterministic generated corpus, including both sides of the refusal."""
+    rng = np.random.default_rng(seed)
+    cfg = sampling_sensitive_enclosure()
+    cfg["formula"] = "R-OSSE" if seed % 3 == 0 else "OSSE"
+    cfg["profile"].update(
+        L=int(rng.integers(60, 141)), R=int(rng.integers(60, 111)),
+        a=f"{rng.uniform(30, 50):.5f}+{rng.uniform(0, 8):.5f}*cos(2*p)",
+    )
+    if cfg["formula"] == "R-OSSE":
+        cfg["profile"].pop("L")
+        cfg["profile"].pop("s")
+    else:
+        cfg["profile"].pop("R")
+    cfg["mesh"].update(
+        quadrants=("1234", "1", "12", "14")[(seed // 4) % 4],
+        topology="acoustic" if seed % 2 else "legacy",
+        angular_segments=int(rng.choice([12, 16, 24, 32])),
+        length_segments=int(rng.choice([8, 12, 16, 20])),
+        vertical_offset_mm=float(rng.choice([0, 0.375, 70.25])),
+        throat_res_mm=8, mouth_res_mm=12, rear_res_mm=30,
+        enc_front_res_mm=30, enc_back_res_mm=40,
+    )
+    if seed % 5 == 0:
+        cfg["morph"] = {"morphTarget": 1, "morphWidth": 200 + seed,
+                        "morphHeight": 240 + seed, "morphCorner": 0,
+                        "morphFixed": 0, "morphAllowShrinkage": 1}
+    cfg["enclosure"].update(
+        edge=float(rng.choice([0, 3, 10])), edge_type=1 + seed % 2,
+        **{f"space_{side}": float(rng.uniform(2, 8)) for side in "lrtb"},
+    )
+    if seed % 4 < 2:
+        # Imported Dim bounds deliberately exercise insufficient and ample
+        # rings for varied resolved mouths, independently of outward rounding.
+        mouth = resolve_geometry(cfg).geometry.inner_points[:, -1, :2]
+        pad = 0.05 if seed % 4 == 0 else 2.0
+        px, py = float(mouth[:, 0].max()) + pad, float(mouth[:, 1].max()) + pad
+        nx = (px if cfg["mesh"]["quadrants"] in ("1", "14")
+              else max(0, -float(mouth[:, 0].min())) + pad)
+        ny = (py if cfg["mesh"]["quadrants"] in ("1", "12")
+              else max(0, -float(mouth[:, 1].min())) + pad)
+        cfg["enclosure"]["dim_mm"] = (px, py, nx, ny)
+    elif seed % 4 == 2:
+        # Retain naturally rounded zero-margin examples too.
+        cfg["enclosure"].update({f"space_{side}": 0 for side in "lrtb"})
+    return cfg
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_generated_preview_and_mesh_acceptance_agree(tmp_path, seed):
+    cfg = varied_enclosure(seed)
+
+    def acceptance(build):
+        try:
+            build()
+        except ConfigError as exc:
+            assert "baffle beside the mouth" in str(exc)
+            return str(exc)
+        return None
+
+    mesh_error = acceptance(lambda: build_from_config(cfg, tmp_path / "varied.msh"))
+    for lod in ("coarse", "fine"):
+        options = PreviewOptionsV1(lod=lod, include_enclosure=bool(seed % 2))
+        assert acceptance(lambda: build_preview_geometry(cfg, options)) == mesh_error
+
+
+@pytest.mark.parametrize("lod", ["coarse", "fine"])
+def test_preview_places_resolved_enclosure_bounds_without_resampling(lod, monkeypatch):
+    import hornlab_mesher.preview.api as api
+    cfg = sampling_sensitive_enclosure()
+    cfg["enclosure"].update({f"space_{side}": 2 for side in "lrtb"})
+    cfg["mesh"]["vertical_offset_mm"] = 0.375
+    expected = resolve_enclosure_bounds(cfg)
+    actual = []
+    real = api.build_viewport_geometry_from_config
+
+    def capture(*args, **kwargs):
+        output = real(*args, **kwargs)
+        actual.append(output["enclosure"]["bounds"])
+        return output
+
+    monkeypatch.setattr(api, "build_viewport_geometry_from_config", capture)
+    result = build_preview_geometry(cfg, PreviewOptionsV1(lod=lod))
+    assert result.surfaces and actual
+    for bounds in actual:
+        for key, value in expected.items():
+            offset = 0.375 if key in ("by0", "by1", "cy", "y_min", "y_max") else 0
+            assert bounds[key] == pytest.approx(value + offset)

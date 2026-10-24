@@ -32,7 +32,7 @@ import numpy as np
 from ..throat_stretch import stretch_config_errors
 from numpy.typing import NDArray
 
-from ..config_builder import build_geometry_params, resolve_geometry
+from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds
 from ..builders.point_grid_freestanding import _restored_outer_throat_points
 from ..rear_compatibility import freestanding_rear_ring
 from ..text_import import uses_text_import_geometry
@@ -261,6 +261,7 @@ def _sample_master_level(
     corner_intervals: int,
     wall_mm: float,
     deferred_wall: float,
+    enclosure_bounds: Mapping[str, float] | None = None,
     refinement_deadline: float | None = None,
 ) -> _MasterLevel:
     """Sample the canonical master at ``axial`` rows and choose the render grid."""
@@ -278,7 +279,8 @@ def _sample_master_level(
     # arrays they would be built from.
     sampling_start = time.perf_counter()
     output = build_viewport_geometry_from_config(
-        sampling_config, point_lists=False, defer_osse_offset_repair=True
+        sampling_config, point_lists=False, defer_osse_offset_repair=True,
+        enclosure_bounds=enclosure_bounds,
     )
     sampling_ms = (time.perf_counter() - sampling_start) * 1000.0
     if formula == "OSSE" and output["grid"].get("outer_offset_fold"):
@@ -464,6 +466,12 @@ def build_preview_geometry(
     # spellings, which injected a z-map into ICW and skipped FREEFORM's corner
     # sampling.
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
+    # Refuse the actual build geometry before replacing its sampling for display.
+    # This also runs for coarse/hidden previews, independently of dimensions.
+    enclosure_bounds = (
+        resolve_enclosure_bounds(config, warn_prefix="viewport ")
+        if _parsed_mode == "enclosure" else None
+    )
     adapter_construction = None
     if parsed_params.get("throat_adapter"):
         from ..throat_adapter import resolve_adapter
@@ -589,6 +597,7 @@ def build_preview_geometry(
             corner_intervals=corner_intervals,
             wall_mm=wall_mm,
             deferred_wall=deferred_wall,
+            enclosure_bounds=enclosure_bounds,
             refinement_deadline=refinement_deadline,
         )
 

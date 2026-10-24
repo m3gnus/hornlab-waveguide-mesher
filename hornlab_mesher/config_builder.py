@@ -2559,6 +2559,27 @@ def resolve_geometry(
     )
 
 
+def resolve_enclosure_bounds(
+    config: Mapping[str, Any], *, warn_prefix: str = "",
+) -> dict[str, float] | None:
+    """Validate and size an enclosure from the mesh's resolved control grid.
+
+    Preview sampling must not change the design's acceptance or box bounds.
+    Keep the clearance predicate in ``enclosure_box_bounds`` and supply it the
+    same geometry as ``build_from_config``, before applying any display LOD.
+    """
+    from .builders.enclosure import enclosure_box_bounds
+
+    geometry = resolve_geometry(config).geometry
+    if geometry.enclosure is None:
+        return None
+    return enclosure_box_bounds(
+        geometry.inner_points, geometry.enclosure, closed=geometry.closed,
+        symmetry_planes=tuple(geometry.symmetry_planes),
+        warn_prefix=warn_prefix,
+    )
+
+
 @stretch_config_errors
 def build_from_config(
     config: Mapping[str, Any],
@@ -2655,6 +2676,7 @@ __all__ = [
     "ResolvedGeometry",
     "build_from_config",
     "resolve_geometry",
+    "resolve_enclosure_bounds",
     "build_geometry_params",
     "_bool",
     "_enclosure_from_config",
