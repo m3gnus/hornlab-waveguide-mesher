@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -237,6 +238,96 @@ def _normalise_formula(value: Any) -> str:
         return _normalise_formula_common(value)
     except ValueError as exc:
         raise ConfigError(str(exc)) from None
+
+
+@lru_cache(maxsize=128)
+def _coverage_angle_extrema(expression: str) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Sample a full turn at 0.01 degrees, then refine every visible extremum.
+
+    Independent of mesh density, quadrants and preview fidelity. Refining all
+    local extrema also catches a narrow peak whose nearest sample is lower
+    than a broad peak elsewhere. This is a numerical check, not a proof for
+    arbitrary discontinuous expressions or peaks narrower than the sampling.
+    Cache only measurements; never change the expression used by geometry.
+    """
+    def evaluate(p: float) -> float:
+        angle = eval_param(expression, p)
+        if not math.isfinite(angle):
+            raise ValueError("the expression must give a finite angle everywhere")
+        return angle
+
+    # Numeric constants need no sampling (the usual saved-design path).
+    try:
+        constant = float(expression)
+    except ValueError:
+        pass
+    else:
+        return (evaluate(0.0), 0.0), (constant, 0.0)
+
+    azimuths = np.linspace(0.0, 2.0 * math.pi, 36001)
+    angles = np.array([evaluate(float(p)) for p in azimuths])
+    extrema = []
+    for sign in (1, -1):
+        values = sign * angles
+        index = int(np.argmin(values))
+        best = (float(values[index]), float(azimuths[index]))
+        # Retain endpoints too: expressions need not be periodic in p.
+        for i in range(len(azimuths)):
+            left, right = max(0, i - 1), min(len(azimuths) - 1, i + 1)
+            if (values[i] <= values[left] and values[i] <= values[right]
+                    and (values[i] < values[left] or values[i] < values[right])):
+                # Refine to adjacent floating-point positions. A tolerance
+                # based optimizer can stop short of a cusp at exactly 90 or
+                # 0 degrees, incorrectly accepting a singular design.
+                lo, hi = float(azimuths[left]), float(azimuths[right])
+                ratio = (math.sqrt(5.0) - 1.0) / 2.0
+                x1, x2 = hi - ratio * (hi - lo), lo + ratio * (hi - lo)
+                f1, f2 = sign * evaluate(x1), sign * evaluate(x2)
+                for _ in range(128):
+                    if not lo < x1 < x2 < hi:
+                        break
+                    if f1 <= f2:
+                        hi, x2, f2 = x2, x1, f1
+                        x1 = hi - ratio * (hi - lo)
+                        f1 = sign * evaluate(x1)
+                    else:
+                        lo, x1, f1 = x1, x2, f2
+                        x2 = lo + ratio * (hi - lo)
+                        f2 = sign * evaluate(x2)
+                candidate = min((sign * evaluate(p), p) for p in (lo, x1, x2, hi))
+                # Rounded golden-section positions can coincide with a few
+                # representable positions still between the final endpoints.
+                p = lo
+                for _ in range(16):
+                    p = math.nextafter(p, hi)
+                    candidate = min(candidate, (sign * evaluate(p), p))
+                    if p == hi:
+                        break
+                if candidate[0] < best[0]:
+                    best = candidate
+        extrema.append((sign * best[0], best[1]))
+    return extrema[0], extrema[1]
+
+
+def _validate_coverage_angles(params: Mapping[str, Any], formula: str) -> None:
+    if formula not in {"OSSE", "R-OSSE"}:
+        return
+    # Both families use tan(a)**2 and tan(a0). Zero and negative a0 describe
+    # supported straight/inward throats; their singularities are at +/-90.
+    for key, label, lower in (("a", "Mouth coverage angle", 0), ("a0", "Throat angle", -90)):
+        try:
+            minimum, maximum = _coverage_angle_extrema(str(params[key]))
+        except ValueError as exc:
+            raise ConfigError(f"{label} ({key}): {exc}. Change the expression.") from exc
+        offending = maximum if maximum[0] >= 90 else minimum if minimum[0] <= lower else None
+        if offending is not None:
+            angle, p = offending
+            requirement = "below 90°" if key == "a" and angle >= 90 else f"above {lower}° and below 90°"
+            raise ConfigError(
+                f"{label} ({key}) reaches {angle:.1f}° near p = {math.degrees(p):.1f}°; "
+                f"{formula} needs it {requirement} everywhere. "
+                f"Change the expression so it stays {requirement}."
+            )
 
 
 def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:
@@ -1321,6 +1412,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 common[key] = _scalar_or_expr(
                     profile, config, names=(key,), default=value
                 )
+
+    _validate_coverage_angles(common, formula)
 
     if formula == "FREEFORM":
         try:
