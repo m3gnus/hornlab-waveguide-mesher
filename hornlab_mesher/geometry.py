@@ -220,6 +220,13 @@ MESH_ALGORITHM_DELAUNAY = 5
 MESH_ALGORITHM_FRONTAL_DELAUNAY = 6
 
 
+class _RetryInterpolatingFit(str):
+    """Keep the same interpolated wall while retrying with MeshAdapt."""
+
+    def __new__(cls):
+        return super().__new__(cls, "interpolate")
+
+
 class PointGridBuildMode(str, Enum):
     """Topology mode implied by point-grid geometry options."""
 

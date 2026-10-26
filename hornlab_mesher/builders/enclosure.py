@@ -120,6 +120,9 @@ def enclosure_box_bounds(
     symmetry_planes: tuple[str, ...] = (),
     y_origin_offset_mm: float = 0.0,
     warn_prefix: str | None = "",
+    surface_fit: str | None = None,
+    preserve_grid: bool = False,
+    boundary_recipe: Any = None,
 ) -> dict[str, float]:
     """Measure and validate the enclosure for a build or preview entry point."""
     bounds = measure_enclosure_box_bounds(
@@ -132,21 +135,96 @@ def enclosure_box_bounds(
         if "y" in symmetry_planes and bounds["y_min"] - float(y_origin_offset_mm) < -1.0e-6:
             raise ValueError("y symmetry plane requested but mouth points cross y=0")
     rings = _front_baffle_rings(bounds, closed=closed, symmetry_planes=symmetry_planes)
-    side, front_ring_min = min(rings.items(), key=lambda item: item[1])
+    front_ring_min = min(rings.values())
     if front_ring_min < _MIN_BAFFLE_CLEARANCE_MM and not math.isclose(
         front_ring_min, _MIN_BAFFLE_CLEARANCE_MM, rel_tol=0.0, abs_tol=1.0e-12
     ):
-        minimum = f"{_MIN_BAFFLE_CLEARANCE_MM:g} mm"
-        remedy = (
-            f"increase Mesh.Enclosure.Dim on the {side} to leave at least {minimum}"
-            if enclosure.dim_mm is not None
-            else f"set the {side} margin to at least {minimum}"
-        )
-        raise EnclosureBaffleError(
-            f"The enclosure leaves {front_ring_min:.2f} mm of baffle beside the mouth "
-            f"on the {side}; {remedy}."
-        )
+        # Exactly the cases the baffle check used to reject take the new
+        # topology. Accepted designs retain the existing bounds and builder.
+        bounds["flush_mount"] = True
+        bounds["clamped_edge"] = 0.0
+        bounds["edge_depth"] = 0.0
+        if surface_fit is not None:
+            _set_flush_rim_bounds(
+                bounds, inner_points, closed=closed,
+                symmetry_planes=symmetry_planes,
+                y_origin_offset_mm=y_origin_offset_mm,
+                surface_fit=surface_fit, preserve_grid=preserve_grid,
+                depth_margin_mm=enclosure.depth_margin_mm,
+                boundary_recipe=boundary_recipe,
+            )
     return bounds
+
+
+def _set_flush_rim_bounds(
+    bounds: dict[str, float], inner_points: NDArray[np.float64], *,
+    closed: bool, symmetry_planes: tuple[str, ...], y_origin_offset_mm: float,
+    surface_fit: str, preserve_grid: bool, depth_margin_mm: float,
+    boundary_recipe: Any = None,
+) -> None:
+    """Measure the same fitted mouth curves that the flush sides extend."""
+    from ._occ import (
+        grid_v_parameters, interpolating_surface_poles, patch_boundary_bounds,
+    )
+    from .point_grid_surfaces import (
+        _bspline_patch_phi_groups, _open_sector_count, _snap_open_symmetry_grid,
+    )
+
+    off = float(y_origin_offset_mm)
+    points = np.array(inner_points, dtype=np.float64, copy=True)
+    points[:, :, 1] -= off
+    points = _snap_open_symmetry_grid(points, closed=closed, symmetry_planes=symmetry_planes)
+    groups = _bspline_patch_phi_groups(
+        len(points), closed=closed,
+        n_sectors=_open_sector_count(closed=closed, symmetry_planes=symmetry_planes),
+    )
+    if boundary_recipe is not None:
+        from ..corner_wall import _angular_poles
+        points = _angular_poles(points, groups, boundary_recipe)
+        surface_fit = "approximate"
+        preserve_grid = False
+    extrema = [patch_boundary_bounds(
+        points, group, surface_fit=surface_fit, preserve_grid=preserve_grid,
+    ) for group in groups]
+    lower = np.min([pair[0] for pair in extrema], axis=0)
+    upper = np.max([pair[1] for pair in extrema], axis=0)
+    x_open = not closed and "x" in symmetry_planes
+    y_open = not closed and "y" in symmetry_planes
+    bx0 = 0.0 if x_open else float(lower[0])
+    bx1 = float(upper[0])
+    by0 = off if y_open else float(lower[1]) + off
+    by1 = float(upper[1]) + off
+    z_front = float(upper[2])
+    # A rolled-back or azimuth-varying mouth can be behind the throat.
+    # Keep every axial side ruling positive and the rear behind the horn.
+    rearmost = min(float(lower[2]), float(np.min(points[:, :, 2])))
+    if surface_fit == "interpolate" and not preserve_grid:
+        # Interpolation can overshoot the sampled z coordinates between rings.
+        # B-splines stay within their control-pole convex hull, so use the
+        # lowest pole of every actual angular patch as a conservative bound.
+        # Reduced quadrant-patch walls use a different shared axial parameter
+        # weighting; include both possibilities so this measurement also owns
+        # the bound for that variant without changing the builder's fit.
+        axial_parameters = [grid_v_parameters(points),
+                            grid_v_parameters(points, closed=closed)]
+        for group in groups:
+            patch = np.ascontiguousarray(points[group].transpose(1, 0, 2))
+            for v_params in axial_parameters:
+                poles, _, _ = interpolating_surface_poles(
+                    patch, degree_u=min(3, len(group) - 1),
+                    degree_v=min(3, points.shape[1] - 1), v_params=v_params,
+                )
+                rearmost = min(rearmost, float(np.min(poles[:, :, 2])))
+    z_back = min(float(bounds["z_back"]), rearmost - max(1.0, float(depth_margin_mm)))
+    bounds.update({
+        "bx0": bx0, "bx1": bx1, "by0": by0, "by1": by1,
+        "x_min": float(lower[0]), "x_max": float(upper[0]),
+        "y_min": float(lower[1]) + off, "y_max": float(upper[1]) + off,
+        "cx": 0.5 * (bx0 + bx1), "cy": 0.5 * (by0 + by1),
+        "half_w": bx1 if x_open else 0.5 * (bx1 - bx0),
+        "half_h": by1 - off if y_open else 0.5 * (by1 - by0),
+        "z_front": z_front, "z_back": z_back, "enc_depth": z_front - z_back,
+    })
 
 
 def measure_enclosure_box_bounds(
@@ -1139,6 +1217,87 @@ def _merge_enclosure_parts(parts: list[dict[str, Any]], bounds: dict[str, float]
     }
 
 
+def _build_flush_enclosure(
+    mouth_curves: list[int], bounds: dict[str, float],
+) -> dict[str, Any]:
+    """Continue the wall's actual mouth curves straight to the rear plane."""
+    from ._occ import make_planar_fill_from_boundary
+
+    gmsh = require_gmsh()
+    occ = gmsh.model.occ
+    rear_curves = []
+    for curve in mouth_curves:
+        curve = abs(int(curve))
+        rear = occ.copy([(1, curve)])
+        # Project the actual curve onto the rear plane. This preserves its XY
+        # exactly even when the mouth is not planar; every ruled side then
+        # continues straight backwards from the horn's own boundary.
+        occ.affineTransform(rear, [1, 0, 0, 0, 0, 1, 0, 0,
+                                   0, 0, 0, float(bounds["z_back"])])
+        rear_curves.extend(rear)
+
+    # Adjacent wall patches own separate but coincident endpoint vertices.
+    # Join the projected rear curves first so a single rear face can share all
+    # of them. A radial fan can cross the fitted rim when a curve folds past a
+    # symmetry axis, leaving all enclosure faces unmeshable.
+    if len(rear_curves) > 1:
+        _, mapping = occ.fragment(rear_curves[:1], rear_curves[1:])
+        if any(len(item) != 1 or int(item[0][0]) != 1 for item in mapping):
+            raise RuntimeError("flush rear curves intersect beyond their shared endpoints")
+        rear_curves = [item[0] for item in mapping]
+    occ.synchronize()
+    end_points = gmsh.model.getBoundary(rear_curves, combined=True, oriented=False)
+    closed = not any(int(dim) == 0 for dim, _ in end_points)
+
+    parts = []
+    for curve, rear in zip(mouth_curves, rear_curves):
+        curve = abs(int(curve))
+        front_wire = int(occ.addWire([curve]))
+        rear_wire = int(occ.addWire([int(rear[1])]))
+        parts.extend(_add_ruled_section(front_wire, rear_wire))
+    sides = [(int(dim), int(tag)) for dim, tag in parts if int(dim) == 2]
+    if not sides:
+        raise RuntimeError("could not build flush enclosure sides")
+    gmsh.model.occ.synchronize()
+    back = make_planar_fill_from_boundary(sides, use_min=True, closed=closed)
+    return {
+        "dimtags": [*sides, *back],
+        "front": [],
+        "back": [tag for _, tag in back],
+        "sides": [tag for _, tag in sides],
+        "front_edges": [],
+        "back_edges": [],
+        "bounds": bounds,
+    }
+
+
+def _flush_mouth_curves(
+    inner_dimtags: list[tuple[int, int]], inner_points: NDArray[np.float64],
+) -> list[int]:
+    """Find the actual terminal mouth edges, including preserved-grid edges.
+
+    A rollback wall can extend forward of its mouth along the symmetry cuts,
+    and a mouth can be nonplanar, so the highest boundary is not the owner.
+    """
+    gmsh = require_gmsh()
+    boundary = gmsh.model.getBoundary(inner_dimtags, combined=True, oriented=False)
+    terminal = np.asarray(inner_points, dtype=np.float64)[:, -1, :]
+    result = []
+    for dim, tag in boundary:
+        if int(dim) != 1:
+            continue
+        endpoints = gmsh.model.getBoundary([(1, abs(int(tag)))], combined=False,
+                                           oriented=False)
+        points = [gmsh.model.getValue(0, int(point), []) for dim, point in endpoints
+                  if int(dim) == 0]
+        if points and all(
+            float(np.linalg.norm(terminal - np.asarray(point), axis=1).min()) <= 1.0e-5
+            for point in points
+        ):
+            result.append(abs(int(tag)))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main builder
 # ---------------------------------------------------------------------------
@@ -1150,6 +1309,9 @@ def build_enclosure_box(
     enclosure: HornEnclosure,
     closed: bool = True,
     symmetry_planes: tuple[str, ...] = (),
+    surface_fit: str | None = None,
+    preserve_grid: bool = False,
+    boundary_recipe: Any = None,
 ) -> dict[str, Any]:
     """Build a closed-domain rear enclosure around the horn mouth.
 
@@ -1168,6 +1330,9 @@ def build_enclosure_box(
             enclosure=enclosure,
             closed=closed,
             symmetry_planes=symmetry_planes,
+            surface_fit=surface_fit,
+            preserve_grid=preserve_grid,
+            boundary_recipe=boundary_recipe,
         )
     finally:
         _reset_curve_endpoints()
@@ -1180,6 +1345,9 @@ def _build_enclosure_box(
     enclosure: HornEnclosure,
     closed: bool = True,
     symmetry_planes: tuple[str, ...] = (),
+    surface_fit: str | None = None,
+    preserve_grid: bool = False,
+    boundary_recipe: Any = None,
 ) -> dict[str, Any]:
     """Build a closed-domain rear enclosure around the horn mouth.
 
@@ -1199,9 +1367,8 @@ def _build_enclosure_box(
 
     Raises ``NotImplementedError`` for unsupported plan/edge/open-domain
     combinations. Implemented edge values are ``1`` rounded fillet and ``2``
-    chamfer. Plan values ``2`` ellipse and ``3`` superellipse are recognised
-    but have no watertight enclosure builder: only ``1`` rounded rectangle is
-    buildable, for both closed and open (reduced) domains.
+    chamfer. The baffle builder supports only plan ``1`` (rounded rectangle).
+    Flush enclosures use the horn mouth as the plan for all three plan values.
     """
 
     if int(enclosure.plan_type) not in (1, 2, 3):
@@ -1214,7 +1381,16 @@ def _build_enclosure_box(
             f"HornEnclosure.edge_type={enclosure.edge_type} not yet supported "
             "by hornlab-mesher (only edge_type ∈ {1, 2} implemented)."
         )
-    if closed and int(enclosure.plan_type) in (2, 3):
+    bounds = enclosure_box_bounds(
+        inner_points,
+        enclosure,
+        closed=closed,
+        symmetry_planes=tuple(symmetry_planes),
+        surface_fit=surface_fit,
+        preserve_grid=preserve_grid,
+        boundary_recipe=boundary_recipe,
+    )
+    if closed and int(enclosure.plan_type) in (2, 3) and not bounds.get("flush_mount"):
         # Only the rounded rectangle has a watertight closed-enclosure builder.
         # Its four-sector route shares the wall's own mouth curves per quadrant;
         # every other plan falls to the generic ring loft, whose single-plane
@@ -1244,14 +1420,6 @@ def _build_enclosure_box(
     # hole legitimately protrudes through it, but a wall contact outside the
     # hole would be bisected by the front face and still weld watertight enough
     # that downstream checks cannot see the self-intersection.
-    _reject_front_baffle_wall_intersections(inner_points, closed=closed)
-
-    bounds = enclosure_box_bounds(
-        inner_points,
-        enclosure,
-        closed=closed,
-        symmetry_planes=tuple(symmetry_planes),
-    )
     x_min = bounds["x_min"]
     x_max = bounds["x_max"]
     bx0, bx1, by0, by1 = bounds["bx0"], bounds["bx1"], bounds["by0"], bounds["by1"]
@@ -1265,9 +1433,16 @@ def _build_enclosure_box(
     front_mesh_size = float(enclosure.front_mesh_size_mm or 0.0)
     back_mesh_size = float(enclosure.back_mesh_size_mm or 0.0)
 
-    mouth_curves = _boundary_curves_at_z_extreme(inner_dimtags, want_min_z=False)
+    mouth_curves = (
+        _flush_mouth_curves(inner_dimtags, inner_points)
+        if bounds.get("flush_mount")
+        else _boundary_curves_at_z_extreme(inner_dimtags, want_min_z=False)
+    )
     if not mouth_curves:
         raise RuntimeError("could not resolve inner-wall mouth boundary curves")
+    if bounds.get("flush_mount"):
+        return _build_flush_enclosure(mouth_curves, bounds)
+    _reject_front_baffle_wall_intersections(inner_points, closed=closed)
     # The wall authored these, so record them here -- the model is synchronized
     # (``_boundary_curves_at_z_extreme`` requires it) and this is the last point
     # at which that is true for free.

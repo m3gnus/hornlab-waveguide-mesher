@@ -478,7 +478,7 @@ MAX_CORNER_RINGS = 1025
 
 def build_corner_wall(geometry):
     from .builders._occ import require_gmsh, make_planar_fill_from_boundary
-    from .builders.point_grid_surfaces import _bspline_patch_phi_groups, _snap_open_symmetry_grid
+    from .builders.point_grid_surfaces import _bspline_patch_phi_groups, _open_sector_count, _snap_open_symmetry_grid
     from .builders.point_grid_dispatch import _shift_coupled_baffle_grid
     from .builders.enclosure import build_enclosure_box
     from .builders.point_grid_interfaces import _normalise_interface_specs, _add_offset_interface_surfaces
@@ -497,7 +497,8 @@ def build_corner_wall(geometry):
     points = _snap_open_symmetry_grid(points, closed=geometry.closed,
                                       symmetry_planes=geometry.symmetry_planes)
     groups = _bspline_patch_phi_groups(len(points), closed=geometry.closed,
-                                      n_sectors=1 if len(geometry.symmetry_planes) > 1 else 2)
+                                      n_sectors=_open_sector_count(closed=geometry.closed,
+                                                                   symmetry_planes=geometry.symmetry_planes))
     for attempt in range(MAX_CORNER_REFINEMENTS + 1):
         before = set(gmsh.model.occ.getEntities())
         patches = _patches(points, recipe.cuts(points), groups, recipe)
@@ -528,7 +529,8 @@ def build_corner_wall(geometry):
     elif mode is PointGridBuildMode.ENCLOSURE:
         data = build_enclosure_box(inner_dimtags=last, inner_points=points,
                                     enclosure=geometry.enclosure, closed=geometry.closed,
-                                    symmetry_planes=geometry.symmetry_planes)
+                                    symmetry_planes=geometry.symmetry_planes,
+                                    surface_fit="approximate", boundary_recipe=recipe)
         roles['enclosure'] = data['dimtags']
         roles['enclosure_edges_front'] = [(2, int(tag)) for tag in data['front_edges']]
         roles['enclosure_edges_back'] = [(2, int(tag)) for tag in data['back_edges']]

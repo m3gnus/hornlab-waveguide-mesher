@@ -12,6 +12,7 @@ from .builders.enclosure import (
 )
 from .config_builder import (
     _enclosure_from_config, _section, build_geometry_params, resolve_enclosure_bounds,
+    resolve_geometry,
 )
 from .geometry import HornEnclosure
 from .profile_sampling import build_point_grid_arrays
@@ -40,6 +41,24 @@ def _grid_with_point_lists(grid: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _set_flush_viewport_ring(enclosure: dict[str, Any], inner_points: NDArray[np.float64]) -> None:
+    """Keep the published enclosure rings on the displayed fitted mouth."""
+    front = np.asarray(inner_points[:, -1, :], dtype=np.float64)
+    back = front.copy()
+    back[:, 2] = float(enclosure["bounds"]["z_back"])
+    front_values = front.reshape(-1).tolist()
+    back_values = back.reshape(-1).tolist()
+    enclosure.update({
+        "mouth_points": front_values,
+        "front_outer_points": front_values,
+        "back_outer_points": back_values,
+        "profile_rings": [
+            {"role": "front_inset", "points": front_values},
+            {"role": "side_back_outer", "points": back_values},
+        ],
+    })
+
+
 def build_enclosure_viewport_grid(
     inner_points: NDArray[np.float64],
     enclosure: HornEnclosure,
@@ -48,6 +67,7 @@ def build_enclosure_viewport_grid(
     symmetry_planes: tuple[str, ...] = (),
     y_origin_offset_mm: float = 0.0,
     validate_baffle: bool = True,
+    resolved_bounds: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return lightweight enclosure rings for viewport tessellation.
 
@@ -70,6 +90,13 @@ def build_enclosure_viewport_grid(
         y_origin_offset_mm=float(y_origin_offset_mm),
         warn_prefix="viewport ",
     )
+    # The decision belongs to the mesh's control grid, not the display LOD.
+    # Only the new flush path replaces display-derived bounds: the established
+    # baffle path retains its previous rendering and byte-for-byte output.
+    if resolved_bounds is not None and resolved_bounds.get("flush_mount"):
+        bounds = dict(resolved_bounds)
+        for key in ("by0", "by1", "cy", "y_min", "y_max"):
+            bounds[key] = float(bounds[key]) + float(y_origin_offset_mm)
     clamped_edge = bounds["clamped_edge"]
     edge_depth = bounds["edge_depth"]
     min_bspline_r = 0.1
@@ -165,7 +192,7 @@ def build_enclosure_viewport_grid(
                 }
             )
 
-    return {
+    result = {
         "mouth_points": inner_points[:, -1, :].reshape(-1).tolist(),
         # Backward-compatible names used by older Waveguide Generator adapters.
         "front_outer_points": flatten(front_inset),
@@ -177,6 +204,9 @@ def build_enclosure_viewport_grid(
         "edge_mm": clamped_edge,
         "edge_depth": edge_depth,
     }
+    if bounds.get("flush_mount"):
+        _set_flush_viewport_ring(result, inner_points)
+    return result
 
 
 def build_viewport_geometry_from_config(
@@ -186,6 +216,7 @@ def build_viewport_geometry_from_config(
     defer_osse_offset_repair: bool = False,
     lod: str | None = None,
     enclosure_validated: bool = False,
+    enclosure_bounds: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build point-grid horn and optional enclosure viewport data from config.
 
@@ -206,7 +237,7 @@ def build_viewport_geometry_from_config(
     enclosure_cfg = _section(config, "enclosure")
     enclosure = _enclosure_from_config(config, mesh, enclosure_cfg)
     if enclosure is not None and not enclosure_validated:
-        resolve_enclosure_bounds(config, warn_prefix=None)
+        enclosure_bounds = resolve_enclosure_bounds(config, warn_prefix=None)
     grid = build_point_grid_arrays(
         params, defer_osse_offset_repair=defer_osse_offset_repair
     )
@@ -221,6 +252,9 @@ def build_viewport_geometry_from_config(
         inner_points[:, :, 1] += vertical_offset_mm
         if grid["outer_grid"] is not None:
             grid["outer_grid"][:, :, 1] += vertical_offset_mm
+    if not enclosure_validated and enclosure_bounds is not None and enclosure_bounds.get("flush_mount"):
+        from .preview.enclosure import _fit_flush_grid
+        _fit_flush_grid(inner_points, resolve_geometry(config), grid["slice_map"])
     if point_lists:
         grid = _grid_with_point_lists(grid)
     enclosure_grid = None
@@ -232,6 +266,7 @@ def build_viewport_geometry_from_config(
             symmetry_planes=tuple(grid.get("symmetry_planes") or ()),
             y_origin_offset_mm=vertical_offset_mm,
             validate_baffle=False,
+            resolved_bounds=enclosure_bounds,
         )
 
     return {

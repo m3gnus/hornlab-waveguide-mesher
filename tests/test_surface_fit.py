@@ -357,6 +357,188 @@ def test_the_throat_boundary_curve_reproduces_the_patch_edge():
         assert np.allclose(curve(u), grid[columns[index], 0, :], atol=1e-9)
 
 
+@pytest.mark.parametrize("surface_fit", [SURFACE_FIT_INTERPOLATE, SURFACE_FIT_APPROXIMATE])
+@pytest.mark.parametrize("station_index", [0, -1])
+@pytest.mark.parametrize("n_columns", [2, 3, 7, 13])
+def test_sample_patch_boundary_matches_occ(surface_fit, station_index, n_columns):
+    """Both axial ends follow the actual wall edge, including its fit bias."""
+    gmsh = pytest.importorskip("gmsh")
+    from hornlab_mesher.builders._occ import add_bspline_patch, sample_patch_boundary
+    from hornlab_mesher.builders.enclosure import _boundary_curves_at_z_extreme
+
+    grid = _revolved_grid(n_phi=32, n_len=9)
+    # Distort angular spacing differently on each axial ring. This detects a
+    # boundary fit that incorrectly uses only the mouth ring's chord lengths.
+    grid[:, :, 0] *= 1.0 + 0.17 * (
+        np.arange(len(grid), dtype=np.float64)[:, None] / len(grid)
+    ) ** 2 * (grid[:, :, 2] / 40.0)
+    columns = list(range(n_columns))
+    samples = np.unique(np.r_[np.linspace(0.0, 1.0, 257), 0.01234, 0.934567])
+
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.model.add("patch-boundary-fit")
+        surface = add_bspline_patch(
+            grid, columns, degree_v=3, surface_fit=surface_fit,
+            v_params=grid_v_parameters(grid),
+        )
+        gmsh.model.occ.synchronize()
+        edges = _boundary_curves_at_z_extreme(
+            [(2, surface)], want_min_z=(station_index == 0),
+        )
+        assert len(edges) == 1
+        lower, upper = gmsh.model.getParametrizationBounds(1, edges[0])
+        actual_u = lower[0] + samples * (upper[0] - lower[0])
+        actual = np.asarray(gmsh.model.getValue(1, edges[0], actual_u)).reshape(-1, 3)
+        result = sample_patch_boundary(
+            grid, columns, samples, station_index=station_index, surface_fit=surface_fit,
+        )
+        np.testing.assert_allclose(result, actual, rtol=0.0, atol=1e-8)
+    finally:
+        gmsh.finalize()
+
+
+@pytest.mark.parametrize("station_index", [0, -1])
+def test_sample_patch_boundary_preserves_the_grid_edges(station_index):
+    from hornlab_mesher.builders._occ import sample_patch_boundary
+
+    grid = _revolved_grid(n_phi=20, n_len=9)
+    columns = [0, 3, 7, 12, 18]
+    nodes = grid[columns, station_index, :]
+    values = np.arange(len(columns), dtype=np.float64) / (len(columns) - 1)
+    actual = sample_patch_boundary(
+        grid, columns, values, station_index=station_index, preserve_grid=True,
+    )
+    np.testing.assert_array_equal(actual, nodes)
+    midpoints = (values[:-1] + values[1:]) / 2.0
+    actual = sample_patch_boundary(
+        grid, columns, midpoints, station_index=station_index, preserve_grid=True,
+    )
+    np.testing.assert_allclose(actual, (nodes[:-1] + nodes[1:]) / 2.0, atol=1e-12)
+
+
+def test_sample_patch_boundary_rejects_non_boundary_or_invalid_parameters():
+    from hornlab_mesher.builders._occ import sample_patch_boundary
+
+    grid = _revolved_grid(n_phi=8, n_len=5)
+    columns = [0, 1, 2, 3]
+    with pytest.raises(ValueError, match="throat or mouth"):
+        sample_patch_boundary(grid, columns, np.array([0.5]), station_index=2)
+    for values in ([float("nan")], [-0.01], [1.01], [[0.5]]):
+        with pytest.raises(ValueError, match="parameters"):
+            sample_patch_boundary(grid, columns, np.asarray(values))
+    with pytest.raises(ValueError, match="surface_fit"):
+        sample_patch_boundary(grid, columns, np.array([0.5]), surface_fit="auto")
+
+
+@pytest.mark.parametrize("surface_fit", [SURFACE_FIT_INTERPOLATE, SURFACE_FIT_APPROXIMATE])
+def test_patch_boundary_xy_bounds_include_fitted_overshoot(surface_fit):
+    """Bounds follow the wall fit, including extrema between control points."""
+    from hornlab_mesher.builders._occ import patch_boundary_xy_bounds, sample_patch_boundary
+
+    grid = _revolved_grid(n_phi=12, n_len=6)
+    columns = list(range(6))
+    grid[columns, -1, 0] = [0, 1, 1, 1, 0, 0]
+    grid[columns, -1, 1] = [0, 1, 2, 3, 4, 5]
+
+    minimum, maximum = patch_boundary_xy_bounds(grid, columns, surface_fit=surface_fit)
+    dense = sample_patch_boundary(
+        grid, columns, np.linspace(0.0, 1.0, 20001), surface_fit=surface_fit,
+    )[:, :2]
+    sampled_min, sampled_max = np.min(dense, axis=0), np.max(dense, axis=0)
+    assert np.all(minimum <= sampled_min + 1e-12)
+    assert np.all(maximum >= sampled_max - 1e-12)
+    np.testing.assert_allclose(minimum, sampled_min, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(maximum, sampled_max, rtol=0.0, atol=1e-5)
+    if surface_fit == SURFACE_FIT_INTERPOLATE:
+        assert minimum[0] < -0.3 and maximum[0] > 1.08
+    else:
+        assert minimum[0] == pytest.approx(0.0) and maximum[0] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("surface_fit", [SURFACE_FIT_INTERPOLATE, SURFACE_FIT_APPROXIMATE])
+def test_patch_boundary_xy_bounds_handle_constant_coordinate(surface_fit):
+    from hornlab_mesher.builders._occ import patch_boundary_xy_bounds
+
+    grid = _revolved_grid(n_phi=12, n_len=6)
+    grid[:, :, 0] = 42.0
+    minimum, maximum = patch_boundary_xy_bounds(grid, list(range(6)), surface_fit=surface_fit)
+    assert np.all(np.isfinite(minimum)) and np.all(np.isfinite(maximum))
+    assert minimum[0] == pytest.approx(42.0, abs=1e-10)
+    assert maximum[0] == pytest.approx(42.0, abs=1e-10)
+
+
+def test_patch_boundary_xy_bounds_preserved_grid_uses_original_vertices():
+    from hornlab_mesher.builders._occ import patch_boundary_xy_bounds
+
+    grid = _revolved_grid(n_phi=20, n_len=9)
+    columns = [0, 3, 7, 12, 18]
+    ring = grid[columns, -1, :2]
+    minimum, maximum = patch_boundary_xy_bounds(grid, columns, preserve_grid=True)
+    np.testing.assert_array_equal(minimum, np.min(ring, axis=0))
+    np.testing.assert_array_equal(maximum, np.max(ring, axis=0))
+
+
+@pytest.mark.parametrize("surface_fit", [SURFACE_FIT_INTERPOLATE, SURFACE_FIT_APPROXIMATE])
+def test_patch_boundary_xy_bounds_two_point_linear_patch(surface_fit):
+    from hornlab_mesher.builders._occ import patch_boundary_xy_bounds
+
+    grid = _revolved_grid(n_phi=8, n_len=5)
+    grid[[0, 1], -1, :2] = [[-4.0, 5.0], [12.0, -3.0]]
+    minimum, maximum = patch_boundary_xy_bounds(grid, [0, 1], surface_fit=surface_fit)
+    np.testing.assert_allclose(minimum, [-4.0, -3.0], rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(maximum, [12.0, 5.0], rtol=0.0, atol=1e-12)
+
+
+@pytest.mark.parametrize("surface_fit", [SURFACE_FIT_INTERPOLATE, SURFACE_FIT_APPROXIMATE])
+def test_patch_boundary_bounds_include_nonplanar_fitted_z_overshoot(surface_fit):
+    from hornlab_mesher.builders._occ import (
+        patch_boundary_bounds, patch_boundary_xy_bounds, sample_patch_boundary,
+    )
+
+    grid = _revolved_grid(n_phi=12, n_len=6)
+    columns = list(range(6))
+    grid[columns, -1, 2] = [0, 1, 1, 1, 0, 0]
+    minimum, maximum = patch_boundary_bounds(grid, columns, surface_fit=surface_fit)
+    dense = sample_patch_boundary(
+        grid, columns, np.linspace(0.0, 1.0, 20001), surface_fit=surface_fit,
+    )
+    sampled_min, sampled_max = np.min(dense, axis=0), np.max(dense, axis=0)
+    assert np.all(minimum <= sampled_min + 1e-12)
+    assert np.all(maximum >= sampled_max - 1e-12)
+    np.testing.assert_allclose(minimum, sampled_min, rtol=0.0, atol=1e-5)
+    np.testing.assert_allclose(maximum, sampled_max, rtol=0.0, atol=1e-5)
+    if surface_fit == SURFACE_FIT_INTERPOLATE:
+        assert minimum[2] < -0.3 and maximum[2] > 1.08
+    else:
+        assert minimum[2] == pytest.approx(0.0) and maximum[2] == pytest.approx(1.0)
+    xy_minimum, xy_maximum = patch_boundary_xy_bounds(grid, columns, surface_fit=surface_fit)
+    np.testing.assert_array_equal(xy_minimum, minimum[:2])
+    np.testing.assert_array_equal(xy_maximum, maximum[:2])
+
+
+@pytest.mark.parametrize("surface_fit", [SURFACE_FIT_INTERPOLATE, SURFACE_FIT_APPROXIMATE])
+def test_patch_boundary_bounds_handle_planar_z(surface_fit):
+    from hornlab_mesher.builders._occ import patch_boundary_bounds
+
+    grid = _revolved_grid(n_phi=12, n_len=6)
+    minimum, maximum = patch_boundary_bounds(grid, list(range(6)), surface_fit=surface_fit)
+    assert np.all(np.isfinite(minimum)) and np.all(np.isfinite(maximum))
+    assert minimum[2] == pytest.approx(40.0, abs=1e-10)
+    assert maximum[2] == pytest.approx(40.0, abs=1e-10)
+
+
+def test_patch_boundary_bounds_preserved_grid_handles_nonplanar_edges():
+    from hornlab_mesher.builders._occ import patch_boundary_bounds
+
+    grid = _revolved_grid(n_phi=12, n_len=6)
+    columns = list(range(6))
+    grid[columns, -1, 2] = [0, 1, 1, 1, 0, -2]
+    minimum, maximum = patch_boundary_bounds(grid, columns, preserve_grid=True)
+    np.testing.assert_array_equal(minimum, np.min(grid[columns, -1, :], axis=0))
+    np.testing.assert_array_equal(maximum, np.max(grid[columns, -1, :], axis=0))
+
+
 @pytest.mark.parametrize("scale", [0.1, 1.0, 12.7])
 def test_coarse_small_interpolating_shell_remains_manifold(tmp_path, caplog, scale):
     """Curve sampling must preserve topology even below the default mesh size."""

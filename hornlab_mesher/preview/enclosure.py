@@ -48,6 +48,343 @@ _FACETED_CORNER_FLOOR_MM = 2.0e-3
 _DEGENERATE_COLUMN_MM = 1.0e-2
 
 
+def _flush_azimuth_parameters(display: NDArray[np.float64], geometry: Any):
+    """Map display meridians to the existing solver mouth patches."""
+    from ..builders._occ import sample_patch_boundary
+    from ..builders.point_grid_surfaces import (
+        _bspline_patch_phi_groups,
+        _open_sector_count,
+        _snap_open_symmetry_grid,
+    )
+
+    points = _snap_open_symmetry_grid(
+        np.asarray(geometry.inner_points, dtype=np.float64),
+        closed=geometry.closed, symmetry_planes=geometry.symmetry_planes,
+    )
+    groups = _bspline_patch_phi_groups(
+        len(points), closed=geometry.closed,
+        n_sectors=_open_sector_count(
+            closed=geometry.closed, symmetry_planes=geometry.symmetry_planes,
+        ),
+    )
+    recipe = getattr(geometry, "freeform_wall", None)
+    surface_fit = geometry.surface_fit
+    preserve_grid = geometry.preserve_grid
+    if recipe is not None:
+        from ..corner_wall import _angular_poles
+
+        points = _angular_poles(points, groups, recipe)
+        surface_fit = "approximate"
+        preserve_grid = False
+    offset = float(geometry.vertical_offset_mm)
+    angles = np.unwrap(np.arctan2(display[:, 1] - offset, display[:, 0]))
+    patch_indices = np.empty(len(display), dtype=np.int64)
+    mapped = np.empty(len(display), dtype=np.float64)
+    assigned = np.zeros(len(display), dtype=bool)
+    candidates = []
+    for patch_index, group in enumerate(groups):
+        parameters = np.linspace(0.0, 1.0, max(129, 16 * len(group)))
+        if preserve_grid:
+            parameters = np.unique(np.r_[parameters, np.linspace(0.0, 1.0, len(group))])
+        sample = sample_patch_boundary(
+            points, group, parameters, surface_fit=surface_fit,
+            preserve_grid=preserve_grid,
+        )
+        theta = np.unwrap(np.arctan2(sample[:, 1], sample[:, 0]))
+        theta += round((float(np.mean(angles)) - float(np.mean(theta))) / math.tau) * math.tau
+        if np.any(np.diff(theta) < -1.0e-10):
+            # A fitted rim may turn back in polar angle even though its curve
+            # is simple. Sorting those angles would reverse the surface
+            # parameter locally and fold the preview. Use the ordered source
+            # meridians to parameterize the fitted patch in that case.
+            control = points[group, -1, :]
+            theta = np.unwrap(np.arctan2(control[:, 1], control[:, 0]))
+            theta += round((float(np.mean(angles)) - float(np.mean(theta))) / math.tau) * math.tau
+            parameters = np.linspace(0.0, 1.0, len(group))
+        order = np.argsort(theta, kind="stable")
+        theta, parameters = theta[order], parameters[order]
+        candidates.append((theta, parameters, patch_index))
+        mask = (~assigned) & (angles >= theta[0] - 1e-10) & (angles <= theta[-1] + 1e-10)
+        if np.any(mask):
+            patch_indices[mask] = patch_index
+            mapped[mask] = np.interp(angles[mask], theta, parameters)
+            assigned[mask] = True
+    # A cyclic seam can differ by a few floating-point ulps after unwrapping.
+    # Map such samples to the nearest fitted endpoint rather than extrapolate.
+    for index in np.flatnonzero(~assigned):
+        options = [(abs(float(angles[index]) - float(theta[k])), parameters[k], patch_index)
+                   for theta, parameters, patch_index in candidates for k in (0, -1)]
+        _, mapped[index], patch_indices[index] = min(options, key=lambda item: item[0])
+    return points, groups, patch_indices, mapped, surface_fit, preserve_grid
+
+
+def _fit_flush_mouth(display: NDArray[np.float64], geometry: Any) -> NDArray[np.float64]:
+    """Place display meridians on the solver's fitted mouth boundary."""
+    from ..builders._occ import sample_patch_boundary
+
+    points, groups, patch_indices, mapped, surface_fit, preserve_grid = (
+        _flush_azimuth_parameters(display, geometry)
+    )
+    fitted = np.empty_like(display, dtype=np.float64)
+    for patch_index, group in enumerate(groups):
+        mask = patch_indices == patch_index
+        if np.any(mask):
+            fitted[mask] = sample_patch_boundary(
+                points, group, mapped[mask], surface_fit=surface_fit,
+                preserve_grid=preserve_grid,
+            )
+    offset = float(geometry.vertical_offset_mm)
+    fitted[:, 1] += offset
+    return fitted
+
+
+def _flush_cap_is_concave(ring: NDArray[np.float64], center: NDArray[np.float64]) -> bool:
+    """Whether a fan about the source axis crosses the ordered boundary."""
+    relative = np.asarray(ring, dtype=np.float64)[:, :2] - np.asarray(center)[:2]
+    following = np.roll(relative, -1, axis=0)
+    cross = relative[:, 0] * following[:, 1] - relative[:, 1] * following[:, 0]
+    scale = max(float(np.max(np.abs(relative))), 1.0)
+    return bool(np.any(cross < -1.0e-12 * scale * scale))
+
+
+def _flush_polygon_triangles(ring: NDArray[np.float64]) -> NDArray[np.uint32]:
+    """Triangulate an ordered simple polygon without crossing its boundary."""
+    xy = np.asarray(ring, dtype=np.float64)[:, :2]
+    order = list(range(len(xy)))
+    signed_area = float(np.sum(xy[:, 0] * np.roll(xy[:, 1], -1)
+                               - xy[:, 1] * np.roll(xy[:, 0], -1)))
+    if signed_area < 0:
+        order.reverse()
+    scale = max(float(np.max(np.abs(xy))), 1.0)
+    tolerance = 1.0e-13 * scale * scale
+    triangles = []
+    while len(order) > 3:
+        found = False
+        for i, current in enumerate(order):
+            a, b, c = order[i - 1], current, order[(i + 1) % len(order)]
+            ab, bc = xy[b] - xy[a], xy[c] - xy[b]
+            if ab[0] * bc[1] - ab[1] * bc[0] <= tolerance:
+                continue
+            others = np.asarray([j for j in order if j not in (a, b, c)], dtype=np.int64)
+            p = xy[others]
+            edges = xy[[b, c, a]] - xy[[a, b, c]]
+            relative = p[None, :, :] - xy[[a, b, c], None, :]
+            cross = edges[:, None, 0] * relative[:, :, 1] - edges[:, None, 1] * relative[:, :, 0]
+            inside = np.all(cross >= -tolerance, axis=0)
+            if np.any(inside):
+                continue
+            triangles.append((a, b, c))
+            order.pop(i)
+            found = True
+            break
+        if not found:
+            raise ValueError("flush cap boundary cannot be triangulated")
+    triangles.append(tuple(order))
+    return np.asarray(triangles, dtype=np.uint32)
+
+
+def _flush_polygon_cap(
+    role: str, ring: NDArray[np.float64], *, closed_phi: bool,
+    axis: NDArray[np.float64], include_curvature: bool,
+    sphere_radius: float | None = None, sphere_sign: float = 1.0,
+    throat_radius: float = 0.0, max_vertices: int | None = None,
+) -> PreviewSurfaceV1:
+    """Cap a non-star-shaped flush contour without cutting across its rim."""
+    positions = np.asarray(ring, dtype=np.float64).copy()
+    if not closed_phi:
+        positions = np.vstack((positions, np.asarray(axis, dtype=np.float64)))
+    triangles = _flush_polygon_triangles(positions)
+    if sphere_radius is not None and (max_vertices is None or 3 * len(triangles) <= max_vertices):
+        # Refine the polygon, preserving its boundary edges, then lift the
+        # interior toward the same spherical reference as the standard cap.
+        # The OCC filling is not spherical at an irregular rim, so its error
+        # cannot be certified from this approximation.
+        boundary = {tuple(sorted((i, (i + 1) % len(positions)))) for i in range(len(positions))}
+        for _ in range(3):
+            edges = np.sort(np.vstack((triangles[:, (0, 1)], triangles[:, (1, 2)],
+                                        triangles[:, (2, 0)])), axis=1)
+            unique, inverse = np.unique(edges, axis=0, return_inverse=True)
+            if max_vertices is not None and 12 * len(triangles) > max_vertices:
+                break
+            midpoint = (positions[unique[:, 0]] + positions[unique[:, 1]]) * 0.5
+            interior = np.asarray([tuple(edge) not in boundary for edge in unique])
+            distance2 = np.sum((midpoint[:, :2] - np.asarray(axis)[:2]) ** 2, axis=1)
+            base = math.sqrt(max(0.0, sphere_radius ** 2 - throat_radius ** 2))
+            height = np.sqrt(np.maximum(0.0, sphere_radius ** 2 - distance2)) - base
+            midpoint[interior, 2] = axis[2] + sphere_sign * np.maximum(0.0, height[interior])
+            start = len(positions)
+            positions = np.vstack((positions, midpoint))
+            mids = (inverse + start).reshape(3, -1).T
+            a, b, c = triangles.T
+            ab, bc, ca = mids.T
+            triangles = np.vstack((np.column_stack((a, ab, ca)), np.column_stack((ab, b, bc)),
+                                   np.column_stack((ca, bc, c)), np.column_stack((ab, bc, ca))))
+            boundary = {tuple(sorted((int(i), int(mid))))
+                        for edge, mid in zip(unique, range(start, len(positions)))
+                        if tuple(edge) in boundary for i in edge}
+    if role == "enclosure.rear":
+        triangles = triangles[:, (0, 2, 1)]
+    faces = positions[triangles]
+    face_normals = np.cross(faces[:, 1] - faces[:, 0], faces[:, 2] - faces[:, 0])
+    if sphere_radius is not None and (max_vertices is None or 3 * len(triangles) <= max_vertices):
+        # The approximation is piecewise planar, with an exact normal for
+        # each facet. Keep vertices separate where neighbouring facets meet.
+        positions = faces.reshape(-1, 3)
+        face_normals /= np.maximum(np.linalg.norm(face_normals, axis=1)[:, None], np.finfo(float).tiny)
+        normals = np.repeat(face_normals, 3, axis=0)
+        triangles = np.arange(len(positions), dtype=np.uint32).reshape(-1, 3)
+    else:
+        normals = np.zeros_like(positions)
+        for column in range(3):
+            np.add.at(normals, triangles[:, column], face_normals)
+        normals /= np.maximum(np.linalg.norm(normals, axis=1)[:, None], np.finfo(float).tiny)
+    oriented = _orient_indices_to_normals(role, positions, triangles.reshape(-1), normals)
+    return PreviewSurfaceV1(
+        role=role, positions=positions, indices=oriented.indices, normals=normals,
+        shading="flat",
+        normal_method="analytic-parametric" if sphere_radius is not None else "exact-planar",
+        closed_phi=closed_phi,
+        curvature_mean=(np.zeros(len(positions)) if include_curvature and sphere_radius is None else None),
+        curvature_principal=(np.zeros(len(positions)) if include_curvature and sphere_radius is None else None),
+        metadata=_orientation_metadata(oriented),
+    )
+
+
+def _fit_flush_grid(grid: NDArray[np.float64], resolved: Any, display_slice_map: Any):
+    """Evaluate the solver's fitted wall, or retain its fitted mouth boundary."""
+    geometry = resolved.geometry
+    control_slice_map = getattr(resolved, "flush_slice_map", None)
+    if control_slice_map is not None and geometry.preserve_grid:
+        points, groups, patch_indices, mapped, _, _ = (
+            _flush_azimuth_parameters(grid[:, -1, :], geometry)
+        )
+        control_t = np.asarray(control_slice_map, dtype=np.float64)
+        display_t = np.asarray(display_slice_map, dtype=np.float64)
+        if (len(control_t) != points.shape[1] or len(display_t) != grid.shape[1]
+                or control_t[-1] <= control_t[0] or display_t[-1] <= display_t[0]
+                or np.any(np.diff(control_t) <= 0.0)):
+            raise ValueError("flush preview requires increasing resolved axial stations")
+        control_t = (control_t - control_t[0]) / (control_t[-1] - control_t[0])
+        display_t = (display_t - display_t[0]) / (display_t[-1] - display_t[0])
+        axial = np.interp(display_t, control_t, np.arange(len(control_t)))
+        pinned_t = [0, len(display_t) - 1]
+        if len(display_t) >= len(control_t):
+            anchors = [(0, 0.0)]
+            for index, station in enumerate(control_t[1:-1], start=1):
+                nearest = int(np.argmin(np.abs(display_t - station)))
+                nearest = max(anchors[-1][0] + 1, min(nearest, len(display_t) - len(control_t) + index))
+                anchors.append((nearest, float(index)))
+            anchors.append((len(display_t) - 1, float(len(control_t) - 1)))
+            pinned_t = [index for index, _ in anchors]
+            axial = np.interp(np.arange(len(display_t)), pinned_t, [value for _, value in anchors])
+        row0 = np.minimum(np.floor(axial).astype(np.int64), points.shape[1] - 2)
+        row_weight = axial - row0
+        pinned_phi = [0, *list(np.flatnonzero(np.diff(patch_indices)) + 1)]
+        for patch_index, group in enumerate(groups):
+            mask = patch_indices == patch_index
+            locations = np.flatnonzero(mask)
+            if not len(locations):
+                continue
+            source_stations = np.arange(1, len(group) - 1) / (len(group) - 1)
+            source_stations = source_stations[(source_stations > mapped[locations[0]])
+                                              & (source_stations < mapped[locations[-1]])]
+            if len(locations) >= len(source_stations) + 2:
+                anchors = [(0, float(mapped[locations[0]]))]
+                for index, station in enumerate(source_stations, start=1):
+                    nearest = int(np.argmin(np.abs(mapped[locations] - station)))
+                    remaining = len(source_stations) - index
+                    nearest = max(anchors[-1][0] + 1, min(nearest, len(locations) - remaining - 2))
+                    anchors.append((nearest, float(station)))
+                anchors.append((len(locations) - 1, float(mapped[locations[-1]])))
+                mapped[locations] = np.interp(
+                    np.arange(len(locations)), [index for index, _ in anchors],
+                    [value for _, value in anchors],
+                )
+                pinned_phi.extend(int(locations[index]) for index, _ in anchors)
+            segment = mapped[mask] * (len(group) - 1)
+            column0 = np.minimum(np.floor(segment).astype(np.int64), len(group) - 2)
+            column_weight = segment - column0
+            columns = np.asarray(group, dtype=np.int64)
+            c0, c1 = columns[column0], columns[column0 + 1]
+            lower = (points[c0[:, None], row0[None, :]] * (1.0 - column_weight[:, None, None])
+                     + points[c1[:, None], row0[None, :]] * column_weight[:, None, None])
+            upper = (points[c0[:, None], (row0 + 1)[None, :]] * (1.0 - column_weight[:, None, None])
+                     + points[c1[:, None], (row0 + 1)[None, :]] * column_weight[:, None, None])
+            grid[mask] = (lower * (1.0 - row_weight[None, :, None])
+                          + upper * row_weight[None, :, None])
+        grid[:, :, 1] += float(geometry.vertical_offset_mm)
+        return sorted(set(pinned_t)), sorted(set(pinned_phi))
+
+    if (control_slice_map is not None and not geometry.preserve_grid
+            and getattr(geometry, "freeform_wall", None) is None):
+        from scipy.interpolate import BSpline
+
+        from ..builders._occ import (
+            _patch_boundary_spline,
+            grid_v_parameters,
+            interpolating_surface_poles,
+        )
+
+        points, groups, patch_indices, mapped, surface_fit, _ = (
+            _flush_azimuth_parameters(grid[:, -1, :], geometry)
+        )
+        control_t = np.asarray(control_slice_map, dtype=np.float64)
+        display_t = np.asarray(display_slice_map, dtype=np.float64)
+        if (len(control_t) != points.shape[1] or len(display_t) != grid.shape[1]
+                or control_t[-1] <= control_t[0] or display_t[-1] <= display_t[0]
+                or np.any(np.diff(control_t) <= 0.0)):
+            raise ValueError("flush preview requires increasing resolved axial stations")
+        control_t = (control_t - control_t[0]) / (control_t[-1] - control_t[0])
+        display_t = (display_t - display_t[0]) / (display_t[-1] - display_t[0])
+        degree_v = min(3, points.shape[1] - 1)
+        v_params = grid_v_parameters(
+            points, closed=geometry.closed if getattr(geometry, "quadrant_patch_fit", False) else None,
+        )
+        transposed = np.ascontiguousarray(points.transpose(1, 0, 2))
+        for patch_index, group in enumerate(groups):
+            mask = patch_indices == patch_index
+            if not np.any(mask):
+                continue
+            degree_u = min(3, len(group) - 1)
+            patch = np.ascontiguousarray(points[group, :, :].transpose(1, 0, 2))
+            if surface_fit == "interpolate":
+                poles, (u_knots, u_mult), (v_knots, v_mult) = interpolating_surface_poles(
+                    patch, degree_u=degree_u, degree_v=degree_v, v_params=v_params,
+                )
+                knots_u, knots_v = np.repeat(u_knots, u_mult), np.repeat(v_knots, v_mult)
+                station_v = v_params
+            else:
+                poles = patch
+                angular = _patch_boundary_spline(points, points[group, -1, :], group, -1, surface_fit)
+                axial_columns = list(range(len(transposed)))
+                axial = _patch_boundary_spline(
+                    transposed, transposed[:, -1, :], axial_columns, -1, surface_fit,
+                )
+                knots_u, knots_v = angular.t, axial.t
+                # The Greville abscissae locate approximating control rows in
+                # the same open-uniform parameterization the OCC wall uses.
+                station_v = np.asarray([
+                    np.mean(knots_v[index + 1:index + degree_v + 1])
+                    for index in range(len(control_t))
+                ])
+            u = knots_u[degree_u] + mapped[mask] * (knots_u[-degree_u - 1] - knots_u[degree_u])
+            v = np.interp(display_t, control_t, station_v)
+            along_u = BSpline(knots_u, poles, degree_u, axis=1)(u)
+            sampled = BSpline(knots_v, along_u, degree_v, axis=0)(v)
+            grid[mask] = sampled.transpose(1, 0, 2)
+        grid[:, :, 1] += float(geometry.vertical_offset_mm)
+        return [], []
+
+    # Preserved-grid and corner-wall surfaces use separate OCC construction.
+    # Keep their matched rim while their interiors follow the existing preview.
+    displacement = _fit_flush_mouth(grid[:, -1, :], geometry) - grid[:, -1, :]
+    axial = np.linspace(0.0, 1.0, grid.shape[1])
+    blend = np.clip(2.0 * axial - 1.0, 0.0, 1.0)
+    blend = blend * blend * (3.0 - 2.0 * blend)
+    grid += displacement[:, None, :] * blend[None, :, None]
+    return [], []
+
+
 def _ccw_ring(points: NDArray[np.float64]) -> NDArray[np.float64]:
     ring = np.asarray(points, dtype=np.float64)
     x = ring[:, 0]
@@ -991,6 +1328,11 @@ def _enclosure_surfaces(
     normal_target: float,
     include_rear: bool,
     include_curvature: bool,
+    closed_phi: bool = True,
+    reference_mouth: NDArray[np.float64] | None = None,
+    mouth_phi: NDArray[np.float64] | None = None,
+    reference_phi: NDArray[np.float64] | None = None,
+    rear_center: NDArray[np.float64] | None = None,
 ) -> tuple[list[PreviewSurfaceV1], dict[str, dict[str, float]]]:
     bounds = enclosure["bounds"]
     depth = float(enclosure["edge_depth"])
@@ -998,6 +1340,50 @@ def _enclosure_surfaces(
     z_front = float(bounds["z_front"])
     z_back = float(bounds["z_back"])
     center_xy = np.asarray((float(bounds["cx"]), float(bounds["cy"])), dtype=np.float64)
+
+    if bounds.get("flush_mount"):
+        rear = np.array(mouth, copy=True)
+        rear[:, 2] = z_back
+        side_grid = np.stack((mouth, rear))
+        reference_front = mouth if reference_mouth is None else reference_mouth
+        reference_rear = np.array(reference_front, copy=True)
+        reference_rear[:, 2] = z_back
+        side_ref = np.stack([
+            reference_front + (reference_rear - reference_front) * t
+            for t in np.linspace(0.0, 1.0, 5)
+        ])
+        hint = side_grid.copy()
+        hint[:, :, 0] -= center_xy[0]
+        hint[:, :, 1] -= center_xy[1]
+        hint[:, :, 2] = 0.0
+        coords = {}
+        if mouth_phi is not None and reference_phi is not None:
+            coords = {
+                "point_t": np.asarray([0.0, 1.0]),
+                "reference_t": np.linspace(0.0, 1.0, 5),
+                "point_phi": np.broadcast_to(mouth_phi, side_grid.shape[:2]),
+                "reference_phi": np.broadcast_to(reference_phi, side_ref.shape[:2]),
+            }
+        side, measured = _smooth_grid_surface(
+            "enclosure.side", side_grid, side_ref, closed_phi=closed_phi,
+            orientation_hint=hint, include_curvature=include_curvature, **coords,
+        )
+        surfaces = [side]
+        if include_rear:
+            axis = (np.asarray(rear_center) if rear_center is not None
+                    else np.asarray((0.0, float(bounds.get("cy", 0.0)), z_back)))
+            if _flush_cap_is_concave(rear, axis):
+                surfaces.append(_flush_polygon_cap(
+                    "enclosure.rear", rear, closed_phi=closed_phi, axis=axis,
+                    include_curvature=include_curvature,
+                ))
+            else:
+                surfaces.append(_flat_cap(
+                    "enclosure.rear", rear, (0.0, 0.0, -1.0),
+                    closed_phi=closed_phi, include_curvature=include_curvature,
+                    center=rear_center if not closed_phi else None,
+                ))
+        return surfaces, {"enclosure.side": measured}
 
     analytic_fillet = depth > 0.0 and _analytic_fillet(enclosure)
     front_native = (

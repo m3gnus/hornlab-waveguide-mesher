@@ -878,6 +878,9 @@ def _realized_bundle_geometry(geometry: PointGridHornGeometry) -> BuiltGeometry:
             geometry.enclosure,
             closed=geometry.closed,
             symmetry_planes=geometry.symmetry_planes,
+            surface_fit=geometry.surface_fit,
+            preserve_grid=geometry.preserve_grid,
+            boundary_recipe=getattr(geometry, "freeform_wall", None),
         )
     points = np.asarray(geometry.inner_points, dtype=np.float64)
     return BuiltGeometry(
@@ -908,6 +911,9 @@ def _validate_realized_bundle_geometry(
         geometry.enclosure,
         closed=geometry.closed,
         symmetry_planes=geometry.symmetry_planes,
+        surface_fit=geometry.surface_fit,
+        preserve_grid=geometry.preserve_grid,
+        boundary_recipe=getattr(geometry, "freeform_wall", None),
     )
     for name, expected_value in expected.items():
         actual_value = built.enclosure_bounds.get(name)
@@ -1370,11 +1376,6 @@ def write_wglink(
             "wglink export supports only FREESTANDING and ENCLOSURE builds; "
             f"{mode.value.upper()} is not supported"
         )
-    if geometry.enclosure is not None and int(geometry.enclosure.plan_type) != 1:
-        raise MesherError(
-            f"wglink export rejects enclosure plan_type={geometry.enclosure.plan_type}; "
-            "only plan_type=1 has a buildable watertight enclosure"
-        )
     if not geometry.closed:
         raise MesherError("wglink export requires a full, closed point grid")
 
@@ -1386,6 +1387,12 @@ def write_wglink(
     target.parent.mkdir(parents=True, exist_ok=True)
     built = built_geometry or _realized_bundle_geometry(geometry)
     _validate_realized_bundle_geometry(geometry, built)
+    if (geometry.enclosure is not None and int(geometry.enclosure.plan_type) != 1
+            and not (built.enclosure_bounds or {}).get("flush_mount")):
+        raise MesherError(
+            f"wglink export rejects enclosure plan_type={geometry.enclosure.plan_type}; "
+            "only plan_type=1 has a buildable watertight non-flush enclosure"
+        )
     datums = derive_datums(geometry, built)
     point_grid = _point_grid_payload(geometry, check_points=check_points)
     parameters = _parameter_table(

@@ -38,7 +38,7 @@ from ..rear_compatibility import freestanding_rear_ring
 from ..text_import import uses_text_import_geometry
 from ..profile_sampling import _outer_offset_shell
 from ..profiles import eval_param
-from ..viewport import build_viewport_geometry_from_config
+from ..viewport import build_viewport_geometry_from_config, _set_flush_viewport_ring
 from .contract import (
     PreviewGeometryV1,
     PreviewOptionsV1,
@@ -51,6 +51,9 @@ from .enclosure import (
     _adaptive_plan_intervals,
     _enclosure_surfaces,
     _faceted_edge,
+    _flush_cap_is_concave,
+    _flush_polygon_cap,
+    _fit_flush_grid,
     _plan_fidelity,
     _plan_ring,
 )
@@ -262,6 +265,8 @@ def _sample_master_level(
     wall_mm: float,
     deferred_wall: float,
     enclosure_validated: bool = False,
+    enclosure_bounds: Mapping[str, Any] | None = None,
+    flush_geometry: Any = None,
     refinement_deadline: float | None = None,
 ) -> _MasterLevel:
     """Sample the canonical master at ``axial`` rows and choose the render grid."""
@@ -281,6 +286,7 @@ def _sample_master_level(
     output = build_viewport_geometry_from_config(
         sampling_config, point_lists=False, defer_osse_offset_repair=True,
         enclosure_validated=enclosure_validated,
+        enclosure_bounds=enclosure_bounds,
     )
     sampling_ms = (time.perf_counter() - sampling_start) * 1000.0
     if formula == "OSSE" and output["grid"].get("outer_offset_fold"):
@@ -291,6 +297,11 @@ def _sample_master_level(
         output["grid"]["outer_grid"] = None
     if has_corners:
         _replace_grid_with_corner_refinement(output, corner_intervals)
+    pinned_t, pinned_phi = [], []
+    if flush_geometry is not None:
+        grid = output["grid"]["inner_grid"]
+        pinned_t, pinned_phi = _fit_flush_grid(grid, flush_geometry, output["grid"]["slice_map"])
+        _set_flush_viewport_ring(output["enclosure"], grid)
     if deferred_wall > 0.0:
         output["params"]["wallThickness"] = deferred_wall
 
@@ -318,10 +329,10 @@ def _sample_master_level(
     )
     initial_t = sorted(
         set(_even_indices(len(master_t), axial_seed + 1, closed=False)).union(
-            semantic_t
+            semantic_t, pinned_t
         )
     )
-    initial_phi = _even_indices(n_phi, silhouette_target, closed=closed_phi)
+    initial_phi = sorted(set(_even_indices(n_phi, silhouette_target, closed=closed_phi)).union(pinned_phi))
     corner_rows: list[int] = []
     if has_corners:
         corner_rows = _corner_phi_indices(inner_normals)
@@ -469,8 +480,14 @@ def build_preview_geometry(
     # Refuse the actual build geometry before replacing its sampling for display.
     # This also runs for coarse/hidden previews, independently of dimensions.
     enclosure_validated = _parsed_mode == "enclosure"
+    enclosure_bounds = None
     if enclosure_validated:
-        resolve_enclosure_bounds(config, warn_prefix=None)
+        enclosure_bounds = resolve_enclosure_bounds(config, warn_prefix=None)
+    flush_geometry = (
+        resolve_geometry(config)
+        if enclosure_bounds is not None and enclosure_bounds.get("flush_mount")
+        else None
+    )
     adapter_construction = None
     if parsed_params.get("throat_adapter"):
         from ..throat_adapter import resolve_adapter
@@ -506,6 +523,11 @@ def build_preview_geometry(
         angular_master = max(
             4 * silhouette_target, 4 * int(math.ceil(360.0 / normal_target))
         )
+    if flush_geometry is not None and flush_geometry.geometry.preserve_grid:
+        production = flush_geometry.geometry
+        coverage = 1 if production.closed else 4 if len(production.symmetry_planes) >= 2 else 2
+        intervals = len(production.inner_points) if production.closed else len(production.inner_points) - 1
+        angular_master = max(angular_master, 2 * coverage * intervals)
     if adapter_construction is not None:
         radius_bound = max(float(np.max(adapter_construction.cubic[:, 1])),
                            float(adapter_construction.body_poles[-1, 1]))*float(parsed_params["scale"])
@@ -527,12 +549,16 @@ def build_preview_geometry(
     )
     axial_master = min(512, max(int(preset["master_axial"]), scaled_axial))
     axial_master = min(512, max(axial_master, 4 * int(preset["axial"])))
+    if flush_geometry is not None and flush_geometry.geometry.preserve_grid:
+        axial_master = max(axial_master, len(flush_geometry.flush_slice_map) - 1)
     # R-OSSE/FREEFORM double the candidate lattice.
     axial_ceiling = (
         min(512, axial_master * 2)
         if formula_name in {"R-OSSE", "FREEFORM"}
         else axial_master
     )
+    if flush_geometry is not None and flush_geometry.geometry.preserve_grid:
+        axial_ceiling = max(axial_ceiling, axial_master)
     # The doubling earns its cost on some of those configurations and not
     # others, so the thin master is attempted only where it was measured to
     # settle, and the escalation below is the guard for the rest:
@@ -597,6 +623,8 @@ def build_preview_geometry(
             wall_mm=wall_mm,
             deferred_wall=deferred_wall,
             enclosure_validated=enclosure_validated,
+            enclosure_bounds=enclosure_bounds,
+            flush_geometry=flush_geometry,
             refinement_deadline=refinement_deadline,
         )
 
@@ -646,6 +674,7 @@ def build_preview_geometry(
         output.get("enclosure") is not None
         and options.include_enclosure
         and not closed_phi
+        and not output["enclosure"]["bounds"].get("flush_mount")
     ):
         reduced_plan_type = int(output["enclosure"].get("plan_type", 1))
         if reduced_plan_type in (2, 3):
@@ -826,7 +855,34 @@ def build_preview_geometry(
             if cap_intervals > allowed_radial:
                 cap_intervals = allowed_radial
                 cap_limited = True
-        while True:
+        source_ring = selected_inner[:, 0, :]
+        source_axis = np.asarray((0.0, float(grid_data.get("vertical_offset_mm", 0.0) or 0.0),
+                                  float(np.mean(source_ring[:, 2]))))
+        polygon_source = flush_geometry is not None and _flush_cap_is_concave(source_ring, source_axis)
+        if polygon_source:
+            from ..builders.point_grid_sources import (
+                _source_cap_height,
+                _source_cap_radius,
+            )
+            from .source_cap import _source_geometry
+
+            source_geometry = _source_geometry(output["params"], output["formula"], selected_inner)
+            throat_radius = float(np.mean(np.linalg.norm(source_ring[:, :2] - source_axis[:2], axis=1)))
+            height = _source_cap_height(throat_radius, source_geometry)
+            radius = _source_cap_radius(throat_radius, source_geometry)
+            rounded = int(source_geometry.source_shape) != 0 and height > 1e-12 and math.isfinite(radius)
+            cap_surface = _flush_polygon_cap(
+                "source_cap", source_ring, closed_phi=closed_phi, axis=source_axis,
+                include_curvature=options.include_curvature,
+                sphere_radius=max(radius, throat_radius * 1.001) if rounded else None,
+                sphere_sign=-1.0 if int(source_geometry.source_curv) == -1 else 1.0,
+                throat_radius=throat_radius, max_vertices=vertex_cap,
+            )
+            cap_fidelity = {"max_chord_error_mm": None, "max_normal_step_deg": 180.0,
+                            "measurement_complete": False}
+            source_details = {"source_cap_height_mm": float(height),
+                              "source_cap_radius_mm": float(radius) if math.isfinite(radius) else None}
+        while not polygon_source:
             cap_surface, cap_fidelity, source_details = _source_cap(
                 selected_inner,
                 output["params"],
@@ -872,7 +928,7 @@ def build_preview_geometry(
         # The toggle above is a display filter, not a config change, so this
         # warning does not depend on it.
         preview_plan_type = int(output["enclosure"].get("plan_type", 1))
-        if preview_plan_type in (2, 3):
+        if preview_plan_type in (2, 3) and not output["enclosure"]["bounds"].get("flush_mount"):
             warnings.append(
                 f"enclosure plan_type={preview_plan_type} is previewed but not "
                 "buildable: only the rounded-rectangle plan (plan_type=1) has a "
@@ -896,11 +952,11 @@ def build_preview_geometry(
             normal_target,
             int(preset["roundover"]),
         )
-        plan_corner_intervals, plan_preflight_limited = _adaptive_plan_intervals(
-            enclosure_payload,
-            chord_target,
-            normal_target,
-            1,
+        flush = bool(enclosure_payload["bounds"].get("flush_mount"))
+        plan_corner_intervals, plan_preflight_limited = (
+            (1, False) if flush else _adaptive_plan_intervals(
+                enclosure_payload, chord_target, normal_target, 1,
+            )
         )
         if plan_preflight_limited:
             preflight_limited = True
@@ -912,6 +968,11 @@ def build_preview_geometry(
             def enclosure_vertex_estimates(
                 radial_intervals: int, plan_intervals: int
             ) -> dict[str, int]:
+                if flush:
+                    estimates = {"enclosure.side": 2 * len(phi_indices)}
+                    if options.include_rear_cap:
+                        estimates["enclosure.rear"] = len(phi_indices) + 1
+                    return estimates
                 plan_vertices = (
                     4 * plan_intervals + 8
                     if int(enclosure_payload["plan_type"]) == 1
@@ -961,14 +1022,21 @@ def build_preview_geometry(
             normal_target=normal_target,
             include_rear=options.include_rear_cap,
             include_curvature=options.include_curvature,
+            closed_phi=closed_phi,
+            reference_mouth=inner_canonical[:, -1, :] if flush else None,
+            mouth_phi=master_phi[-1, phi_indices] if flush else None,
+            reference_phi=master_phi[-1, :] if flush else None,
+            rear_center=np.asarray((0.0, float(grid_data.get("vertical_offset_mm", 0.0) or 0.0),
+                                    float(enclosure_payload["bounds"]["z_back"]))) if flush else None,
         )
         surfaces.extend(enclosure_surfaces)
-        plan_measurement = _plan_fidelity(
-            enclosure_payload, plan_corner_intervals
+        plan_measurement = (
+            enclosure_fidelity.get("enclosure.side", {}) if flush
+            else _plan_fidelity(enclosure_payload, plan_corner_intervals)
         )
         plan_chord = plan_measurement["max_chord_error_mm"]
         plan_normal = plan_measurement["max_normal_step_deg"]
-        plan_vertices = len(
+        plan_vertices = len(phi_indices) if flush else len(
             _plan_ring(
                 enclosure_payload,
                 0.0,
@@ -1002,8 +1070,15 @@ def build_preview_geometry(
                     plan_normal,
                     round_normal,
                 )
-            elif surface.role == "enclosure.side":
+            elif surface.role == "enclosure.side" and not flush:
                 measured = dict(plan_measurement)
+            if flush and surface.role in {"enclosure.side", "enclosure.rear"}:
+                # Both boundaries follow the horn's selected mouth. If its
+                # reference lattice ran out, the cap and sides cannot claim
+                # a measured bound just because no intermediate sample exists.
+                measured = dict(measured)
+                if not horn_achieved.get("measurement_complete", True):
+                    measured["measurement_complete"] = False
             fidelity[surface.role] = _fidelity_record(
                 measured,
                 chord_target=chord_target,

@@ -10,7 +10,6 @@ from hornlab_mesher.preview import PreviewOptionsV1, build_preview_geometry
 import hornlab_mesher.preview.api as preview_api
 import hornlab_mesher.preview.dimensions as measurement
 from hornlab_mesher.config_builder import resolve_geometry
-from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
 from test_offset_envelope import _grooved_config
 from test_freeform_morph import _config_with_morph
@@ -260,11 +259,19 @@ def test_measurement_does_not_repeat_outer_wall_warning(caplog):
     assert not [record for record in caplog.records[before:] if 'outer wall' in record.getMessage()]
 
 
-def test_measurement_surfaces_design_refusal_instead_of_caching_unavailable():
-    from test_preview_enclosure_edges import TIED_SIDE_REFUSAL, sampling_sensitive_enclosure
+def test_measurement_caches_current_dimensions_for_flush_enclosure():
+    from hornlab_mesher.config_builder import resolve_enclosure_bounds
+    from test_preview_enclosure_edges import sampling_sensitive_enclosure
+
     config = sampling_sensitive_enclosure()
-    for _ in range(2):
-        with pytest.raises(ConfigError, match=TIED_SIDE_REFUSAL):
-            measurement.dimension_metadata(config, "fine")
-    assert not measurement._DIMENSIONS_CACHE
+    bounds = resolve_enclosure_bounds(config, warn_prefix=None)
+    assert bounds["flush_mount"] is True
+    first = measurement.dimension_metadata(config, "fine")
+    assert first["dimensions_status"] == "current"
+    assert first["dimensions_mm"]["enclosure_overall"] == pytest.approx([
+        bounds["bx1"] - bounds["bx0"], bounds["by1"] - bounds["by0"],
+        bounds["z_front"] - bounds["z_back"],
+    ])
+    assert measurement.dimension_metadata(config, "fine") == first
+    assert measurement._DIMENSIONS_CACHE
     assert not measurement._IN_FLIGHT

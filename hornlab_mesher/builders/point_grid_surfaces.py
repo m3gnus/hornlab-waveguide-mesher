@@ -489,6 +489,11 @@ def _add_spline_span_wall_surfaces(
     return surfaces
 
 
+def _open_sector_count(*, closed: bool, symmetry_planes: tuple[str, ...]) -> int:
+    """Count the quadrant sectors of a full or symmetry-reduced wall."""
+    return 1 if closed or len(tuple(symmetry_planes)) >= 2 else 2
+
+
 def _bspline_patch_phi_groups(
     n_phi: int, *, closed: bool, n_sectors: int = 1
 ) -> list[list[int]]:

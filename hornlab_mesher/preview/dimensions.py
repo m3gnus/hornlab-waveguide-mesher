@@ -130,6 +130,8 @@ def _geometry_dimensions(
             inner, geometry.enclosure, closed=True)
         result["enclosure_overall"] = [bounds["bx1"] - bounds["bx0"],
             bounds["by1"] - bounds["by0"], bounds["z_front"] - bounds["z_back"]]
+        if bounds.get("flush_mount"):
+            result["mouth_opening"] = result["enclosure_overall"][:2]
     return result
 
 

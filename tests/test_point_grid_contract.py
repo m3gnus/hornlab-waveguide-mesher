@@ -3502,7 +3502,7 @@ def test_caller_supplied_endpoints_replace_rather_than_extend_the_registry():
             gmsh.finalize()
 
 
-# Minimum front-baffle ring: shared bounds and mesh refusal contract.
+# Minimum front-baffle ring: shared bounds and flush-mount contract.
 def rectangular_enclosure(*, margin=1.0, quadrants="1234", fractional=False):
     config = {
         "formula": "ICW", "mode": "enclosure",
@@ -3529,7 +3529,7 @@ def rectangular_enclosure(*, margin=1.0, quadrants="1234", fractional=False):
     return config
 
 
-REFUSED_RINGS = [
+PREVIOUSLY_REFUSED_RINGS = [
     ("all-zero", None, 0.0),
     ("right-zero", "r", 0.0),
     ("top-zero", "t", 0.0),
@@ -3541,15 +3541,15 @@ REFUSED_RINGS = [
     ("left-sliver", "l", 0.05),
     ("bottom-sliver", "b", 0.05),
 ]
-REFUSED_DOMAINS = [
+PREVIOUSLY_REFUSED_DOMAINS = [
     (quadrants, case, side, margin)
     for quadrants in ("1234", "1")
-    for case, side, margin in REFUSED_RINGS
+    for case, side, margin in PREVIOUSLY_REFUSED_RINGS
     if quadrants == "1234" or side not in ("l", "b")
 ]
 
 
-def refused_config(side, margin, quadrants):
+def previously_refused_config(side, margin, quadrants):
     config = rectangular_enclosure(margin=margin if side is None else 1.0,
                                    quadrants=quadrants)
     if side is not None:
@@ -3557,23 +3557,36 @@ def refused_config(side, margin, quadrants):
     return config
 
 
-@pytest.mark.parametrize("quadrants,_case,side,margin", REFUSED_DOMAINS,
-                         ids=[f"{q}-{case}" for q, case, _, _ in REFUSED_DOMAINS])
-def test_mesh_refuses_inadequate_baffle(tmp_path, quadrants, _case, side, margin):
-    config = refused_config(side, margin, quadrants)
-    output = tmp_path / "refused.msh"
-    with pytest.raises(ConfigError, match=r"baffle beside the mouth on the .*at least 0\.1 mm"):
-        build_from_config(config, output)
-    assert not output.exists()
+@pytest.mark.parametrize("quadrants,_case,side,margin", PREVIOUSLY_REFUSED_DOMAINS,
+                         ids=[f"{q}-{case}" for q, case, _, _ in PREVIOUSLY_REFUSED_DOMAINS])
+def test_mesh_builds_previously_refused_baffle_as_flush(tmp_path, quadrants, _case, side, margin):
+    from hornlab_mesher.config_builder import resolve_enclosure_bounds
+
+    config = previously_refused_config(side, margin, quadrants)
+    assert resolve_enclosure_bounds(config, warn_prefix=None)["flush_mount"] is True
+    output = tmp_path / "flush.msh"
+    result = build_from_config(config, output)
+    assert result.n_triangles > 0
+    mesh = meshio.read(output)
+    triangles, tags = _triangles_and_tags(mesh)
+    assert {1, 2, 3}.issubset(set(tags))
+    boundary = _boundary_edges(triangles)
+    if quadrants == "1234":
+        assert not boundary
+    else:
+        assert boundary
+        for a, b in boundary:
+            assert any(abs(mesh.points[a, axis]) < 1e-7 and
+                       abs(mesh.points[b, axis]) < 1e-7 for axis in (0, 1))
 
 
 @pytest.mark.parametrize("topology,preserve", [("legacy", False), ("legacy", True),
                                              ("acoustic", False)])
-def test_baffle_refusal_survives_build_modes_and_auto_fit(tmp_path, topology, preserve):
+def test_flush_builds_in_each_topology_and_auto_fit(tmp_path, topology, preserve):
     config = rectangular_enclosure(margin=0, quadrants="1")
     config["mesh"].update(topology=topology, preserve_grid=preserve, surfaceFit="auto")
-    with pytest.raises(ConfigError, match="baffle beside the mouth"):
-        build_from_config(config, tmp_path / "mode.msh")
+    result = build_from_config(config, tmp_path / "mode.msh")
+    assert result.n_triangles > 0
 
 
 @pytest.mark.parametrize("margin,fractional", [(0.0, True), (0.1, False), (1.0, False)])
@@ -3589,7 +3602,7 @@ def test_mesh_accepts_real_baffle_with_zero_cut_margins(tmp_path, margin, fracti
     ("left", 0, False), ("bottom", 1, False),
 ])
 @pytest.mark.parametrize("dim", [False, True])
-def test_bounds_name_narrowest_wall(side, axis, positive, dim):
+def test_bounds_select_flush_for_narrowest_wall(side, axis, positive, dim):
     points = np.array([[[-1, -2, 0], [-150, -200, 100]],
                        [[1, 2, 0], [150, 200, 100]]], dtype=float)
     margins = dict(space_l_mm=1, space_r_mm=1, space_t_mm=1, space_b_mm=1)
@@ -3597,18 +3610,15 @@ def test_bounds_name_narrowest_wall(side, axis, positive, dim):
         dims = [151.0, 201.0, 151.0, 201.0]
         dims[axis + (0 if positive else 2)] -= 0.95
         enclosure = HornEnclosure(depth_mm=200, dim_mm=tuple(dims), **margins)
-        remedy = "increase Mesh.Enclosure.Dim"
     else:
         margins[f"space_{side[0]}_mm"] = 0.05
         enclosure = HornEnclosure(depth_mm=200, **margins)
-        remedy = f"set the {side} margin"
-    with pytest.raises(ConfigError) as error:
-        enclosure_box_bounds(points, enclosure, closed=True)
-    assert str(error.value).startswith(
-        f"The enclosure leaves 0.05 mm of baffle beside the mouth on the {side};"
-    )
-    assert remedy in str(error.value)
-    assert "at least 0.1 mm" in str(error.value)
+    bounds = enclosure_box_bounds(points, enclosure, closed=True)
+    assert bounds["flush_mount"] is True
+    assert bounds["front_ring_min_mm"] == pytest.approx(0.05)
+    side_key = {"right": "bx1", "top": "by1", "left": "bx0", "bottom": "by0"}[side]
+    expected = (150 if axis == 0 else 200) + 0.05
+    assert bounds[side_key] == pytest.approx(expected if positive else -expected)
 
 
 @pytest.mark.parametrize("planes", [("x",), ("y",), ("x", "y")])
@@ -3626,13 +3636,15 @@ def test_bounds_exclude_cut_walls_and_preserve_offset(planes, dim):
     bounds = enclosure_box_bounds(points, enclosure, closed=False,
                                   symmetry_planes=planes, y_origin_offset_mm=0.375)
     assert bounds["front_ring_min_mm"] == pytest.approx(0.1)
+    assert "flush_mount" not in bounds
 
 
-def test_bounds_reject_ring_just_below_minimum():
+def test_bounds_select_flush_for_ring_just_below_minimum():
     points = np.array([[[1, 2, 0], [150, 200, 100]]], dtype=float)
     enclosure = HornEnclosure(depth_mm=200, space_r_mm=0.1 - 1e-8)
-    with pytest.raises(ConfigError, match="on the right"):
-        enclosure_box_bounds(points, enclosure, closed=True)
+    bounds = enclosure_box_bounds(points, enclosure, closed=True)
+    assert bounds["front_ring_min_mm"] == pytest.approx(0.1 - 1e-8)
+    assert bounds["flush_mount"] is True
 
 
 @pytest.mark.parametrize("margin", [0.0, 0.05, 0.1, 1.0])
@@ -3650,11 +3662,12 @@ def test_measure_bounds_without_accepting_enclosure(margin, dim):
     assert [bounds[k] for k in ("bx0", "bx1", "by0", "by1")] == pytest.approx(
         [-150 - margin, 150 + margin, -200 - margin, 200 + margin])
     assert bounds["front_ring_min_mm"] == pytest.approx(margin)
+    assert "flush_mount" not in bounds
+    validated = enclosure_box_bounds(points, enclosure, closed=True)
     if margin < 0.1:
-        with pytest.raises(ConfigError, match="baffle beside the mouth"):
-            enclosure_box_bounds(points, enclosure, closed=True)
+        assert validated == {**bounds, "flush_mount": True}
     else:
-        assert enclosure_box_bounds(points, enclosure, closed=True) == bounds
+        assert validated == bounds
 
 
 @pytest.mark.parametrize("plane", ["x", "y"])
@@ -3669,9 +3682,15 @@ def test_measure_bounds_does_not_validate_symmetry(plane):
         enclosure_box_bounds(points, enclosure, closed=False, symmetry_planes=(plane,))
 
 
-def test_step_export_refuses_inadequate_baffle(tmp_path):
+def test_step_export_builds_previously_refused_baffle_as_flush(tmp_path):
     from hornlab_mesher.cad import write_step_from_config
-    output = tmp_path / "refused.step"
-    with pytest.raises(MesherError, match="baffle beside the mouth"):
-        write_step_from_config(rectangular_enclosure(margin=0), output)
-    assert not output.exists()
+    from hornlab_mesher.config_builder import resolve_enclosure_bounds
+
+    config = rectangular_enclosure(margin=0)
+    assert resolve_enclosure_bounds(config, warn_prefix=None)["flush_mount"] is True
+    output = tmp_path / "flush.step"
+    path, info = write_step_from_config(config, output)
+    assert path == output
+    assert info.body == "solid"
+    assert info.volume_mm3 is not None and info.volume_mm3 > 0.0
+    assert "MANIFOLD_SOLID_BREP" in output.read_text(encoding="utf-8", errors="replace")

@@ -27,6 +27,7 @@ from .geometry import (
     MeshDensity,
     PointGridHornGeometry,
     _StretchedPointGridHornGeometry,
+    _RetryInterpolatingFit,
     validate_mesh_density,
 )
 from .mesher import MesherError, TriangleBudgetExceeded, build_mesh_with_info
@@ -2387,6 +2388,13 @@ class ResolvedGeometry:
     freeform_report: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class _FlushResolvedGeometry(ResolvedGeometry):
+    """Carry production sampling stations to the flush preview only."""
+
+    flush_slice_map: tuple[float, ...] = field(default=(), repr=False, compare=False)
+
+
 def _certify_imported_rear_route_agreement(
     params, density, mesh, topology_mode, inner_points, restored_outer, rear,
 ):
@@ -2655,7 +2663,19 @@ def resolve_geometry(
     scale_to_metres = _bool(
         mesh, names=("scale_to_metres", "scaleToMetres"), default=True
     )
-    return ResolvedGeometry(
+    resolved_type = ResolvedGeometry
+    resolved_extra: dict[str, Any] = {}
+    if geometry.enclosure is not None:
+        from .builders.enclosure import enclosure_box_bounds
+
+        bounds = enclosure_box_bounds(
+            geometry.inner_points, geometry.enclosure, closed=geometry.closed,
+            symmetry_planes=tuple(geometry.symmetry_planes), warn_prefix=None,
+        )
+        if bounds.get("flush_mount"):
+            resolved_type = _FlushResolvedGeometry
+            resolved_extra["flush_slice_map"] = tuple(float(value) for value in grid["slice_map"])
+    return resolved_type(
         geometry=geometry,
         density=density,
         formula=formula,
@@ -2667,6 +2687,7 @@ def resolve_geometry(
                            **({"construction_fingerprint": adapter.fingerprint,
                                "throat_adapter": dict(adapter.payload)} if adapter is not None else {})},
         freeform_report=freeform_report,
+        **resolved_extra,
     )
 
 
@@ -2688,6 +2709,8 @@ def resolve_enclosure_bounds(
         geometry.inner_points, geometry.enclosure, closed=geometry.closed,
         symmetry_planes=tuple(geometry.symmetry_planes),
         warn_prefix=warn_prefix,
+        surface_fit=geometry.surface_fit, preserve_grid=geometry.preserve_grid,
+        boundary_recipe=getattr(geometry, "freeform_wall", None),
     )
 
 
@@ -2741,13 +2764,26 @@ def build_from_config(
         # who named it wants to know.
         if not chose_automatically:
             raise
-        logger.warning(
-            "[hornlab-mesher] the interpolating surface fit could not mesh this "
-            "geometry; falling back to the approximating fit, whose acoustic "
-            "wall sits slightly inside the design. Set mesh.surface_fit "
-            "explicitly to choose either one and see the failure."
-        )
-        geometry = replace(geometry, surface_fit="approximate")
+        flush = False
+        if geometry.enclosure is not None and not geometry.preserve_grid:
+            from .builders.enclosure import enclosure_box_bounds
+            flush = bool(enclosure_box_bounds(
+                geometry.inner_points, geometry.enclosure, closed=geometry.closed,
+                symmetry_planes=tuple(geometry.symmetry_planes), warn_prefix=None,
+            ).get("flush_mount"))
+        if flush:
+            logger.warning(
+                "[hornlab-mesher] the interpolating surface fit could not mesh this "
+                "geometry; retrying the same interpolated wall with MeshAdapt."
+            )
+        else:
+            logger.warning(
+                "[hornlab-mesher] the interpolating surface fit could not mesh this "
+                "geometry; falling back to the approximating fit, whose acoustic "
+                "wall sits slightly inside the design. Set mesh.surface_fit "
+                "explicitly to choose either one and see the failure."
+            )
+        geometry = replace(geometry, surface_fit=_RetryInterpolatingFit() if flush else "approximate")
         mesh_path, info = build_mesh_with_info(
             geometry,
             resolved.density,

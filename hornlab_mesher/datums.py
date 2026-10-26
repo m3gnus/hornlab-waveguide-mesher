@@ -79,6 +79,34 @@ def _axis_plane(axis: str, value: float) -> dict[str, Any]:
     }
 
 
+def _flush_mouth_outline(geometry: PointGridHornGeometry) -> NDArray[np.float64]:
+    """Sample the same wall boundary that the flush enclosure continues."""
+    from .builders._occ import sample_patch_boundary
+    from .builders.point_grid_surfaces import _bspline_patch_phi_groups
+
+    points = np.asarray(geometry.inner_points, dtype=np.float64)
+    groups = _bspline_patch_phi_groups(len(points), closed=True)
+    fit = geometry.surface_fit
+    preserve = geometry.preserve_grid
+    recipe = getattr(geometry, "freeform_wall", None)
+    if recipe is not None:
+        from .corner_wall import _angular_poles
+
+        points = _angular_poles(points, groups, recipe)
+        fit = "approximate"
+        preserve = False
+    samples = []
+    for group in groups:
+        # For the faceted wall, include every original vertex so its linear
+        # segments are represented exactly rather than cutting corners.
+        count = len(group) - 1 if preserve else max(65, len(group))
+        u = np.linspace(0.0, 1.0, count, endpoint=False)
+        samples.append(sample_patch_boundary(
+            points, group, u, surface_fit=fit, preserve_grid=preserve,
+        ))
+    return _placed(np.vstack(samples), geometry.vertical_offset_mm)
+
+
 def derive_datums(
     geometry: PointGridHornGeometry | StandaloneSourceGeometry,
     built: BuiltGeometry | None,
@@ -210,14 +238,15 @@ def derive_datums(
 
     if geometry.enclosure is None:
         raise ValueError("enclosure datums require HornEnclosure metadata")
-    if int(geometry.enclosure.plan_type) != 1:
-        raise ValueError(
-            f"enclosure plan_type={geometry.enclosure.plan_type} is not supported "
-            "for wglink export; only plan_type=1 is buildable"
-        )
     bounds = built.enclosure_bounds
     if bounds is None:
         raise ValueError("enclosure datums require realized BuiltGeometry.enclosure_bounds")
+    flush = bool(bounds.get("flush_mount"))
+    if int(geometry.enclosure.plan_type) != 1 and not flush:
+        raise ValueError(
+            f"enclosure plan_type={geometry.enclosure.plan_type} is not supported "
+            "for wglink export; only plan_type=1 is buildable without flush mount"
+        )
     required = {
         "bx0",
         "bx1",
@@ -231,6 +260,25 @@ def derive_datums(
     missing = sorted(required.difference(bounds))
     if missing:
         raise ValueError("enclosure_bounds is missing " + ", ".join(missing))
+
+    if flush:
+        # There is no baffle face or baffle plane. The sides begin at the
+        # fitted acoustic mouth itself; expose that actual common outline.
+        # The inner datum retains the point-grid ray count for CAD consumers;
+        # the denser outer datum preserves the shape between those rays.
+        from .preview.enclosure import _fit_flush_mouth
+
+        mouth = _flush_mouth_outline(geometry)
+        ray_mouth = _fit_flush_mouth(_placed(points[:, -1, :], offset), geometry)
+        mouth_planar, mouth_plane = _fit_plane(mouth, tolerance_mm=plane_tolerance_mm)
+        datums["rim_planar"] = mouth_planar
+        datums["WG_MOUTH_OUTLINE_INNER"] = _polyline(ray_mouth)
+        datums["WG_MOUTH_OUTLINE_OUTER"] = _polyline(mouth)
+        datums.pop("WG_MOUTH_PLANE", None)
+        if mouth_planar:
+            datums["WG_MOUTH_PLANE"] = {**mouth_plane, "exact": True}
+        datums["WG_ENC_BACK_PLANE"] = _axis_plane("z", float(bounds["z_back"]))
+        return datums
 
     z_front = float(bounds["z_front"])
     edge = float(bounds["clamped_edge"])

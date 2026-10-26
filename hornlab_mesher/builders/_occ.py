@@ -583,8 +583,10 @@ def add_bspline_patch(
 def throat_boundary_curve(
     points: NDArray[np.float64],
     column_indices: list[int],
+    *,
+    station_index: int = 0,
 ) -> tuple[NDArray[np.float64], tuple[list[float], list[int]], int]:
-    """Poles and knots of a wall patch's throat (v = 0) boundary curve.
+    """Poles and knots of an interpolated wall patch's axial boundary curve.
 
     Gmsh welds the source cap to the wall by *coincident mesh nodes*, not by
     shared topology, so the cap's rim has to be the same curve the wall's
@@ -594,11 +596,11 @@ def throat_boundary_curve(
     rim worked at all; under the interpolating fit they differ by the fit's own
     bias and every reduced-domain shell tore open at the source.
 
-    A clamped tensor-product surface's v = 0 isocurve carries its first pole row
-    over the surface's own u knot vector, and a clamped interpolating spline
-    reproduces its end data, so that row is exactly the u-interpolation of the
-    throat ring -- independent of the v parameterisation, and therefore of how
-    the caller chose to share v across patches.
+    A clamped tensor-product surface's boundary isocurve carries the first or
+    last pole row over the surface's own u knot vector. A clamped interpolating
+    spline reproduces its end data, so that row is exactly the u-interpolation
+    of the boundary ring, independently of the v parameterisation. The default
+    station is the throat; ``station_index=-1`` selects the mouth.
     """
 
     from scipy.interpolate import make_interp_spline
@@ -606,14 +608,149 @@ def throat_boundary_curve(
     grid = np.ascontiguousarray(
         np.asarray(points, dtype=np.float64)[column_indices, :, :].transpose(1, 0, 2)
     )
+    if station_index not in (0, -1, grid.shape[0] - 1):
+        raise ValueError("station_index must select the throat or mouth boundary")
     degree_u = min(3, max(1, len(column_indices) - 1))
     u_params = _averaged_chord_parameters(grid, axis=1)
-    curve = make_interp_spline(u_params, grid[0], k=degree_u)
+    curve = make_interp_spline(u_params, grid[station_index], k=degree_u)
     return (
         np.asarray(curve.c, dtype=np.float64),
         _knots_and_multiplicities(curve.t),
         degree_u,
     )
+
+
+def _patch_boundary_grid(
+    points: NDArray[np.float64], column_indices: list[int], station_index: int,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    grid = np.asarray(points, dtype=np.float64)
+    if grid.ndim != 3 or grid.shape[2] != 3 or grid.shape[1] < 2:
+        raise ValueError("point grid must have shape (n_phi, n_length, 3)")
+    if len(column_indices) < 2:
+        raise ValueError("a patch boundary needs at least two columns")
+    if station_index not in (0, -1, grid.shape[1] - 1):
+        raise ValueError("station_index must select the throat or mouth boundary")
+    return grid, grid[column_indices, station_index, :]
+
+
+def _patch_boundary_spline(
+    grid: NDArray[np.float64],
+    ring: NDArray[np.float64],
+    column_indices: list[int],
+    station_index: int,
+    surface_fit: str,
+):
+    """Construct the same axial boundary B-spline as ``add_bspline_patch``."""
+    from scipy.interpolate import BSpline
+
+    if surface_fit == SURFACE_FIT_INTERPOLATE:
+        poles, (knots, multiplicities), degree = throat_boundary_curve(
+            grid, column_indices, station_index=station_index,
+        )
+        full_knots = np.repeat(knots, multiplicities)
+    elif surface_fit == SURFACE_FIT_APPROXIMATE:
+        poles = ring
+        degree = min(3, len(column_indices) - 1)
+        end = len(column_indices) - degree
+        # OCC's default B-spline surface uses this open uniform knot vector.
+        full_knots = np.concatenate((
+            np.zeros(degree + 1),
+            np.arange(1, end, dtype=np.float64),
+            np.full(degree + 1, end, dtype=np.float64),
+        ))
+    else:
+        raise ValueError("surface_fit must be the resolved interpolating or approximating fit")
+    return BSpline(full_knots, poles, degree, extrapolate=False)
+
+
+def sample_patch_boundary(
+    points: NDArray[np.float64],
+    column_indices: list[int],
+    parameters: NDArray[np.float64],
+    *,
+    station_index: int = -1,
+    surface_fit: str = SURFACE_FIT_INTERPOLATE,
+    preserve_grid: bool = False,
+) -> NDArray[np.float64]:
+    """Sample the actual wall patch boundary at normalized parameters in [0, 1].
+
+    The interpolating and approximating modes use the same boundary poles and
+    knot vectors as ``add_bspline_patch``. For a preserved grid, each angular
+    cell instead contributes a straight edge. The caller supplies the same
+    angular column group and resolved fit that were used to build the wall.
+    Only the throat and mouth are clamped axial boundaries of the patch.
+    """
+
+    grid, ring = _patch_boundary_grid(points, column_indices, station_index)
+    u = np.asarray(parameters, dtype=np.float64)
+    if u.ndim != 1 or not np.all(np.isfinite(u)) or np.any((u < 0.0) | (u > 1.0)):
+        raise ValueError("boundary parameters must be a one-dimensional array in [0, 1]")
+
+    if preserve_grid:
+        position = u * (len(column_indices) - 1)
+        start = np.minimum(position.astype(np.int64), len(column_indices) - 2)
+        fraction = position - start
+        sampled = ring[start] + fraction[:, None] * (ring[start + 1] - ring[start])
+        # Keep the authored last vertex bit-exact when the parameter is one;
+        # subtracting and re-adding the edge can round it by one ULP.
+        at_end = fraction == 1.0
+        sampled[at_end] = ring[start[at_end] + 1]
+        return sampled
+
+    spline = _patch_boundary_spline(grid, ring, column_indices, station_index, surface_fit)
+    lower, upper = spline.t[spline.k], spline.t[-spline.k - 1]
+    return np.asarray(spline(lower + u * (upper - lower)), dtype=np.float64)
+
+
+def patch_boundary_bounds(
+    points: NDArray[np.float64],
+    column_indices: list[int],
+    *,
+    station_index: int = -1,
+    surface_fit: str = SURFACE_FIT_INTERPOLATE,
+    preserve_grid: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return fitted wall-boundary XYZ minima and maxima in model coordinates.
+
+    The fitted curve is piecewise polynomial. Every interior extremum occurs at
+    a derivative root or knot; evaluating those and the endpoints avoids using
+    display samples as bounds. A preserved-grid edge is linear, so its extrema
+    occur at the original vertices. Results use floating-point spline arithmetic.
+    """
+    from scipy.interpolate import BSpline, PPoly
+
+    grid, ring = _patch_boundary_grid(points, column_indices, station_index)
+    if preserve_grid:
+        return np.min(ring, axis=0), np.max(ring, axis=0)
+
+    spline = _patch_boundary_spline(grid, ring, column_indices, station_index, surface_fit)
+    lower, upper = spline.t[spline.k], spline.t[-spline.k - 1]
+    knots = np.unique(spline.t[(spline.t >= lower) & (spline.t <= upper)])
+    minimum, maximum = np.empty(3, dtype=np.float64), np.empty(3, dtype=np.float64)
+    for axis in range(3):
+        scalar = BSpline(spline.t, spline.c[:, axis], spline.k, extrapolate=False)
+        polynomial = PPoly.from_spline(scalar, extrapolate=False)
+        roots = polynomial.derivative().roots(discontinuity=False, extrapolate=False)
+        roots = roots[np.isfinite(roots) & (roots >= lower) & (roots <= upper)]
+        values = scalar(np.concatenate((knots, roots)))
+        minimum[axis], maximum[axis] = np.min(values), np.max(values)
+    return minimum, maximum
+
+
+def patch_boundary_xy_bounds(
+    points: NDArray[np.float64],
+    column_indices: list[int],
+    *,
+    station_index: int = -1,
+    surface_fit: str = SURFACE_FIT_INTERPOLATE,
+    preserve_grid: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return the transverse components of the fitted boundary's bounds."""
+    minimum, maximum = patch_boundary_bounds(
+        points, column_indices, station_index=station_index,
+        surface_fit=surface_fit, preserve_grid=preserve_grid,
+    )
+    return minimum[:2], maximum[:2]
 
 
 def grid_v_parameters(points: NDArray[np.float64], *, closed: bool | None = None) -> NDArray[np.float64]:

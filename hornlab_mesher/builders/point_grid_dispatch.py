@@ -6,6 +6,7 @@ import numpy as np
 
 from ..geometry import (
     MESH_ALGORITHM_DELAUNAY,
+    _RetryInterpolatingFit,
     BuiltGeometry,
     PointGridBuildMode,
     PointGridHornGeometry,
@@ -41,6 +42,7 @@ from .point_grid_surfaces import (
     _add_occ_bspline_patch_wall_surfaces,
     _add_spline_span_wall_surfaces,
     _bspline_patch_phi_groups,
+    _open_sector_count,
     _phi_segments,
     _snap_open_symmetry_grid,
     _spline_span_phi_groups,
@@ -50,20 +52,6 @@ from .point_grid_surfaces import (
 
 _BAFFLE_PLANE_SNAP_TOL_MM = 1.0e-6
 _BAFFLE_PROTRUSION_TOL_MM = 1.0e-7
-
-
-def _open_sector_count(geometry: PointGridHornGeometry) -> int:
-    """Quadrant sectors spanned by an open reduced grid.
-
-    A quarter model is bounded by two cut planes (``symmetry_planes`` has two
-    entries) and is a single quadrant; a half model is bounded by one cut plane
-    and spans two quadrants that meet on the off-cut axis. Closed grids are a
-    single full surface (the caller does not split them).
-    """
-
-    if geometry.closed:
-        return 1
-    return 1 if len(tuple(geometry.symmetry_planes)) >= 2 else 2
 
 
 def _shift_coupled_baffle_grid(points: np.ndarray) -> np.ndarray:
@@ -178,7 +166,7 @@ def _build_coupled_baffle_point_grid(
     else:
         if getattr(geometry, "quadrant_patch_fit", False):
             cap_boundary_groups = _bspline_patch_phi_groups(
-                n_phi, closed=geometry.closed, n_sectors=_open_sector_count(geometry))
+                n_phi, closed=geometry.closed, n_sectors=_open_sector_count(closed=geometry.closed, symmetry_planes=geometry.symmetry_planes))
             wall = _add_occ_bspline_patch_wall_surfaces(
                 inner_points, closed=geometry.closed, phi_groups=cap_boundary_groups,
                 surface_fit=geometry.surface_fit, quadrant_patch_fit=True,
@@ -353,7 +341,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             wall_groups = _bspline_patch_phi_groups(
                 inner_points.shape[0],
                 closed=geometry.closed,
-                n_sectors=_open_sector_count(geometry),
+                n_sectors=_open_sector_count(closed=geometry.closed, symmetry_planes=geometry.symmetry_planes),
             )
             wall = _add_occ_bspline_patch_wall_surfaces(
                 inner_points,
@@ -403,7 +391,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                     inner_points, closed=geometry.closed,
                     phi_groups=_bspline_patch_phi_groups(
                         inner_points.shape[0], closed=geometry.closed,
-                        n_sectors=_open_sector_count(geometry)),
+                        n_sectors=_open_sector_count(closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)),
                     surface_fit=geometry.surface_fit, quadrant_patch_fit=True,
                 )
             else:
@@ -424,7 +412,7 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                     boundary_phi_groups=(
                         _bspline_patch_phi_groups(
                             inner_points.shape[0], closed=geometry.closed,
-                            n_sectors=_open_sector_count(geometry))
+                            n_sectors=_open_sector_count(closed=geometry.closed, symmetry_planes=geometry.symmetry_planes))
                         if getattr(geometry, "quadrant_patch_fit", False) else
                         (None if geometry.closed else [list(range(inner_points.shape[0]))])
                     ),
@@ -489,6 +477,8 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
             enclosure=geometry.enclosure,
             closed=geometry.closed,
             symmetry_planes=geometry.symmetry_planes,
+            surface_fit=geometry.surface_fit,
+            preserve_grid=geometry.preserve_grid,
         )
         enclosure_tags = [tag for _, tag in enc_data["dimtags"]]
         # All enclosure surfaces join the "enclosure" group so density.py's
@@ -534,7 +524,9 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
         # Delaunay this branch would otherwise select (and to 4.7 deg under
         # Frontal-Delaunay). See MESH_ALGORITHM_* in ``geometry`` for the table.
         mesh_algorithm=(
-            None if build_mode is PointGridBuildMode.BARE else MESH_ALGORITHM_DELAUNAY
+            None if (build_mode is PointGridBuildMode.BARE
+                     or isinstance(geometry.surface_fit, _RetryInterpolatingFit))
+            else MESH_ALGORITHM_DELAUNAY
         ),
         open_shell_wall_points_mm=open_shell_points,
         open_shell_wall_normals=open_shell_normals,

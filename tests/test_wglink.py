@@ -88,6 +88,8 @@ def _built(geometry: PointGridHornGeometry) -> BuiltGeometry:
             geometry.enclosure,
             closed=geometry.closed,
             symmetry_planes=geometry.symmetry_planes,
+            surface_fit=geometry.surface_fit,
+            preserve_grid=geometry.preserve_grid,
         )
     return BuiltGeometry(
         surface_groups={},
@@ -333,6 +335,87 @@ def test_wglink_rejects_unbuildable_enclosure_plans(plan_type, tmp_path):
         write_wglink(_enclosure_geometry(plan_type=plan_type), tmp_path / "bad.wglink")
 
 
+@pytest.mark.parametrize("plan_type", [1, 2, 3])
+@pytest.mark.parametrize("nonplanar", [False, True])
+def test_flush_bundle_exposes_the_fitted_mouth_without_a_baffle(
+    plan_type, nonplanar, monkeypatch, tmp_path,
+):
+    from dataclasses import replace
+
+    from hornlab_mesher.builders._occ import sample_patch_boundary
+    from hornlab_mesher.builders.point_grid_surfaces import _bspline_patch_phi_groups
+    from scipy.spatial import cKDTree
+
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry(plan_type=plan_type, vertical_offset_mm=11.0)
+    geometry = replace(geometry, enclosure=replace(geometry.enclosure, space_r_mm=0))
+    if nonplanar:
+        geometry = replace(geometry, inner_points=_inner_grid(nonplanar_mouth=True))
+    result = write_wglink(geometry, tmp_path / "flush.wglink")
+    manifest = read_wglink(result.path)
+    datums = manifest["datums"]
+    assert manifest["enclosure"]["plan_type"] == plan_type
+    assert "WG_BAFFLE_PLANE" not in datums
+    assert "WG_BAFFLE_OUTLINE_FACE" not in datums
+    assert "WG_BAFFLE_OUTLINE_ENVELOPE" not in datums
+    assert ("WG_MOUTH_PLANE" in datums) is not nonplanar
+    actual = np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
+    assert len(actual) == len(geometry.inner_points)
+    groups = _bspline_patch_phi_groups(len(geometry.inner_points), closed=True)
+    expected = np.vstack([
+        sample_patch_boundary(geometry.inner_points, group,
+                              np.linspace(0, 1, 65, endpoint=False),
+                              surface_fit=geometry.surface_fit)
+        for group in groups
+    ])
+    expected[:, 1] += geometry.vertical_offset_mm
+    np.testing.assert_allclose(datums["WG_MOUTH_OUTLINE_OUTER"]["points_mm"], expected, atol=1e-10)
+    dense = np.vstack([
+        sample_patch_boundary(geometry.inner_points, group,
+                              np.linspace(0, 1, 16385),
+                              surface_fit=geometry.surface_fit)
+        for group in groups
+    ])
+    dense[:, 1] += geometry.vertical_offset_mm
+    assert cKDTree(dense).query(actual)[0].max() < 0.01
+    # The n_phi entries still correspond to the original grid rays.
+    original = geometry.inner_points[:, -1, :2]
+    on_ray = actual[:, :2].copy()
+    on_ray[:, 1] -= geometry.vertical_offset_mm
+    cross = original[:, 0] * on_ray[:, 1] - original[:, 1] * on_ray[:, 0]
+    assert np.max(np.abs(cross)) < 0.01
+    assert datums["WG_ENC_BACK_PLANE"]["origin_mm"][2] == pytest.approx(
+        _built(geometry).enclosure_bounds["z_back"]
+    )
+
+
+def test_flush_preserved_grid_datum_keeps_every_corner(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry(vertical_offset_mm=11.0)
+    geometry = replace(geometry, preserve_grid=True,
+                       enclosure=replace(geometry.enclosure, space_r_mm=0))
+    datums = write_wglink(geometry, tmp_path / "flush.wglink").manifest["datums"]
+    expected = geometry.inner_points[:, -1, :].copy()
+    expected[:, 1] += geometry.vertical_offset_mm
+    actual = np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
+    np.testing.assert_allclose(actual, expected, atol=1e-10)
+
+
+@pytest.mark.parametrize("plan_type", [2, 3])
+def test_flush_nonrectangular_plan_writes_real_step_bundle(plan_type, tmp_path):
+    from hornlab_mesher.config_builder import resolve_geometry
+    from test_point_grid_contract import rectangular_enclosure
+
+    config = rectangular_enclosure(margin=0, quadrants="1234")
+    config["enclosure"]["plan_type"] = plan_type
+    result = write_wglink(resolve_geometry(config).geometry, tmp_path / "flush.wglink")
+    assert result.cad_info.body == "solid"
+    assert result.cad_info.volume_mm3 > 0
+    assert read_wglink(result.path)["enclosure"]["plan_type"] == plan_type
+
+
 @pytest.mark.parametrize(
     "geometry, mode",
     [
@@ -528,22 +611,47 @@ def test_writer_rejects_config_like_enclosure_bounds(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("supplied_bounds", [False, True])
-def test_writer_rejects_unbuildable_measured_enclosure(monkeypatch, tmp_path, supplied_bounds):
+def test_writer_accepts_flush_enclosure_with_validated_bounds(monkeypatch, tmp_path, supplied_bounds):
     from dataclasses import replace
-    from hornlab_mesher.builders.enclosure import (
-        EnclosureBaffleError, measure_enclosure_box_bounds,
-    )
+
     _fake_step(monkeypatch)
     geometry = _enclosure_geometry()
-    built = _built(geometry) if supplied_bounds else None
     geometry = replace(geometry, enclosure=replace(geometry.enclosure, space_r_mm=0))
+    built = _built(geometry) if supplied_bounds else None
     if built is not None:
-        built.enclosure_bounds = measure_enclosure_box_bounds(
-            geometry.inner_points, geometry.enclosure, closed=True)
-    output = tmp_path / "refused.wglink"
-    with pytest.raises(EnclosureBaffleError, match="on the right"):
+        assert built.enclosure_bounds["flush_mount"] is True
+    result = write_wglink(geometry, tmp_path / "flush.wglink", built_geometry=built)
+    assert result.path.is_dir()
+    assert read_wglink(result.path)["enclosure"]["plan_type"] == 1
+
+
+def test_writer_rejects_unvalidated_flush_bounds(monkeypatch, tmp_path):
+    from dataclasses import replace
+    from hornlab_mesher.builders.enclosure import measure_enclosure_box_bounds
+
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry()
+    geometry = replace(geometry, enclosure=replace(geometry.enclosure, space_r_mm=0))
+    built = _built(geometry)
+    built.enclosure_bounds = measure_enclosure_box_bounds(
+        geometry.inner_points, geometry.enclosure, closed=True)
+    assert "flush_mount" not in built.enclosure_bounds
+    output = tmp_path / "unvalidated.wglink"
+    with pytest.raises(MesherError, match="enclosure_bounds do not match"):
         write_wglink(geometry, output, built_geometry=built)
     assert not output.exists()
+
+
+def test_writer_rejects_flush_bounds_without_topology_marker(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry()
+    geometry = replace(geometry, enclosure=replace(geometry.enclosure, space_r_mm=0))
+    built = _built(geometry)
+    assert built.enclosure_bounds.pop("flush_mount") is True
+    with pytest.raises(MesherError, match="flush_mount"):
+        write_wglink(geometry, tmp_path / "missing-marker.wglink", built_geometry=built)
 
 
 def test_bundle_is_not_staged_in_a_private_temporary_directory(monkeypatch, tmp_path):

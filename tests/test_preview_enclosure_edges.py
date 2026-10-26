@@ -16,9 +16,11 @@ import copy
 import numpy as np
 import pytest
 
-from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.config_builder import build_from_config, resolve_enclosure_bounds, resolve_geometry
-from test_point_grid_contract import REFUSED_DOMAINS, rectangular_enclosure, refused_config
+from test_point_grid_contract import (
+    PREVIOUSLY_REFUSED_DOMAINS, _boundary_edges, _triangles_and_tags,
+    previously_refused_config, rectangular_enclosure,
+)
 
 from hornlab_mesher.preview.api import (
     PreviewOptionsV1,
@@ -520,12 +522,19 @@ def test_fillet_band_has_no_corner_needles(lod):
     assert float(np.max((longest**2 / doubled_area)[corner])) < 30.0
 
 
-@pytest.mark.parametrize("quadrants,_case,side,margin", REFUSED_DOMAINS,
-                         ids=[f"{q}-{case}" for q, case, _, _ in REFUSED_DOMAINS])
-def test_preview_refuses_inadequate_baffle(quadrants, _case, side, margin):
-    config = refused_config(side, margin, quadrants)
-    with pytest.raises(ConfigError, match=r"baffle beside the mouth on the .*at least 0\.1 mm"):
-        build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+@pytest.mark.parametrize("quadrants,_case,side,margin", PREVIOUSLY_REFUSED_DOMAINS,
+                         ids=[f"{q}-{case}" for q, case, _, _ in PREVIOUSLY_REFUSED_DOMAINS])
+def test_preview_builds_previously_refused_baffle_as_flush(quadrants, _case, side, margin):
+    config = previously_refused_config(side, margin, quadrants)
+    bounds = resolve_enclosure_bounds(config, warn_prefix=None)
+    assert bounds["flush_mount"] is True
+    viewport = build_viewport_geometry_from_config(config)
+    assert viewport["enclosure"]["bounds"]["flush_mount"] is True
+    result = build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+    roles = {surface.role for surface in result.surfaces}
+    assert "horn.inner" in roles
+    assert {"enclosure.side", "enclosure.rear"}.issubset(roles)
+    assert "enclosure.front" not in roles
 
 
 @pytest.mark.parametrize("margin,fractional", [(0.0, True), (0.1, False), (1.0, False)])
@@ -541,12 +550,10 @@ def test_preview_accepts_real_baffle_with_zero_cut_margins(margin, fractional, l
     assert bounds["front_ring_min_mm"] >= 0.1 - 1e-12
 
 
-@pytest.mark.parametrize("build", ["preview", "mesh"])
-@pytest.mark.parametrize("margin", [0.0, 0.05])
-def test_imported_dim_refuses_in_both_paths(tmp_path, build, margin):
-    from hornlab_mesher.config_builder import build_from_config
+def imported_dim_enclosure(margin):
     from hornlab_mesher.config_parser import parse_ath_config
-    config = parse_ath_config(f"""
+
+    return parse_ath_config(f"""
 OSSE = {{
   L = 120
   r0 = 12.7
@@ -565,18 +572,44 @@ Morph.CornerRadius = 0
 Morph.FixedPart = 0
 Morph.AllowShrinkage = 1
 """)
-    with pytest.raises(ConfigError, match=r"on the right; increase Mesh\.Enclosure\.Dim.*0\.1 mm"):
-        if build == "preview":
-            build_preview_geometry(config, PreviewOptionsV1(lod="fine"))
-        else:
-            build_from_config(config, tmp_path / "dim.msh")
 
 
-# Coverage 45+10*sin(2p) is identical at p = 0, 90, 180 and 270 degrees, so all
-# four sides tie at the same 0.08 mm ring; which one is named comes down to
-# platform floating-point noise. The refusal, thickness and remedy are fixed.
-TIED_SIDE_REFUSAL = (r"leaves 0\.08 mm of baffle beside the mouth on the (?:top|bottom|left|right);"
-                     r".*at least 0\.1 mm")
+@pytest.mark.parametrize("build", ["preview", "mesh"])
+@pytest.mark.parametrize("margin", [0.0, 0.05])
+def test_imported_dim_builds_flush_in_both_paths(tmp_path, build, margin):
+    config = imported_dim_enclosure(margin)
+    # Keep a finite, explicit mesh budget high enough for this fine-resolution
+    # imported case so the test exercises the Dim geometry and closure.
+    config["mesh"]["maxTriangles"] = 88000
+    assert resolve_enclosure_bounds(config, warn_prefix=None)["flush_mount"] is True
+    if build == "preview":
+        result = build_preview_geometry(config, PreviewOptionsV1(lod="fine"))
+        assert any(surface.role == "horn.inner" for surface in result.surfaces)
+    else:
+        import meshio
+
+        result = build_from_config(config, tmp_path / "dim.msh")
+        mesh = meshio.read(result.mesh_path)
+        triangles, _tags = _triangles_and_tags(mesh)
+        boundary = _boundary_edges(triangles)
+        assert boundary
+        for a, b in boundary:
+            assert any(abs(mesh.points[a, axis]) < 1e-7 and
+                       abs(mesh.points[b, axis]) < 1e-7 for axis in (0, 1))
+
+
+@pytest.mark.parametrize("margin", [0.0, 0.05])
+def test_imported_dim_flush_still_obeys_default_mesh_budget(tmp_path, margin):
+    from hornlab_mesher import TriangleBudgetExceeded
+
+    config = imported_dim_enclosure(margin)
+    assert resolve_enclosure_bounds(config, warn_prefix=None)["flush_mount"] is True
+    output = tmp_path / "budget.msh"
+    # This is the independent existing triangle-budget admission, not a
+    # refusal of the flush enclosure geometry.
+    with pytest.raises(TriangleBudgetExceeded, match="exceeding the effective limit"):
+        build_from_config(config, output)
+    assert not output.exists()
 
 
 def sampling_sensitive_enclosure():
@@ -593,7 +626,7 @@ def sampling_sensitive_enclosure():
 
 
 @pytest.mark.parametrize("build", ["coarse", "fine", "mesh", "viewport"])
-def test_display_sampling_cannot_hide_resolved_baffle_refusal(tmp_path, build):
+def test_display_sampling_uses_resolved_flush_decision(tmp_path, build):
     cfg = sampling_sensitive_enclosure()
     # Verify the reported defect is the mesh's 0.084242 mm ring, before rounding
     # the diagnostic to two decimal places; do not encode another cutoff here.
@@ -601,14 +634,23 @@ def test_display_sampling_cannot_hide_resolved_baffle_refusal(tmp_path, build):
     roomy["enclosure"].update({f"space_{side}": 1 for side in "lrtb"})
     assert resolve_enclosure_bounds(roomy)["front_ring_min_mm"] - 1 == pytest.approx(
         0.084242, abs=1e-6)
-    with pytest.raises(ConfigError, match=TIED_SIDE_REFUSAL):
-        if build == "mesh":
-            build_from_config(cfg, tmp_path / "refused.msh")
-        elif build == "viewport":
-            build_viewport_geometry_from_config(cfg)
-        else:
-            build_preview_geometry(cfg, PreviewOptionsV1(lod=build, include_enclosure=False))
-    assert not (tmp_path / "refused.msh").exists()
+    resolved = resolve_enclosure_bounds(cfg, warn_prefix=None)
+    assert resolved["front_ring_min_mm"] == pytest.approx(0.084242, abs=1e-6)
+    assert resolved["flush_mount"] is True
+    if build == "mesh":
+        import meshio
+
+        result = build_from_config(cfg, tmp_path / "flush.msh")
+        mesh = meshio.read(result.mesh_path)
+        triangles, _tags = _triangles_and_tags(mesh)
+        assert not _boundary_edges(triangles)
+    elif build == "viewport":
+        bounds = build_viewport_geometry_from_config(cfg)["enclosure"]["bounds"]
+        assert bounds["flush_mount"] is True
+        assert bounds["bx1"] == pytest.approx(resolved["bx1"])
+    else:
+        result = build_preview_geometry(cfg, PreviewOptionsV1(lod=build, include_enclosure=False))
+        assert any(surface.role == "horn.inner" for surface in result.surfaces)
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine"])
@@ -637,7 +679,7 @@ def test_dense_display_mouth_keeps_its_own_enclosure_bounds(lod):
 
 
 def varied_enclosure(seed):
-    """A deterministic generated corpus, including both sides of the refusal."""
+    """A deterministic generated corpus spanning flush and baffle enclosures."""
     rng = np.random.default_rng(seed)
     cfg = sampling_sensitive_enclosure()
     cfg["formula"] = "R-OSSE" if seed % 3 == 0 else "OSSE"
@@ -688,19 +730,18 @@ def varied_enclosure(seed):
 def test_generated_preview_and_mesh_acceptance_agree(tmp_path, seed):
     cfg = varied_enclosure(seed)
 
-    def acceptance(build):
-        try:
-            build()
-        except ConfigError as exc:
-            assert "baffle beside the mouth" in str(exc)
-            return str(exc)
-        return None
-
-    mesh_error = acceptance(lambda: build_from_config(cfg, tmp_path / "varied.msh"))
+    bounds = resolve_enclosure_bounds(cfg, warn_prefix=None)
+    if seed % 4 == 0:
+        assert bounds["flush_mount"] is True
+    elif seed % 4 == 1:
+        assert "flush_mount" not in bounds
+    result = build_from_config(cfg, tmp_path / "varied.msh")
+    assert result.n_triangles > 0
     for lod in ("coarse", "fine"):
         # Always render the enclosure: hiding it masks display-mouth crossings.
         options = PreviewOptionsV1(lod=lod, include_enclosure=True)
-        assert acceptance(lambda: build_preview_geometry(cfg, options)) == mesh_error
+        preview = build_preview_geometry(cfg, options)
+        assert any(surface.role == "horn.inner" for surface in preview.surfaces)
 
 
 @pytest.mark.parametrize("lod", ["coarse", "fine"])
