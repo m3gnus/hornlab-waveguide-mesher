@@ -6,7 +6,7 @@ import pytest
 import hornlab_mesher.step_prepare as sp
 
 
-def _boundaries(*, other_source_role="wall", target_scale=1.0):
+def _boundaries(*, other_source_role="wall", other_target_role="wall", target_scale=1.0):
     # Two role boundaries at x = +/- 1. The negative-side boundary is
     # displaced by 0.002 in z; all faces share their role-transition edge.
     vertices = {
@@ -22,7 +22,7 @@ def _boundaries(*, other_source_role="wall", target_scale=1.0):
                   6: (3, 4), 7: (3,), 8: (3,), 9: (4,), 10: (4,)}
     face_vertices = {1: (1, 2, 3), 2: (1, 2, 4), 3: (5, 6, 7), 4: (5, 6, 8)}
     model = sp._OccTriangleModel(vertices, face_edges, edge_vertices, edge_faces, face_vertices)
-    roles = {1: "source", 2: other_source_role, 3: "source", 4: "wall"}
+    roles = {1: "source", 2: other_source_role, 3: "source", 4: other_target_role}
     return sp._OccTriangleRoleBoundaries(model, roles), roles
 
 
@@ -58,6 +58,12 @@ def test_waiver_requires_a_matching_role_face_and_the_same_opposite_role():
     assert not _allows(boundaries, candidates=(4,))
     different_boundary, _ = _boundaries(other_source_role="port")
     assert not _allows(different_boundary)
+
+
+def test_waiver_requires_the_same_opposite_role_on_both_sides():
+    boundaries, roles = _boundaries(other_source_role="wall", other_target_role="port")
+    roles[5] = "wall"  # A second nearby hit carries the source-side opposite role.
+    assert not _allows(boundaries, hits=(4, 5), candidates=(3, 4, 5))
 
 
 def test_nonfinite_boundary_queries_never_waive_a_mismatch():

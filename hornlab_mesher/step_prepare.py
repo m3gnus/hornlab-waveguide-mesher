@@ -856,18 +856,20 @@ class _OccTriangleRoleBoundaries:
             return False
         role = self.roles[surface]
         opposite_roles = {self.roles[hit] for hit in hits}
-        source_distance = self._distance(surface, point, opposite_roles)
-        if not np.isfinite(source_distance):
-            return False
-        for target in candidates:
-            if self.roles[target] != role:
+        for opposite in opposite_roles:
+            transition = {opposite}
+            source_distance = self._distance(surface, point, transition)
+            if not np.isfinite(source_distance):
                 continue
-            limit = min(tolerance,
-                        AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION * self.feature[surface],
-                        AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION * self.feature[target])
-            if (source_distance <= limit
-                    and self._distance(target, mirrored, opposite_roles) <= limit):
-                return True
+            for target in candidates:
+                if self.roles[target] != role:
+                    continue
+                limit = min(tolerance,
+                            AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION * self.feature[surface],
+                            AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION * self.feature[target])
+                if (source_distance <= limit
+                        and self._distance(target, mirrored, transition) <= limit):
+                    return True
         return False
 
 
