@@ -112,6 +112,16 @@ def test_acoustic_refinement_keeps_the_ath_rosse_morph_start():
         np.testing.assert_array_equal(fine['inner_grid'][:, j], base['inner_grid'][:, i])
 
 
+@pytest.mark.parametrize('fixed', ['0', '0.5*sin(p)^2'])
+def test_acoustic_pin_reproduces_every_meridian_start(fixed):
+    from hornlab_mesher.profile_sampling import ACOUSTIC_ROSSE_MORPH_STATION_KEY
+    text = (FIXTURES / 'rm_fp0.cfg').read_text().replace('Morph.FixedPart = 0', 'Morph.FixedPart = ' + fixed)
+    params = build_geometry_params(parse_text_config(text))[0]
+    base = build_point_grid_arrays(params)
+    pinned = build_point_grid_arrays({**params, ACOUSTIC_ROSSE_MORPH_STATION_KEY: base['rosse_morph_start_station']})
+    np.testing.assert_array_equal(pinned['inner_grid'], base['inner_grid'])
+
+
 def test_rosse_circle_morph_leaves_the_throat_extension_round():
     text = ((FIXTURES / 'rm_fp0.cfg').read_text().replace('R = 150', 'R = 150 + 20*cos(p)^2')
             .replace('Morph.TargetShape = 1', 'Morph.TargetShape = 2') + 'Throat.Ext.Length = 40\nThroat.Ext.Angle = 0\n')

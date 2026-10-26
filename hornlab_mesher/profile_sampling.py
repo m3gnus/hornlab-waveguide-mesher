@@ -1093,6 +1093,7 @@ def _ath_rosse_morph_factors(
     phi: float,
     params: Mapping[str, Any],
     t_unit_values: np.ndarray,
+    start_index: int | None = None,
 ) -> tuple[np.ndarray, int]:
     """ATH V2026-09a morph blend along one imported R-OSSE meridian.
 
@@ -1105,9 +1106,12 @@ def _ath_rosse_morph_factors(
     alone, and a circle target always starts at the first station past any
     throat extension. GridExport probes match all of this to the CSV's 1e-6 mm.
 
-    Returns the factors and the start station's index. A start station pinned
-    by the acoustic fit (``ACOUSTIC_ROSSE_MORPH_STATION_KEY``) replaces the
-    search, so a refined grid blends from the same point of the surface.
+    Returns the factors and the start station's index. The grid resolves the
+    start once, on its first meridian with ``Morph.FixedPart`` at p = 0 as the
+    native schedule does, and passes it as ``start_index`` to the rest, so
+    every meridian starts at one station. A station pinned by the acoustic fit
+    (``ACOUSTIC_ROSSE_MORPH_STATION_KEY``) replaces the search, so a refined
+    grid blends from the same point of the surface.
     """
 
     z = np.asarray(z_values, dtype=np.float64) - float(z_start)
@@ -1116,13 +1120,15 @@ def _ath_rosse_morph_factors(
     if not _morph_active(params, phi):
         return factors, last
     pinned = params.get(ACOUSTIC_ROSSE_MORPH_STATION_KEY)
-    if pinned is not None:
+    if start_index is not None:
+        index = int(start_index)
+    elif pinned is not None:
         index = int(np.argmin(np.abs(np.asarray(t_unit_values, dtype=np.float64) - float(pinned))))
     elif _morph_target_shape(params, phi) == 2:
         # A circle target ignores Morph.FixedPart on R-OSSE (it does not on OSSE).
         index = max(1, int(np.flatnonzero(z >= 0.0)[0]))
     else:
-        reached = np.flatnonzero(z / np.max(z) >= ath_morph_fixed_part(params, phi))
+        reached = np.flatnonzero(z / np.max(z) >= ath_morph_fixed_part(params, 0.0))
         index = max(1, int(reached[0])) if reached.size else last
     progress = z / z[-1]
     start = float(progress[index])
@@ -1958,6 +1964,7 @@ def build_point_grid_arrays(
     else:
         morph_possible = True
 
+    ath_rosse_start_index: int | None = None
     ath_rosse_start_station: float | None = None
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     if formula == "FREEFORM":
@@ -1993,8 +2000,10 @@ def build_point_grid_arrays(
                         phi_value,
                         params,
                         t_unit_values,
+                        start_index=ath_rosse_start_index,
                     )
-                    if i == 0:
+                    if ath_rosse_start_index is None and _morph_active(params, phi_value):
+                        ath_rosse_start_index = start_index
                         ath_rosse_start_station = float(t_unit_values[start_index])
                 else:
                     factors = _morph_factors(
