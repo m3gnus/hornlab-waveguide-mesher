@@ -121,10 +121,11 @@ def test_tiny_numeric_compositions_use_exact_zero(key):
 
 def test_active_rosse_numeric_zero_rotation_matches_ath_v2026_09a_defaults():
     imported = parse_text_config('R-OSSE = {\nR = 200\ns1 = .5\ns2 = .2\n}\nRot = 0')
-    # m5_rosse_omit_all measures these imported defaults; native inputs must
-    # state them explicitly to describe the same horn.
+    # m5_rosse_omit_all measures these imported defaults (and an absent
+    # CornerSegments is ATH's 6); native inputs must state them explicitly to
+    # describe the same horn.
     native = {'formula': 'R-OSSE', 'profile': {'R': 200, 'a': 40, 'a0': 0, 'r': .25, 'm': .9, 'b': .4, 'q': 3.5, 's1': .5, 's2': .2, 'rot': 0, '_athLengthMode': 'total'},
-              'mesh': imported['mesh'], 'simType': imported['simType']}
+              'mesh': {**imported['mesh'], 'cornerSegments': 6}, 'simType': imported['simType']}
     from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT
     native_params, formula, mode = build_geometry_params(native)
     assert build_geometry_params(imported) == (

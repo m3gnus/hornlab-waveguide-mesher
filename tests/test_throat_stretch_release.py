@@ -18,6 +18,8 @@ from hornlab_mesher.builders.rosse_waveguide import _rosse_params
 from hornlab_mesher.config_parser import ConfigError, parse_text_config
 from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
 from hornlab_mesher.text_import import ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT, ATH_AXIAL_LEGACY
+from hornlab_mesher.text_import import ATH_DEFAULT_CORNER_SEGMENTS
+from hornlab_mesher.profile_sampling import ath_angular_segments
 from hornlab_mesher.geometry import OsseHornGeometry, RosseHornGeometry
 from hornlab_mesher.profile_formulas import (
     _icw_cache_key, _stretch_x, _stretch_x_curve,
@@ -64,6 +66,20 @@ def _measured_s_default(text, formula, *expected):
                 mapping["rot"] = 0.0
             else:
                 mapping.pop("rot", None)
+
+
+def _current_ath_sampling(text, mapping):
+    """Apply the V2026-09a angular rules introduced after the capture.
+
+    AngularSegments rounds up to a multiple of eight unless NAC is present,
+    and an absent CornerSegments is ATH's 6 (fixtures/ath_import/ath-v2026-09a).
+    """
+    from hornlab_mesher.config_parser import _parse_ath_blocks
+    _, flat, _ = _parse_ath_blocks(text)
+    if 'NAC' not in flat:
+        mapping['angularSegments'] = ath_angular_segments(mapping['angularSegments'])
+    if not any(key in flat for key in ('Mesh.CornerSegments', 'CornerSegments')):
+        mapping['cornerSegments'] = ATH_DEFAULT_CORNER_SEGMENTS
 
 
 def _assert_base_equal(actual, expected):
@@ -222,6 +238,7 @@ def test_native_and_text_normalization_equal_captured_base(family, dormant):
     expected_params = {**captured['text_params'], TEXT_IMPORT_VERSION_KEY: TEXT_IMPORT_VERSION,
                        ATH_AXIAL_RULE_KEY: ATH_AXIAL_CURRENT}
     _measured_s_default(text, parsed['formula'], expected_params)
+    _current_ath_sampling(text, expected_params)
     _assert_base_equal(cb.build_geometry_params(parsed)[0], expected_params)
 
 
@@ -280,6 +297,8 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
         expected_parsed['profile']['rot'] = 10
         expected_params['rot'] = 10
     _measured_s_default(text, parsed['formula'], expected_parsed['profile'], expected_params)
+    if rule == ATH_AXIAL_CURRENT:
+        _current_ath_sampling(text, expected_params)
     if expected_parsed.get('enclosure'):
         enclosure = expected_parsed['enclosure']
         if 'space_l_mm' in enclosure and 'space_r_mm' in enclosure:
