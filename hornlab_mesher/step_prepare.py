@@ -892,6 +892,19 @@ def _copy_triangle_faces(surfaces: list[int]) -> list[int]:
         raise
 
 
+def _verify_triangle_copies(copies: dict[int, int], model: _OccTriangleModel) -> None:
+    """Check batch-copy order against each original triangle's vertices."""
+    if not copies:
+        return
+    from .step_mapping import _gmsh_surface_boundaries
+
+    points, _curves = _gmsh_surface_boundaries(list(copies.values()))
+    for (parent, _copy), actual in zip(copies.items(), points):
+        expected = sorted(tuple(model.vertices[tag]) for tag in model.face_vertices[parent])
+        if actual.shape != (3, 3) or sorted(map(tuple, actual)) != expected:
+            raise RuntimeError("OCC returned triangle face copies in an unexpected order")
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -936,6 +949,8 @@ def _cut_occ_geometry_to_positive_side(
         elif cut_parents:
             copies = dict(zip(cut_parents, _copy_triangle_faces(cut_parents)))
         gmsh.model.occ.synchronize()
+        if triangle_model is not None:
+            _verify_triangle_copies(copies, triangle_model)
         cut_surfaces = cut_parents
         repaired: list[int] = []
         mapping: dict[int, list[int]] = {}
@@ -993,6 +1008,8 @@ def _cut_occ_geometry_to_positive_side(
                 ]
             else:
                 retry_copies = _copy_triangle_faces([copies[parent] for parent in cut_parents])
+                gmsh.model.occ.synchronize()
+                _verify_triangle_copies(dict(zip(cut_parents, retry_copies)), triangle_model)
             gmsh.model.occ.convertToNURBS([
                 (2, retry_copies[index])
                 for index, parent in enumerate(cut_parents) if parent in uncovered

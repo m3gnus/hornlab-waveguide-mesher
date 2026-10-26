@@ -151,6 +151,23 @@ def test_triangle_copy_failure_never_removes_a_reported_original(monkeypatch):
         assert not gmsh.model.getEntities(3)
 
 
+def test_triangle_cut_refuses_reordered_batch_copies_before_the_boolean(monkeypatch):
+    with _gmsh_session():
+        faces = _triangle_box(n=1)
+        model = sp._triangle_model(faces)
+        before = set(gmsh.model.getEntities(2))
+        original = gmsh.model.occ.copy
+        monkeypatch.setattr(gmsh.model.occ, "copy", lambda dimtags: list(reversed(original(dimtags))))
+        monkeypatch.setattr(gmsh.model.occ, "intersect", lambda *_a, **_k: pytest.fail("boolean ran"))
+        with pytest.raises(RuntimeError, match="copies in an unexpected order"):
+            sp._cut_occ_geometry_to_positive_side(
+                ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
+                grid=3, triangle_model=model,
+            )
+        assert set(gmsh.model.getEntities(2)) == before
+        assert not gmsh.model.getEntities(3)
+
+
 def test_triangle_retry_copy_failure_removes_partially_created_copies(monkeypatch):
     with _gmsh_session():
         faces = _triangle_box(n=1)
@@ -177,6 +194,36 @@ def test_triangle_retry_copy_failure_removes_partially_created_copies(monkeypatc
             )
         assert created
         assert not set(created) & set(gmsh.model.occ.getEntities(2))
+        assert not gmsh.model.getEntities(3)
+
+
+def test_triangle_retry_refuses_reordered_copies_and_cleans_them(monkeypatch):
+    with _gmsh_session():
+        faces = _triangle_box(n=1)
+        model = sp._triangle_model(faces)
+        original = gmsh.model.occ.copy
+        calls = 0
+        retry = []
+
+        def reverse_retry(dimtags):
+            nonlocal calls
+            calls += 1
+            copied = original(dimtags)
+            if calls == 2:
+                retry.extend(copied)
+                return list(reversed(copied))
+            return copied
+
+        monkeypatch.setattr(gmsh.model.occ, "copy", reverse_retry)
+        monkeypatch.setattr(sp, "_uncovered_cut_parents",
+                            lambda mapping, *_a, **_k: [next(iter(mapping))])
+        with pytest.raises(RuntimeError, match="copies in an unexpected order"):
+            sp._cut_occ_geometry_to_positive_side(
+                ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
+                grid=3, triangle_model=model,
+            )
+        assert retry
+        assert not set(retry) & set(gmsh.model.occ.getEntities(2))
         assert not gmsh.model.getEntities(3)
 
 
