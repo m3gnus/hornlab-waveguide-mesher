@@ -18,7 +18,7 @@ GRID_CASES = ['m3_rosse_nomorph', 'm4_enc', 'm5_osse_omit_a_s', 'm5_rosse_omit_a
               'm6_var_wall', 'm7_rot_none', 'm7_rot_in', 'm7_rot_top', 'm7_rot_both', 'm10_ext_rot']
 # Morph and angular-sampling rules; see the fixture README for what each pins.
 MORPH_CASES = ['m3_rosse_morph', 'rm_fp0', 'rm_fp05', 'rm_fp1', 'rm_rate1', 'rm_ls10', 'rm_tmax095',
-               'rm_circ_var', 'rm_implicit', 'rm_cap', 'rm_wh', 'rm_cs8', 'rm_na100', 'rm_var_small',
+               'rm_circ_var', 'rm_implicit', 'rm_cap', 'rm_wh', 'rm_cs8', 'rm_na100',
                'rm_wall', 'ao_cs4', 'ao_fp1', 'ao_rate1']
 
 
@@ -61,14 +61,36 @@ def test_rosse_rollback_start_with_fractional_rate_is_refused_by_name():
         _grid(parse_text_config(text))
 
 
-def test_rosse_morph_applies_where_ath_skips_a_varying_length():
-    # ATH V2026-09a builds this horn unmorphed ("attempt to stretch a
-    # variable-length profile!"); WG applies the same per-meridian morph.
-    grid = _grid(config('rm_var_large'))
+def _assert_wg_morph_on_target(grid):
     x, y = np.abs(grid[:, -1, 0]), np.abs(grid[:, -1, 1])
     on_side = np.minimum(np.abs(x - 160), np.abs(y - 160))
     corner = np.hypot(np.maximum(x - 140, 0), np.maximum(y - 140, 0))
     assert np.all((on_side < 1e-9) | (np.abs(corner - 20) < 1e-9))
+    # WG's own morph never carries the rollback past the mouth's radius.
+    radius = np.hypot(grid[..., 0], grid[..., 1])
+    assert np.all(radius.max(axis=1) <= radius[:, -1] + 1e-9)
+
+
+@pytest.mark.parametrize('name', ['rm_var_small', 'rm_var_large'])
+def test_rosse_morph_with_varying_depth_uses_wg_morph(name):
+    # ATH morphs rm_var_small per meridian and builds rm_var_large unmorphed
+    # ("attempt to stretch a variable-length profile!"), at a tolerance the
+    # probes did not pin. WG uses its own morph for any varying depth.
+    grid = _grid(config(name))
+    _assert_wg_morph_on_target(grid)
+    if name == 'rm_var_small':
+        ath = reference(name)
+        np.testing.assert_allclose(grid[:, -1], ath[:, -1], rtol=0, atol=2e-4)
+        assert np.abs(grid - ath).max() > 1
+
+
+def test_rosse_superellipse_morph_uses_wg_morph():
+    # ATH V2026-09a builds no Superellipse morph on R-OSSE.
+    text = (FIXTURES / 'm3_rosse_morph.cfg').read_text().replace('Morph.TargetShape = 1', 'Morph.TargetShape = 3')
+    grid = _grid(parse_text_config(text))
+    radius = np.hypot(grid[..., 0], grid[..., 1])
+    assert np.all(radius.max(axis=1) <= radius[:, -1] + 1e-9)
+    assert np.abs(grid[:, -1, :2]).max(axis=0) == pytest.approx([160, 160], abs=1e-9)
 
 
 def test_native_rosse_morph_is_unchanged_by_the_import_rules():

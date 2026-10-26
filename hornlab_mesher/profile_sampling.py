@@ -1064,6 +1064,26 @@ def _morph_schedule(
     return _MorphSchedule(np.asarray(progress, dtype=np.float64), start, start_station)
 
 
+def _ath_builds_rosse_morph(params: Mapping[str, Any], z_values: np.ndarray) -> bool:
+    """Whether ATH V2026-09a morphs this imported R-OSSE grid at all.
+
+    It builds no Superellipse morph on R-OSSE, and it gives up on a Rectangle
+    when the depth varies around the mouth ("attempt to stretch a
+    variable-length profile!") beyond a size-dependent tolerance the probes did
+    not pin; a Circle it always morphs. Both refusals take Waveguide
+    Generator's own R-OSSE morph instead (Magnus, 2026-10-26): ATH's
+    construction there balloons ASRO68's wall to 558 x 571 mm to reach a
+    400 x 400 mm mouth. Any variation in depth counts here.
+    """
+
+    shape = _morph_target_shape(params, 0.0)
+    if shape != 1:
+        return shape == 2
+    z = np.asarray(z_values, dtype=np.float64)
+    tolerance = 1.0e-9 * max(1.0, float(np.max(np.abs(z))))
+    return bool(np.ptp(z[:, -1]) <= tolerance and np.ptp(np.max(z, axis=1)) <= tolerance)
+
+
 def _ath_rosse_morph_factors(
     z_values: np.ndarray, z_start: float, phi: float, params: Mapping[str, Any]
 ) -> np.ndarray:
@@ -1077,10 +1097,6 @@ def _ath_rosse_morph_factors(
     the mouth on the target. A start on the mouth station moves the mouth
     alone, and a circle target always starts at the first station. GridExport
     probes match all of this to the CSV's 1e-6 mm.
-
-    ATH gives up on an R-OSSE whose length varies with azimuth ("attempt to
-    stretch a variable-length profile!") and builds it unmorphed; Waveguide
-    Generator applies this same per-meridian rule instead (Magnus, 2026-10-26).
     """
 
     z = np.asarray(z_values, dtype=np.float64) - float(z_start)
@@ -1945,13 +1961,16 @@ def build_point_grid_arrays(
             morph_progress = morph_schedule.progress
             morph_progress_start = morph_schedule.start
             ath_current = uses_current_ath_axial_sampling(params)
+            ath_rosse_morph = (
+                formula == "R-OSSE" and ath_current and _ath_builds_rosse_morph(params, z_values)
+            )
             # A start on the mouth station still moves the mouth onto the
             # target in ATH V2026-09a (FixedPart 0.99 on 20 segments).
             ath_mouth_start = ath_current and morph_schedule.start_station == float(t_unit_values[-1])
             radials = raw_radials.copy()
             for i, phi in enumerate(angles):
                 phi_value = float(phi)
-                if formula == "R-OSSE" and ath_current:
+                if ath_rosse_morph:
                     factors = _ath_rosse_morph_factors(
                         z_values[i], rosse_axial_layout(params, phi_value).ext_len, phi_value, params
                     )

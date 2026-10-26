@@ -154,7 +154,10 @@ def _outer_shell_surfaces(
                 raise ValueError(
                     "horn.outer: inconsistent local orientation "
                     f"({disagreeing}/{len(raw)} non-degenerate triangles "
-                    "disagree with their normals)"
+                    "disagree with their normals). The outer wall folds into "
+                    "the horn where the profile turns tighter than the wall is "
+                    "thick: reduce the wall thickness, or mount the horn as a "
+                    "bare shell or in an infinite baffle."
                 )
         return [outer]
 
