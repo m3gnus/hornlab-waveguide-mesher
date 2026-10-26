@@ -600,7 +600,52 @@ def _remove_temporary_geometry(copies: Iterable[int], box: int | None) -> None:
     if box is not None and (3, box) in present:
         doomed.append((3, box))
     if doomed:
-        gmsh.model.occ.remove(doomed, recursive=True)
+        faces = [tag for dim, tag in doomed if dim == 2]
+        # OCC's recursive removal of a list visits each face separately. A
+        # temporary shell makes the same faces one removal operation, while
+        # OCC still preserves boundaries used by surviving entities. Some
+        # face combinations cannot form a shell; retain the original removal
+        # for those combinations.
+        container = None
+        if len(faces) > 1:
+            try:
+                shell = gmsh.model.occ.addSurfaceLoop(faces, sewing=False)
+                container = gmsh.model.occ.addVolume([shell])
+            except Exception:
+                # An OCC call can fail after creating an entity. Release any
+                # new volume before falling back to the original cleanup.
+                created = [item for item in gmsh.model.occ.getEntities(3)
+                           if item not in present]
+                if created:
+                    gmsh.model.occ.remove(created, recursive=False)
+                container = None
+        if container is None:
+            gmsh.model.occ.remove(doomed, recursive=True)
+        else:
+            try:
+                gmsh.model.occ.remove(
+                    [(3, container), *[item for item in doomed if item[0] == 3]],
+                    recursive=True,
+                )
+                # A shell can be created even when OCC will not recursively
+                # remove every face in it. Finish with the original operation
+                # for any entities that remain.
+                present = set(gmsh.model.occ.getEntities())
+                if (3, container) in present:
+                    gmsh.model.occ.remove([(3, container)], recursive=False)
+                    present = set(gmsh.model.occ.getEntities())
+                remaining = [item for item in doomed if item in present]
+                if remaining:
+                    gmsh.model.occ.remove(remaining, recursive=True)
+            except Exception:
+                # Do not leave the auxiliary volume holding copies if removal
+                # fails. Preserve the original exception after best effort.
+                try:
+                    gmsh.model.occ.remove([(3, container)], recursive=False)
+                    gmsh.model.occ.remove(doomed, recursive=True)
+                except Exception:
+                    pass
+                raise
     gmsh.model.occ.synchronize()
 
 

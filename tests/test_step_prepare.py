@@ -188,6 +188,9 @@ def test_auto_cut_does_not_treat_untrimmed_hole_as_symmetric():
 
         assert result.planes == ("y0",)
         assert result.report["planes"]["x0"]["points_off_model"] > 0
+        assert {tag for _, tag in gmsh.model.getEntities(2)} == {
+            tag for group in result.groups for tag in group.selector.surface_tags
+        }
 
 
 def test_auto_cut_only_considers_the_planes_the_caller_supports():
