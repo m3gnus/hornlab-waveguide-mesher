@@ -151,6 +151,35 @@ def test_triangle_copy_failure_never_removes_a_reported_original(monkeypatch):
         assert not gmsh.model.getEntities(3)
 
 
+def test_triangle_retry_copy_failure_removes_partially_created_copies(monkeypatch):
+    with _gmsh_session():
+        faces = _triangle_box(n=1)
+        model = sp._triangle_model(faces)
+        original = gmsh.model.occ.copy
+        calls = 0
+        created = []
+
+        def fail_during_retry(dimtags):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                created.extend(original(dimtags[:1]))
+                raise RuntimeError("injected retry copy failure")
+            return original(dimtags)
+
+        monkeypatch.setattr(gmsh.model.occ, "copy", fail_during_retry)
+        monkeypatch.setattr(sp, "_uncovered_cut_parents",
+                            lambda mapping, *_a, **_k: [next(iter(mapping))])
+        with pytest.raises(RuntimeError, match="injected retry copy failure"):
+            sp._cut_occ_geometry_to_positive_side(
+                ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
+                grid=3, triangle_model=model,
+            )
+        assert created
+        assert not set(created) & set(gmsh.model.occ.getEntities(2))
+        assert not gmsh.model.getEntities(3)
+
+
 def test_default_cad_cut_does_not_enter_triangle_specialization(monkeypatch):
     with _gmsh_session():
         occ = gmsh.model.occ

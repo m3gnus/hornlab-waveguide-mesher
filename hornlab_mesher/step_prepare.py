@@ -871,6 +871,27 @@ class _OccTriangleRoleBoundaries:
         return False
 
 
+def _copy_triangle_faces(surfaces: list[int]) -> list[int]:
+    """Copy a batch and clean up any partial result if OCC fails."""
+    before = set(gmsh.model.occ.getEntities(2))
+    try:
+        copied = gmsh.model.occ.copy([(2, surface) for surface in surfaces])
+        if len(copied) != len(surfaces) or any(dim != 2 for dim, _ in copied):
+            raise RuntimeError("OCC returned incomplete triangle face copies")
+        tags = [tag for _, tag in copied]
+        if len(set(tags)) != len(surfaces):
+            raise RuntimeError("OCC returned duplicate triangle face copies")
+        created = set(gmsh.model.occ.getEntities(2)) - before
+        if created != {(2, tag) for tag in tags}:
+            raise RuntimeError("OCC returned unexpected triangle face copies")
+        return tags
+    except Exception:
+        leaked = [tag for dim, tag in gmsh.model.occ.getEntities(2)
+                  if (dim, tag) not in before]
+        _remove_temporary_geometry(leaked, None)
+        raise
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -913,23 +934,7 @@ def _cut_occ_geometry_to_positive_side(
             for surface in surfaces:
                 copies[surface] = gmsh.model.occ.copy([(2, surface)])[0][1]
         elif cut_parents:
-            before = set(gmsh.model.occ.getEntities(2))
-            try:
-                copied = gmsh.model.occ.copy([(2, surface) for surface in cut_parents])
-                if len(copied) != len(cut_parents) or any(dim != 2 for dim, _ in copied):
-                    raise RuntimeError("OCC returned incomplete triangle face copies")
-                copy_tags = [tag for _, tag in copied]
-                if len(set(copy_tags)) != len(cut_parents):
-                    raise RuntimeError("OCC returned duplicate triangle face copies")
-                created = set(gmsh.model.occ.getEntities(2)) - before
-                if created != {(2, tag) for tag in copy_tags}:
-                    raise RuntimeError("OCC returned unexpected triangle face copies")
-                copies = dict(zip(cut_parents, copy_tags))
-            except Exception:
-                leaked = [tag for dim, tag in gmsh.model.occ.getEntities(2)
-                          if (dim, tag) not in before]
-                _remove_temporary_geometry(leaked, None)
-                raise
+            copies = dict(zip(cut_parents, _copy_triangle_faces(cut_parents)))
         gmsh.model.occ.synchronize()
         cut_surfaces = cut_parents
         repaired: list[int] = []
@@ -980,11 +985,14 @@ def _cut_occ_geometry_to_positive_side(
                 gmsh.model.occ.remove([(2, tag) for tag in remaining], recursive=True)
             else:
                 _remove_temporary_geometry(remaining, None)
-            retry_copies = [
-                tag for _dim, tag in gmsh.model.occ.copy(
-                    [(2, copies[parent]) for parent in cut_parents]
-                )
-            ]
+            if triangle_model is None:
+                retry_copies = [
+                    tag for _dim, tag in gmsh.model.occ.copy(
+                        [(2, copies[parent]) for parent in cut_parents]
+                    )
+                ]
+            else:
+                retry_copies = _copy_triangle_faces([copies[parent] for parent in cut_parents])
             gmsh.model.occ.convertToNURBS([
                 (2, retry_copies[index])
                 for index, parent in enumerate(cut_parents) if parent in uncovered
