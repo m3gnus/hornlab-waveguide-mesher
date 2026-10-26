@@ -274,3 +274,31 @@ def test_c0_cubic_span_certificate_uses_its_own_left_derivative():
         ((4, 0), (5, 1), (6, 2), (7, 3), (12, 4), (15, 6), (20, 10)), "FREEFORM")
     np.testing.assert_array_equal(wall.beziers[0], ((4, 0), (5, 1), (6, 2), (7, 3)))
     assert wall.distance(np.asarray([[5.5, 0, 1.5]]), (0, 0, 0))[0] <= 2e-7
+
+
+@pytest.mark.parametrize("endpoint", [0, -1])
+def test_clamped_endpoint_plane_survives_polynomial_roundoff(endpoint):
+    # On both SciPy 1.17.1 and 1.18.1 this power-basis conversion puts the
+    # mouth root at 1.0000000000000002, outside the finite spline domain.
+    wall = GeneralHornWall(3, (0, 0, 0, 0, .8804320253047894, 1, 1, 1, 1),
+        ((4, 0), (5, 1), (6, 2), (7, 3), (8, 3.1)), "ICW")
+    radius, z = wall.poles_mm[endpoint]
+    assert radius in wall.radii_at_z(z)
+    restored = GeneralHornWall.from_dict(json.loads(json.dumps(wall.to_dict())))
+    np.testing.assert_array_equal(restored.radii_at_z(z), wall.radii_at_z(z))
+
+
+def test_endpoint_plane_keeps_other_rolled_wall_intersections():
+    wall = GeneralHornWall(3, (0, 0, 0, 0, 1, 1, 1, 1),
+        ((4, 0), (5, 4), (6, 4), (7, 2)), "ROSSE")
+    # z(t) - 2 = 2(t - 1)(t**2 - 5*t + 1); r(t) = 4 + 3*t.
+    radii = wall.radii_at_z(2)
+    assert min(radii) == pytest.approx(4 + 3 * (5 - np.sqrt(21)) / 2)
+    assert max(radii) == pytest.approx(7)
+
+
+@pytest.mark.parametrize("z", [np.nextafter(0., -np.inf), np.nextafter(1., np.inf)])
+def test_nearby_exterior_planes_are_not_snapped_to_endpoints(z):
+    wall = GeneralHornWall(1, (0, 0, 1, 1), ((4, 0), (8, 1)), "ICW")
+    with pytest.raises(ValueError, match="does not intersect"):
+        wall.radii_at_z(z)

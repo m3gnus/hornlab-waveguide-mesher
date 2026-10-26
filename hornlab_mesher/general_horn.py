@@ -247,11 +247,19 @@ class GeneralHornWall:
         polynomial.c[-1] -= z
         roots = polynomial.roots(extrapolate=False)
         roots = roots[np.isfinite(roots) & (roots >= 0) & (roots <= 1)]
-        if not len(roots):
+        radii = self.spline(roots)[:, 0]
+        # The clamped spline meets its endpoint poles exactly. Conversion to
+        # power coefficients can move an endpoint root just outside [0, 1].
+        # Recover only exact endpoint planes, without snapping nearby queries
+        # or losing other intersections of a rolled mouth.
+        for t, (radius, axial) in ((0, self.poles_mm[0]), (1, self.poles_mm[-1])):
+            if z == axial and not np.any(roots == t):
+                radii = np.append(radii, radius)
+        if not len(radii):
             raise ValueError("passage plane does not intersect the general horn")
         # Rolled mouths may cross a plane twice. The inner branch bounds the
         # open passage; all branches enter minimum_body_clearance independently.
-        return self.spline(roots)[:, 0]
+        return radii
 
     def radius_at_z(self, z):
         return float(self.radii_at_z(z).min())
