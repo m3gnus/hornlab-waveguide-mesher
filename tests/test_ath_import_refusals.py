@@ -61,6 +61,72 @@ def _osse(extra_in_block: str = "") -> str:
     return OSSE_BLOCK % extra_in_block
 
 
+@pytest.mark.parametrize("value", ["0", "-0.0", "1 - 1", "sin(0)"])
+@pytest.mark.parametrize("block", [False, True])
+def test_fresh_source_only_text_is_refused_before_geometry(value: str, block: bool) -> None:
+    text = f"OSSE = {{\n L = {value}\n}}\n" if block else f"Length = {value}\nCoverage.Angle = 45\n"
+    with pytest.raises(ConfigError, match=r"Length = 0.*source-only.*positive Length"):
+        parse_text_config(text)
+
+
+def test_source_only_check_uses_effective_block_length() -> None:
+    text = "OSSE = {\n L = 60\n}\nLength = 0\n"
+    assert parse_text_config(text)["profile"]["L"] == 60
+    with pytest.raises(ConfigError, match="source-only"):
+        parse_text_config("OSSE = {\n L = 0\n}\nLength = 60\n")
+
+
+@pytest.mark.parametrize("header", [
+    "; Parameter config\n",
+    "; Waveguide Generator geometry-interpretation: native-v1\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n",
+])
+def test_saved_text_retains_its_previous_zero_length_parse(header: str) -> None:
+    config = parse_text_config(header + "Length = 0\nCoverage.Angle = 45\n")
+    assert config["profile"]["L"] == 0
+
+
+def test_source_only_check_does_not_classify_azimuth_varying_length_at_zero() -> None:
+    config = parse_text_config("Length = 10*sin(p)\nCoverage.Angle = 45\n")
+    assert config["profile"]["L"] == "10*sin(p)"
+
+
+@pytest.mark.parametrize("unit", ["1", "1.0", "+1e0", "0.5 + 0.5", "sin(pi/2)"])
+@pytest.mark.parametrize("block", [_osse, _rosse])
+def test_unit_axial_scale_is_reported_without_changing_import(unit, block, caplog):
+    expected = parse_text_config(block())
+    with caplog.at_level(logging.WARNING, logger="hornlab_mesher.config_parser"):
+        assert parse_text_config(block() + f"Scale.Z = {unit}\n") == expected
+    assert f"ignoring Scale.Z = {unit}: a unit axial scale" in caplog.text
+
+
+@pytest.mark.parametrize("scale", ["1 - 0.5", "1 + sin(p)", "unknown"])
+def test_nonunit_or_unverified_axial_scale_is_refused(scale):
+    with pytest.raises(ConfigError, match="Scale.Z"):
+        parse_text_config(_rosse() + f"Scale.Z = {scale}\n")
+
+
+@pytest.mark.parametrize("key", ["arcterm", "trunc"])
+def test_rosse_block_only_keys_at_top_level_are_reported(key, caplog):
+    expected = parse_text_config(_rosse())
+    with caplog.at_level(logging.WARNING, logger="hornlab_mesher.config_parser"):
+        assert parse_text_config(_rosse() + f"{key} = 160\n") == expected
+    assert f"ignoring {key} = 160: ATH ignores this item at top level" in caplog.text
+    with pytest.raises(ConfigError, match=rf"R-OSSE\.{key}\b"):
+        parse_text_config(_rosse(f"  {key} = 160\n") + f"{key} = 160\n")
+
+
+@pytest.mark.parametrize("header", [
+    "; Parameter config\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n",
+])
+@pytest.mark.parametrize("extra", ["Scale.Z = 1\n", "arcterm = 160\n", "trunc = 10\n"])
+def test_noop_items_keep_the_older_text_refusal(header, extra):
+    with pytest.raises(ConfigError, match="unsupported item"):
+        parse_text_config(header + _rosse() + extra)
+
+
 @pytest.mark.parametrize(
     ("config", "named"),
     [
@@ -88,6 +154,11 @@ def test_unknown_top_level_key_is_refused_by_name(config: str, named: str) -> No
     assert named in str(excinfo.value)
 
 
+def test_unknown_key_refusal_does_not_claim_ath_changes_the_model() -> None:
+    with pytest.raises(ConfigError, match="not supported and may affect the model"):
+        parse_text_config(_rosse() + "MadeUp = 41\n")
+
+
 @pytest.mark.parametrize(
     ("block", "named"),
     [
@@ -108,10 +179,36 @@ def test_unknown_block_is_refused_by_name(block: str, named: str) -> None:
     assert named in str(excinfo.value)
 
 
-@pytest.mark.parametrize("key", ["arcterm", "trunc", "made_up", "L", "n", "Rot", "Scale"])
+@pytest.mark.parametrize("key", ["arcterm", "trunc", "made_up", "L", "n", "Scale"])
 def test_unknown_key_inside_rosse_block_is_refused(key: str) -> None:
     with pytest.raises(ConfigError, match=rf"R-OSSE\.{key}\b"):
         parse_text_config(_rosse(f"  {key} = 1\n"))
+
+
+@pytest.mark.parametrize("family", ["R-OSSE", "ROSSE"])
+@pytest.mark.parametrize("stretch", ["", "  s1 = .5\n  s2 = .2\n"])
+@pytest.mark.parametrize("rotation", ["0", "30", "10*cos(p)"])
+def test_rosse_block_rotation_is_ignored_and_reported(family, stretch, rotation, caplog):
+    plain = _rosse(stretch).replace("R-OSSE =", f"{family} =")
+    rotated = _rosse(stretch + f"  Rot = {rotation}\n").replace("R-OSSE =", f"{family} =")
+    expected = parse_text_config(plain)
+    with caplog.at_level(logging.WARNING, logger="hornlab_mesher.config_parser"):
+        assert parse_text_config(rotated) == expected
+    assert f"ignoring {family}.Rot = {rotation}: ATH ignores rotation" in caplog.text
+
+
+@pytest.mark.parametrize("header", [
+    "; Parameter config\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n",
+])
+def test_rosse_block_rotation_keeps_older_text_refusal(header):
+    with pytest.raises(ConfigError, match=r"R-OSSE\.Rot"):
+        parse_text_config(header + _rosse("  Rot = 30\n"))
+
+
+def test_rosse_block_rotation_does_not_hide_top_level_rotation():
+    with pytest.raises(ConfigError, match=r"unsupported item.*\bRot\b"):
+        parse_text_config(_rosse("  Rot = 30\n") + "Rot = 10\n")
 
 
 @pytest.mark.parametrize("key", ["R", "m", "b", "tmax", "arcterm", "Scale"])
@@ -598,3 +695,12 @@ def test_warning_names_preserve_each_supplied_namespace(caplog: pytest.LogCaptur
     assert len(caplog.records) == 4
     for name, value in (("Morph.Width", 300), ("MORPH.Width", 400), ("GCurve.Distance", 20), ("GCURVE.Distance", 30)):
         assert f"ignoring {name} = {value}: ATH has no such key" in caplog.text
+
+
+@pytest.mark.parametrize("extra", ["Scale.Z = 1\n", "arcterm = 160\n", "trunc = 10\n"])
+def test_ath_09a_stamped_text_follows_ath_for_noop_items(extra):
+    # Text stamped with the ATH V2026-09a interpretation follows the same
+    # measured rule as a fresh ATH file: these items leave ATH's grid intact.
+    stamp = "; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n"
+    assert parse_text_config(stamp + _rosse() + extra) == parse_text_config(stamp + _rosse())
+    assert parse_text_config(stamp + _rosse("  Rot = 30\n")) == parse_text_config(stamp + _rosse())

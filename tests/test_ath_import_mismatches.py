@@ -48,6 +48,26 @@ def _grid(cfg):
     return build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid']
 
 
+@pytest.mark.parametrize('extra', [
+    'block_rot', 'top_arcterm', 'top_trunc', 'scale_one', 'scale_expr', 'scale_func',
+])
+def test_rosse_noop_item_grid_matches_ath(extra):
+    # ATH V2026-09a exported these variants byte-identically to the
+    # captured m3_rosse_nomorph profile; the active placements differ.
+    text = (FIXTURES / 'm3_rosse_nomorph.cfg').read_text()
+    if extra == 'block_rot':
+        assert text.count('q = 3.4\n}') == 1
+        text = text.replace('q = 3.4\n}', 'q = 3.4\nRot = 30\n}')
+    else:
+        text += {'top_arcterm': '\narcterm = 160\n',
+                 'top_trunc': '\ntrunc = 20\n',
+                 'scale_one': '\nScale.Z = 1\n',
+                 'scale_expr': '\nScale.Z = 0.5+0.5\n',
+                 'scale_func': '\nScale.Z = sin(pi/2)\n'}[extra]
+    np.testing.assert_allclose(_grid(parse_text_config(text)), reference('m3_rosse_nomorph'),
+                               rtol=0, atol=2e-4)
+
+
 def test_rosse_morph_starting_on_the_rollback_matches_ath():
     # FixedPart 0.9 starts beyond the mouth's z, where factors turn negative
     # and cross the axis; ATH amplifies its 1e-6 mm CSV rounding there.

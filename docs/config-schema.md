@@ -806,13 +806,23 @@ inside `R-OSSE`, a `Plan` inside `Mesh.Enclosure` and a mistyped
 Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `Throat.Ext.Included`, `HornGeometry`, `Horn.Adapter`, `Horn.Part:<tag>`,
 `Profile`, `BEE = {}`, `Source.Array`,
-`FusionRotaryProfile = {}`, named enclosure plans, `Plan` and `Dim` inside
+`FusionRotaryProfile = {}`, named enclosure plans, `Plan` inside
 `Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
-of the other formula. V2 OSSE honours top-level `Rot` beside a profile block;
+of the other formula. `Dim` inside `Mesh.Enclosure` is imported as the
+enclosure dimensions. `Scale.Z` is refused unless it is a constant that
+evaluates to exactly 1; a unit axial scale is reported as ignored, because
+ATH V2026-09a exports the same grid with and without it. An expression that
+refers to the azimuth `p` is refused even when it is 1 at `p = 0`: ATH
+applies such a scale, not its value at one azimuth. A fresh ATH OSSE file
+whose `Length` is a constant zero describes a source-only model; the importer
+refuses it by name. Saved WG text keeps its earlier parse. V2 OSSE honours top-level `Rot` beside a profile block;
 ATH ignores in-block `Rot`, including an explicit zero, and the importer
 reports `OSSE.Rot` as unused. This rule is measured on V2025-12 and V2026-09a;
 saved v1/native text retains its authoring precedence. Top-level
-`Rot = 0` beside `R-OSSE` is accepted as inactive rotation. Nonzero or
+`Rot = 0` beside `R-OSSE` is accepted as inactive rotation. `Rot` inside an
+`R-OSSE` block, and `arcterm` or `trunc` at top level beside `R-OSSE`, are
+reported as ignored: ATH V2026-09a ignores them there and exports a
+byte-identical grid. Nonzero or
 expression-valued top-level `Rot` beside `R-OSSE` is refused, as is any other
 unverified top-level profile key (`Throat.Diameter`, `Coverage.Angle`, `Length`
 beside `R-OSSE`). A file with multiple profile blocks is refused, including

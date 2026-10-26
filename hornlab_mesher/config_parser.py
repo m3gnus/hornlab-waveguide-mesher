@@ -140,6 +140,15 @@ def _maybe_number(value: Any) -> Any:
     return int(out) if out.is_integer() else out
 
 
+def _eval_constant_param(value: Any) -> float:
+    """Use the shared expression evaluator only when no azimuth is referenced."""
+    if isinstance(value, str):
+        tree = ast.parse(value.replace("^", "**"), mode="eval")
+        if any(isinstance(node, ast.Name) and node.id == "p" for node in ast.walk(tree)):
+            raise ValueError("azimuth-varying expression")
+    return eval_param(value)
+
+
 
 def _parse_ath_blocks(
     content: str,
@@ -533,8 +542,8 @@ def _reject_unrecognised_ath_items(
     raise ConfigError(
         "unsupported item(s) in ATH config: "
         + "; ".join(details)
-        + ". The importer would drop them and build a horn that does not match the "
-        "config. Remove them, or prefix a name with '_' to disable it."
+        + ". These items are not supported and may affect the model. "
+        "Remove them, or prefix a name with '_' to disable it."
     )
 
 
@@ -810,6 +819,29 @@ def parse_text_config(content: str) -> dict[str, Any]:
     # level, so there the profile tables recognise top-level keys.
     known_flat: set[str] = set(_KNOWN_TOP_LEVEL_KEYS)
     known_profile: set[str] = {"Throat.Profile"}
+    if v2_geometry:
+        unit_axial_scale = False
+        if "Scale.Z" in flat:
+            try:
+                unit_axial_scale = _eval_constant_param(flat["Scale.Z"]) == 1
+            except (SyntaxError, TypeError, ValueError, ArithmeticError):
+                pass
+        if unit_axial_scale:
+            # ATH applies axial scale, but a unit scale leaves the output intact.
+            known_flat.add("Scale.Z")
+            _report_ignored_ath_item(
+                "Scale.Z", "a unit axial scale does not change the geometry",
+                value=flat["Scale.Z"],
+            )
+        if formula == "R-OSSE":
+            for key in ("arcterm", "trunc"):
+                if key in flat:
+                    # ATH reads these only inside the R-OSSE block.
+                    known_flat.add(key)
+                    _report_ignored_ath_item(
+                        key, "ATH ignores this item at top level; its R-OSSE block form is not supported",
+                        value=flat[key],
+                    )
     if profile_block is not None:
         known_flat.update(("Throat.Ext.Length", "Throat.Ext.Angle", "Slot.Length"))
         if profile_block == "OSSE":
@@ -821,6 +853,14 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # An explicit numeric zero is the same as absent rotation. Do not
             # admit expressions or nonzero R-OSSE rotation without ATH parity.
             known_flat.add("Rot")
+        if v2_geometry and formula == "R-OSSE" and "Rot" in blocks[profile_block]:
+            # ATH ignores rotation inside this block. Top-level rotation still
+            # has its own parity/refusal boundary below.
+            known_profile.add("Rot")
+            _report_ignored_ath_item(
+                f"{profile_block}.Rot", "ATH ignores rotation inside the R-OSSE block",
+                value=blocks[profile_block]["Rot"],
+            )
 
     def mapped(items: Mapping[str, str], pairs: tuple[tuple[str, str], ...]) -> dict[str, Any]:
         if items is flat:
@@ -875,11 +915,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if "throat_diameter" in common_profile:
         diameter = common_profile.pop("throat_diameter")
         try:
-            if isinstance(diameter, str):
-                tree = ast.parse(diameter.replace("^", "**"), mode="eval")
-                if any(isinstance(node, ast.Name) and node.id == "p" for node in ast.walk(tree)):
-                    raise ValueError("azimuth-varying diameter is unsupported")
-            radius = eval_param(diameter) / 2.0
+            radius = _eval_constant_param(diameter) / 2.0
         except (SyntaxError, TypeError, ValueError, OverflowError) as exc:
             raise ConfigError(
                 f"Throat.Diameter must be a positive finite number; got {diameter!r}. "
@@ -939,6 +975,21 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if formula == "OSSE":
         if "L" not in profile:
             raise ConfigError("ATH OSSE text configs must set Length")
+        if imported_geometry and saved_geometry_version is None:
+            # ATH permits source-only models with Length = 0, but this text
+            # importer cannot build them. Catch a constant zero before the
+            # profile sampler, without changing saved/native interpretation or
+            # treating a value at one azimuth as a constant.
+            length = profile["L"]
+            try:
+                source_only = bool(str(length).strip()) and _eval_constant_param(length) == 0
+            except (SyntaxError, TypeError, ValueError, ArithmeticError):
+                source_only = False
+            if source_only:
+                raise ConfigError(
+                    "OSSE Length = 0 describes a source-only model, which this ATH text importer "
+                    "does not support; use a positive Length"
+                )
         if "OSSE" in blocks:
             # ATH V2025-12 and V2026-09a ignore OSSE.Rot and read only
             # top-level Rot. Saved v1/native text retains its authoring mapping.

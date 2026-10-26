@@ -247,11 +247,12 @@ def test_dormant_icw_seed_key_matches_base(dormant):
     assert _icw_cache_key({'icw_seed': {'type': 'OSSE', 'L': 160, **dormant}}) == BASE['icw_disabled_key']
 
 
-# These synthetic variants previously dropped nonzero R-OSSE Rot. Refuse it
-# until ATH parity establishes the geometry, as documented in config-schema.
+# These synthetic variants contain top-level nonzero R-OSSE Rot. Refuse it
+# until ATH parity establishes the geometry. In-block rotation is ignored and
+# compared to its captured base mapping below, as in ATH's import behavior.
 # No archive case is exempted from the captured import/parameter comparison.
 UNVERIFIED_ROSSE_ROT_VARIANTS = {
-    f'variant-{number:02d}' for number in (22, 23, 24, 26, 28, 30, 31, 32, 33, 34, 35, 36)
+    f'variant-{number:02d}' for number in (22, 23, 24, 31, 32, 33, 34, 35, 36)
 }
 
 
