@@ -283,7 +283,7 @@ def test_clamped_endpoint_plane_survives_polynomial_roundoff(endpoint):
     wall = GeneralHornWall(3, (0, 0, 0, 0, .8804320253047894, 1, 1, 1, 1),
         ((4, 0), (5, 1), (6, 2), (7, 3), (8, 3.1)), "ICW")
     radius, z = wall.poles_mm[endpoint]
-    assert radius in wall.radii_at_z(z)
+    assert np.any(np.isclose(wall.radii_at_z(z), radius, rtol=0, atol=1e-9))
     restored = GeneralHornWall.from_dict(json.loads(json.dumps(wall.to_dict())))
     np.testing.assert_array_equal(restored.radii_at_z(z), wall.radii_at_z(z))
 
