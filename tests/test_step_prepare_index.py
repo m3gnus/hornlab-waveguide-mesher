@@ -219,3 +219,54 @@ def test_index_preserves_scalar_norm_at_extreme_scales_and_tolerance_edges(monke
     for point, local in zip(points, index.candidates_for_points(points)):
         assert index.closest(point, local) == full_scan(
             point, candidates=candidates, bboxes=bboxes, tolerance=tolerance)
+
+
+def test_recovering_nearest_gap_does_not_retry_a_failed_occ_projection(monkeypatch):
+    candidates = [1, 2]
+    bboxes = {1: (10., 0., 0., 11., 1., 1.), 2: (-1., -1., 0., 1., 1., 0.)}
+    point = np.zeros(3)
+    calls = []
+
+    def flaky_projection(_dim, surface, query):
+        calls.append(surface)
+        if len(calls) == 1:
+            raise RuntimeError('transient projection failure')
+        return query, [0., 0.]
+
+    monkeypatch.setattr(gmsh.model, 'getClosestPoint', flaky_projection)
+    monkeypatch.setattr(sp, '_parametric_point_on_face', lambda *_: True)
+    expected = full_scan(point, candidates=candidates, bboxes=bboxes, tolerance=0.1)
+    assert calls == [2]
+    calls.clear()
+    index = sp._OccMirrorIndex(candidates, bboxes, 0.1)
+    local = index.candidates_for_points([point])[0]
+    assert index.closest(point, local) == expected == (-1., 10., [])
+    assert calls == [2]
+
+
+@pytest.mark.parametrize('far_first', [True, False])
+def test_recovering_nearest_preserves_original_nan_reduction_order(monkeypatch, far_first):
+    candidates = [1, 2, 3] if far_first else [2, 3, 1]
+    bboxes = {1: (10., 0., 0., 11., 1., 1.),
+              2: (-1., -1., 0., 1., 1., 0.), 3: (-1., -1., 0., 1., 1., 0.)}
+    point = np.zeros(3)
+    calls = []
+
+    def projection(_dim, surface, query):
+        calls.append(surface)
+        return ([float('nan'), 0., 0.] if surface == 2 else query), [0., 0.]
+
+    monkeypatch.setattr(gmsh.model, 'getClosestPoint', projection)
+    monkeypatch.setattr(sp, '_parametric_point_on_face', lambda *_: True)
+    expected = full_scan(point, candidates=candidates, bboxes=bboxes, tolerance=0.1)
+    assert calls == [2, 3]
+    calls.clear()
+    index = sp._OccMirrorIndex(candidates, bboxes, 0.1)
+    actual = index.closest(point, index.candidates_for_points([point])[0])
+    assert calls == [2, 3]
+    assert np.isnan(actual[0]) and np.isnan(expected[0])
+    assert actual[2] == expected[2] == [2, 3]
+    if far_first:
+        assert actual[1] == expected[1] == 0.
+    else:
+        assert np.isnan(actual[1]) and np.isnan(expected[1])

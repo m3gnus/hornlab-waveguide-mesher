@@ -258,6 +258,7 @@ def _closest_on_model(
     candidates: list[int],
     bboxes: dict[int, tuple[float, ...]],
     tolerance: float,
+    nearest_contributions: dict[int, float] | None = None,
 ) -> tuple[float, float, list[int]]:
     matched_distance = -1.0
     nearest = -1.0
@@ -277,6 +278,8 @@ def _closest_on_model(
             )
         )
         if gap > tolerance:
+            if nearest_contributions is not None:
+                nearest_contributions[surface] = gap
             if nearest < 0.0 or gap < nearest:
                 nearest = gap
             continue
@@ -285,6 +288,8 @@ def _closest_on_model(
         except Exception:
             continue
         distance = float(np.linalg.norm(np.asarray(closest) - np.asarray([px, py, pz])))
+        if nearest_contributions is not None:
+            nearest_contributions[surface] = distance
         if nearest < 0.0 or distance < nearest:
             nearest = distance
         if distance > tolerance or not _parametric_point_on_face(surface, parametric):
@@ -302,7 +307,7 @@ class _OccMirrorIndex:
     hit: coincident faces can carry different caller roles. Farther boxes
     contribute only their gap to ``nearest`` in the original scan. They
     cannot change it once a local candidate gives a distance <= tolerance;
-    otherwise we fall back to the full scan, including its gap diagnostics.
+    otherwise we recover the omitted gap diagnostics in original order.
     """
 
     def __init__(self, candidates, bboxes, tolerance):
@@ -358,15 +363,34 @@ class _OccMirrorIndex:
         return nearby
 
     def closest(self, point, candidates):
+        contributions: dict[int, float] = {}
         result = _closest_on_model(
-            point, candidates=candidates, bboxes=self.bboxes, tolerance=self.tolerance
+            point, candidates=candidates, bboxes=self.bboxes, tolerance=self.tolerance,
+            nearest_contributions=contributions,
         )
         if candidates is self.candidates or 0 <= result[1] <= self.tolerance:
             return result
-        return _closest_on_model(
-            point, candidates=self.candidates, bboxes=self.bboxes,
-            tolerance=self.tolerance,
-        )
+        # Never retry a projection or trim query: an OCC exception must remain
+        # a failed sample, even if a second call would succeed. Omitted boxes
+        # are beyond tolerance, so the existing scan reads only their gaps.
+        # Reduce all contributions in original order, including NaN behavior.
+        local = set(candidates)
+        nearest = -1.0
+        for surface in self.candidates:
+            if surface in local:
+                if surface not in contributions:
+                    continue
+                distance = contributions[surface]
+            else:
+                distance = _closest_on_model(
+                    point, candidates=[surface], bboxes=self.bboxes,
+                    tolerance=self.tolerance,
+                )[1]
+                if distance < 0.0:
+                    continue
+            if nearest < 0.0 or distance < nearest:
+                nearest = distance
+        return result[0], nearest, result[2]
 
 
 def evaluate_occ_plane_symmetry(
