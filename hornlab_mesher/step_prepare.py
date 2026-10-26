@@ -44,6 +44,7 @@ AUTO_CUT_SPAN_REL = 1.0e-3
 AUTO_CUT_TRIM_NUDGE_REL = 1.0e-3
 AUTO_CUT_BOX_PAD_REL = 0.1
 AUTO_CUT_MAX_FAILURE_SAMPLES = 5
+AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION = 0.005
 
 
 @dataclass(frozen=True)
@@ -401,6 +402,7 @@ def evaluate_occ_plane_symmetry(
     bboxes: dict[int, tuple[float, ...]],
     tolerance: float,
     span_tolerance: float,
+    _role_boundaries: _OccTriangleRoleBoundaries | None = None,
 ) -> PlaneSymmetryVerdict:
     """Require both trimmed geometry and caller-supplied roles to mirror."""
     axis = SYMMETRY_AXIS_FOR_PLANE[plane]
@@ -464,6 +466,9 @@ def evaluate_occ_plane_symmetry(
                 max_residual = matched_distance
                 max_residual_surface = int(surface)
             if role not in {roles[hit] for hit in hits}:
+                if (_role_boundaries is not None
+                        and _role_boundaries.allows(surface, point, mirrored, hits, local, tolerance)):
+                    continue
                 role_mismatches += 1
                 if len(failures) < AUTO_CUT_MAX_FAILURE_SAMPLES:
                     failures.append(
@@ -802,6 +807,70 @@ def _triangle_model(surfaces: list[int]) -> _OccTriangleModel:
                              face_vertices)
 
 
+class _OccTriangleRoleBoundaries:
+    """Role transitions on the validated triangle model's actual edges."""
+
+    def __init__(self, model: _OccTriangleModel, roles: dict[int, str]) -> None:
+        self.roles = roles
+        self.boundaries: dict[int, list[tuple[str, np.ndarray, np.ndarray]]] = {}
+        self.feature: dict[int, float] = {}
+        for surface, edges in model.face_edges.items():
+            self.feature[surface] = min(
+                float(np.linalg.norm(model.vertices[model.edge_vertices[edge][0]]
+                                     - model.vertices[model.edge_vertices[edge][1]]))
+                for edge in edges
+            )
+        for edge, faces in model.edge_faces.items():
+            if len(faces) != 2 or roles[faces[0]] == roles[faces[1]]:
+                continue
+            start, end = (model.vertices[tag] for tag in model.edge_vertices[edge])
+            first, second = faces
+            self.boundaries.setdefault(first, []).append((roles[second], start, end))
+            self.boundaries.setdefault(second, []).append((roles[first], start, end))
+
+    def _distance(self, surface: int, point: np.ndarray, other_roles: set[str]) -> float:
+        nearest = float("inf")
+        if not np.all(np.isfinite(point)):
+            return nearest
+        for role, start, end in self.boundaries.get(surface, ()):
+            if role not in other_roles:
+                continue
+            vector = end - start
+            squared = float(np.dot(vector, vector))
+            if not np.isfinite(squared) or squared <= 0:
+                continue
+            position = float(np.dot(point - start, vector) / squared)
+            if not np.isfinite(position):
+                continue
+            position = min(1.0, max(0.0, position))
+            distance = float(np.linalg.norm(point - (start + position * vector)))
+            if distance < nearest:
+                nearest = distance
+        return nearest
+
+    def allows(
+        self, surface: int, point: np.ndarray, mirrored: np.ndarray,
+        hits: list[int], candidates: list[int], tolerance: float,
+    ) -> bool:
+        if not np.isfinite(tolerance) or tolerance <= 0:
+            return False
+        role = self.roles[surface]
+        opposite_roles = {self.roles[hit] for hit in hits}
+        source_distance = self._distance(surface, point, opposite_roles)
+        if not np.isfinite(source_distance):
+            return False
+        for target in candidates:
+            if self.roles[target] != role:
+                continue
+            limit = min(tolerance,
+                        AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION * self.feature[surface],
+                        AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION * self.feature[target])
+            if (source_distance <= limit
+                    and self._distance(target, mirrored, opposite_roles) <= limit):
+                return True
+        return False
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -1007,6 +1076,8 @@ def auto_cut_occ_geometry(
             + (" and more" if len(unselected) > 12 else "")
         )
     triangle_model = _triangle_model(surfaces) if triangle_surface_mesh else None
+    role_boundaries = (_OccTriangleRoleBoundaries(triangle_model, roles)
+                       if triangle_model is not None else None)
     samples = {
         surface: sample_occ_surface_points(surface, grid=grid) for surface in surfaces
     }
@@ -1030,17 +1101,12 @@ def auto_cut_occ_geometry(
     diagonal = float(np.linalg.norm(np.asarray(sample_bbox[3:]) - sample_bbox[:3]))
     tolerance = tolerance_rel * diagonal
     span_tolerance = AUTO_CUT_SPAN_REL * diagonal
-    verdicts = [
-        evaluate_occ_plane_symmetry(
-            plane,
-            samples=samples,
-            roles=roles,
-            bboxes=bboxes,
-            tolerance=tolerance,
-            span_tolerance=span_tolerance,
-        )
-        for plane in candidate_planes
-    ]
+    verdict_options = dict(samples=samples, roles=roles, bboxes=bboxes,
+                           tolerance=tolerance, span_tolerance=span_tolerance)
+    if role_boundaries is not None:
+        verdict_options["_role_boundaries"] = role_boundaries
+    verdicts = [evaluate_occ_plane_symmetry(plane, **verdict_options)
+                for plane in candidate_planes]
     accepted_planes = tuple(verdict.plane for verdict in verdicts if verdict.accepted)
     report: dict[str, object] = {
         "mode": "auto-cut",
