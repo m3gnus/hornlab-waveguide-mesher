@@ -8,14 +8,14 @@ import hornlab_mesher.step_prepare as sp
 from test_step_prepare import _gmsh_session
 
 
-def _triangle_box(n=3):
+def _triangle_box(n=3, move=None):
     occ = gmsh.model.occ
     points = {}
     edges = {}
     faces = []
 
     def vertex(coordinates):
-        key = tuple(coordinates)
+        key = tuple(coordinates if move is None else move(tuple(coordinates)))
         if key not in points:
             points[key] = occ.addPoint(*key)
         return points[key]
@@ -74,7 +74,20 @@ def _box_cut(*, triangle_surface_mesh):
             _, connectivity = gmsh.model.mesh.getElementsByType(2, tag)
             for row in np.asarray(connectivity).reshape(-1, 3):
                 triangles.append(tuple(sorted(tuple(np.round(nodes[int(node)], 10)) for node in row)))
-        return area, parent_area, sorted(triangles), result.report["cut"]
+        uses = {}
+        for tri in triangles:
+            for edge in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[0], tri[2])):
+                uses[edge] = uses.get(edge, 0) + 1
+        histogram = sorted(set(uses.values()))
+        faces_now = [(2, tag) for _, tag in gmsh.model.getEntities(2)]
+        used_curves = {t for _, t in gmsh.model.getBoundary(
+            faces_now, combined=False, oriented=False, recursive=False)}
+        used_points = {t for _, t in gmsh.model.getBoundary(
+            faces_now, combined=False, oriented=False, recursive=True)}
+        orphans = ({t for _, t in gmsh.model.getEntities(1)} - used_curves,
+                   {t for _, t in gmsh.model.getEntities(0)} - used_points)
+        return (area, parent_area, sorted(triangles), result.report["cut"],
+                len(nodes), histogram, orphans)
 
 
 def test_triangle_cut_matches_whole_model_geometry_and_retained_parents():
@@ -84,13 +97,17 @@ def test_triangle_cut_matches_whole_model_geometry_and_retained_parents():
     np.testing.assert_allclose(triangles[1], general[1], atol=1e-10, rtol=0)
     assert triangles[2] == general[2]
     assert triangles[3]["surfaces_dropped"] == general[3]["surfaces_dropped"]
+    assert triangles[4] == general[4]
+    for run in (general, triangles):
+        assert set(run[5]) <= {1, 2}  # every mesh edge used by one or two faces
+        assert run[6] == (set(), set())  # no orphan curves or points
 
 
 def test_triangle_mode_refuses_nontriangular_cad_faces():
     with _gmsh_session():
         face = gmsh.model.occ.addRectangle(-1, -1, 0, 2, 2)
         gmsh.model.occ.synchronize()
-        with pytest.raises(ValueError, match="nontriangle"):
+        with pytest.raises(sp.TriangleCutRefused, match="nontriangle"):
             sp._triangle_model([face])
 
 
@@ -104,7 +121,7 @@ def test_triangle_mode_refuses_intersecting_facets():
             edges = [occ.addLine(vertices[i], vertices[(i + 1) % 3]) for i in range(3)]
             faces.append(occ.addPlaneSurface([occ.addCurveLoop(edges)]))
         occ.synchronize()
-        with pytest.raises(ValueError, match="intersecting"):
+        with pytest.raises(sp.TriangleCutRefused, match="intersecting"):
             sp._triangle_model(faces)
 
 
@@ -168,63 +185,141 @@ def test_triangle_cut_refuses_reordered_batch_copies_before_the_boolean(monkeypa
         assert not gmsh.model.getEntities(3)
 
 
-def test_triangle_retry_copy_failure_removes_partially_created_copies(monkeypatch):
+def test_triangle_mode_refuses_instead_of_retrying_and_cleans_up(monkeypatch):
     with _gmsh_session():
         faces = _triangle_box(n=1)
         model = sp._triangle_model(faces)
+        before = set(gmsh.model.getEntities(2))
         original = gmsh.model.occ.copy
         calls = 0
-        created = []
 
-        def fail_during_retry(dimtags):
+        def counting_copy(dimtags):
             nonlocal calls
             calls += 1
-            if calls == 2:
-                created.extend(original(dimtags[:1]))
-                raise RuntimeError("injected retry copy failure")
             return original(dimtags)
 
-        monkeypatch.setattr(gmsh.model.occ, "copy", fail_during_retry)
+        monkeypatch.setattr(gmsh.model.occ, "copy", counting_copy)
         monkeypatch.setattr(sp, "_uncovered_cut_parents",
                             lambda mapping, *_a, **_k: [next(iter(mapping))])
-        with pytest.raises(RuntimeError, match="injected retry copy failure"):
+        with pytest.raises(sp.TriangleCutRefused, match="lost retained portions"):
             sp._cut_occ_geometry_to_positive_side(
                 ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
                 grid=3, triangle_model=model,
             )
-        assert created
-        assert not set(created) & set(gmsh.model.occ.getEntities(2))
+        assert calls == 1  # no retry copies were made
         assert not gmsh.model.getEntities(3)
+        assert isinstance(sp.TriangleCutRefused("x"), RuntimeError)
+        assert not isinstance(sp.TriangleCutRefused("x"), ValueError)
+        # Whatever remains is the cut result, with no leftover copies.
+        assert len(gmsh.model.getEntities(2)) <= len(before)
 
 
-def test_triangle_retry_refuses_reordered_copies_and_cleans_them(monkeypatch):
+def test_triangle_cut_refuses_stray_curves_or_points(monkeypatch):
+    with _gmsh_session():
+        faces = _triangle_box(n=1)
+        gmsh.model.occ.addPoint(5, 5, 5)
+        gmsh.model.occ.synchronize()
+        model = sp._triangle_model(faces)
+        with pytest.raises(sp.TriangleCutRefused, match="stray curves or points"):
+            sp._cut_occ_geometry_to_positive_side(
+                ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
+                grid=3, triangle_model=model,
+            )
+
+
+def test_cleanup_failure_in_finally_does_not_mask_the_original_error(monkeypatch):
     with _gmsh_session():
         faces = _triangle_box(n=1)
         model = sp._triangle_model(faces)
-        original = gmsh.model.occ.copy
-        calls = 0
-        retry = []
 
-        def reverse_retry(dimtags):
-            nonlocal calls
-            calls += 1
-            copied = original(dimtags)
-            if calls == 2:
-                retry.extend(copied)
-                return list(reversed(copied))
-            return copied
+        def boom(*_a, **_k):
+            raise RuntimeError("cleanup failure")
 
-        monkeypatch.setattr(gmsh.model.occ, "copy", reverse_retry)
-        monkeypatch.setattr(sp, "_uncovered_cut_parents",
-                            lambda mapping, *_a, **_k: [next(iter(mapping))])
-        with pytest.raises(RuntimeError, match="copies in an unexpected order"):
+        monkeypatch.setattr(sp, "_verify_triangle_copies",
+                            lambda *_a, **_k: (_ for _ in ()).throw(
+                                sp.TriangleCutRefused("original")))
+        real = sp._remove_temporary_geometry
+        monkeypatch.setattr(sp, "_remove_temporary_geometry", boom)
+        with pytest.raises(sp.TriangleCutRefused, match="original"):
             sp._cut_occ_geometry_to_positive_side(
                 ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
                 grid=3, triangle_model=model,
             )
-        assert retry
-        assert not set(retry) & set(gmsh.model.occ.getEntities(2))
-        assert not gmsh.model.getEntities(3)
+        monkeypatch.setattr(sp, "_remove_temporary_geometry", real)
+
+
+def _two_role_box(boundary_z_for_negative_x, move=None):
+    faces = _triangle_box(n=3, move=move)
+    roles = {}
+    for tag in faces:
+        box = gmsh.model.getBoundingBox(2, tag)
+        cx = (box[0] + box[3]) / 2
+        cz = (box[2] + box[5]) / 2
+        boundary = 1 / 3 if cx >= 0 else boundary_z_for_negative_x
+        roles[tag] = "top" if cz > boundary else "bottom"
+    return faces, roles
+
+
+def _with_edge_samples(monkeypatch):
+    """Add samples just inside every face edge.
+
+    The default parametric samples are far coarser than the sub-tolerance band
+    next to a role boundary, so they alone never exercise the waiver.
+    """
+    original = sp.sample_occ_surface_points
+
+    def sampler(surface, *, grid):
+        points = original(surface, grid=grid)
+        corners = np.asarray([gmsh.model.getValue(0, tag, []) for _d, tag in
+                              gmsh.model.getBoundary([(2, surface)], combined=False,
+                                                     oriented=False, recursive=True)])
+        centre = corners.mean(axis=0)
+        extra = [0.5 * (corners[i] + corners[j]) * (1 - 1e-4) + 1e-4 * centre
+                 for i in range(3) for j in range(i + 1, 3)]
+        return np.vstack([points, extra])
+
+    monkeypatch.setattr(sp, "sample_occ_surface_points", sampler)
+
+
+def _run_two_role(boundary_z_for_negative_x, move=None):
+    with _gmsh_session():
+        faces, roles = _two_role_box(boundary_z_for_negative_x, move)
+        groups = [sp.OccSurfaceGroup(role, sp.OccSurfaceSelector(
+                      [t for t in faces if roles[t] == role]), sp.OccSurfaceRole(role))
+                  for role in ("top", "bottom")]
+        return sp.auto_cut_occ_geometry(
+            groups, planes=("x0",), grid=3, triangle_surface_mesh=True,
+        ).planes
+
+
+def test_role_boundary_shifted_below_tolerance_is_accepted_end_to_end(monkeypatch):
+    _with_edge_samples(monkeypatch)
+    delta = 5e-4  # well below the auto-cut tolerance for this model
+
+    def move(point):
+        x, y, z = point
+        return (x, y, z + delta) if x < 0 and abs(z - 1 / 3) < 1e-9 else point
+
+    # Roles follow the moved row on the negative side, as an imported mesh would.
+    assert _run_two_role(1 / 3 + delta / 2, move=move) == ("x0",)
+
+
+def test_role_boundary_shifted_by_a_triangle_row_is_refused_end_to_end(monkeypatch):
+    _with_edge_samples(monkeypatch)
+    calls = []
+    original = sp._OccTriangleRoleBoundaries.allows
+
+    def spy(self, *args, **kwargs):
+        calls.append(original(self, *args, **kwargs))
+        return calls[-1]
+
+    monkeypatch.setattr(sp._OccTriangleRoleBoundaries, "allows", spy)
+    assert _run_two_role(-1 / 3) == ()
+    # The mismatches reached the role-boundary check built by auto_cut, which
+    # waived none of them; if it waived all of them the plane would be cut.
+    assert calls and not any(calls)
+    monkeypatch.setattr(sp._OccTriangleRoleBoundaries, "allows", lambda *_a, **_k: True)
+    assert _run_two_role(-1 / 3) == ("x0",)
 
 
 def test_default_cad_cut_does_not_enter_triangle_specialization(monkeypatch):

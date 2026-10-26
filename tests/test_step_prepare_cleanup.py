@@ -106,3 +106,38 @@ def test_batch_cleanup_releases_a_volume_created_before_an_error(monkeypatch):
         sp._remove_temporary_geometry(faces, None)
         assert not occ.getEntities(2)
         assert not occ.getEntities(3)
+
+
+def test_failed_removal_that_already_removed_part_still_releases_the_rest(monkeypatch):
+    with _gmsh_session():
+        occ = gmsh.model.occ
+        # A closed set of faces, so the temporary shell volume can be built.
+        volume = occ.addBox(0, 0, 0, 1, 1, 1)
+        occ.synchronize()
+        faces = [tag for _d, tag in gmsh.model.getBoundary([(3, volume)], oriented=False)]
+        occ.remove([(3, volume)], recursive=False)
+        occ.synchronize()
+        original = occ.remove
+        calls = 0
+
+        def partial_then_fail(dimtags, recursive=False):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # Remove the container and one face, then fail: the request
+                # is now partly gone.
+                original([dimtags[0]], recursive=False)
+                original([(2, faces[0])], recursive=True)
+                raise RuntimeError("injected removal failure")
+            # A stale entity in the request makes OCC fail, as in practice.
+            present = set(occ.getEntities())
+            if any(item not in present for item in dimtags):
+                raise RuntimeError("stale entity in removal request")
+            return original(dimtags, recursive=recursive)
+
+        monkeypatch.setattr(occ, "remove", partial_then_fail)
+        with pytest.raises(RuntimeError, match="injected removal failure"):
+            sp._remove_temporary_geometry(faces, None)
+        monkeypatch.undo()
+        assert not occ.getEntities(2)
+        assert not occ.getEntities(3)

@@ -6,6 +6,7 @@ about OCC surface tags, mirrored geometry, and exact boolean parentage.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -45,6 +46,10 @@ AUTO_CUT_TRIM_NUDGE_REL = 1.0e-3
 AUTO_CUT_BOX_PAD_REL = 0.1
 AUTO_CUT_MAX_FAILURE_SAMPLES = 5
 AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION = 0.005
+
+
+class TriangleCutRefused(RuntimeError):
+    """The triangle-surface cut cannot be done safely; the model stays uncut."""
 
 
 @dataclass(frozen=True)
@@ -646,8 +651,13 @@ def _remove_temporary_geometry(copies: Iterable[int], box: int | None) -> None:
                 # Do not leave the auxiliary volume holding copies if removal
                 # fails. Preserve the original exception after best effort.
                 try:
-                    gmsh.model.occ.remove([(3, container)], recursive=False)
-                    gmsh.model.occ.remove(doomed, recursive=True)
+                    present = set(gmsh.model.occ.getEntities())
+                    if (3, container) in present:
+                        gmsh.model.occ.remove([(3, container)], recursive=False)
+                        present = set(gmsh.model.occ.getEntities())
+                    left = [item for item in doomed if item in present]
+                    if left:
+                        gmsh.model.occ.remove(left, recursive=True)
                 except Exception:
                     pass
                 raise
@@ -752,24 +762,24 @@ def _triangle_model(surfaces: list[int]) -> _OccTriangleModel:
     vertices: dict[int, np.ndarray] = {}
     for surface in surfaces:
         if gmsh.model.getType(2, surface) != "Plane":
-            raise ValueError("triangle surface model contains a nonplanar face")
+            raise TriangleCutRefused("triangle surface model contains a nonplanar face")
         boundary = gmsh.model.getBoundary(
             [(2, surface)], combined=False, oriented=False, recursive=False
         )
         edges = tuple(abs(tag) for dim, tag in boundary if dim == 1)
         if len(edges) != 3 or len(set(edges)) != 3:
-            raise ValueError("triangle surface model contains a nontriangle face")
+            raise TriangleCutRefused("triangle surface model contains a nontriangle face")
         face_edges[surface] = edges
         degree: dict[int, int] = {}
         for edge in edges:
             edge_faces.setdefault(edge, []).append(surface)
             if edge not in edge_vertices:
                 if gmsh.model.getType(1, edge) != "Line":
-                    raise ValueError("triangle surface model contains a curved edge")
+                    raise TriangleCutRefused("triangle surface model contains a curved edge")
                 ends = gmsh.model.getBoundary([(1, edge)], oriented=False)
                 tags = tuple(abs(tag) for dim, tag in ends if dim == 0)
                 if len(tags) != 2 or tags[0] == tags[1]:
-                    raise ValueError("triangle surface model has an invalid edge")
+                    raise TriangleCutRefused("triangle surface model has an invalid edge")
                 edge_vertices[edge] = tags
                 for tag in tags:
                     if tag not in vertices:
@@ -777,23 +787,23 @@ def _triangle_model(surfaces: list[int]) -> _OccTriangleModel:
             for vertex in edge_vertices[edge]:
                 degree[vertex] = degree.get(vertex, 0) + 1
         if len(degree) != 3 or any(value != 2 for value in degree.values()):
-            raise ValueError("triangle surface model has an invalid face boundary")
+            raise TriangleCutRefused("triangle surface model has an invalid face boundary")
         face_vertices[surface] = tuple(sorted(degree))
     if any(len(faces) > 2 for faces in edge_faces.values()):
-        raise ValueError("triangle surface model has a nonmanifold edge")
+        raise TriangleCutRefused("triangle surface model has a nonmanifold edge")
     if not vertices or any(not np.all(np.isfinite(point)) for point in vertices.values()):
-        raise ValueError("triangle surface model has invalid vertices")
+        raise TriangleCutRefused("triangle surface model has invalid vertices")
     facets = np.asarray([[vertices[v] for v in face_vertices[s]] for s in surfaces])
     lengths = np.linalg.norm(facets - np.roll(facets, 1, axis=1), axis=2)
     areas = np.linalg.norm(np.cross(facets[:, 1] - facets[:, 0],
                                     facets[:, 2] - facets[:, 0]), axis=1)
     if (not np.all(np.isfinite(lengths)) or not np.all(np.isfinite(areas))
             or np.any(lengths <= 0) or np.any(areas <= 0)):
-        raise ValueError("triangle surface model has a degenerate face")
+        raise TriangleCutRefused("triangle surface model has a degenerate face")
     origin = facets.min(axis=(0, 1))
     scale = float(np.max(facets.max(axis=(0, 1)) - origin))
     if not np.isfinite(scale) or scale <= 0:
-        raise ValueError("triangle surface model has invalid extent")
+        raise TriangleCutRefused("triangle surface model has invalid extent")
     # Reuse the existing conservative facet intersection and contact checks.
     # Normalize so their numerical guards apply independently of model units.
     from .shell_facets import BoundaryIndex, _contact_only
@@ -801,7 +811,7 @@ def _triangle_model(surfaces: list[int]) -> _OccTriangleModel:
     normalized = (facets - origin) / scale
     for first, second in BoundaryIndex(normalized).hits(normalized):
         if first < second and not _contact_only(normalized[first], normalized[second]):
-            raise ValueError("triangle surface model contains intersecting faces")
+            raise TriangleCutRefused("triangle surface model contains intersecting faces")
     return _OccTriangleModel(vertices, face_edges, edge_vertices,
                              {edge: tuple(faces) for edge, faces in edge_faces.items()},
                              face_vertices)
@@ -927,7 +937,7 @@ def _cut_occ_geometry_to_positive_side(
         axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
         boxes = {tag: tuple(gmsh.model.getBoundingBox(2, tag)) for tag in surfaces}
         if any(not np.all(np.isfinite(box)) for box in boxes.values()):
-            raise ValueError("triangle surface model has invalid face bounds")
+            raise TriangleCutRefused("triangle surface model has invalid face bounds")
         outside = {tag for tag in surfaces if any(boxes[tag][axis + 3] < 0 for axis in axes)}
         inside = {tag for tag in surfaces if all(boxes[tag][axis] > 0 for axis in axes)}
         cut_parents = [tag for tag in surfaces if tag not in inside and tag not in outside]
@@ -990,6 +1000,11 @@ def _cut_occ_geometry_to_positive_side(
             )
             if not uncovered:
                 break
+            if triangle_model is not None:
+                # Standalone retry copies lose edge sharing with the untouched
+                # inside faces, so the triangle path never retries.
+                raise TriangleCutRefused(
+                    f"OCC cut lost retained portions of surfaces {uncovered}")
             if attempt:
                 raise RuntimeError(f"OCC cut lost retained portions of surfaces {uncovered}")
             # OCC can lose a periodic analytic face when its seam meets the
@@ -998,20 +1013,12 @@ def _cut_occ_geometry_to_positive_side(
             # surface. Retry the whole boundary together to share cut edges;
             # adding a repaired face alone would leave a disconnected mesh.
             repaired = uncovered
-            if triangle_model is None:
-                gmsh.model.occ.remove([(2, tag) for tag in remaining], recursive=True)
-            else:
-                _remove_temporary_geometry(remaining, None)
-            if triangle_model is None:
-                retry_copies = [
-                    tag for _dim, tag in gmsh.model.occ.copy(
-                        [(2, copies[parent]) for parent in cut_parents]
-                    )
-                ]
-            else:
-                retry_copies = _copy_triangle_faces([copies[parent] for parent in cut_parents])
-                gmsh.model.occ.synchronize()
-                _verify_triangle_copies(dict(zip(cut_parents, retry_copies)), triangle_model)
+            gmsh.model.occ.remove([(2, tag) for tag in remaining], recursive=True)
+            retry_copies = [
+                tag for _dim, tag in gmsh.model.occ.copy(
+                    [(2, copies[parent]) for parent in cut_parents]
+                )
+            ]
             gmsh.model.occ.convertToNURBS([
                 (2, retry_copies[index])
                 for index, parent in enumerate(cut_parents) if parent in uncovered
@@ -1024,11 +1031,24 @@ def _cut_occ_geometry_to_positive_side(
             actual = {tag for _dim, tag in gmsh.model.getEntities(2)}
             if actual != expected:
                 raise RuntimeError("OCC could not remove the discarded triangle faces")
+            faces = [(2, tag) for tag in sorted(actual)]
+            used_curves = {tag for _d, tag in gmsh.model.getBoundary(
+                faces, combined=False, oriented=False, recursive=False)}
+            used_points = {tag for _d, tag in gmsh.model.getBoundary(
+                faces, combined=False, oriented=False, recursive=True)}
+            if ({tag for _d, tag in gmsh.model.getEntities(1)} != used_curves
+                    or {tag for _d, tag in gmsh.model.getEntities(0)} != used_points):
+                raise TriangleCutRefused("triangle cut left stray curves or points")
             remaining = sorted(actual)
             mapping = {surface: ([surface] if surface in inside else mapping.get(surface, []))
                        for surface in surfaces}
     finally:
-        _remove_temporary_geometry([*copies.values(), *retry_copies], box)
+        try:
+            _remove_temporary_geometry([*copies.values(), *retry_copies], box)
+        except Exception:
+            # Never mask the exception already in flight.
+            if sys.exc_info()[0] is None:
+                raise
     stats = {
         "planes": list(planes),
         "half_space_box_step_units": [float(value) for value in lo + hi],
