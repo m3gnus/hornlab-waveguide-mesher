@@ -754,7 +754,9 @@ Implementation rules:
   `Mesh.CornerSegments`, which grows the total angular point budget:
   `AngularSegments + CornerSegments` is rounded up to a whole number per
   quadrant (m2-clone: 100 + 4 -> 104; solana: 36 + 1 -> 40). Wall spans split
-  the remaining segments proportionally to their angular extents.
+  the remaining segments proportionally to their angular extents. Current ATH
+  imports follow V2026-09a instead (see
+  [text import geometry](text-import-geometry.md)).
 
 ## Freestanding Mouth Closure
 

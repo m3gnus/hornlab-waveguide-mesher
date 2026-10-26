@@ -56,11 +56,16 @@ probes establish the Gielis `sf(m,n1,n2,n3,a,b,p)` formula, natural `log`,
 and half-away-from-zero `round`. The two-value functions `frexp` and `modf`
 are refused during parsing and evaluation.
 
-Current (v2, V2025-12+ rule) imported angular sampling adds the corner budget and rounds up to four
-segments even for a plain profile: `AngularSegments=100`, `CornerSegments=4`
-gives 104. The presence of integer `NAC` disables this addition; the value
-does not affect the grid and is ignored with a named warning. Previously only
-rectangular morphs received the corner-budget addition.
+Current (v2, V2025-12+ rule) imported angular sampling rounds `AngularSegments`
+up to a multiple of eight, for plain profiles and morphs alike, and
+`CornerSegments` does not enter the count: 100 gives 104, and 64 stays 64 with
+`CornerSegments` 4 or 8 (V2026-09a GridExport). The presence of integer `NAC`
+keeps `AngularSegments` as written; its value does not affect the grid and is
+ignored with a named warning. A rounded-rectangle morph corner gets
+`max(3, CornerSegments - 1)` arc intervals, equal in arc angle, and five when
+`CornerSegments` is absent; a wall share ending in .5 rounds up. Earlier mesher
+versions added `CornerSegments` to the count and always used three arc
+intervals.
 
 The current default OSSE axial map uses a cubic Bézier from `(0,0)` to
 `(1,1)` with controls `(0.5,0.1)`, `(0.5,0.92)`. For each equally spaced
@@ -91,7 +96,8 @@ sampler reproduces the four affected archive parity cases.
 | `Throat.Ext.Length` with `Rot` | The extension stays unrotated at its own angle; only the body rotates, about the end of the extension. Current imports retain ten extension segments before the body map. | Existing native rotation behavior. |
 | OSSE-block `Rot` | Ignored with a warning naming `OSSE.Rot`; only top-level `Rot` applies. | Existing authored precedence. |
 | OSSE-block `r0` expression | Refused by name; ATH reads only a leading numeric token. Literal signed decimal/exponent numbers remain accepted. | Existing expression evaluation. |
-| R-OSSE morph | Refused by name: the supplied rectangular morph changes the radial profile, so dropping it would change the horn. | Existing morph behavior. |
+| R-OSSE morph | Each meridian blends additively in radius with `((u - u0)/(1 - u0))^Rate`, `u = z/z_mouth` from the end of any extension. `FixedPart` is compared with `z/z_max` and starts at the first station at or past it, never the throat; a Circle target ignores it. Along the rollback `u > 1`, so the factor exceeds one; a start beyond the mouth's z gives negative factors (a fractional `Rate` there is refused by name, as ATH writes NaN). ATH builds an R-OSSE whose length varies with azimuth, and a Superellipse target, without the morph; WG applies the morph. | Existing morph behavior. |
+| Morph clamps | `Rate` below 1.01 is used as 1.01, `FixedPart` above 0.99 as 0.99, `TargetWidth`/`TargetHeight` above 1000 mm as 1000. An implicit rectangle half-size is `floor(mouth) + 1`. On OSSE a start on the mouth station moves the mouth alone onto the target. | `Rate` in `[0, 1)` and the other values as written. |
 | `Mesh.Enclosure.Spacing` | Four margins in +x,+y,-x,-y order. | Left (-x), top (+y), right (+x), bottom (-y). |
 | Circular `Morph.TargetShape=2` | Uses the largest sampled raw mouth radius, ignoring explicit target width/height and without rounding to a whole millimetre. | Honors explicit dimensions and retains the implicit dimension rule. |
 | Rectangular morph with `Morph.AllowShrinkage=1` | Uses the requested target dimensions. | Uses the requested target dimensions. |

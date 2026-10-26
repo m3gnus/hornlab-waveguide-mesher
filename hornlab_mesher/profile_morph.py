@@ -6,7 +6,13 @@ from typing import Any, Callable, Literal, Mapping, NamedTuple
 import numpy as np
 
 from .profile_common import _is_true, _osse_radius, _parse_number_list, eval_param
-from .text_import import uses_text_import_geometry
+from .text_import import uses_current_ath_axial_sampling, uses_text_import_geometry
+
+# ATH V2026-09a clamps these morph inputs, with a warning, before building.
+ATH_MIN_MORPH_RATE = 1.01
+ATH_MAX_MORPH_FIXED_PART = 0.99
+ATH_MAX_MORPH_TARGET_MM = 1000.0
+
 
 def _guiding_curve_type(params: Mapping[str, Any], p: float) -> int:
     return int(round(eval_param(params.get("gcurveType"), p, 0.0)))
@@ -491,7 +497,16 @@ def _resolve_morph_half_dimensions(
         return radius, radius
     width = eval_param(params.get("morphWidth"), phi, 0.0)
     height = eval_param(params.get("morphHeight"), phi, 0.0)
-    if round_implicit_up:
+    if uses_current_ath_axial_sampling(params):
+        # "Morph.TargetWidth set too big, using 1000" (ATH V2026-09a).
+        width = min(width, ATH_MAX_MORPH_TARGET_MM)
+        height = min(height, ATH_MAX_MORPH_TARGET_MM)
+    if round_implicit_up and uses_current_ath_axial_sampling(params):
+        # ATH V2026-09a takes the next whole millimetre above the mouth, so a
+        # whole-millimetre mouth (R-OSSE R = 150) gains one: 151 (GridExport).
+        implicit_width = float(math.floor(raw_half_width) + 1.0)
+        implicit_height = float(math.floor(raw_half_height) + 1.0)
+    elif round_implicit_up:
         implicit_width = float(math.ceil(raw_half_width - 1.0e-9))
         implicit_height = float(math.ceil(raw_half_height - 1.0e-9))
     else:
@@ -659,6 +674,7 @@ def _morph_rate(params: Mapping[str, Any], phi: float) -> float:
     Waveguide Generator feature (0 jumps straight to the target), so only the
     meaningless negative range is rejected: there the blend exponent turns the
     clamped progress into factors above one and the wall overshoots the target.
+    A current ATH import takes ATH's floor instead, as ATH builds it.
     """
 
     rate = eval_param(params.get("morphRate"), phi, 3.0)
@@ -666,7 +682,16 @@ def _morph_rate(params: Mapping[str, Any], phi: float) -> float:
         raise ValueError(
             f"Morph.Rate must be >= 0, got {rate:g} at phi={math.degrees(phi) % 360.0:.1f} deg"
         )
+    if uses_current_ath_axial_sampling(params):
+        # ATH V2026-09a: "Morph.Rate set too small, using 1.01" below 1.01.
+        return max(rate, ATH_MIN_MORPH_RATE)
     return rate
+
+
+def ath_morph_fixed_part(params: Mapping[str, Any], phi: float) -> float:
+    """``Morph.FixedPart`` for a current ATH import, which ATH caps at 0.99."""
+
+    return min(eval_param(params.get("morphFixed"), phi, 0.0), ATH_MAX_MORPH_FIXED_PART)
 
 
 def _continuous_morph_start(params: Mapping[str, Any], phi: float) -> float:
@@ -749,12 +774,19 @@ def _rounded_rect_quadrant_layout(
     half_width: float,
     half_height: float,
     corner_radius: float,
+    ath_corner_segments: int | None = None,
 ) -> _RoundedRectQuadrantLayout | None:
     """Resolve the quadrant interval budget, or ``None`` for a uniform quadrant.
 
     ``None`` means the sampler degenerates to a plain azimuth ``linspace`` (no
     corner radius, or a fully round target): there is no fixed-structure arc,
     so those quadrants refine normally with the angular budget.
+
+    ``ath_corner_segments`` selects ATH V2026-09a's rule for imports: the arc
+    gets ``max(3, CornerSegments - 1)`` intervals and a wall-span share ending
+    in .5 rounds up, also when symmetric spans leave it a rounding error short (GridExport probes: CornerSegments 0-4 give three, 5 four,
+    8 seven, 12 eleven). Without it the arc keeps three intervals and the
+    split rounds half to even, as native designs always have.
     """
 
     points_per_quadrant = max(1, int(points_per_quadrant))
@@ -764,7 +796,7 @@ def _rounded_rect_quadrant_layout(
 
     theta1 = math.atan2(half_height - corner_radius, half_width)
     theta2 = math.atan2(half_height, half_width - corner_radius)
-    arc_segments = 3
+    arc_segments = 3 if ath_corner_segments is None else max(3, int(ath_corner_segments) - 1)
     side_segments = max(2, points_per_quadrant - arc_segments)
     span1 = theta1
     span2 = math.pi / 2.0 - theta2
@@ -789,9 +821,10 @@ def _rounded_rect_quadrant_layout(
         side1_segments = points_per_quadrant - arc_segments
         side2_segments = 0
     else:
+        share = side_segments * span1 / max(span1 + span2, 1.0e-12)
         side1_segments = max(
             1,
-            int(round(side_segments * span1 / max(span1 + span2, 1.0e-12))),
+            int(round(share)) if ath_corner_segments is None else int(math.floor(share + 0.5 + 1.0e-9)),
         )
         side2_segments = max(1, side_segments - side1_segments)
     return _RoundedRectQuadrantLayout(
@@ -833,33 +866,38 @@ def _rounded_rect_quadrant_angles(
     corner_segments: int,
     *,
     arc_subdivision: int = 1,
+    ath_current: bool = False,
 ) -> np.ndarray:
     """First-quadrant azimuth samples for a rounded-rectangle morph target.
 
-    ATH always samples the corner arc with four profiles per quadrant (both
-    wall-tangency endpoints plus two interior points at 30/60 degrees of arc
-    parameter) regardless of ``Mesh.CornerSegments``, which grows the total
-    angular point budget. The remaining segments are uniform in azimuth on the
-    two wall spans, split proportionally to their angular extents. Verified
+    The corner arc is sampled at intervals equal in arc parameter. Natively, and
+    in older ATH, there are three -- both wall-tangency endpoints plus interior
+    points at 30/60 degrees -- whatever ``Mesh.CornerSegments`` says, verified
     against the ATH m2-clone (CornerSegments 4) and solana (CornerSegments 1)
-    reference grids.
+    reference grids. ``ath_current`` applies ATH V2026-09a's import rule
+    instead, where ``corner_segments`` sets the arc count (see
+    :func:`_rounded_rect_quadrant_layout`). The remaining segments are uniform
+    in azimuth on the two wall spans, split proportionally to their angular
+    extents.
 
     ``arc_subdivision`` splits every arc interval into that many equal
     sub-intervals, leaving the wall budget untouched. It defaults to 1, so the
     public/ATH sampling is unchanged; the acoustic control-grid fit raises it,
     and so does one consumer outside this repository -- see
     ``profile_sampling._morph_corner_arc_subdivision`` for both, and for what
-    they rely on. It exists because ATH's fixed three intervals pin the corner
-    chord at
-    ``2*R*sin(15 deg)`` no matter how large the angular budget grows. Splitting
-    into ``3k`` equal intervals keeps ATH's four canonical profiles as an exact
-    subset (indices ``k``, ``2k``, ``3k`` reproduce the same arc parameters).
+    they rely on. It exists because ATH's fixed arc intervals pin the corner
+    chord (``2*R*sin(15 deg)`` for three) no matter how large the angular budget
+    grows. Splitting each into ``k`` equal intervals keeps ATH's arc profiles as
+    an exact subset (every ``k``-th index reproduces the same arc parameter).
     """
     points_per_quadrant = max(1, int(points_per_quadrant))
     corner_radius = min(max(float(corner_radius), 0.0), half_width, half_height)
-    del corner_segments  # budget-only in ATH; the arc structure is fixed
     layout = _rounded_rect_quadrant_layout(
-        points_per_quadrant, half_width, half_height, corner_radius
+        points_per_quadrant,
+        half_width,
+        half_height,
+        corner_radius,
+        ath_corner_segments=corner_segments if ath_current else None,
     )
     if layout is None:
         return np.linspace(0.0, math.pi / 2.0, points_per_quadrant + 1, dtype=np.float64)

@@ -46,6 +46,7 @@ from .profile_sampling import (
     GCURVE_CROSS_SECTION_CONFLICT,
     _classify_zmap_kind,
     _cross_section_is_circular,
+    ath_angular_segments,
     freeform_azimuth_twist_note,
 )
 from .profiles import azimuthal_mean, build_point_grid, eval_param
@@ -56,6 +57,7 @@ from .builders.point_grid_freestanding import (
 )
 from .rear_compatibility import freestanding_rear_ring, text_import_geometry_class
 from .text_import import uses_v2_text_import_geometry
+from .text_import import ATH_DEFAULT_CORNER_SEGMENTS, uses_current_ath_axial_sampling
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
@@ -1076,6 +1078,13 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         except ValueError as exc:
             raise ConfigError(str(exc)) from exc
     default_sampling_mode = "zmap" if z_map_points is not None else "ath-default-zmap" if imported_defaults else "uniform"
+    angular_segments = _int(
+        mesh, config, names=("angular_segments", "angularSegments"), default=64
+    )
+    if uses_current_ath_axial_sampling(config) and not (
+        mesh.get("_athNacPresent") or config.get("_athNacPresent")
+    ):
+        angular_segments = ath_angular_segments(angular_segments)
     imported_morph = imported_defaults and _pick(
         morph, config, names=("morph_target", "morphTarget"), default=None
     ) is not None
@@ -1107,11 +1116,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         "slotLength": _scalar_or_expr(
             profile, config, names=("slot_length_mm", "slotLength"), default=0.0
         ),
-        "angularSegments": _int(
-            mesh, config, names=("angular_segments", "angularSegments"), default=64
-        ),
+        "angularSegments": angular_segments,
         "cornerSegments": _int(
-            mesh, config, names=("corner_segments", "cornerSegments"), default=0
+            mesh,
+            config,
+            names=("corner_segments", "cornerSegments"),
+            default=ATH_DEFAULT_CORNER_SEGMENTS if uses_current_ath_axial_sampling(config) else 0,
         ),
         "lengthSegments": length_segments,
         "samplingMode": _pick(
@@ -1279,8 +1289,6 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         # Carry the sampling rule as plain transport data for dictionary consumers.
         if ATH_AXIAL_RULE_KEY in config:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
-    if uses_v2_text_import_geometry(config) and formula == "R-OSSE" and common["morphTarget"] != 0:
-        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-09a output changes the radial profile and has no qualified import construction")
     common.update(ath_controls)
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True

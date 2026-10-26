@@ -454,7 +454,7 @@ round too.
 | Canonical TOML/JSON key | Aliases | Default | Notes |
 | --- | --- | --- | --- |
 | `angular_segments` | `angularSegments` | `64` | Geometry sampling for the fitted acoustic surface; it does not directly set BEM element count. |
-| `corner_segments` | `cornerSegments` | `0` | Grows the angular point budget for rounded-rectangle morphs; the corner arc itself always carries four profiles per quadrant. |
+| `corner_segments` | `cornerSegments` | `0` | Grows the angular point budget for rounded-rectangle morphs; the corner arc itself always carries four profiles per quadrant. Current ATH imports instead keep the budget and give the arc `max(3, CornerSegments - 1)` intervals (default 6 when absent). |
 | `length_segments` | `lengthSegments` | `32` | Geometry sampling for the fitted acoustic surface; it does not directly set BEM element count. |
 | `sampling_mode` | `samplingMode` | `uniform` or `zmap` | Defaults to `zmap` when `z_map_points` is set. Text imports default to `ath-default-zmap`. |
 | `vertical_offset_mm` | `verticalOffset` | `0.0` | Rigid +y translation applied after `scale`. |
@@ -667,9 +667,8 @@ V2 ATH V2026-09a import defaults differ from native authoring: OSSE `a=45`,
 `b=0.4`, `q=3.5`. OSSE-block `r0` must be a literal signed decimal number,
 optionally with an exponent. Non-literal values are refused by name because
 ATH reads only their leading number. R-OSSE expressions and saved v1/native text
-retain normal expression evaluation. V2 R-OSSE imports with an active morph are
-refused by name: the measured rectangular morph changes radial profiles and
-has no qualified construction. Saved v1 imports retain their earlier defaults,
+retain normal expression evaluation. V2 R-OSSE imports with an active morph
+follow the measured ATH V2026-09a construction. Saved v1 imports retain their earlier defaults,
 OSSE-block rotation precedence, left/top/right/bottom Spacing order, whole
 extension rotation, and R-OSSE morph construction; materially warped rears
 retain the previous refusal. See [the versioned contract](text-import-geometry.md)
@@ -855,11 +854,11 @@ unsupported ATH objects, or preserve unknown sections for later use. New ATH
 behaviour is added only after it has been confirmed against ATH output; until
 then the item is refused.
 
-For imported geometry without `NAC`, the sampling budget includes
-`Mesh.CornerSegments`, rounded up to four segments, for plain profiles as
-well as rectangular morphs (`100 + 4` becomes `104`). Earlier mesher versions
-applied this addition only to rectangular morphs. Native geometry keeps its
-existing budget rule. V2026-09a OSSE imports also use the measured default
+For imported geometry without `NAC`, `Mesh.AngularSegments` rounds up to a
+multiple of eight and `Mesh.CornerSegments` does not add to it (`100` becomes
+`104`; `64` stays `64`). `Mesh.CornerSegments` sets the rounded-rectangle
+corner arc to `max(3, CornerSegments - 1)` intervals, five when absent. Native
+geometry keeps its existing budget rule. V2026-09a OSSE imports also use the measured default
 axial map described in [text import geometry](text-import-geometry.md).
 
 ## Standalone source body

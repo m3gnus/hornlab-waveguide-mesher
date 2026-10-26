@@ -1048,8 +1048,6 @@ def parse_text_config(content: str) -> dict[str, Any]:
         **blocks.get("MORPH", {}),
     }
     morph = mapped(morph_items, _MORPH_KEY_MAP)
-    if v2_geometry and formula == "R-OSSE" and morph.get("morphTarget", 0) != 0:
-        raise ConfigError("R-OSSE with Morph.TargetShape is unsupported: measured ATH V2026-09a output changes the radial profile and has no qualified import construction")
     if "morphTarget" in morph and imported_geometry:
         # ATH default Morph.CornerRadius is 35, not 0 (Ath 4.8.2 User Guide 4.1.2).
         morph.setdefault("morphCorner", 35)

@@ -82,8 +82,8 @@ def test_explicit_axial_map_overrides_echo(stamp):
     np.testing.assert_allclose(grid[0, :, 2], np.linspace(0, 160, 21), rtol=0, atol=1e-10)
 
 
-@pytest.mark.parametrize("stamp,half_width", [("V2025-06", 132), ("V2026-09a", 131)])
-def test_implicit_rectangle_uses_versioned_raw_ring(stamp, half_width):
+@pytest.mark.parametrize("stamp,half_width,profiles", [("V2025-06", 132, 84), ("V2026-09a", 132, 80)])
+def test_implicit_rectangle_uses_versioned_raw_ring(stamp, half_width, profiles):
     text = FIXTURE.read_text().replace("Mesh.AngularSegments = 8", "Mesh.AngularSegments = 80")
     text += ("Mesh.CornerSegments = 4\nMorph.TargetShape = 1\nMorph.AllowShrinkage = 1\n"
              "Morph.CornerRadius = 10\nGCurve.Type = 2\nGCurve.Width = 200\n"
@@ -91,9 +91,9 @@ def test_implicit_rectangle_uses_versioned_raw_ring(stamp, half_width):
              "GCurve.SF.n2 = 7\nGCurve.SF.n3 = 2.5\n")
     config = parse_text_config(f"; Ath version {stamp}\n" + text)
     grid = build_point_grid_arrays(build_geometry_params(config)[0])["inner_grid"]
-    # Both final rings retain the corner budget. Only the implicit target's
-    # measurement uses the historical raw 80-angle ring for the older build.
-    assert grid.shape[0] == 84
+    # The older build adds the corner budget to the final ring; ATH V2026-09a
+    # exports 80 profiles and a 132 mm half-width (GridExport of this config).
+    assert grid.shape[0] == profiles
     np.testing.assert_allclose(np.max(np.abs(grid[:, -1, :2]), axis=0),
                                [half_width, 113], rtol=0, atol=1e-10)
 
@@ -104,7 +104,8 @@ def test_utf8_bom_does_not_hide_version_echo(stamp):
     assert parse_text_config('\ufeff' + text) == parse_text_config(text)
 
 
-@pytest.mark.parametrize('stamp,segments', [('V2025-06', 8), ('V2026-09a', 12)])
+# ATH V2026-09a exports 8 profiles here: CornerSegments does not add to the count.
+@pytest.mark.parametrize('stamp,segments', [('V2025-06', 8), ('V2026-09a', 8)])
 def test_plain_profile_corner_budget_follows_sampling_rule(stamp, segments):
     cfg = parse_text_config(f'; Ath version {stamp}\n' + FIXTURE.read_text() + 'Mesh.CornerSegments = 4\n')
     assert build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid'].shape[0] == segments

@@ -5,7 +5,16 @@ blank-line-separated block per profile) and the configs that produced them.
 
 | Pair | What it establishes |
 | --- | --- |
-| `m3_rosse_morph`, `m3_rosse_nomorph` | R-OSSE rectangular morph changes radial profiles: unmodified mouth radius 150 mm; morphed radii 160–217.766142 mm. The unsupported morph is refused by name. |
+| `m3_rosse_morph`, `m3_rosse_nomorph` | R-OSSE rectangular morph changes radial profiles: unmodified mouth radius 150 mm; morphed radii 160–217.766142 mm. Each meridian blends additively in radius with `((u - u0)/(1 - u0))^Rate`, `u = z/z_mouth`; above 1 along the rollback. |
+| `rm_fp0`, `rm_fp05` | R-OSSE `Morph.FixedPart` is compared with `z/z_max` and starts at the first station at or past it (never the throat); `u0` is that station's `z/z_mouth`. |
+| `rm_fp09` | A start beyond the mouth's z (`u0 > 1`) gives negative factors; a radius crossing the axis stays positive. CSV rounding amplifies to ~1.5e-3 mm. With a fractional Rate ATH writes NaN. |
+| `rm_fp1`, `ao_fp1` | FixedPart above 0.99 is used as 0.99 ("set too big"). On OSSE a start on the mouth station moves the mouth alone onto the target. |
+| `rm_rate1`, `ao_rate1` | `Morph.Rate` below 1.01 is used as 1.01 ("set too small"), OSSE included. |
+| `rm_ls10`, `rm_tmax095`, `rm_wall` | The R-OSSE morph rule holds for 10 segments, `tmax = 0.95` and a free-standing wall. |
+| `rm_circ_var` | A Circle target on R-OSSE ignores FixedPart (blend from the first station); on OSSE it does not. |
+| `rm_implicit`, `rm_cap` | An implicit target half-size is `floor(mouth) + 1` (151 for R = 150); TargetWidth/Height above 1000 mm are used as 1000. |
+| `rm_wh`, `rm_cs8`, `rm_na100`, `ao_cs4` | Angular sampling: AngularSegments rounds up to a multiple of 8 and CornerSegments does not add to it (100 -> 104, 64 + CornerSegments 4 -> 64); the corner arc has `max(3, CornerSegments - 1)` intervals equal in arc angle, five when the key is absent; a .5 wall share rounds up. |
+| `rm_var_small` | ATH still morphs an R-OSSE whose length varies a little with azimuth, per meridian. `rm_var_large` (config only) varies more: ATH builds it unmorphed ("attempt to stretch a variable-length profile!"), and WG applies the morph. |
 | `m4_enc` | Enclosure Spacing is ordered +x,+y,-x,-y; 25,30,35,40 gives x bounds -196/186 mm on this horn. `m4_enc-enclosure.csv` contains the outer enclosure boundary witnesses. |
 | `m5_osse_omit_a_s`, `m5_rosse_omit_all` | Omitted import coefficients use ATH V2026-09a defaults: OSSE a=45, s=0.5; R-OSSE R=200, a=40, a0=0, r=0.25, m=0.9, b=0.4, q=3.5. |
 | `m6_var_wall` | Azimuth-varying OSSE with a wall builds a RearShape 1 throat shifted -5 mm and offset by wall thickness along its meridional chord normal; rear z span 0.258 mm. `m6_var_wall-rear.csv` contains the throat-ring witnesses, including duplicated ATH endpoints. |

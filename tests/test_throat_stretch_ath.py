@@ -13,7 +13,7 @@ from hornlab_mesher.config_parser import parse_text_config
 from hornlab_mesher.profile_formulas import (
     calculate_osse, calculate_osse_curve, calculate_rosse, calculate_rosse_curve,
 )
-from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT
+from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT, ATH_DEFAULT_CORNER_SEGMENTS
 
 ROOT = Path(__file__).parent / "fixtures/throat_stretch/ath-v2025-12"
 CASES = json.loads((ROOT / "cases.json").read_text())["cases"]
@@ -56,6 +56,9 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
     expected_params = dict(case["params"])
     expected_params[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_VERSION
     expected_params[ATH_AXIAL_RULE_KEY] = ATH_AXIAL_CURRENT
+    if "CornerSegments" not in case["config"]:
+        # Recorded before an absent key took ATH's own value.
+        expected_params["cornerSegments"] = ATH_DEFAULT_CORNER_SEGMENTS
     if expected_params["s1"] == 0 or expected_params["s2"] == 0:
         del expected_params["s1"], expected_params["s2"]
     else:

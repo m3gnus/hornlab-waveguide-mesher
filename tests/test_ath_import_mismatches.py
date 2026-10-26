@@ -16,6 +16,10 @@ from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_V1, 
 FIXTURES = Path(__file__).parent / 'fixtures/ath_import/ath-v2026-09a'
 GRID_CASES = ['m3_rosse_nomorph', 'm4_enc', 'm5_osse_omit_a_s', 'm5_rosse_omit_all',
               'm6_var_wall', 'm7_rot_none', 'm7_rot_in', 'm7_rot_top', 'm7_rot_both', 'm10_ext_rot']
+# Morph and angular-sampling rules; see the fixture README for what each pins.
+MORPH_CASES = ['m3_rosse_morph', 'rm_fp0', 'rm_fp05', 'rm_fp1', 'rm_rate1', 'rm_ls10', 'rm_tmax095',
+               'rm_circ_var', 'rm_implicit', 'rm_cap', 'rm_wh', 'rm_cs8', 'rm_na100', 'rm_var_small',
+               'rm_wall', 'ao_cs4', 'ao_fp1', 'ao_rate1']
 
 
 def config(name):
@@ -27,7 +31,7 @@ def reference(name):
                      for block in (FIXTURES / f'{name}.csv').read_text().strip().split('\n\n')])
 
 
-@pytest.mark.parametrize('name', GRID_CASES)
+@pytest.mark.parametrize('name', GRID_CASES + MORPH_CASES)
 @pytest.mark.parametrize('quadrants', ['1', '1234'])
 def test_grid_matches_ath_v2026_09a(name, quadrants):
     cfg = config(name)
@@ -40,24 +44,42 @@ def test_grid_matches_ath_v2026_09a(name, quadrants):
     np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-4)
 
 
-def test_rosse_morph_refusal_names_measured_radial_change():
-    # ATH V2026-09a does change these radii: morph cannot be ignored.
-    plain, morphed = reference('m3_rosse_nomorph'), reference('m3_rosse_morph')
-    np.testing.assert_allclose(np.linalg.norm(plain[:, -1, :2], axis=1), 150, rtol=0, atol=2e-4)
-    radius = np.linalg.norm(morphed[:, -1, :2], axis=1)
-    assert radius.min() == pytest.approx(160, abs=2e-4)
-    assert radius.max() == pytest.approx(217.766142, abs=2e-4)
-    with pytest.raises(ConfigError, match=r'R-OSSE with Morph.TargetShape.*radial profile'):
-        config('m3_rosse_morph')
-    cfg = config('m3_rosse_nomorph')
-    cfg['morph'] = {'morphTarget': 1, 'morphWidth': 320, 'morphHeight': 320, 'morphCorner': 20}
-    with pytest.raises(ConfigError, match=r'R-OSSE with Morph.TargetShape'):
-        resolve_geometry(cfg)
+def _grid(cfg):
+    return build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid']
+
+
+def test_rosse_morph_starting_on_the_rollback_matches_ath():
+    # FixedPart 0.9 starts beyond the mouth's z, where factors turn negative
+    # and cross the axis; ATH amplifies its 1e-6 mm CSV rounding there.
+    np.testing.assert_allclose(_grid(config('rm_fp09')), reference('rm_fp09'), rtol=0, atol=2e-3)
+
+
+def test_rosse_rollback_start_with_fractional_rate_is_refused_by_name():
+    # ATH writes NaN rows for this: a negative blend has no real 2.5th power.
+    text = (FIXTURES / 'rm_fp09.cfg').read_text().replace('Morph.FixedPart = 0.9', 'Morph.FixedPart = 0.9\nMorph.Rate = 2.5')
+    with pytest.raises(ValueError, match='beyond the mouth'):
+        _grid(parse_text_config(text))
+
+
+def test_rosse_morph_applies_where_ath_skips_a_varying_length():
+    # ATH V2026-09a builds this horn unmorphed ("attempt to stretch a
+    # variable-length profile!"); WG applies the same per-meridian morph.
+    grid = _grid(config('rm_var_large'))
+    x, y = np.abs(grid[:, -1, 0]), np.abs(grid[:, -1, 1])
+    on_side = np.minimum(np.abs(x - 160), np.abs(y - 160))
+    corner = np.hypot(np.maximum(x - 140, 0), np.maximum(y - 140, 0))
+    assert np.all((on_side < 1e-9) | (np.abs(corner - 20) < 1e-9))
+
+
+def test_native_rosse_morph_is_unchanged_by_the_import_rules():
+    cfg = config('m3_rosse_morph')
     cfg.pop(TEXT_IMPORT_VERSION_KEY)
-    assert build_point_grid_arrays(build_geometry_params(cfg)[0])['inner_grid'].shape == plain.shape
+    native = _grid(cfg)
+    assert native.shape == reference('m3_rosse_morph').shape
+    assert np.abs(native - reference('m3_rosse_morph')).max() > 1
 
 
-@pytest.mark.parametrize('name', GRID_CASES + ['m3_rosse_morph'])
+@pytest.mark.parametrize('name', GRID_CASES + MORPH_CASES + ['rm_fp09'])
 def test_normalised_ath_v2026_09a_fixtures(name):
     for suffix in ['cfg', 'csv']:
         data = (FIXTURES / f'{name}.{suffix}').read_bytes()
@@ -364,11 +386,13 @@ def test_saved_v1_extension_rotation_scalar_and_vector_match_pinned_contract():
 
 @pytest.mark.parametrize('version', [TEXT_IMPORT_V1, TEXT_IMPORT_VERSION])
 @pytest.mark.parametrize('echo', ['V2025-06', 'V2026-09a'])
-def test_rosse_morph_refusal_depends_on_geometry_stamp_not_sampling_echo(version, echo):
+def test_rosse_morph_follows_geometry_stamp_and_sampling_echo(version, echo):
     text = ('; Ath version ' + echo + '\n; Waveguide Generator geometry-interpretation: ' + version + '\n'
             + (FIXTURES / 'm3_rosse_morph.cfg').read_text())
-    if version == TEXT_IMPORT_VERSION:
-        with pytest.raises(ConfigError, match=r'R-OSSE with Morph.TargetShape'):
-            parse_text_config(text)
-    else:
+    if version != TEXT_IMPORT_VERSION:
         assert_v1_grid(parse_text_config(text), 'm3_rosse_morph/grid')
+    elif echo == 'V2026-09a':
+        np.testing.assert_allclose(_grid(parse_text_config(text)), reference('m3_rosse_morph'), rtol=0, atol=2e-4)
+    else:
+        # The V2025-06 echo keeps the historical sampler and morph rules.
+        assert _grid(parse_text_config(text)).shape == reference('m3_rosse_morph').shape

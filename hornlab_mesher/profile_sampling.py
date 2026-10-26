@@ -43,12 +43,14 @@ from .profile_morph import (
     _morph_factor,
     _morph_active,
     _morph_factors,
+    _morph_rate,
     _morph_target_radius_at_angle,
     _morph_target_shape,
     _resolve_morph_half_dimensions,
     _validate_static_morph_target,
     _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
+    ath_morph_fixed_part,
     rounded_rect_corner_arc_span,
 )
 
@@ -83,12 +85,20 @@ def _normalise_ath_angular_segments(raw_count: int) -> int:
 
 
 def _sampling_angular_segments(params: Mapping[str, Any]) -> int:
-    count = _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
-    if uses_current_ath_axial_sampling(params) and not params.get("_athNacPresent"):
-        # V2026-09a applies this budget even without a rectangular morph.
-        corner = max(0, int(round(eval_param(params.get("cornerSegments"), 0.0, 0.0))))
-        count = int(math.ceil((count + corner) / 4.0)) * 4
-    return count
+    # A current ATH import's count was rounded the ATH way in the builder
+    # (``ath_angular_segments``); acoustic refinement then grows it from there.
+    return _normalise_ath_angular_segments(int(params.get("angularSegments", 64)))
+
+
+def ath_angular_segments(raw_count: int) -> int:
+    """Profile count ATH V2026-09a builds for ``Mesh.AngularSegments`` without NAC.
+
+    It rounds up to a multiple of eight, with or without a morph, and
+    Mesh.CornerSegments does not enter it (GridExport probes: 36 -> 40,
+    60 -> 64, 64 -> 64, 100 -> 104 for CornerSegments absent, 0, 4 and 8).
+    """
+
+    return max(8, int(math.ceil(max(4, int(raw_count)) / 8.0)) * 8)
 
 
 
@@ -211,6 +221,7 @@ def _morph_angle_list(
             corner,
             corner_segments,
             arc_subdivision=_morph_corner_arc_subdivision(params),
+            ath_current=uses_current_ath_axial_sampling(params),
         )
     )
 
@@ -1016,7 +1027,11 @@ def _morph_schedule(
         measure = t_vals
 
     last = len(t_unit) - 1
-    configured = eval_param(params.get("morphFixed"), 0.0, 0.0)
+    configured = (
+        ath_morph_fixed_part(params, 0.0)
+        if uses_current_ath_axial_sampling(params)
+        else eval_param(params.get("morphFixed"), 0.0, 0.0)
+    )
     index = min(last, int(np.searchsorted(measure, configured, side="left")))
     if uses_current_ath_axial_sampling(params):
         # Current ATH reserves the first segment even for FixedPart = 0: the first
@@ -1047,6 +1062,53 @@ def _morph_schedule(
         start = float(override)
         start_station = None
     return _MorphSchedule(np.asarray(progress, dtype=np.float64), start, start_station)
+
+
+def _ath_rosse_morph_factors(
+    z_values: np.ndarray, z_start: float, phi: float, params: Mapping[str, Any]
+) -> np.ndarray:
+    """ATH V2026-09a morph blend along one imported R-OSSE meridian.
+
+    ATH measures ``Morph.FixedPart`` against ``z / z_max`` and starts at the
+    first station at or past it (never the throat); the blend then runs on
+    ``u = z / z_mouth``, with ``z`` from the extension's end. The rollback
+    beyond the mouth's z has ``u > 1``, so the factor exceeds one there, and a
+    start on the rollback (``u0 > 1``) gives negative factors and still lands
+    the mouth on the target. A start on the mouth station moves the mouth
+    alone, and a circle target always starts at the first station. GridExport
+    probes match all of this to the CSV's 1e-6 mm.
+
+    ATH gives up on an R-OSSE whose length varies with azimuth ("attempt to
+    stretch a variable-length profile!") and builds it unmorphed; Waveguide
+    Generator applies this same per-meridian rule instead (Magnus, 2026-10-26).
+    """
+
+    z = np.asarray(z_values, dtype=np.float64) - float(z_start)
+    factors = np.zeros_like(z)
+    if not _morph_active(params, phi):
+        return factors
+    last = len(z) - 1
+    if _morph_target_shape(params, phi) == 2:
+        # A circle target ignores Morph.FixedPart on R-OSSE (it does not on OSSE).
+        index = 1
+    else:
+        reached = np.flatnonzero(z / np.max(z) >= ath_morph_fixed_part(params, phi))
+        index = max(1, int(reached[0])) if reached.size else last
+    if index == last:
+        factors[-1] = 1.0
+        return factors
+    progress = z / z[-1]
+    start = float(progress[index])
+    rate = _morph_rate(params, phi)
+    blend = (progress[index + 1 :] - start) / (1.0 - start)
+    if start > 1.0 and rate != round(rate) and np.any(blend < 0.0):
+        raise ValueError(
+            "Morph.FixedPart starts this R-OSSE morph beyond the mouth's depth, "
+            f"where Morph.Rate {rate:g} has no real blend (ATH writes NaN). "
+            "Lower Morph.FixedPart or use a whole-number Morph.Rate."
+        )
+    factors[index + 1 :] = np.power(blend, rate)
+    return factors
 
 
 def _pin_axial_stations(
@@ -1882,16 +1944,27 @@ def build_point_grid_arrays(
             # per-azimuth slot length.
             morph_progress = morph_schedule.progress
             morph_progress_start = morph_schedule.start
+            ath_current = uses_current_ath_axial_sampling(params)
+            # A start on the mouth station still moves the mouth onto the
+            # target in ATH V2026-09a (FixedPart 0.99 on 20 segments).
+            ath_mouth_start = ath_current and morph_schedule.start_station == float(t_unit_values[-1])
             radials = raw_radials.copy()
             for i, phi in enumerate(angles):
                 phi_value = float(phi)
-                factors = _morph_factors(
-                    morph_progress,
-                    phi_value,
-                    params,
-                    morph_start=morph_progress_start,
-                )
-                blended = factors > 0.0
+                if formula == "R-OSSE" and ath_current:
+                    factors = _ath_rosse_morph_factors(
+                        z_values[i], rosse_axial_layout(params, phi_value).ext_len, phi_value, params
+                    )
+                else:
+                    factors = _morph_factors(
+                        morph_progress,
+                        phi_value,
+                        params,
+                        morph_start=morph_progress_start,
+                    )
+                    if ath_mouth_start and _morph_active(params, phi_value):
+                        factors[-1] = 1.0
+                blended = factors != 0.0
                 if not blended.any():
                     continue
                 mouth_radial = float(raw_radials[i, -1])
@@ -1902,7 +1975,9 @@ def build_point_grid_arrays(
                     implicit_half_width=resolved_half_width,
                     implicit_half_height=resolved_half_height,
                 )
-                radials[i, blended] = (
+                # Only an ATH R-OSSE start on the rollback has negative factors
+                # that can cross the axis; ATH keeps the radius positive there.
+                radials[i, blended] = np.abs(
                     raw_radials[i, blended]
                     + (target_radius - mouth_radial) * factors[blended]
                 )

@@ -11,6 +11,9 @@ GEOMETRY_STAMP_LABEL = "Waveguide Generator geometry-interpretation:"
 ATH_AXIAL_RULE_KEY = "_athAxialSamplingRule"
 ATH_AXIAL_LEGACY = "ath-v2025-06"
 ATH_AXIAL_CURRENT = "ath-v2025-12+"
+# ATH V2026-09a samples a rectangle-morph corner arc with five intervals when
+# Mesh.CornerSegments is absent, as it does for an explicit 6 (GridExport probes).
+ATH_DEFAULT_CORNER_SEGMENTS = 6
 
 
 def ath_axial_sampling_rule(content: str) -> tuple[str, str | None]:
