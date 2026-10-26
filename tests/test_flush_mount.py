@@ -50,6 +50,48 @@ def test_previously_buildable_fractional_zero_margin_keeps_bounds():
                                                   warn_prefix=None)
 
 
+def test_flush_refuses_a_horn_wider_behind_the_rim_before_meshing(monkeypatch, tmp_path):
+    import hornlab_mesher.config_builder as builder
+
+    config = {
+        "formula": "OSSE", "mode": "enclosure",
+        "profile": {"L": 120, "r0": 12.7, "a": 60, "a0": 15.5, "k": 1, "s": 0},
+        "morph": {"morphTarget": 2, "morphWidth": 200, "morphHeight": 200,
+                  "morphAllowShrinkage": 1, "morphFixed": 0.5},
+        "mesh": {"quadrants": "1", "topology": "legacy", "angularSegments": 32,
+                 "lengthSegments": 24, "surfaceFit": "interpolate", "wallThickness": 0},
+        "enclosure": {"depth": 280, "edge": 0,
+                      **{f"space_{side}": 0 for side in "lrtb"}},
+    }
+    monkeypatch.setattr(builder, "build_mesh_with_info", lambda *a, **k: pytest.fail("mesh started"))
+    with pytest.raises(ConfigError, match="wider behind the mouth.*Add an enclosure margin"):
+        builder.resolve_geometry(config)
+    with pytest.raises(ConfigError, match="wider behind the mouth"):
+        builder.build_from_config(config, tmp_path / "refused.msh")
+    # The new restriction only applies on the flush branch.
+    config["enclosure"].update({f"space_{side}": 100 for side in "lrtb"})
+    assert builder.resolve_enclosure_bounds(config, warn_prefix=None).get("flush_mount") is None
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_flush_with_configured_woofer_is_refused_before_meshing(active, monkeypatch, tmp_path):
+    import hornlab_mesher.config_builder as builder
+    from test_enclosure_woofers import assembly_config
+
+    config = assembly_config()
+    config["enclosure"]["woofers"][0]["active"] = active
+    mouth = builder.resolve_geometry(config).geometry.inner_points[:, -1, :]
+    config["enclosure"]["dim_mm"] = (
+        float(mouth[:, 0].max()), float(mouth[:, 1].max()) + 150,
+        float(-mouth[:, 0].min()) + 80, float(-mouth[:, 1].min()) + 150,
+    )
+    monkeypatch.setattr(builder, "build_mesh_with_info", lambda *a, **k: pytest.fail("mesh started"))
+    with pytest.raises(ConfigError, match="no front baffle for a woofer"):
+        builder.resolve_geometry(config)
+    with pytest.raises(ConfigError, match="no front baffle for a woofer"):
+        builder.build_from_config(config, tmp_path / "refused.msh")
+
+
 def test_flush_bounds_include_the_fitted_mouth_rim():
     config = rectangular_enclosure(margin=0.0, quadrants="1")
     bounds = resolve_enclosure_bounds(config, warn_prefix=None)
@@ -316,7 +358,7 @@ def test_flush_nonplanar_mouth_still_has_planar_rear(tmp_path):
     assert mesh.points[:, 2].min() == pytest.approx(bounds["z_back"] / 1000, abs=1e-6)
 
 
-def test_flush_rear_stays_behind_a_deep_rollback():
+def test_flush_refuses_a_deep_rollback_that_is_wider_behind_the_rim():
     profile = dict(_ASRO2_PARAMS, tmax=1.3)
     config = {
         "formula": "ROSSE", "mode": "enclosure", "profile": profile,
@@ -328,9 +370,8 @@ def test_flush_rear_stays_behind_a_deep_rollback():
     mouth = geometry.inner_points[:, -1, :]
     xmax, ymax = float(mouth[:, 0].max()), float(mouth[:, 1].max())
     config["enclosure"]["dim_mm"] = (xmax, ymax, xmax, ymax)
-    bounds = resolve_enclosure_bounds(config, warn_prefix=None)
-    assert bounds["flush_mount"] is True
-    assert bounds["z_back"] <= float(np.min(geometry.inner_points[:, :, 2])) - 1.0
+    with pytest.raises(ConfigError, match="wider behind the mouth"):
+        resolve_enclosure_bounds(config, warn_prefix=None)
 
 
 @pytest.mark.parametrize("case", ["a", "c"])
@@ -364,3 +405,49 @@ def test_flush_freeform_corner_wall_uses_the_actual_rim(tmp_path, case):
     assert all(any(abs(mesh.points[a, axis]) < 1e-7 and
                    abs(mesh.points[b, axis]) < 1e-7 for axis in (0, 1))
                for a, b in _boundary_edges(triangles))
+
+
+def _flush_corpus_config(family, quadrants, fit):
+    from copy import deepcopy
+
+    from test_general_horn_attachment import config as corpus_config
+
+    config = deepcopy(corpus_config(family))
+    config["mode"] = "enclosure"
+    config["mesh"].update(surface_fit=fit, quadrants="1234")
+    config["enclosure"] = {"depth": 280, "edge": 0}
+    rim = resolve_geometry(config).geometry.inner_points[:, -1, :]
+    x_max, y_max = float(np.abs(rim[:, 0]).max()), float(np.abs(rim[:, 1]).max())
+    config["enclosure"]["dim_mm"] = (x_max, y_max, x_max, y_max)
+    config["mesh"]["quadrants"] = quadrants
+    return config
+
+
+@pytest.mark.parametrize("quadrants", ["1", "12", "14", "1234"])
+@pytest.mark.parametrize("family,fit", [
+    ("OSSE", "interpolate"), ("OSSE", "approximate"),
+    ("ROSSE", "interpolate"), ("ROSSE", "approximate"),
+    ("ICW", "interpolate"), ("ICW", "approximate"),
+    ("FREEFORM", "approximate"),
+])
+def test_ordinary_flush_designs_pass_the_flush_refusals(family, fit, quadrants):
+    # The identity-corpus horns, flush-mounted, are neither wider behind the
+    # rim nor folded: the design-time refusals must leave them buildable.
+    config = _flush_corpus_config(family, quadrants, fit)
+    assert resolve_enclosure_bounds(config, warn_prefix=None)["flush_mount"] is True
+
+
+@pytest.mark.parametrize("quadrants", ["1", "1234"])
+@pytest.mark.parametrize("margin,fractional", [(0.0, True), (0.1, False), (1.0, False)])
+def test_flush_refusals_never_run_for_enclosures_0_3_6_accepted(
+    monkeypatch, quadrants, margin, fractional,
+):
+    import hornlab_mesher.builders.enclosure as enclosure_builder
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("an accepted baffle reached the flush refusals")
+
+    monkeypatch.setattr(enclosure_builder, "_validate_flush_enclosure", refuse)
+    config = rectangular_enclosure(margin=margin, quadrants=quadrants, fractional=fractional)
+    assert "flush_mount" not in resolve_enclosure_bounds(config, warn_prefix=None)
+    assert resolve_geometry(config).geometry.enclosure is not None

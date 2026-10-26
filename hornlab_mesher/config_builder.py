@@ -2483,9 +2483,6 @@ def resolve_geometry(
     topology_mode = _mesh_topology_mode(mesh)
     density = _mesh_density_from_config(config, allow_large_mesh=allow_large_mesh)
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
-    if requested_woofers:
-        from .enclosure_woofers import validate_woofer_domain
-        validate_woofer_domain(params, enclosure_obj)
 
     wall_thickness_mm = float(params.get("wallThickness") or 0.0)
     acoustic_wall_floor_mm = 0.025 * min(
@@ -2671,10 +2668,15 @@ def resolve_geometry(
         bounds = enclosure_box_bounds(
             geometry.inner_points, geometry.enclosure, closed=geometry.closed,
             symmetry_planes=tuple(geometry.symmetry_planes), warn_prefix=None,
+            surface_fit=geometry.surface_fit, preserve_grid=geometry.preserve_grid,
+            boundary_recipe=getattr(geometry, "freeform_wall", None),
         )
         if bounds.get("flush_mount"):
             resolved_type = _FlushResolvedGeometry
             resolved_extra["flush_slice_map"] = tuple(float(value) for value in grid["slice_map"])
+    if requested_woofers:
+        from .enclosure_woofers import validate_woofer_domain
+        validate_woofer_domain(params, enclosure_obj)
     return resolved_type(
         geometry=geometry,
         density=density,

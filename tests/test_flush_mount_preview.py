@@ -257,47 +257,25 @@ def test_preserved_grid_preview_keeps_dense_control_vertices(angular, length):
 
 @pytest.mark.parametrize("quadrants", ["1", "12", "14", "1234"])
 @pytest.mark.parametrize("lod", ["coarse", "fine"])
-def test_non_star_flush_caps_follow_the_ordered_rims(quadrants, lod):
-    from scipy.spatial import cKDTree
+def test_folded_flush_rim_is_refused_before_preview_or_meshing(quadrants, lod, monkeypatch, tmp_path):
     from test_preview_enclosure_edges import sampling_sensitive_enclosure
-
-    from hornlab_mesher.config_builder import resolve_geometry
+    import hornlab_mesher.config_builder as builder
+    from hornlab_mesher.config_parser import ConfigError
 
     config = sampling_sensitive_enclosure()
     config["mesh"].update(angular_segments=16, surface_fit="interpolate")
     config["profile"]["a"] = "45+20*sin(5*p)"
-    full_rim = resolve_geometry(config).geometry.inner_points[:, -1, :]
+    full_rim = builder.resolve_geometry(config).geometry.inner_points[:, -1, :]
     extent = float(np.max(np.abs(full_rim[:, :2])))
     config["enclosure"]["dim_mm"] = (extent,) * 4
     config["mesh"]["quadrants"] = quadrants
-    preview = build_preview_geometry(config, PreviewOptionsV1(lod=lod))
-    surfaces = {surface.role: surface for surface in preview.surfaces}
-    side = surfaces["enclosure.side"]
-    n_phi = len(side.positions) // 2
-    horn = surfaces["horn.inner"]
-    source_rim = horn.positions[:n_phi]
-    rear_rim = side.positions[n_phi:]
-    assert np.max(cKDTree(surfaces["source_cap"].positions).query(source_rim)[0]) < 1e-8
-    assert np.max(cKDTree(surfaces["enclosure.rear"].positions).query(rear_rim)[0]) < 1e-8
-    for role, ring in (("source_cap", source_rim), ("enclosure.rear", rear_rim)):
-        polygon = ring[:, :2]
-        if quadrants != "1234":
-            polygon = np.vstack((polygon, (0.0, 0.0)))
-        polygon_area = 0.5 * abs(np.sum(
-            polygon[:, 0] * np.roll(polygon[:, 1], -1)
-            - polygon[:, 1] * np.roll(polygon[:, 0], -1)
-        ))
-        surface = surfaces[role]
-        triangles = surface.positions[surface.indices.reshape(-1, 3), :2]
-        ab, ac = triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
-        triangle_area = 0.5 * np.sum(np.abs(ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]))
-        assert triangle_area == pytest.approx(polygon_area, rel=1e-9)
-    for surface in surfaces.values():
-        triangles = surface.positions[surface.indices.reshape(-1, 3)]
-        area2 = np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0],
-                                        triangles[:, 2] - triangles[:, 0]), axis=1)
-        assert np.min(area2) > 1e-10
-    assert not preview.metadata["fidelity"]["source_cap"]["measurement_complete"]
+    def no_mesh(*args, **kwargs):
+        raise AssertionError("mesh generation must not start")
+    monkeypatch.setattr(builder, "build_mesh_with_info", no_mesh)
+    with pytest.raises(ConfigError, match="mouth rim (folds back|crosses)"):
+        build_preview_geometry(config, PreviewOptionsV1(lod=lod))
+    with pytest.raises(ConfigError, match="mouth rim (folds back|crosses)"):
+        builder.build_from_config(config, tmp_path / "refused.msh")
 
 
 def test_non_star_flush_original_full_domain_fixture():

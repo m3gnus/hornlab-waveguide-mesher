@@ -141,6 +141,11 @@ def enclosure_box_bounds(
     ):
         # Exactly the cases the baffle check used to reject take the new
         # topology. Accepted designs retain the existing bounds and builder.
+        _validate_flush_enclosure(
+            inner_points, enclosure, closed=closed, symmetry_planes=symmetry_planes,
+            y_origin_offset_mm=y_origin_offset_mm, surface_fit=surface_fit,
+            preserve_grid=preserve_grid, boundary_recipe=boundary_recipe,
+        )
         bounds["flush_mount"] = True
         bounds["clamped_edge"] = 0.0
         bounds["edge_depth"] = 0.0
@@ -154,6 +159,79 @@ def enclosure_box_bounds(
                 boundary_recipe=boundary_recipe,
             )
     return bounds
+
+
+def _validate_flush_enclosure(
+    inner_points: NDArray[np.float64], enclosure: HornEnclosure, *, closed: bool,
+    symmetry_planes: tuple[str, ...], y_origin_offset_mm: float,
+    surface_fit: str | None, preserve_grid: bool, boundary_recipe: Any,
+) -> None:
+    """Refuse flush designs that cannot form a valid rear enclosure."""
+    if enclosure.woofers:
+        raise EnclosureBaffleError(
+            "A flush enclosure has no front baffle for a woofer. "
+            "Remove the woofer or add an enclosure margin."
+        )
+
+    points = np.array(inner_points, dtype=np.float64, copy=True)
+    points[:, :, 1] -= float(y_origin_offset_mm)
+    radii = np.linalg.norm(points[:, :, :2], axis=2)
+    tolerance = max(1.0e-6, float(np.max(radii)) * 1.0e-9)
+    if np.any(radii[:, :-1] > radii[:, -1, None] + tolerance):
+        raise EnclosureBaffleError(
+            "This horn is wider behind the mouth than at the rim, so a flush "
+            "box would cut through it. Add an enclosure margin."
+        )
+    if surface_fit is None:
+        return
+
+    from ._occ import sample_patch_boundary
+    from .point_grid_surfaces import (
+        _bspline_patch_phi_groups, _open_sector_count, _snap_open_symmetry_grid,
+    )
+
+    points = _snap_open_symmetry_grid(points, closed=closed, symmetry_planes=symmetry_planes)
+    groups = _bspline_patch_phi_groups(
+        len(points), closed=closed,
+        n_sectors=_open_sector_count(closed=closed, symmetry_planes=symmetry_planes),
+    )
+    if boundary_recipe is not None:
+        from ..corner_wall import _angular_poles
+        points = _angular_poles(points, groups, boundary_recipe)
+        surface_fit, preserve_grid = "approximate", False
+    rim_parts = []
+    for group in groups:
+        # Check at least sixteen samples per authored angular interval. A
+        # backwards polar step identifies the folded reduced-domain rims
+        # that can duplicate triangles at the rear seam.
+        count = max(65, 16 * (len(group) - 1) + 1)
+        rim = sample_patch_boundary(
+            points, group, np.linspace(0.0, 1.0, count),
+            surface_fit=surface_fit, preserve_grid=preserve_grid,
+        )
+        if not closed:
+            angle = np.unwrap(np.arctan2(rim[:, 1], rim[:, 0]))
+            if np.any(np.diff(angle) < -1.0e-10):
+                raise EnclosureBaffleError(
+                    "This mouth rim folds back around the horn, so a reduced "
+                    "flush enclosure cannot be meshed reliably. Change the "
+                    "mouth shape or add an enclosure margin."
+                )
+            for axis, name in ((0, "x"), (1, "y")):
+                if name in symmetry_planes and np.min(rim[:, axis]) < -1.0e-6:
+                    raise EnclosureBaffleError(
+                        "This mouth rim crosses a symmetry plane, so a reduced "
+                        "flush enclosure cannot be meshed reliably. Change the "
+                        "mouth shape or add an enclosure margin."
+                    )
+        rim_parts.append(rim[:-1])
+    if closed:
+        from ..freeform import _polyline_self_intersects_2d
+        if _polyline_self_intersects_2d(np.vstack(rim_parts)[:, :2], closed=True):
+            raise EnclosureBaffleError(
+                "This mouth rim crosses itself, so a flush enclosure cannot "
+                "be built. Change the mouth shape or add an enclosure margin."
+            )
 
 
 def _set_flush_rim_bounds(
