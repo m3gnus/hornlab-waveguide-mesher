@@ -295,6 +295,80 @@ def _closest_on_model(
     return matched_distance, nearest, matched
 
 
+class _OccMirrorIndex:
+    """Conservative broad phase for the existing ordered face scan.
+
+    All boxes within tolerance must be visited, even after a zero-distance
+    hit: coincident faces can carry different caller roles. Farther boxes
+    contribute only their gap to ``nearest`` in the original scan. They
+    cannot change it once a local candidate gives a distance <= tolerance;
+    otherwise we fall back to the full scan, including its gap diagnostics.
+    """
+
+    def __init__(self, candidates, bboxes, tolerance):
+        self.candidates = candidates
+        self.bboxes = bboxes
+        self.tolerance = tolerance
+        self.tree = None
+        self.tags = [tag for tag in candidates if tag in bboxes]
+        if not self.tags or not np.isfinite(tolerance) or tolerance < 0:
+            return
+        boxes = np.asarray([bboxes[tag] for tag in self.tags], dtype=float)
+        if not np.all(np.isfinite(boxes)) or np.any(boxes[:, :3] > boxes[:, 3:]):
+            return
+        centers = boxes[:, :3] * 0.5 + boxes[:, 3:] * 0.5
+        half_width = float(np.max(np.maximum(
+            centers - boxes[:, :3], boxes[:, 3:] - centers
+        )))
+        self.scale = max(float(np.max(np.abs(boxes))), 1.0)
+        self.boxes = boxes
+        self.radius = half_width + tolerance
+        if not np.isfinite(self.radius):
+            return
+        # Lazy by package contract. Other facet indices use triangle overlap
+        # predicates and geometric margins; neither applies to this scan.
+        from scipy.spatial import cKDTree
+
+        self.tree = cKDTree(centers)
+
+    def candidates_for_points(self, points):
+        if self.tree is None or not np.all(np.isfinite(points)):
+            return [self.candidates] * len(points)
+        # Outward padding is only a broad-phase roundoff guard. The original
+        # scalar norm below still decides membership at the unchanged tolerance.
+        scale = np.maximum(np.max(np.abs(points), axis=1), self.scale)
+        guard = 16 * np.finfo(float).eps * (scale + self.radius)
+        radii = np.nextafter(self.radius + guard, np.inf)
+        try:
+            rows = self.tree.query_ball_point(points, radii, p=np.inf, eps=0)
+        except ValueError:
+            # Finite extreme coordinates can overflow tree distance bounds.
+            # The scalar scan already defines the diagnostic for those inputs.
+            return [self.candidates] * len(points)
+        nearby = []
+        for point, row, margin in zip(points, rows, guard):
+            indices = np.asarray(sorted(row), dtype=int)
+            boxes = self.boxes[indices]
+            # A large face can inflate the tree radius. Reject its broad-phase
+            # false positives in bulk, conservatively on each coordinate. The
+            # scalar Euclidean norm remains the final membership predicate.
+            keep = np.all(np.maximum(boxes[:, :3] - point, point - boxes[:, 3:])
+                          <= self.tolerance + margin, axis=1)
+            nearby.append([self.tags[index] for index in indices[keep]])
+        return nearby
+
+    def closest(self, point, candidates):
+        result = _closest_on_model(
+            point, candidates=candidates, bboxes=self.bboxes, tolerance=self.tolerance
+        )
+        if candidates is self.candidates or 0 <= result[1] <= self.tolerance:
+            return result
+        return _closest_on_model(
+            point, candidates=self.candidates, bboxes=self.bboxes,
+            tolerance=self.tolerance,
+        )
+
+
 def evaluate_occ_plane_symmetry(
     plane: str,
     *,
@@ -333,14 +407,14 @@ def evaluate_occ_plane_symmetry(
     worst_off_model = -1.0
     worst_surface: int | None = None
     failures: list[dict[str, object]] = []
+    index = _OccMirrorIndex(candidates, bboxes, tolerance)
     for surface in candidates:
         role = roles[surface]
-        for point in samples[surface]:
-            mirrored = point.copy()
-            mirrored[axis] = -mirrored[axis]
-            matched_distance, nearest, hits = _closest_on_model(
-                mirrored, candidates=candidates, bboxes=bboxes, tolerance=tolerance
-            )
+        mirrored_points = samples[surface].copy()
+        mirrored_points[:, axis] *= -1
+        nearby = index.candidates_for_points(mirrored_points)
+        for point, mirrored, local in zip(samples[surface], mirrored_points, nearby):
+            matched_distance, nearest, hits = index.closest(mirrored, local)
             if not hits:
                 points_off_model += 1
                 if nearest > worst_off_model:
