@@ -261,10 +261,10 @@ def test_measurement_does_not_repeat_outer_wall_warning(caplog):
 
 
 def test_measurement_surfaces_design_refusal_instead_of_caching_unavailable():
-    from test_preview_enclosure_edges import sampling_sensitive_enclosure
+    from test_preview_enclosure_edges import TIED_SIDE_REFUSAL, sampling_sensitive_enclosure
     config = sampling_sensitive_enclosure()
     for _ in range(2):
-        with pytest.raises(ConfigError, match=r"leaves 0\.08 mm.*on the top"):
+        with pytest.raises(ConfigError, match=TIED_SIDE_REFUSAL):
             measurement.dimension_metadata(config, "fine")
     assert not measurement._DIMENSIONS_CACHE
     assert not measurement._IN_FLIGHT

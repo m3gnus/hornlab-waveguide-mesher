@@ -572,6 +572,13 @@ Morph.AllowShrinkage = 1
             build_from_config(config, tmp_path / "dim.msh")
 
 
+# Coverage 45+10*sin(2p) is identical at p = 0, 90, 180 and 270 degrees, so all
+# four sides tie at the same 0.08 mm ring; which one is named comes down to
+# platform floating-point noise. The refusal, thickness and remedy are fixed.
+TIED_SIDE_REFUSAL = (r"leaves 0\.08 mm of baffle beside the mouth on the (?:top|bottom|left|right);"
+                     r".*at least 0\.1 mm")
+
+
 def sampling_sensitive_enclosure():
     return {
         "formula": "OSSE", "mode": "enclosure",
@@ -594,7 +601,7 @@ def test_display_sampling_cannot_hide_resolved_baffle_refusal(tmp_path, build):
     roomy["enclosure"].update({f"space_{side}": 1 for side in "lrtb"})
     assert resolve_enclosure_bounds(roomy)["front_ring_min_mm"] - 1 == pytest.approx(
         0.084242, abs=1e-6)
-    with pytest.raises(ConfigError, match=r"leaves 0\.08 mm.*on the top;.*at least 0\.1 mm"):
+    with pytest.raises(ConfigError, match=TIED_SIDE_REFUSAL):
         if build == "mesh":
             build_from_config(cfg, tmp_path / "refused.msh")
         elif build == "viewport":
