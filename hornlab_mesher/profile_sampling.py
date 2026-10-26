@@ -70,6 +70,9 @@ FREEFORM_CONTINUOUS_COLLAPSE_KEY = "_freeformContinuousCollapse"
 # interfaces) that must exist as rings. Never set by user configs.
 ACOUSTIC_MORPH_START_KEY = "_acousticMorphStart"
 ACOUSTIC_AXIAL_STATIONS_KEY = "_acousticAxialStations"
+# The normalised station where an imported R-OSSE morph built ATH's way starts
+# on the requested grid; the acoustic fit pins it so both grids blend alike.
+ACOUSTIC_ROSSE_MORPH_STATION_KEY = "_acousticRosseMorphStation"
 # Private params key: ``False`` gives ATH's own rule, in which Slot.Length is
 # part of the morphed horn. Set only by the ATH text importer. Everything else
 # keeps this mesher's contract that a throat extension and a slot are never
@@ -1085,8 +1088,12 @@ def _ath_builds_rosse_morph(params: Mapping[str, Any], z_values: np.ndarray) -> 
 
 
 def _ath_rosse_morph_factors(
-    z_values: np.ndarray, z_start: float, phi: float, params: Mapping[str, Any]
-) -> np.ndarray:
+    z_values: np.ndarray,
+    z_start: float,
+    phi: float,
+    params: Mapping[str, Any],
+    t_unit_values: np.ndarray,
+) -> tuple[np.ndarray, int]:
     """ATH V2026-09a morph blend along one imported R-OSSE meridian.
 
     ATH measures ``Morph.FixedPart`` against ``z / z_max`` and starts at the
@@ -1095,26 +1102,34 @@ def _ath_rosse_morph_factors(
     beyond the mouth's z has ``u > 1``, so the factor exceeds one there, and a
     start on the rollback (``u0 > 1``) gives negative factors and still lands
     the mouth on the target. A start on the mouth station moves the mouth
-    alone, and a circle target always starts at the first station. GridExport
-    probes match all of this to the CSV's 1e-6 mm.
+    alone, and a circle target always starts at the first station past any
+    throat extension. GridExport probes match all of this to the CSV's 1e-6 mm.
+
+    Returns the factors and the start station's index. A start station pinned
+    by the acoustic fit (``ACOUSTIC_ROSSE_MORPH_STATION_KEY``) replaces the
+    search, so a refined grid blends from the same point of the surface.
     """
 
     z = np.asarray(z_values, dtype=np.float64) - float(z_start)
     factors = np.zeros_like(z)
-    if not _morph_active(params, phi):
-        return factors
     last = len(z) - 1
-    if _morph_target_shape(params, phi) == 2:
+    if not _morph_active(params, phi):
+        return factors, last
+    pinned = params.get(ACOUSTIC_ROSSE_MORPH_STATION_KEY)
+    if pinned is not None:
+        index = int(np.argmin(np.abs(np.asarray(t_unit_values, dtype=np.float64) - float(pinned))))
+    elif _morph_target_shape(params, phi) == 2:
         # A circle target ignores Morph.FixedPart on R-OSSE (it does not on OSSE).
-        index = 1
+        index = max(1, int(np.flatnonzero(z >= 0.0)[0]))
     else:
         reached = np.flatnonzero(z / np.max(z) >= ath_morph_fixed_part(params, phi))
         index = max(1, int(reached[0])) if reached.size else last
-    if index == last:
-        factors[-1] = 1.0
-        return factors
     progress = z / z[-1]
     start = float(progress[index])
+    if index == last or start == 1.0:
+        # Nothing lies between the start and the mouth to blend.
+        factors[-1] = 1.0
+        return factors, index
     rate = _morph_rate(params, phi)
     blend = (progress[index + 1 :] - start) / (1.0 - start)
     if start > 1.0 and rate != round(rate) and np.any(blend < 0.0):
@@ -1124,7 +1139,7 @@ def _ath_rosse_morph_factors(
             "Lower Morph.FixedPart or use a whole-number Morph.Rate."
         )
     factors[index + 1 :] = np.power(blend, rate)
-    return factors
+    return factors, index
 
 
 def _pin_axial_stations(
@@ -1943,6 +1958,7 @@ def build_point_grid_arrays(
     else:
         morph_possible = True
 
+    ath_rosse_start_station: float | None = None
     inner = np.empty((len(angles), n_length + 1, 3), dtype=np.float64)
     if formula == "FREEFORM":
         inner[:, :, 0] = raw_radials * np.cos(phi_grid)
@@ -1971,9 +1987,15 @@ def build_point_grid_arrays(
             for i, phi in enumerate(angles):
                 phi_value = float(phi)
                 if ath_rosse_morph:
-                    factors = _ath_rosse_morph_factors(
-                        z_values[i], rosse_axial_layout(params, phi_value).ext_len, phi_value, params
+                    factors, start_index = _ath_rosse_morph_factors(
+                        z_values[i],
+                        rosse_axial_layout(params, phi_value).ext_len,
+                        phi_value,
+                        params,
+                        t_unit_values,
                     )
+                    if i == 0:
+                        ath_rosse_start_station = float(t_unit_values[start_index])
                 else:
                     factors = _morph_factors(
                         morph_progress,
@@ -1994,12 +2016,14 @@ def build_point_grid_arrays(
                     implicit_half_width=resolved_half_width,
                     implicit_half_height=resolved_half_height,
                 )
-                # Only an ATH R-OSSE start on the rollback has negative factors
-                # that can cross the axis; ATH keeps the radius positive there.
-                radials[i, blended] = np.abs(
+                radials[i, blended] = (
                     raw_radials[i, blended]
                     + (target_radius - mouth_radial) * factors[blended]
                 )
+                if ath_rosse_morph:
+                    # A start on the rollback gives negative factors that can
+                    # cross the axis; ATH keeps the radius positive there.
+                    radials[i, blended] = np.abs(radials[i, blended])
         inner[:, :, 0] = radials * np.cos(angles)[:, None]
         inner[:, :, 1] = radials * np.sin(angles)[:, None]
         inner[:, :, 2] = z_values
@@ -2148,6 +2172,9 @@ def build_point_grid_arrays(
         "morph_start_station": (
             None if formula == "FREEFORM" else morph_schedule.start_station
         ),
+        # An imported R-OSSE morph built ATH's way starts per meridian from its
+        # own depth; the acoustic fit pins this station instead.
+        "rosse_morph_start_station": ath_rosse_start_station,
         # Azimuth span of the fixed-structure morph corner arc (first quadrant),
         # so the acoustic fit can tell corner intervals from wall intervals.
         "morph_corner_arc_span": (

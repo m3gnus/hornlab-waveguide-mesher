@@ -40,6 +40,7 @@ from .profile_sampling import (
     ACOUSTIC_AXIAL_STATIONS_KEY,
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
     ACOUSTIC_MORPH_START_KEY,
+    ACOUSTIC_ROSSE_MORPH_STATION_KEY,
     MORPH_KEEPS_SLOT_KEY,
     build_point_grid_arrays,
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
@@ -56,8 +57,11 @@ from .builders.point_grid_freestanding import (
     _restored_outer_throat_points,
 )
 from .rear_compatibility import freestanding_rear_ring, text_import_geometry_class
-from .text_import import uses_v2_text_import_geometry
-from .text_import import ATH_DEFAULT_CORNER_SEGMENTS, uses_current_ath_axial_sampling
+from .text_import import (
+    ATH_DEFAULT_CORNER_SEGMENTS,
+    uses_current_ath_axial_sampling,
+    uses_v2_text_import_geometry,
+)
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
@@ -2024,6 +2028,9 @@ def _requested_axial_layout(
     stations: list[float] = []
     morph_start = None
     start_station = grid.get("morph_start_station")
+    rosse_station = grid.get("rosse_morph_start_station")
+    if morph_possible and rosse_station is not None:
+        start_station = rosse_station
     if morph_possible and start_station is not None and float(start_station) > 0.0:
         morph_start = float(grid["morph_start"])
         stations.append(float(start_station))
@@ -2034,6 +2041,7 @@ def _requested_axial_layout(
     return {
         "slice_map": slice_map,
         "morph_start": morph_start,
+        "rosse_morph_station": rosse_station if morph_possible else None,
         "stations": stations,
     }
 
@@ -2087,6 +2095,8 @@ def _build_acoustic_sampling_grid(
         stations = list(requested["stations"])
         if requested["morph_start"] is not None:
             working[ACOUSTIC_MORPH_START_KEY] = requested["morph_start"]
+        if requested["rosse_morph_station"] is not None:
+            working[ACOUSTIC_ROSSE_MORPH_STATION_KEY] = requested["rosse_morph_station"]
         if stations:
             working[ACOUSTIC_AXIAL_STATIONS_KEY] = stations
     if formula == "FREEFORM":

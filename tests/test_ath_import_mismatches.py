@@ -93,6 +93,42 @@ def test_rosse_superellipse_morph_uses_wg_morph():
     assert np.abs(grid[:, -1, :2]).max(axis=0) == pytest.approx([160, 160], abs=1e-9)
 
 
+def test_acoustic_refinement_keeps_the_ath_rosse_morph_start():
+    from hornlab_mesher.profile_sampling import (
+        ACOUSTIC_AXIAL_STATIONS_KEY,
+        ACOUSTIC_ROSSE_MORPH_STATION_KEY,
+    )
+    params = build_geometry_params(config('rm_fp0'))[0]
+    base = build_point_grid_arrays(params)
+    station = base['rosse_morph_start_station']
+    fine = build_point_grid_arrays({**params, 'lengthSegments': 40, ACOUSTIC_AXIAL_STATIONS_KEY: [station],
+                                    ACOUSTIC_ROSSE_MORPH_STATION_KEY: station})
+    t_base = np.asarray(base['slice_map']) / base['slice_map'][-1]
+    t_fine = np.asarray(fine['slice_map']) / fine['slice_map'][-1]
+    shared = [(i, int(np.argmin(np.abs(t_fine - t)))) for i, t in enumerate(t_base)
+              if np.min(np.abs(t_fine - t)) < 1e-12]
+    assert len(shared) > 3
+    for i, j in shared:
+        np.testing.assert_array_equal(fine['inner_grid'][:, j], base['inner_grid'][:, i])
+
+
+def test_rosse_circle_morph_leaves_the_throat_extension_round():
+    text = ((FIXTURES / 'rm_fp0.cfg').read_text().replace('R = 150', 'R = 150 + 20*cos(p)^2')
+            .replace('Morph.TargetShape = 1', 'Morph.TargetShape = 2') + 'Throat.Ext.Length = 40\nThroat.Ext.Angle = 0\n')
+    grid = _grid(parse_text_config(text))
+    radius = np.hypot(grid[..., 0], grid[..., 1])
+    assert np.ptp(radius[grid[..., 2] <= 40 + 1e-9]) < 1e-9
+
+
+def test_native_morph_crossing_the_axis_keeps_its_sign():
+    cfg = config('rm_fp0')
+    cfg.pop(TEXT_IMPORT_VERSION_KEY)
+    cfg['morph'].update(morphRate=0, morphAllowShrinkage=1, morphWidth=20, morphHeight=20, morphCorner=2)
+    # Rate 0 jumps every blended station to a 20 mm target: the native blend
+    # crosses the axis, and only ATH's R-OSSE construction takes |r|.
+    assert _grid(cfg)[..., 0].min() == pytest.approx(-125.833554, abs=1e-6)
+
+
 def test_native_rosse_morph_is_unchanged_by_the_import_rules():
     cfg = config('m3_rosse_morph')
     cfg.pop(TEXT_IMPORT_VERSION_KEY)
