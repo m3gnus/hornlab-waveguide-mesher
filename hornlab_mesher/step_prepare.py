@@ -6,7 +6,6 @@ about OCC surface tags, mirrored geometry, and exact boolean parentage.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -954,6 +953,7 @@ def _cut_occ_geometry_to_positive_side(
     copies: dict[int, int] = {}
     retry_copies: list[int] = []
     box: int | None = None
+    cut_succeeded = False
     try:
         if triangle_model is None:
             for surface in surfaces:
@@ -1042,12 +1042,14 @@ def _cut_occ_geometry_to_positive_side(
             remaining = sorted(actual)
             mapping = {surface: ([surface] if surface in inside else mapping.get(surface, []))
                        for surface in surfaces}
+        cut_succeeded = True
     finally:
         try:
             _remove_temporary_geometry([*copies.values(), *retry_copies], box)
         except Exception:
-            # Never mask the exception already in flight.
-            if sys.exc_info()[0] is None:
+            # Raise a cleanup failure after a successful cut (leftover copies
+            # would be meshed); never mask an exception already in flight.
+            if cut_succeeded:
                 raise
     stats = {
         "planes": list(planes),

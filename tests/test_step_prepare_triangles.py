@@ -248,6 +248,25 @@ def test_cleanup_failure_in_finally_does_not_mask_the_original_error(monkeypatch
         monkeypatch.setattr(sp, "_remove_temporary_geometry", real)
 
 
+@pytest.mark.parametrize("triangle", [False, True])
+def test_cleanup_failure_after_a_successful_cut_is_raised(monkeypatch, triangle):
+    with _gmsh_session():
+        faces = _triangle_box(n=1)
+        model = sp._triangle_model(faces) if triangle else None
+        real = sp._remove_temporary_geometry
+
+        def boom(*_a, **_k):
+            raise RuntimeError("cleanup failure")
+
+        monkeypatch.setattr(sp, "_remove_temporary_geometry", boom)
+        with pytest.raises(RuntimeError, match="cleanup failure"):
+            sp._cut_occ_geometry_to_positive_side(
+                ("x0",), bbox=(-1, -1, -1, 1, 1, 1), tolerance=0.001,
+                grid=3, triangle_model=model,
+            )
+        monkeypatch.setattr(sp, "_remove_temporary_geometry", real)
+
+
 def _two_role_box(boundary_z_for_negative_x, move=None):
     faces = _triangle_box(n=3, move=move)
     roles = {}
