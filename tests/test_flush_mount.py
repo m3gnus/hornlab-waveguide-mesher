@@ -451,3 +451,13 @@ def test_flush_refusals_never_run_for_enclosures_0_3_6_accepted(
     config = rectangular_enclosure(margin=margin, quadrants=quadrants, fractional=fractional)
     assert "flush_mount" not in resolve_enclosure_bounds(config, warn_prefix=None)
     assert resolve_geometry(config).geometry.enclosure is not None
+
+
+@pytest.mark.parametrize("quadrants", ["1", "12", "14", "1234"])
+def test_flush_preserved_rollback_wall_has_no_enclosure_seam(tmp_path, quadrants):
+    from hornlab_mesher.config_builder import build_from_config
+
+    config = _flush_corpus_config("ROSSE", quadrants, "interpolate")
+    # This test certifies enclosure seams, independently of the triangle cap.
+    config["mesh"].update(preserve_grid=True, topology="legacy", allow_large_mesh=True)
+    assert build_from_config(config, tmp_path / "rollback.msh").n_triangles > 0

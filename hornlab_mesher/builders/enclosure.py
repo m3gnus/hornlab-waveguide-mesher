@@ -1300,6 +1300,7 @@ def _build_flush_enclosure(
 ) -> dict[str, Any]:
     """Continue the wall's actual mouth curves straight to the rear plane."""
     from ._occ import make_planar_fill_from_boundary
+    from .point_grid_surfaces import _SharedSurfaceBuilder
 
     gmsh = require_gmsh()
     occ = gmsh.model.occ
@@ -1328,8 +1329,26 @@ def _build_flush_enclosure(
     closed = not any(int(dim) == 0 for dim, _ in end_points)
 
     parts = []
+    side_builder = _SharedSurfaceBuilder()
     for curve, rear in zip(mouth_curves, rear_curves):
         curve = abs(int(curve))
+        if gmsh.model.getType(1, curve) == "Line":
+            # Preserve straight grid chords as planar faces. OCC's ruled
+            # B-spline strip parameterization can fan a narrow, deep side
+            # into slivers that the mesh quality filter removes.
+            front_ends = _curve_endpoints(curve)
+            rear_ends = _curve_endpoints(int(rear[1]))
+            front_start = np.asarray(gmsh.model.getValue(0, front_ends[0], []))
+            rear_xyz = [np.asarray(gmsh.model.getValue(0, tag, [])) for tag in rear_ends]
+            if np.linalg.norm(front_start[:2] - rear_xyz[0][:2]) > np.linalg.norm(
+                front_start[:2] - rear_xyz[1][:2]
+            ):
+                rear_ends = rear_ends[::-1]
+            parts.append(side_builder.surface([
+                curve, side_builder.line_tags(front_ends[1], rear_ends[1]),
+                int(rear[1]), side_builder.line_tags(rear_ends[0], front_ends[0]),
+            ]))
+            continue
         front_wire = int(occ.addWire([curve]))
         rear_wire = int(occ.addWire([int(rear[1])]))
         parts.extend(_add_ruled_section(front_wire, rear_wire))
