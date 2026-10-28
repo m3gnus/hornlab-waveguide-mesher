@@ -156,6 +156,46 @@ def test_flush_rear_cap_handles_mouth_that_crosses_a_sector_axis(tmp_path):
     assert build_from_config(config, tmp_path / "fold.msh").n_triangles > 0
 
 
+@pytest.mark.parametrize("fractional", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_flush_triangulation_is_scoped_to_the_build(tmp_path, monkeypatch, fractional, fail):
+    """A flush build must not change the caller's subsequent mesh behaviour."""
+    gmsh = pytest.importorskip("gmsh")
+    from hornlab_mesher import mesher
+    from hornlab_mesher.config_builder import build_from_config
+
+    option = "Mesh.OldInitialDelaunay2D"
+    original_density = mesher.configure_density
+    checked = []
+
+    def density(built, config):
+        checked.append(gmsh.option.getNumber(option))
+        assert checked[-1] == (0.0 if fractional else 1.0)
+        if fail:
+            raise RuntimeError("scoped meshing control failure")
+        return original_density(built, config)
+
+    monkeypatch.setattr(mesher, "configure_density", density)
+    initialized_here = not gmsh.isInitialized()
+    if initialized_here:
+        gmsh.initialize()
+    previous = gmsh.option.getNumber(option)
+    try:
+        gmsh.option.setNumber(option, 0)
+        config = rectangular_enclosure(margin=0.0, quadrants="1", fractional=fractional)
+        if fail:
+            with pytest.raises(mesher.MesherError, match="scoped meshing control failure"):
+                build_from_config(config, tmp_path / "failed.msh")
+        else:
+            assert build_from_config(config, tmp_path / "scoped.msh").n_triangles > 0
+        assert checked
+        assert gmsh.option.getNumber(option) == 0.0
+    finally:
+        gmsh.option.setNumber(option, previous)
+        if initialized_here:
+            gmsh.finalize()
+
+
 @pytest.mark.parametrize("quadrant_patch_fit", [False, True])
 @pytest.mark.parametrize("closed", [False, True])
 def test_flush_back_stays_behind_interpolated_wall_overshoot(quadrant_patch_fit, closed):

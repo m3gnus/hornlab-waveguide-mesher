@@ -549,6 +549,9 @@ class BuiltGeometry:
     # Dedicated exact controls builds retain their immutable analytic authority.
     controls_meridian: object | None = None
 
+    # Builder-specific meshing controls, scoped to this build by the mesher.
+    mesh_options: dict[str, float] = field(default_factory=dict)
+
 
 @dataclass(frozen=True)
 class MeshInfo:

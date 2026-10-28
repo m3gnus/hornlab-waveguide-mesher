@@ -528,6 +528,15 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
                      or isinstance(geometry.surface_fit, _RetryInterpolatingFit))
             else MESH_ALGORITHM_DELAUNAY
         ),
+        # On concave fitted throat rims, Gmsh's newer initial triangulator can
+        # put a triangle of three throat-edge nodes on both the wall and source
+        # cap (Linux 4.15.2). The older boundary-recovery triangulator avoids
+        # these ears without changing the fitted surfaces or their shared rims.
+        # Keep every previously accepted enclosure on its original mesh path.
+        mesh_options=(
+            {"Mesh.OldInitialDelaunay2D": 1.0}
+            if enclosure_bounds and enclosure_bounds.get("flush_mount") else {}
+        ),
         open_shell_wall_points_mm=open_shell_points,
         open_shell_wall_normals=open_shell_normals,
     )

@@ -338,6 +338,10 @@ def build_mesh_with_info(
                 geometry, mesh_density
             )
             built = _dispatch_builder(acoustic_geometry)
+            for name, value in built.mesh_options.items():
+                if not initialized_here and name not in saved_options:
+                    saved_options[name] = gmsh.option.getNumber(name)
+                gmsh.option.setNumber(name, value)
             if getattr(getattr(acoustic_geometry, "enclosure", None), "woofers", ()):
                 from .enclosure_woofers import cut_woofers
                 cut_woofers(built, acoustic_geometry)
