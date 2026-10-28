@@ -266,6 +266,41 @@ def test_generated_outer_offset_grid_guard_rejects_a_normal_flip():
         validate_outer_offset_grid(inner, outer, full_circle=True)
 
 
+@pytest.mark.parametrize("side", ["inner", "outer", "inner and outer"])
+def test_generated_outer_offset_grid_names_degenerate_normal(side):
+    inner = np.asarray([
+        [[0., 0., 0.], [0., 0., 1.], [0., 0., 2.]],
+        [[1., 0., 0.], [1., 0., 1.], [1., 0., 2.]],
+    ])
+    outer = inner.copy()
+    if "inner" in side:
+        inner[0, 2] = inner[0, 1]
+    if "outer" in side:
+        outer[0, 2] = outer[0, 1]
+    normals = "normals" if side == "inner and outer" else "normal"
+    with pytest.raises(ValueError, match=rf"degenerate {side} {normals} near azimuth row 0, axial interval 1"):
+        validate_outer_offset_grid(inner, outer, full_circle=False, label="OSSE")
+
+
+@pytest.mark.parametrize("first", ["degenerate", "flip"])
+def test_generated_outer_offset_grid_reports_the_first_invalid_cell(first):
+    inner = np.asarray([
+        [[0., 0., 0.], [0., 0., 1.], [0., 0., 2.]],
+        [[1., 0., 0.], [1., 0., 1.], [1., 0., 2.]],
+    ])
+    outer = inner.copy()
+    if first == "degenerate":
+        outer[0, 1] = outer[0, 0]
+        outer[0, 2, 2] = -1.
+        message = "degenerate outer normal"
+    else:
+        outer[0, 1, 2] = -1.
+        outer[0, 2] = outer[0, 1]
+        message = "normal flip"
+    with pytest.raises(ValueError, match=rf"{message} near azimuth row 0, axial interval 0"):
+        validate_outer_offset_grid(inner, outer, full_circle=False)
+
+
 @pytest.mark.parametrize(
     "points,closed,expected",
     [

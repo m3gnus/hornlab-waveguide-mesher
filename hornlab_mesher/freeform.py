@@ -1951,9 +1951,20 @@ def validate_outer_offset_grid(
         outer_len = np.linalg.norm(outer_normal, axis=1)
         degenerate = (inner_len <= 1.0e-12) | (outer_len <= 1.0e-12)
         alignment = np.sum(inner_normal * outer_normal, axis=1)
-        flipped = degenerate | (alignment <= 0.0)
-        if np.any(flipped):
-            ring = int(np.flatnonzero(flipped)[0])
+        invalid = degenerate | (alignment <= 0.0)
+        if np.any(invalid):
+            ring = int(np.flatnonzero(invalid)[0])
+            if degenerate[ring]:
+                inner_bad = inner_len[ring] <= 1.0e-12
+                outer_bad = outer_len[ring] <= 1.0e-12
+                if inner_bad and outer_bad:
+                    detail = "degenerate inner and outer normals"
+                else:
+                    detail = f"a degenerate {'inner' if inner_bad else 'outer'} normal"
+                raise ValueError(
+                    f"{label} generated outer offset grid has {detail} near "
+                    f"azimuth row {i}, axial interval {ring}"
+                )
             raise ValueError(
                 f"{label} generated outer offset grid has a normal flip "
                 f"near azimuth row {i}, axial interval {ring}"
