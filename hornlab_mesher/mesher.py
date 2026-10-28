@@ -35,6 +35,12 @@ from .geometry import (
     StandaloneSourceGeometry,
     validate_mesh_density,
 )
+from .mesh_repair_ops import (
+    DEGENERATE_MIN_QUALITY,
+    WELD_TOLERANCE_MM,
+    _compact_unused_vertices as _compact_repair_vertices,
+    _weld_near_duplicate_vertices as _weld_repair_vertices,
+)
 from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .native_env import preserve_native_windows_path
 from .normals import (
@@ -582,12 +588,12 @@ def _postprocess_mesh(
     # (micrometres apart on fine grids); welding them prevents overlapping
     # elements whose near-identical rows make dense BEM solves singular.
     if weld_near_duplicates:
-        triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=5.0e-3)
+        triangles = _weld_near_duplicate_vertices(points, triangles, tol_mm=WELD_TOLERANCE_MM)
     triangles, phys = _remove_symmetry_plane_slivers(
         points, triangles, phys, symmetry_snap_axes
     )
     triangles, phys, _ = remove_degenerate_triangles(
-        points, triangles, phys, min_quality=1.0e-4
+        points, triangles, phys, min_quality=DEGENERATE_MIN_QUALITY
     )
     if len(triangles) == 0:
         raise MesherError("gmsh produced only degenerate triangle elements")
@@ -851,86 +857,20 @@ def _validate_infinite_baffle_contract(
             )
 
 
-_WELD_FORWARD_NEIGHBOR_OFFSETS = tuple(
-    (dx, dy, dz)
-    for dx in (-1, 0, 1)
-    for dy in (-1, 0, 1)
-    for dz in (-1, 0, 1)
-    if (dx, dy, dz) > (0, 0, 0)
-)
-
-
 def _weld_near_duplicate_vertices(
-    points: np.ndarray,
-    triangles: np.ndarray,
-    *,
-    tol_mm: float = 5.0e-3,
+    points: np.ndarray, triangles: np.ndarray, *, tol_mm: float = WELD_TOLERANCE_MM
 ) -> np.ndarray:
-    """Remap triangle indices so vertices closer than ``tol_mm`` coincide.
-
-    Uses a spatial hash with cells of the weld tolerance; clusters merge to
-    the lowest vertex index. Orphaned duplicate vertices become unused and
-    are dropped by the final compaction. Returns the remapped triangles.
-    """
-
-    if len(points) == 0 or len(triangles) == 0:
-        return triangles
-    cells = np.floor(points / tol_mm).astype(np.int64)
-    buckets: dict[tuple[int, int, int], list[int]] = {}
-    for index, key in enumerate(map(tuple, cells)):
-        buckets.setdefault(key, []).append(index)
-
-    parent = np.arange(len(points))
-
-    def find(a: int) -> int:
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = int(parent[a])
-        return a
-
-    tol_sq = tol_mm * tol_mm
-
-    def merge_if_close(i: int, j: int) -> None:
-        delta = points[j] - points[i]
-        if float(delta @ delta) > tol_sq:
-            return
-        ri, rj = find(i), find(j)
-        if ri != rj:
-            parent[max(ri, rj)] = min(ri, rj)
-
-    for key, indices in buckets.items():
-        for position, i in enumerate(indices):
-            for j in indices[position + 1 :]:
-                merge_if_close(i, j)
-        # Visit each pair of neighboring cells once. The old all-neighbor
-        # traversal visited every pair from both cells and discarded half of
-        # the candidates by vertex index.
-        for dx, dy, dz in _WELD_FORWARD_NEIGHBOR_OFFSETS:
-            others = buckets.get((key[0] + dx, key[1] + dy, key[2] + dz))
-            if others is None:
-                continue
-            for i in indices:
-                for j in others:
-                    merge_if_close(i, j)
-
-    roots = np.fromiter(
-        (find(i) for i in range(len(points))), dtype=np.int64, count=len(points)
+    """Preserve the generated-mesh distance comparison."""
+    return _weld_repair_vertices(
+        points, triangles, tol_mm=tol_mm, merge_when_unordered=True
     )
-    if np.array_equal(roots, np.arange(len(points))):
-        return triangles
-    return roots[triangles]
 
 
 def _compact_unused_vertices(
-    points: np.ndarray,
-    triangles: np.ndarray,
+    points: np.ndarray, triangles: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    used = np.unique(triangles)
-    if len(used) == len(points):
-        return points, triangles
-    remap = np.full(len(points), -1, dtype=np.int64)
-    remap[used] = np.arange(len(used), dtype=np.int64)
-    return points[used], remap[triangles]
+    """Drop all vertices when the generated triangle set is empty."""
+    return _compact_repair_vertices(points, triangles, preserve_empty=False)
 
 
 _SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25

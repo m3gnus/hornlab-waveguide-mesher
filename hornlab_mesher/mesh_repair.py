@@ -11,6 +11,13 @@ from collections import defaultdict, deque
 import meshio
 import numpy as np
 
+from .mesh_repair_ops import (
+    DEGENERATE_MIN_QUALITY,
+    WELD_TOLERANCE_MM,
+    _compact_unused_vertices,
+    _remove_degenerate_triangles,
+    _weld_near_duplicate_vertices,
+)
 from .mesh_validation import (
     _edge_direction_stats,
     _edge_on_expected_plane,
@@ -22,8 +29,6 @@ from .normals import open_shell_bore_alignment
 from .step_mapping import RIGID_TAG, StepFaceGroup
 from .step_prepare import millimetres_to_step_units, snap_symmetry_plane_vertices
 
-WELD_TOLERANCE_MM = 5.0e-3  # 5 micrometres; closes near-duplicate OCC patch nodes
-DEGENERATE_MIN_QUALITY = 1.0e-4  # drops needle slivers that make dense solves singular
 
 def _mesh_triangle_data(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if "triangle" not in mesh.cells_dict:
@@ -35,110 +40,6 @@ def _mesh_triangle_data(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndarray, np.n
     except KeyError as exc:
         raise RuntimeError("mesh has no gmsh:physical triangle tags") from exc
     return points, triangles, tags
-
-
-def _remove_degenerate_triangles(
-    points: np.ndarray,
-    triangles: np.ndarray,
-    tags: np.ndarray,
-    *,
-    eps: float = 1e-18,
-    min_quality: float = 0.0,
-) -> tuple[np.ndarray, np.ndarray, int]:
-    """Drop zero-area triangles and, optionally, needle slivers.
-
-    ``min_quality`` is a scale-invariant shape threshold: a triangle whose area
-    falls below ``min_quality * longest_edge**2`` is removed. Fine OCC meshes
-    carry micrometre-wide needles bridging near-duplicate patch-boundary nodes
-    whose quadrature-degenerate rows make the dense metal-bem solve singular
-    (LAPACK info > 0). Ported from hornlab_mesher.normals (commit a5539de).
-    """
-    if len(triangles) == 0:
-        return triangles, tags, 0
-    p0 = points[triangles[:, 0]]
-    p1 = points[triangles[:, 1]]
-    p2 = points[triangles[:, 2]]
-    area2 = np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
-    keep = area2 > eps
-    if min_quality > 0.0:
-        longest_sq = np.maximum(
-            np.maximum(
-                np.sum((p1 - p0) ** 2, axis=1),
-                np.sum((p2 - p1) ** 2, axis=1),
-            ),
-            np.sum((p0 - p2) ** 2, axis=1),
-        )
-        keep &= (0.5 * area2) > (min_quality * longest_sq)
-    return triangles[keep], tags[keep], int(np.count_nonzero(~keep))
-
-
-def _weld_near_duplicate_vertices(
-    points: np.ndarray,
-    triangles: np.ndarray,
-    *,
-    tol_mm: float = WELD_TOLERANCE_MM,
-) -> np.ndarray:
-    """Remap triangles so vertices closer than ``tol_mm`` coincide.
-
-    Spatial hash with cells of the weld tolerance; clusters merge to the lowest
-    vertex index via union-find. Closes the near-duplicate boundary nodes
-    (micrometres apart) that OCC leaves between sewn patches on fine meshes,
-    which otherwise seed singular slivers and spurious free edges. Ported from
-    hornlab_mesher.mesher (commit a8c2648).
-    """
-    if len(points) == 0 or len(triangles) == 0:
-        return triangles
-    cells = np.floor(points / tol_mm).astype(np.int64)
-    buckets: dict[tuple[int, int, int], list[int]] = {}
-    for index, key in enumerate(map(tuple, cells)):
-        buckets.setdefault(key, []).append(index)
-
-    parent = np.arange(len(points))
-
-    def find(a: int) -> int:
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = int(parent[a])
-        return a
-
-    tol_sq = tol_mm * tol_mm
-    neighbor_offsets = [
-        (dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
-    ]
-    for key, indices in buckets.items():
-        candidates: list[int] = []
-        for dx, dy, dz in neighbor_offsets:
-            candidates.extend(buckets.get((key[0] + dx, key[1] + dy, key[2] + dz), ()))
-        for i in indices:
-            pi = points[i]
-            for j in candidates:
-                if j <= i:
-                    continue
-                delta = points[j] - pi
-                if float(delta @ delta) <= tol_sq:
-                    ri, rj = find(i), find(j)
-                    if ri != rj:
-                        parent[max(ri, rj)] = min(ri, rj)
-
-    roots = np.fromiter((find(i) for i in range(len(points))), dtype=np.int64, count=len(points))
-    if np.array_equal(roots, np.arange(len(points))):
-        return triangles
-    return roots[triangles]
-
-
-def _compact_unused_vertices(
-    points: np.ndarray,
-    triangles: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Drop unreferenced vertices and renumber triangles to the survivors."""
-    if len(triangles) == 0:
-        return points, triangles
-    used = np.unique(triangles)
-    if len(used) == len(points):
-        return points, triangles
-    remap = np.full(len(points), -1, dtype=np.int64)
-    remap[used] = np.arange(len(used))
-    return points[used], remap[triangles]
 
 
 def _source_normal_projections(

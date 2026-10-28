@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .edges import build_edge_table
+from .mesh_repair_ops import _remove_degenerate_triangles
 from .tags import PhysicalGroup
 
 
@@ -51,30 +52,10 @@ def remove_degenerate_triangles(
     eps: float = 1e-18,
     min_quality: float = 0.0,
 ) -> tuple[NDArray[np.int64], NDArray[np.int32], int]:
-    """Drop zero-area triangles and, optionally, needle slivers.
-
-    ``min_quality`` is a scale-invariant shape threshold: triangles whose
-    area falls below ``min_quality * longest_edge**2`` are removed. Gmsh can
-    emit needle triangles bridging near-duplicate OCC patch-boundary nodes
-    (observed: micrometre-wide needles on fine grids) whose
-    quadrature-degenerate rows make dense BEM solves singular.
-    """
-
-    p0 = points[triangles[:, 0]]
-    p1 = points[triangles[:, 1]]
-    p2 = points[triangles[:, 2]]
-    area2 = np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
-    keep = area2 > eps
-    if min_quality > 0.0:
-        longest_sq = np.maximum(
-            np.maximum(
-                np.sum((p1 - p0) ** 2, axis=1),
-                np.sum((p2 - p1) ** 2, axis=1),
-            ),
-            np.sum((p0 - p2) ** 2, axis=1),
-        )
-        keep &= (0.5 * area2) > (min_quality * longest_sq)
-    return triangles[keep], tags[keep], int(np.count_nonzero(~keep))
+    """Drop zero-area triangles and, optionally, needle slivers."""
+    return _remove_degenerate_triangles(
+        points, triangles, tags, eps=eps, min_quality=min_quality, preserve_empty=False
+    )
 
 
 def open_shell_wall_orientation_references(
