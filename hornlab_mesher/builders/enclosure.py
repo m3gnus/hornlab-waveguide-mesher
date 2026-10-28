@@ -1299,7 +1299,7 @@ def _build_flush_enclosure(
     mouth_curves: list[int], bounds: dict[str, float],
 ) -> dict[str, Any]:
     """Continue the wall's actual mouth curves straight to the rear plane."""
-    from ._occ import make_planar_fill_from_boundary
+    from ._occ import _make_planar_fill_from_loop_curves, extreme_boundary_loop_curves
     from .point_grid_surfaces import _SharedSurfaceBuilder
 
     gmsh = require_gmsh()
@@ -1329,6 +1329,8 @@ def _build_flush_enclosure(
     closed = not any(int(dim) == 0 for dim, _ in end_points)
 
     parts = []
+    cap_curves = []
+    lofts = []
     side_builder = _SharedSurfaceBuilder()
     for curve, rear in zip(mouth_curves, rear_curves):
         curve = abs(int(curve))
@@ -1348,15 +1350,26 @@ def _build_flush_enclosure(
                 curve, side_builder.line_tags(front_ends[1], rear_ends[1]),
                 int(rear[1]), side_builder.line_tags(rear_ends[0], front_ends[0]),
             ]))
+            # These are the plane's own shared rear edges. Coarse wall fills
+            # can widen their OCC tolerance boxes beyond the cap selector's
+            # flatness threshold, without moving the actual curves.
+            cap_curves.append(int(rear[1]))
             continue
         front_wire = int(occ.addWire([curve]))
         rear_wire = int(occ.addWire([int(rear[1])]))
-        parts.extend(_add_ruled_section(front_wire, rear_wire))
+        loft = _add_ruled_section(front_wire, rear_wire)
+        lofts.append(loft)
+        parts.extend(loft)
     sides = [(int(dim), int(tag)) for dim, tag in parts if int(dim) == 2]
     if not sides:
         raise RuntimeError("could not build flush enclosure sides")
     gmsh.model.occ.synchronize()
-    back = make_planar_fill_from_boundary(sides, use_min=True, closed=closed)
+    # A loft can re-author its rear curve, so retain its actual boundary.
+    # Extract each patch separately to keep disjoint curved portions when
+    # a mouth also contains straight segments.
+    for loft in lofts:
+        cap_curves.extend(extreme_boundary_loop_curves(loft, use_min=True))
+    back = _make_planar_fill_from_loop_curves(cap_curves, closed=closed)
     return {
         "dimtags": [*sides, *back],
         "front": [],

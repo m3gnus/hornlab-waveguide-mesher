@@ -461,3 +461,19 @@ def test_flush_preserved_rollback_wall_has_no_enclosure_seam(tmp_path, quadrants
     # This test certifies enclosure seams, independently of the triangle cap.
     config["mesh"].update(preserve_grid=True, topology="legacy", allow_large_mesh=True)
     assert build_from_config(config, tmp_path / "rollback.msh").n_triangles > 0
+
+
+@pytest.mark.parametrize("quadrants", ["1", "12", "14", "1234"])
+def test_coarse_preserved_rectangular_flush_wall_closes(tmp_path, quadrants):
+    from hornlab_mesher.config_builder import build_from_config
+
+    config = rectangular_enclosure(margin=0.0, quadrants="1234")
+    config["mesh"].pop("angularSegments", None)
+    config["mesh"].update(angular_segments=16, surface_fit="interpolate",
+                          preserve_grid=True, topology="legacy", allow_large_mesh=True)
+    rim = resolve_geometry(config).geometry.inner_points[:, -1, :]
+    x_max, y_max = np.max(np.abs(rim[:, :2]), axis=0)
+    config["enclosure"].update(dim_mm=(x_max, y_max, x_max, y_max), edge=0)
+    config["mesh"]["quadrants"] = quadrants
+    assert resolve_enclosure_bounds(config, warn_prefix=None)["flush_mount"] is True
+    assert build_from_config(config, tmp_path / "coarse.msh").n_triangles > 0
