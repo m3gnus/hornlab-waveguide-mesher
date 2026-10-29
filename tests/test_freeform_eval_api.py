@@ -79,7 +79,7 @@ def test_inputs_defaults_and_precedence_match_curve_query():
     assert config["profile"] == plain  # Queries do not rewrite input.
 
 
-@pytest.mark.parametrize("z", [-1, 120.00000000001, np.nan, np.inf, [1, np.nan]])
+@pytest.mark.parametrize("z", [-1, 120.000000001, np.nan, np.inf, [1, np.nan]])
 def test_evaluate_rejects_invalid_z(z):
     with pytest.raises(ValueError, match="z queries"):
         freeform_evaluate_profile(params(reviewer()), "H", z)
@@ -188,3 +188,22 @@ assert "gmsh" not in sys.modules
 '''
     subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
                    check=True, timeout=30)
+
+
+@pytest.mark.parametrize('profile', [reviewer(), corners()])
+def test_query_shares_production_h_extent_and_relative_boundary_tolerance(profile):
+    config = params(profile)
+    # Ingest admits H/V end positions within 1e-9 mm; production uses H's span.
+    for i, delta in ((0, 5e-10), (-1, -5e-10)):
+        row = config['profileV']['points'][i]
+        if isinstance(row, dict):
+            row['z'] += delta
+        else:
+            row[0] += delta
+    geometry = build_freeform_geometry(config)
+    z = np.array([-1e-11, 0, 120, 120 + 1e-11])
+    expected = geometry.evaluate_radii(z)
+    for plane, radii in zip(('H', 'V'), expected):
+        assert np.array_equal(freeform_evaluate_profile(config, plane, z), radii)
+        with pytest.raises(ValueError, match='shared'):
+            freeform_evaluate_profile(config, plane, 120 + 1e-8)

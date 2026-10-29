@@ -6,7 +6,6 @@ only the documented writer product counter is normalized in the comparison.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 try:
@@ -66,12 +65,8 @@ def rounded_base_tree(tmp_path_factory):
 
 
 def archive_base(tmp_path_factory, base):
-    if not (ROOT / '.git').exists():
-        pytest.skip(f'S1-wall slice gate requires a Git checkout with base {base[:7]}')
-    ancestry = subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'],
-                              cwd=ROOT, capture_output=True, check=False)
-    if ancestry.returncode != 0:
-        pytest.skip(f'S1-wall slice gate applies only while {base[:7]} is an ancestor of HEAD')
+    # The historical base is immutable; a rebase changes ancestry, not the
+    # compatibility promise. Missing/unreadable objects fail git archive.
     return archive_tree(tmp_path_factory, base)
 
 

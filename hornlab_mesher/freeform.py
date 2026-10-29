@@ -539,6 +539,8 @@ def _cache_store(key: str, geometry: FreeformGeometry) -> None:
 
 def _finite_float(value: Any, field: str) -> float:
     try:
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError("boolean values are not numeric profile controls")
         result = float(value)
     except (OverflowError, TypeError, ValueError) as exc:
         raise ValueError(
@@ -682,45 +684,32 @@ def _parse_endpoint_values(
     default_throat_angle: float,
 ) -> tuple[float, float]:
     anchors = parsed.points
-    if np.isfinite(parsed.angles_deg[0]):
-        throat_angle = float(parsed.angles_deg[0])
-    else:
-        throat_angle = _finite_float(
-            profile.get("throatAngleDeg", default_throat_angle),
-            f"profile{plane}.throatAngleDeg",
-        )
-
-    last_delta = anchors[-1] - anchors[-2]
-    default_mouth_angle = math.degrees(math.atan2(last_delta[1], last_delta[0]))
-    if np.isfinite(parsed.angles_deg[-1]):
-        mouth_angle = float(parsed.angles_deg[-1])
-    else:
-        mouth_angle = _finite_float(
-            profile.get("mouthAngleDeg", default_mouth_angle),
-            f"profile{plane}.mouthAngleDeg",
-        )
-
-    for field_name, angle in (
-        ("throatAngleDeg", throat_angle),
-        ("mouthAngleDeg", mouth_angle),
+    effective = []
+    for index, handles, sign, chord, field_name, default in (
+        (0, parsed.handles_out, 1, anchors[1] - anchors[0],
+         "throatAngleDeg", default_throat_angle),
+        (-1, parsed.handles_in, -1, anchors[-1] - anchors[-2],
+         "mouthAngleDeg", None),
     ):
-        if not (-90.0 <= angle <= 90.0):
-            raise ValueError(
-                f"FREEFORM profile{plane}.{field_name} must be in [-90, 90] degrees, "
-                f"got {angle:g}"
-            )
-
-    # Resolve new endpoint precedence for diagnostics as well as evaluation.
-    effective = [throat_angle, mouth_angle]
-    for side, index, handles, sign, chord in (
-        (0, 0, parsed.handles_out, 1, anchors[1] - anchors[0]),
-        (1, -1, parsed.handles_in, -1, anchors[-1] - anchors[-2]),
-    ):
+        # Validate only the active rule. Saved inactive block angles must not
+        # override a handle, point angle or endpoint corner's chord direction.
         if handles and handles[index] is not None:
             vector = sign * np.asarray(handles[index])
-            effective[side] = math.degrees(math.atan2(vector[1], vector[0]))
-        elif parsed.joins and parsed.joins[index] == "corner" and not np.isfinite(parsed.angles_deg[index]):
-            effective[side] = math.degrees(math.atan2(chord[1], chord[0]))
+            angle = math.degrees(math.atan2(vector[1], vector[0]))
+        elif np.isfinite(parsed.angles_deg[index]):
+            angle = float(parsed.angles_deg[index])
+        elif parsed.joins and parsed.joins[index] == "corner":
+            angle = math.degrees(math.atan2(chord[1], chord[0]))
+        else:
+            if default is None:
+                default = math.degrees(math.atan2(chord[1], chord[0]))
+            angle = _finite_float(profile.get(field_name, default), f"profile{plane}.{field_name}")
+            if not -90.0 <= angle <= 90.0:
+                raise ValueError(
+                    f"FREEFORM profile{plane}.{field_name} must be in [-90, 90] degrees, "
+                    f"got {angle:g}"
+                )
+        effective.append(angle)
     return effective[0], effective[1]
 
 
@@ -1110,7 +1099,8 @@ def _bezier_spline(controls: np.ndarray, anchor_u: np.ndarray) -> Any:
 def _straight_bezier(controls: np.ndarray) -> bool:
     chord = controls[3] - controls[0]
     expected = controls[0] + np.arange(4)[:, None] * chord / 3
-    return bool(np.all(np.abs(controls - expected) <= 1e-12))
+    tolerance = np.maximum(1e-12, 8 * np.finfo(float).eps * np.maximum(1., np.abs(expected)))
+    return bool(np.all(np.abs(controls - expected) <= tolerance))
 
 
 def _resolve_plane(
@@ -1227,6 +1217,7 @@ def _resolve_plane(
         raise ValueError(f"FREEFORM profile{name} span {failure.segment} "
                          f"z=[{z0:g}, {z1:g}] mm: " + failure.message)
 
+    minimum_failures: dict[int, _SplineViolation] = {}
     violations = violations_for(factors)
     # Same iteration order, coupled reduction and bisections as the legacy solver.
     for _iteration in range(4 * n + 8):
@@ -1244,7 +1235,13 @@ def _resolve_plane(
                     break
                 trial_scale *= 0.5
             if feasible_scale is None:
+                # Keep solving as before, but retain the hard guard exposed at
+                # the minimum. Reporting the initial overshoot hides this cause.
+                failures = violations_for(trial, [segment])
+                minimum_failures[segment] = next(
+                    (failure for failure in failures if not failure.overshoot), failures[0])
                 break
+            minimum_failures.pop(segment, None)
             lower = feasible_scale
             upper = min(1.0, 2.0 * feasible_scale)
             for _bisection in range(24):
@@ -1256,7 +1253,8 @@ def _resolve_plane(
             factors = scaled(factors, segment, lower)
         violations = violations_for(factors)
     if violations:
-        refuse(violations[0])
+        failure = violations[0]
+        refuse(minimum_failures.get(failure.segment, failure))
 
     # Recover in anchor order, keeping smooth sides coupled and corners separate.
     for group in groups:
@@ -1343,7 +1341,7 @@ def freeform_insert_anchor(
         raise ValueError("FREEFORM insert z must be strictly inside a span, not on an anchor")
     if len(parsed.points) == 64:
         raise ValueError("FREEFORM insertion would exceed 64 anchors")
-    span = int(np.searchsorted(parsed.points[:, 0], z) - 1)
+    span = int(_plane_span_indices(original, np.asarray(z)))
     controls = _plane_beziers(original)
     s = float(_bezier_parameters_at_z(controls[span:span+1], np.asarray([z]))[0])
     p0, p1, p2, p3 = controls[span]
@@ -1393,8 +1391,11 @@ def freeform_insert_anchor(
                 current = _resolve_plane("H", updated, *endpoints)
             except ValueError as exc:
                 raise ValueError(
-                    "FREEFORM exact insertion cannot preserve this curve under the "
-                    "subdivided-span validation guards: " + str(exc)
+                    f"FREEFORM exact insertion at z={z:.17g} mm cannot preserve this curve "
+                    "under the subdivided-span validation guards; "
+                    f"nearest anchor z={parsed.points[np.argmin(abs(parsed.points[:, 0] - z)), 0]:.17g} mm "
+                    f"is {np.min(abs(parsed.points[:, 0] - z)):.6g} mm away. "
+                    "Try inserting farther from that anchor: " + str(exc)
                 ) from exc
         changed = np.flatnonzero(np.max(np.abs(_plane_beziers(current) - target), axis=(1, 2)) > 1e-12)
         if not len(changed):
@@ -1429,6 +1430,7 @@ def _resolved_anchor_report(plane: _PlaneSpline) -> list[dict[str, Any]]:
 
 def _freeform_query_geometry(
     config_or_params: Mapping[str, Any], *, default_throat_angle_deg: float | None = None,
+    warning_messages: list[str] | None = None,
 ) -> FreeformGeometry:
     """One config/default resolution path for all public profile queries."""
     if not isinstance(config_or_params, Mapping):
@@ -1441,7 +1443,7 @@ def _freeform_query_geometry(
     if default_throat_angle_deg is not None:
         default = _finite_float(default_throat_angle_deg, "default_throat_angle_deg")
         params.setdefault("a0", default)
-    return build_freeform_geometry(params)
+    return _build_freeform_geometry(params, warning_messages=warning_messages)
 
 
 def freeform_evaluate_profile(
@@ -1458,14 +1460,7 @@ def freeform_evaluate_profile(
         raise ValueError("FREEFORM plane must be 'H' or 'V'")
     geometry = _freeform_query_geometry(
         config_or_params, default_throat_angle_deg=default_throat_angle_deg)
-    resolved = geometry._profile_h if plane == "H" else geometry._profile_v
-    query = np.asarray(z, dtype=float)
-    if not np.all(np.isfinite(query)):
-        raise ValueError("FREEFORM z queries must all be finite")
-    z0, z1 = resolved.anchors[[0, -1], 0]
-    if np.any(query < z0) or np.any(query > z1):
-        raise ValueError(f"FREEFORM profile{plane} z queries must lie in [{z0:g}, {z1:g}] mm")
-    return resolved.radii_at_z(query)
+    return geometry.evaluate_radii(z)[plane == "V"]
 
 
 def _refine_deviation_samples(z: np.ndarray, difference: Callable) -> list[float]:
@@ -1546,10 +1541,9 @@ def freeform_profile_curves(config_or_params: Mapping[str, Any], *, samples_per_
     """Return JSON curve data without importing Gmsh or constructing a grid."""
     if isinstance(samples_per_span, bool) or not isinstance(samples_per_span, (int, np.integer)) or samples_per_span < 2:
         raise ValueError("FREEFORM samples_per_span must be an integer >= 2")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", UserWarning)
-        geometry = _freeform_query_geometry(config_or_params)
-    result = {"warnings": [str(w.message) for w in caught]}
+    messages: list[str] = []
+    geometry = _freeform_query_geometry(config_or_params, warning_messages=messages)
+    result = {"warnings": messages}
     for name, plane in (("H", geometry._profile_h), ("V", geometry._profile_v)):
         if isinstance(plane, _BezierPlane):
             result["warnings"].extend(plane.validation_warnings)
@@ -2411,6 +2405,13 @@ def _reject_inflections(
 
 def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     """Parse, validate, construct, and memoize a FREEFORM geometry definition."""
+    return _build_freeform_geometry(params)
+
+
+def _build_freeform_geometry(
+    params: Mapping[str, Any], *, warning_messages: list[str] | None = None,
+) -> FreeformGeometry:
+    """Own construction and diagnostics without mutating process warning filters."""
     if not isinstance(params, Mapping):
         raise ValueError("FREEFORM params must be a mapping")
     morph_target = _validate_freeform_morph_target(params)
@@ -2460,12 +2461,14 @@ def build_freeform_geometry(params: Mapping[str, Any]) -> FreeformGeometry:
     endpoint_h = _parse_endpoint_values(profile_h, parsed_h, "H", default_throat_angle)
     endpoint_v = _parse_endpoint_values(profile_v, parsed_v, "V", default_throat_angle)
     if abs(endpoint_h[0] - endpoint_v[0]) > 5.0:
-        warnings.warn(
+        message = (
             "FREEFORM H/V throat tangent angles differ by more than 5 degrees; "
-            "the circular source-cap transition may be inconsistent",
-            UserWarning,
-            stacklevel=2,
+            "the circular source-cap transition may be inconsistent"
         )
+        if warning_messages is None:
+            warnings.warn(message, UserWarning, stacklevel=3)
+        else:
+            warning_messages.append(message)
 
     inflection_policy = str(params.get("inflectionPolicy", "warn")).strip().lower()
     if inflection_policy not in {"warn", "reject"}:

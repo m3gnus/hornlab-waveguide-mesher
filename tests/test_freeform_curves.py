@@ -591,3 +591,109 @@ def test_corner_automatic_sides_shrink_and_recover_independently():
     assert np.linalg.norm(shrinking.beziers[0, 2] - shrinking.anchors[1]) < 1
     assert np.linalg.norm(unshrunk.beziers[0, 2] - unshrunk.anchors[1]) > 10
     np.testing.assert_array_equal(shrinking.beziers[1], unshrunk.beziers[1])
+
+
+@pytest.mark.parametrize('value', [True, False, np.bool_(True)])
+def test_insert_rejects_boolean_z(value):
+    with pytest.raises(ValueError, match='insert z must be a finite number'):
+        freeform_insert_anchor(reviewer(), z=value, default_throat_angle_deg=15.5)
+
+
+@pytest.mark.parametrize('field', ['z', 'r', 'angleDeg', 'handleOut'])
+def test_object_anchor_rejects_boolean_numbers(field):
+    p = corners()
+    p['points'][0][field] = [True, 1] if field == 'handleOut' else True
+    with pytest.raises(ValueError, match=field + ' must be a finite number'):
+        build_freeform_geometry(params(p))
+
+
+@pytest.mark.parametrize('rule', ['corner', 'point-angle', 'handle'])
+def test_inactive_endpoint_block_angles_do_not_refuse_valid_curve(rule, tmp_path):
+    p = corners()
+    if rule == 'point-angle':
+        p['points'][0]['angleDeg'] = 25
+        p['points'][-1]['angleDeg'] = 55
+    elif rule == 'handle':
+        p['points'][0]['handleOut'] = [10, 4]
+        p['points'][-1]['handleIn'] = [-10, -12]
+    expected = freeform_profile_curves(params(p))
+    config = {"formula": "FREEFORM", "mode": "bare", "profile": params(p),
+              "mesh": {"throat_res_mm": 10, "mouth_res_mm": 15}}
+    before = tmp_path / 'active.msh'
+    build_from_config(config, before)
+    p.update(throatAngleDeg=150, mouthAngleDeg=-150)
+    assert freeform_profile_curves(params(p)) == expected
+    config['profile'] = params(p)
+    after = tmp_path / 'inactive.msh'
+    build_from_config(config, after)
+    assert before.read_bytes() == after.read_bytes()
+
+
+@pytest.mark.parametrize('field', ['throatAngleDeg', 'mouthAngleDeg'])
+def test_active_endpoint_block_angle_still_range_checked(field):
+    p = reviewer()
+    p[field] = 150
+    with pytest.raises(ValueError, match=field + r' must be in \[-90, 90\]'):
+        build_freeform_geometry(params(p))
+
+
+def test_near_anchor_refusal_names_requested_z_and_distance():
+    with pytest.raises(ValueError, match=r'z=39[.]999999999899998 mm.*nearest anchor z=40 mm.*mm away.*farther'):
+        freeform_insert_anchor(reviewer(), z=40 - 1e-10, default_throat_angle_deg=15.5)
+
+
+def test_straight_diagnostic_scales_with_metre_length_roundoff():
+    from hornlab_mesher.freeform import _straight_bezier
+
+    controls = np.array([[0, 12.7], [4000, 50], [8000, 87.3], [12000, 124.6]])
+    controls[2, 0] = np.nextafter(controls[2, 0], np.inf)
+    assert _straight_bezier(controls)
+    controls[2, 0] += 1e-6
+    assert not _straight_bezier(controls)
+
+
+def test_concurrent_curve_queries_collect_only_their_own_warnings(monkeypatch):
+    import warnings
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from hornlab_mesher import freeform
+
+    distinct = params(corners())
+    distinct['profileV']['points'][0]['angleDeg'] = 45
+    quiet = params(corners())
+    # Exercise both a cold build and a warm cache concurrently. The barriers
+    # force overlap inside the build owner, where catch_warnings used to race.
+    freeform._FREEFORM_GEOMETRY_CACHE.clear()
+    original = freeform._parse_endpoint_values
+    barrier = Barrier(2)
+
+    def synchronized(*args, **kwargs):
+        value = original(*args, **kwargs)
+        if args[2] == 'V':
+            barrier.wait(timeout=10)
+        return value
+
+    monkeypatch.setattr(freeform, '_parse_endpoint_values', synchronized)
+    filters = list(warnings.filters)
+    showwarning = warnings.showwarning
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        for _ in range(2):
+            noisy = executor.submit(freeform_profile_curves, distinct)
+            silent = executor.submit(freeform_profile_curves, quiet)
+            assert sum('source-cap' in m for m in noisy.result()['warnings']) == 1
+            assert not any('source-cap' in m for m in silent.result()['warnings'])
+    assert warnings.filters == filters
+    assert warnings.showwarning is showwarning
+    monkeypatch.setattr(freeform, '_parse_endpoint_values', original)
+    with pytest.warns(UserWarning, match='source-cap'):
+        build_freeform_geometry(distinct)
+
+
+def test_mixed_handle_refusal_reports_hard_guard_at_interior_minimum():
+    p = {'points': [{'z': 0, 'r': 20, 'handleOut': [10, 100]}, [40, 20], [80, 30]],
+         'mouthAngleDeg': 0}
+    original = copy.deepcopy(p)
+    with pytest.raises(ValueError, match=r"profileH span 0 z=\[0, 40\].*z'\(u\)=0 away from a curve endpoint"):
+        resolved(p)
+    assert p == original
