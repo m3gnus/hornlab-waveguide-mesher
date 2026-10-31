@@ -24,7 +24,7 @@ from .profile_common import (
     eval_param,
 )
 from .offset_envelope import regularize_outer_offset
-from .text_import import uses_text_import_geometry, uses_current_ath_axial_sampling
+from .text_import import uses_text_import_geometry, uses_current_ath_axial_sampling, uses_v2_text_import_geometry
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -47,6 +47,8 @@ from .profile_morph import (
     _morph_target_radius_at_angle,
     _morph_target_shape,
     _resolve_morph_half_dimensions,
+    _ath_no_shrink_half_dimensions,
+    _ath_no_shrink_active,
     _validate_static_morph_target,
     _rounded_rect_quadrant_layout,
     _rounded_rect_quadrant_angles,
@@ -69,6 +71,9 @@ FREEFORM_CONTINUOUS_COLLAPSE_KEY = "_freeformContinuousCollapse"
 # progress) and the normalised axial stations (morph start, subdomain
 # interfaces) that must exist as rings. Never set by user configs.
 ACOUSTIC_MORPH_START_KEY = "_acousticMorphStart"
+ACOUSTIC_MORPH_DIMENSIONS_KEY = "_acousticMorphHalfDimensions"
+ACOUSTIC_MORPH_ANGLE_MAP_KEY = "_acousticMorphAngleMap"
+ACOUSTIC_EXTENSION_SEGMENTS_KEY = "_acousticExtensionSegments"
 ACOUSTIC_AXIAL_STATIONS_KEY = "_acousticAxialStations"
 # The normalised station where an imported R-OSSE morph built ATH's way starts
 # on the requested grid; the acoustic fit pins it so both grids blend alike.
@@ -78,6 +83,21 @@ ACOUSTIC_ROSSE_MORPH_STATION_KEY = "_acousticRosseMorphStation"
 # keeps this mesher's contract that a throat extension and a slot are never
 # morphed (the extension is excluded by construction either way).
 MORPH_KEEPS_SLOT_KEY = "_morphKeepsSlot"
+
+
+def retain_ath_morph_construction(params: Mapping[str, Any], grid: Mapping[str, Any]) -> dict[str, Any]:
+    """Carry the authored no-shrink wall into a different sampling budget.
+
+    Call before changing angular/corner counts or adding refinement azimuths.
+    Boundary dimensions and source-meridian correspondence are geometry,
+    rather than density controls. Other configurations retain their parameters.
+    """
+    result = dict(params)
+    for field, key in (("morph_half_dimensions", ACOUSTIC_MORPH_DIMENSIONS_KEY),
+                       ("morph_angle_map", ACOUSTIC_MORPH_ANGLE_MAP_KEY)):
+        if grid.get(field) is not None:
+            result[key] = grid[field]
+    return result
 
 
 def _normalise_ath_angular_segments(raw_count: int) -> int:
@@ -908,7 +928,15 @@ def _raw_radial_grid(
     # inversions are all constant along t, and paying them per node is what
     # made a preview build spend ~90% of its time in the profile formulas.
     circular_section = _cross_section_is_circular(exponent, aspect_ratio)
-    for i, phi in enumerate(angles):
+    evaluation_angles = angles
+    angle_map = params.get(ACOUSTIC_MORPH_ANGLE_MAP_KEY)
+    if angle_map is not None:
+        # ATH retains the initial meridian by index when rebuilding a
+        # no-shrink boundary's directions. Refined consumers interpolate that
+        # authored correspondence instead of evaluating a(p) at the new phi.
+        mapping = np.asarray(angle_map, dtype=np.float64)
+        evaluation_angles = np.interp(angles, mapping[:, 0], mapping[:, 1])
+    for i, phi in enumerate(evaluation_angles):
         phi_value = float(phi)
         scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
         meridian_prefix = 0.0
@@ -1875,15 +1903,20 @@ def build_point_grid_arrays(
             sampling_mode = "uniform"
         else:
             t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
-        if (formula == "OSSE" and uses_text_import_geometry(params)
-                and uses_current_ath_axial_sampling(params)
-                and eval_param(params.get("rot"), 0.0, 0.0) != 0.0):
-            _, total, extension, _ = osse_length_config(params, 0.0)
+        if ((formula == "R-OSSE" and uses_v2_text_import_geometry(params))
+                or (formula == "OSSE" and uses_current_ath_axial_sampling(params)
+                    and eval_param(params.get("rot"), 0.0, 0.0) != 0.0)):
+            if formula == "OSSE":
+                _, total, extension, _ = osse_length_config(params, 0.0)
+            else:
+                layout = rosse_axial_layout(params, 0.0)
+                total, extension = layout.full_length, layout.ext_len
             if extension > 0:
                 # ATH V2026-09a adds ten extension segments before the
                 # authored body map, retaining the extension/body junction.
                 fraction = extension / total
-                t_unit_values = np.concatenate((np.linspace(0, fraction, 11)[:-1],
+                segments = max(10, int(params.get(ACOUSTIC_EXTENSION_SEGMENTS_KEY, 10)))
+                t_unit_values = np.concatenate((np.linspace(0, fraction, segments+1)[:-1],
                                                fraction + (1-fraction)*t_unit_values))
         t_unit_values = _pin_axial_stations(
             t_unit_values, params.get(ACOUSTIC_AXIAL_STATIONS_KEY)
@@ -1908,6 +1941,8 @@ def build_point_grid_arrays(
     morph_target = _morph_target_shape(params, 0.0)
     resolved_half_width: float | None = None
     resolved_half_height: float | None = None
+    ath_no_shrink = _ath_no_shrink_active(params)
+    morph_angle_map = params.get(ACOUSTIC_MORPH_ANGLE_MAP_KEY)
     if morph_target in {1, 2, 3}:
         if morph_target == 2 and uses_text_import_geometry(params):
             raw_half_width = raw_half_height = float(np.max(raw_radials[:, -1]))
@@ -1921,22 +1956,48 @@ def build_point_grid_arrays(
             raw_half_height,
             round_implicit_up=morph_target != 3,
         )
+        fixed_dimensions = params.get(ACOUSTIC_MORPH_DIMENSIONS_KEY) if ath_no_shrink else None
+        if fixed_dimensions is not None:
+            resolved_half_width, resolved_half_height = map(float, fixed_dimensions)
         # FREEFORM samples its own azimuths per ring, morph included, in
         # ``_freeform_raw_radial_grid``. Re-deriving the rectangle-morph angle
         # list here and resampling through ``_raw_radial_grid`` evaluated the
         # R-OSSE formula on a FREEFORM design: a 100 mm horn came back as the
         # 40 mm default R-OSSE whenever the two angle lists differed.
         if morph_target == 1 and formula != "FREEFORM":
-            new_angles, full_circle = _angle_list(
-                params,
-                morph_half_width=resolved_half_width,
-                morph_half_height=resolved_half_height,
-            )
-            if len(new_angles) != len(angles) or not np.allclose(new_angles, angles):
-                angles = new_angles
-                raw_radials, z_values, throat_prefix = _raw_radial_grid(
-                    params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
+            source_angles = None
+            while True:
+                new_angles, full_circle = _angle_list(
+                    params,
+                    morph_half_width=resolved_half_width,
+                    morph_half_height=resolved_half_height,
                 )
+                angles_changed = len(new_angles) != len(angles)
+                if not angles_changed:
+                    angles_changed = (not np.array_equal(new_angles, angles) if ath_no_shrink
+                                      else not np.allclose(new_angles, angles))
+                if angles_changed:
+                    angles = new_angles
+                    if source_angles is None:
+                        raw_radials, z_values, throat_prefix = _raw_radial_grid(
+                            params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
+                        )
+                if not ath_no_shrink or fixed_dimensions is not None:
+                    break
+                width, height = _ath_no_shrink_half_dimensions(
+                    params, angles, raw_radials[:, -1], resolved_half_width, resolved_half_height
+                )
+                if max(width-resolved_half_width, height-resolved_half_height) <= 1e-9:
+                    break
+                if source_angles is None:
+                    source_angles = angles.copy()
+                resolved_half_width, resolved_half_height = width, height
+            if source_angles is not None:
+                final_angles = angles
+                if full_circle:
+                    final_angles = np.r_[angles[-1]-math.tau, angles, angles[0]+math.tau]
+                    source_angles = np.r_[source_angles[-1]-math.tau, source_angles, source_angles[0]+math.tau]
+                morph_angle_map = np.column_stack((final_angles, source_angles)).tolist()
 
     morph_corner_arc_span = _morph_corner_arc_span(
         params, resolved_half_width, resolved_half_height
@@ -2157,6 +2218,9 @@ def build_point_grid_arrays(
                     )
 
     return {
+        **({"morph_half_dimensions": [resolved_half_width, resolved_half_height],
+            "morph_angle_map": morph_angle_map}
+           if ath_no_shrink else {}),
         **({"construction_fingerprint": adapter.fingerprint,
             "semantic_stations": {"driver": 0.0, "adapter_join": .5, "mouth": 1.0}}
            if adapter is not None else {}),

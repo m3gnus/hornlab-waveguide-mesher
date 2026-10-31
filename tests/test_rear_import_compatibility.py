@@ -256,7 +256,13 @@ def test_run21_source_and_main_throat_coordinates_are_preserved():
     assert join_radius == pytest.approx(19.5,abs=1e-8)
     native=copy.deepcopy(cfg)
     native.pop(TEXT_IMPORT_VERSION_KEY)
-    np.testing.assert_array_equal(geom.inner_points,resolve_geometry(native).geometry.inner_points)
+    saved_v1=copy.deepcopy(cfg)
+    saved_v1[TEXT_IMPORT_VERSION_KEY]='ath-2026-08c-v1'
+    # Saved v1/native retain the old allocation exactly. V2 now uses ATH's
+    # ten extension segments; its physical rows are independently pinned by
+    # the native r-ext-run21 witness in test_ath_import_blockers.
+    np.testing.assert_array_equal(resolve_geometry(saved_v1).geometry.inner_points,
+                                  resolve_geometry(native).geometry.inner_points)
     expected_rear=-5*(1+math.sin(math.radians(5.25)))
     assert np.mean(geom.outer_points[:,0,2])-5 == pytest.approx(expected_rear,abs=1e-7)
 

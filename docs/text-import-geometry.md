@@ -93,7 +93,9 @@ sampler reproduces the four affected archive parity cases.
 | Omitted profile coefficients | OSSE `a=45`; R-OSSE `R=200`, `a=40`, `a0=0`, `r=0.25`, `m=0.9`, `b=0.4`, `q=3.5`. | Existing profile defaults. |
 | RearShape 1 without a lip | A materially warped rear uses the measured throat normal-offset ring and a fan, preserving the analytic outer shell. Planar rears retain their construction. | Existing planar rear rule. |
 | OSSE `Slot.Length` | A conical prefix at slope `tan(a0)`. `r0` is its starting radius; the main profile starts at `r0 + slot*tan(a0)`. The slot is included in `Length`; the main termination uses `Length - slot`. | A cylindrical prefix at `r0`, added to the body length unless an explicit total-length mode is selected. |
-| `Throat.Ext.Length` with `Rot` | The extension stays unrotated at its own angle; only the body rotates, about the end of the extension. Current imports retain ten extension segments before the body map. | Existing native rotation behavior. |
+| R-OSSE `Slot.Length` | An axial translation of the main meridian, including signed lengths; no cylindrical slot rows and no body-parameter reallocation. With an extension, its ten pre-body rows stay in place and the body starts at `extension + slot`. | Existing cylindrical prefix and additive parameter allocation. |
+| R-OSSE `Throat.Ext.Length` | Retains ten uniformly spaced extension segments before the complete authored body map. The extension tapers back from the main throat radius. Existing OSSE sampling and rotation rules are unchanged. | Existing native sampling and rotation behavior. |
+| OSSE `Throat.Ext.Length` with `Rot` | The extension stays unrotated at its own angle; only the body rotates about its endpoint. Current rotated imports retain ten extension segments before the body map. | Existing native rotation behavior. |
 | OSSE-block `Rot` | Ignored with a warning naming `OSSE.Rot`; only top-level `Rot` applies. | Existing authored precedence. |
 | OSSE-block `r0` expression | Refused by name; ATH reads only a leading numeric token. Literal signed decimal/exponent numbers remain accepted. | Existing expression evaluation. |
 | R-OSSE morph | Each meridian blends additively in radius with `((u - u0)/(1 - u0))^Rate`, `u = z/z_mouth` from the end of any extension. `FixedPart` is compared with `z/z_max` and starts at the first station at or past it, never the throat; a Circle target ignores it. Along the rollback `u > 1`, so the factor exceeds one; a start beyond the mouth's z gives negative factors (a fractional `Rate` there is refused by name, as ATH writes NaN). ATH builds no Superellipse morph on R-OSSE, and builds a Rectangle unmorphed when the depth varies around the mouth (a size-dependent tolerance, not pinned); a Circle it always morphs. For those two cases WG uses its own R-OSSE morph, whenever the depth varies at all: ATH's construction there balloons the wall far past the mouth. | Existing morph behavior. |
@@ -101,7 +103,7 @@ sampler reproduces the four affected archive parity cases.
 | `Mesh.Enclosure.Spacing` | Four margins in +x,+y,-x,-y order. | Left (-x), top (+y), right (+x), bottom (-y). |
 | Circular `Morph.TargetShape=2` | Uses the largest sampled raw mouth radius, ignoring explicit target width/height and without rounding to a whole millimetre. | Honors explicit dimensions and retains the implicit dimension rule. |
 | Rectangular morph with `Morph.AllowShrinkage=1` | Uses the requested target dimensions. | Uses the requested target dimensions. |
-| Rectangular morph with default/false shrinkage and smaller target dimensions | Refused with a named diagnostic. This reference behavior is sample dependent and has no qualified construction. Choose explicit `AllowShrinkage=1`, or author a native configuration for a literal dimension floor. | Floors each target half-dimension at the corresponding raw extent. |
+| Rectangular morph with default/false shrinkage and smaller target dimensions | V2 OSSE/R-OSSE uses ATH's sampled per-axis boundary expansion and retains the original meridians when rebuilding directions; see below. Saved v1 retains its earlier refusal. | Floors each target half-dimension at the corresponding raw extent. |
 
 Imported OSSE slot construction has bounded physical-curve witnesses covering
 different slot lengths, positive/zero/negative throat slopes, disabled and
@@ -193,3 +195,74 @@ are added, edges reach a geometric size floor, or a resource bound is reached.
 separate flags; `refinement_limit` names the reason. The preview tests check
 all emitted normal steps within patches, zero folds, closure and explicit
 LOD vertex/time budgets independently of those flags.
+
+## Remaining import blockers corrected in v2
+
+Native Windows ATH V2026-09a captures establish these corrections. The
+executable SHA-256 is
+`4795b08e9b03f83489ec390cbba8abe0fa900aff2d87862f8fca5f014d003d8d`.
+Exact inputs, full-ring profile exports and normalized-file hashes are in
+[the blocker fixtures](../tests/fixtures/ath_import/ath-v2026-09a/blockers/README.md).
+Licensed binaries, the full reference archive, and raw process logs remain
+outside this repository.
+
+R-OSSE slots translate the physical main curve, including the rollback. They
+leave its radii, parameter stations and row count unchanged. A 12 mm slot on
+the reference example starts the body at z=12 mm; adding a cylindrical prefix
+and reparameterizing the body was the drift. An R-OSSE extension instead contributes
+ten pre-body segments, followed by all LengthSegments body segments. With
+slot and extension together, ATH leaves the extension's pre-body rows alone
+and moves the body junction by the slot; the joining segment spans that gap.
+This is the measured construction, rather than a new cylindrical slot.
+
+For a rectangular no-shrink morph, let r_i be the initially sampled raw mouth
+radius, p_i its direction, and T_i the requested rounded-rectangle ray radius.
+ATH computes each largest positive Cartesian deficit:
+
+- dx = max(0, max_i((r_i - T_i) * abs(cos(p_i))))
+- dy = max(0, max_i((r_i - T_i) * abs(sin(p_i))))
+
+It adds 2*dx and 2*dy to the **half-dimensions**, rebuilds the angular layout,
+and repeats the boundary check until no positive deficit remains. It retains
+the initial raw meridians by profile index, including their azimuth-dependent
+coefficients; it does not recalculate them at the new directions. The ordinary
+morph blend then uses the corrected target and those retained meridians.
+For the circular R=150 mm example with a 240 x 360 mm request and 20 mm
+corners, 32 angular segments give a 360 x 388.3281573 mm boundary. At 64
+angular segments its height is 390.7419516 mm. Even the originally larger
+axis can expand. A literal dimension floor, absolute radial displacement, or
+re-evaluating OSSE a(p) at the final directions misses the observed wall.
+Circle behavior and other unqualified target constructions are unchanged.
+
+The shared sampler retains the effective half-dimensions and a final-direction
+to original-meridian correspondence. Adaptive solve grids, mouth fitting and
+preview LODs reuse that construction. Between authored directions, refinement
+interpolates the source-direction correspondence; it does not derive a new
+ATH design from a different angular budget. `AllowShrinkage=1`, native
+authoring and saved v1 retain their preceding behavior. Current v2 R-OSSE slot/extension and inward rectangular no-shrink outputs
+intentionally change. OSSE extension allocation and non-expanding morph
+previews retain their prior output.
+Existing coefficient, morph, archive, native/v1, mesh and STEP assertions
+retain their tolerances.
+
+### Consumers that replace sampling controls
+
+Call `hornlab_mesher.config_builder.retain_ath_import_construction(config)`
+on the **authored** mesher config before replacing angular, corner or axial
+counts. Carry its returned transient construction fields through subsequent
+normalization and sampling. For already-normalized parameters and an authored
+grid, `profile_sampling.retain_ath_morph_construction(params, grid)` retains
+the boundary and meridian correspondence. These fields are runtime data;
+saved files continue to use the existing geometry stamp.
+
+Waveguide Generator consumer work remains separate. At consumer dev
+`49c63ed26aadb66781fc1554db2a61195fb668d8`, the failing boundaries are
+`server/exports/core.py::_prepared_design` (overwrites authored grid and corner
+counts before translation), its solid-STEP `mesh_cfg` construction,
+`server/exports/sizing.py::_point_grid` (resamples parameters), and
+`server/preview/core.py::_cache_relevant_config` (removes authored angular/axial
+counts). Freeze the authored construction before export resampling, retain it
+in sizing/planner calls, and retain the geometry-relevant authored controls or
+frozen construction in the preview cache key. Changing only CornerSegments
+from 6 to 12 on the example above changes its height from 388.3281573 to
+360 mm without that handoff. No WG pins or consumer code move in this change.

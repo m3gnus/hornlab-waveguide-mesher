@@ -5,8 +5,8 @@ from typing import Any, Callable, Literal, Mapping, NamedTuple
 
 import numpy as np
 
-from .profile_common import _is_true, _osse_radius, _parse_number_list, eval_param
-from .text_import import uses_current_ath_axial_sampling, uses_text_import_geometry
+from .profile_common import _is_true, _osse_radius, _parse_number_list, eval_param, _normalise_formula
+from .text_import import uses_current_ath_axial_sampling, uses_text_import_geometry, uses_v2_text_import_geometry
 
 # ATH V2026-09a clamps these morph inputs, with a warning, before building.
 ATH_MIN_MORPH_RATE = 1.01
@@ -471,6 +471,12 @@ def _rounded_rect_radii(
     return np.where(cos_degenerate, half_height, result)
 
 
+def _ath_no_shrink_active(params: Mapping[str, Any]) -> bool:
+    return (uses_v2_text_import_geometry(params) and _morph_target_shape(params, 0.0) == 1
+            and _normalise_formula(params.get("type", "OSSE")) in {"OSSE", "R-OSSE"}
+            and not _is_true(params.get("morphAllowShrinkage")))
+
+
 def _resolve_morph_half_dimensions(
     params: Mapping[str, Any],
     phi: float,
@@ -486,7 +492,8 @@ def _resolve_morph_half_dimensions(
     mouth extent, rounded up to whole millimetres when ``round_implicit_up``
     (implicit native rectangle/circle targets). Native no-shrink targets are
     floored at the raw extents. The versioned text import uses exact raw mouth
-    radius for circles and refuses the unqualified inward no-shrink case.
+    radius for circles. V2 rectangles resolve their sampled no-shrink boundary
+    in the shared grid owner; other inward import targets retain their refusal.
     """
 
     imported = uses_text_import_geometry(params)
@@ -514,7 +521,11 @@ def _resolve_morph_half_dimensions(
         implicit_height = raw_half_height
     half_width = width / 2.0 if width > 0.0 else implicit_width
     half_height = height / 2.0 if height > 0.0 else implicit_height
-    if imported and not _is_true(params.get("morphAllowShrinkage")) and (
+    ath_boundary_expansion = (
+        uses_v2_text_import_geometry(params) and _morph_target_shape(params, phi) == 1
+        and _normalise_formula(params.get("type", "OSSE")) in {"OSSE", "R-OSSE"}
+    )
+    if imported and not ath_boundary_expansion and not _is_true(params.get("morphAllowShrinkage")) and (
         half_width < raw_half_width - 1.0e-9 or half_height < raw_half_height - 1.0e-9
     ):
         raise ValueError(
@@ -525,6 +536,28 @@ def _resolve_morph_half_dimensions(
         half_width = max(half_width, raw_half_width)
         half_height = max(half_height, raw_half_height)
     return half_width, half_height
+
+
+def _ath_no_shrink_half_dimensions(
+    params: Mapping[str, Any], angles: np.ndarray, raw_mouth: np.ndarray,
+    half_width: float, half_height: float,
+) -> tuple[float, float]:
+    """ATH's sampled boundary expansion, before rebuilding the angle layout.
+
+    A radial inward move contributes a separate x/y deficit. ATH adds twice
+    each largest positive deficit to that target half-size, then resamples.
+    Even a requested axis larger than its raw extent can therefore grow.
+    """
+    target = np.asarray([
+        _morph_target_radius_at_angle(
+            float(radius), float(phi), params,
+            implicit_half_width=half_width, implicit_half_height=half_height,
+        ) for phi, radius in zip(angles, raw_mouth)
+    ])
+    deficit = raw_mouth - target
+    dx = max(0.0, float(np.max(deficit * np.abs(np.cos(angles)))))
+    dy = max(0.0, float(np.max(deficit * np.abs(np.sin(angles)))))
+    return half_width + 2.0 * dx, half_height + 2.0 * dy
 
 
 def _configured_morph_half_dimension(

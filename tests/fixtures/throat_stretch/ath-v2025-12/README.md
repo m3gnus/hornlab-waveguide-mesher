@@ -16,6 +16,10 @@ parameter: OSSE obtains it from the paired zero axial coordinate (undoing
 Rot), and R-OSSE obtains main t by inverting the independently transcribed
 published radial equation in ordinal order, then converts it to the composite
 parameter where prefixed. This never searches nearest axial coordinates.
+The stored composite parameter predates the v2 R-OSSE slot correction. Tests
+decode its historical extension/slot/body allocation into the corrected
+translated-body parameter before evaluating current v2. The ATH coordinates,
+fixture bytes/hashes and 2.7e-5 mm physical assertion are unchanged.
 For the OSSE slot cases outside the ATH parity claim, station is a diagnostic radius match to the
 existing native slot model, not a claim to reproduce ATH's unknown transition.
 

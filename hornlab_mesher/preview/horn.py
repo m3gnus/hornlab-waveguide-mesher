@@ -18,6 +18,7 @@ from ..profile_sampling import (
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
     FREEFORM_CONTINUOUS_COLLAPSE_KEY,
     build_point_grid_arrays,
+    retain_ath_morph_construction,
 )
 from .contract import PreviewSurfaceV1, _triangle_orientation_analysis
 from .fidelity import analytic_grid_curvature, analytic_grid_normals
@@ -370,7 +371,7 @@ def _configuration_has_corners(params: Mapping[str, Any], formula: str) -> bool:
 def _replace_grid_with_corner_refinement(
     output: dict[str, Any], corner_intervals: int
 ) -> None:
-    params = dict(output["params"])
+    params = retain_ath_morph_construction(output["params"], output["grid"])
     params[ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY] = max(
         1, int(math.ceil(corner_intervals / 3.0))
     )

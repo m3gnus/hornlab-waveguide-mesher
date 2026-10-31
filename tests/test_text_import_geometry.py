@@ -13,7 +13,7 @@ from hornlab_mesher.config_builder import build_geometry_params, resolve_geometr
 from hornlab_mesher.config_parser import parse_text_config
 from hornlab_mesher.profile_formulas import calculate_osse, calculate_osse_curve
 from hornlab_mesher.profile_sampling import build_point_grid_arrays
-from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
+from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, TEXT_IMPORT_V1
 
 BASE = """OSSE = {
 L = 137
@@ -110,8 +110,9 @@ def test_native_circle_honors_explicit_dimensions():
 
 
 @pytest.mark.parametrize("flag", ["", "Morph.AllowShrinkage = 0\n"])
-def test_imported_inward_no_shrink_target_has_named_refusal(flag):
+def test_saved_v1_inward_no_shrink_target_retains_named_refusal(flag):
     config = parse_text_config(BASE + "Morph.TargetShape = 1\nMorph.TargetWidth = 360\nMorph.TargetHeight = 280\nMorph.CornerRadius = 35\n" + flag)
+    config[TEXT_IMPORT_VERSION_KEY] = TEXT_IMPORT_V1
     with pytest.raises(ValueError, match=r"Imported Morph.AllowShrinkage=0.*Morph.AllowShrinkage=1"):
         inner(config)
     with pytest.raises(ValueError, match="no qualified construction"):

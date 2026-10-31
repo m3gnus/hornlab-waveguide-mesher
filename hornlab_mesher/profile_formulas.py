@@ -965,7 +965,8 @@ class RosseAxialLayout(NamedTuple):
     truncates the main curve exactly as it does without a prefix, and the
     prefix changes neither the main curve nor the mouth (ATH GridExport:
     identical main-section radii and mouth with and without a 30 mm extension
-    at tmax = 0.8).
+    at tmax = 0.8). V2 imports reserve only the extension: Slot.Length is
+    a body_offset, applied after evaluating the main curve.
     """
 
     ext_len: float
@@ -973,6 +974,7 @@ class RosseAxialLayout(NamedTuple):
     main_length: float
     t_max: float
     full_length: float
+    body_offset: float = 0.0
 
 
 def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialLayout:
@@ -980,6 +982,12 @@ def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialL
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
+    # Current ATH R-OSSE slots translate the body; they do not reserve a
+    # cylindrical prefix or consume any of the main curve's parameter.
+    body_offset = 0.0
+    if uses_v2_text_import_geometry(params):
+        body_offset = eval_param(params.get("slotLength"), p, 0.0)
+        slot_len = 0.0
     main_length = _rosse_length(params, p)
     t_max = _rosse_tmax(params)
     return RosseAxialLayout(
@@ -992,6 +1000,7 @@ def rosse_axial_layout(params: Mapping[str, Any], p: float = 0.0) -> RosseAxialL
         # main curve short (main_t = 0.74 instead of 0.8 in the review case)
         # and moved the mouth by 7 mm. With tmax = 1 this is unchanged.
         full_length=ext_len + slot_len + (main_length if t_max == 1.0 else t_max * main_length),
+        body_offset=body_offset,
     )
 
 
@@ -1015,7 +1024,8 @@ def calculate_rosse(
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
 
     if ext_len <= 0.0 and slot_len <= 0.0:
-        return _calculate_rosse_main(t, p, params)
+        x, y = _calculate_rosse_main(t, p, params)
+        return x + layout.body_offset, y
 
     full_length = layout.full_length
     if full_length <= 1.0e-12:
@@ -1024,16 +1034,25 @@ def calculate_rosse(
     axial_pos = max(0.0, float(t)) * full_length
     if layout.t_max != 1.0:
         axial_pos = max(0.0, float(t)) / layout.t_max * full_length
-    if axial_pos <= ext_len:
-        return axial_pos, r0_throat + axial_pos * math.tan(ext_angle)
-    if axial_pos <= ext_len + slot_len:
+    in_ext = axial_pos < ext_len - 1e-9 if uses_v2_text_import_geometry(params) else axial_pos <= ext_len
+    if in_ext:
+        x = axial_pos
+        if layout.body_offset != 0.0:
+            # ATH's last extension segment joins row 9 to the translated
+            # body throat. Retain that straight physical segment when a
+            # consumer samples between the authored ten extension rows.
+            x += layout.body_offset * max(0.0, (axial_pos / ext_len - 0.9) / 0.1)
+        return x, r0_throat + axial_pos * math.tan(ext_angle)
+    if slot_len > 0.0 and axial_pos <= ext_len + slot_len:
         return axial_pos, r0_base
 
     if main_length <= 1.0e-12:
         return ext_len + slot_len, r0_base
     main_t = (axial_pos - ext_len - slot_len) / main_length
+    if uses_v2_text_import_geometry(params):
+        main_t = max(0.0, main_t)
     x, y = _calculate_rosse_main(main_t, p, params)
-    return x + ext_len + slot_len, y
+    return x + ext_len + slot_len + layout.body_offset, y
 
 
 def calculate_rosse_curve(
@@ -1061,7 +1080,8 @@ def calculate_rosse_curve(
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
 
     if ext_len <= 0.0 and slot_len <= 0.0:
-        return _rosse_main_curve(t, _rosse_main_coefficients(p, params))
+        x, y = _rosse_main_curve(t, _rosse_main_coefficients(p, params))
+        return x + layout.body_offset, y
 
     full_length = layout.full_length
     if full_length <= 1.0e-12:
@@ -1070,13 +1090,16 @@ def calculate_rosse_curve(
     axial_pos = np.maximum(0.0, t) * full_length
     if layout.t_max != 1.0:
         axial_pos = np.maximum(0.0, t) / layout.t_max * full_length
-    in_ext = axial_pos <= ext_len
-    in_slot = ~in_ext & (axial_pos <= ext_len + slot_len)
+    in_ext = (axial_pos < ext_len - 1e-9 if uses_v2_text_import_geometry(params)
+              else axial_pos <= ext_len)
+    in_slot = ~in_ext & (axial_pos <= ext_len + slot_len) & (slot_len > 0.0)
     in_main = ~(in_ext | in_slot)
 
     x = np.empty_like(t)
     y = np.empty_like(t)
     x[in_ext] = axial_pos[in_ext]
+    if layout.body_offset != 0.0:
+        x[in_ext] += layout.body_offset * np.maximum(0.0, (axial_pos[in_ext] / ext_len - 0.9) / 0.1)
     y[in_ext] = r0_throat + axial_pos[in_ext] * math.tan(ext_angle)
     x[in_slot] = axial_pos[in_slot]
     y[in_slot] = r0_base
@@ -1088,8 +1111,10 @@ def calculate_rosse_curve(
         # from an extension station would take ``t ** q`` to NaN for the
         # fractional exponents R-OSSE actually uses.
         main_t = (axial_pos[in_main] - ext_len - slot_len) / main_length
+        if uses_v2_text_import_geometry(params):
+            main_t = np.maximum(0.0, main_t)
         main_x, main_y = _rosse_main_curve(main_t, _rosse_main_coefficients(p, params))
-        x[in_main] = main_x + ext_len + slot_len
+        x[in_main] = main_x + ext_len + slot_len + layout.body_offset
         if s1 != 0.0 and s2 != 0.0:
             _verify_stretched_axial_map(x[in_main])
             order = np.argsort(main_t)

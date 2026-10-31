@@ -32,7 +32,7 @@ import numpy as np
 from ..throat_stretch import stretch_config_errors
 from numpy.typing import NDArray
 
-from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds
+from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds, retain_ath_import_construction
 from ..builders.point_grid_freestanding import _restored_outer_throat_points
 from ..rear_compatibility import freestanding_rear_ring
 from ..text_import import uses_text_import_geometry
@@ -476,6 +476,7 @@ def build_preview_geometry(
     # documented ``profile.formula``/``type`` aliases and alternative
     # spellings, which injected a z-map into ICW and skipped FREEFORM's corner
     # sampling.
+    config = retain_ath_import_construction(config)
     parsed_params, _parsed_formula, _parsed_mode = build_geometry_params(config)
     # Refuse the actual build geometry before replacing its sampling for display.
     # This also runs for coarse/hidden previews, independently of dimensions.

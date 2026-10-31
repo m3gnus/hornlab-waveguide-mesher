@@ -12,6 +12,7 @@ from hornlab_mesher.config_builder import ConfigError, build_geometry_params
 from hornlab_mesher.config_parser import parse_text_config
 from hornlab_mesher.profile_formulas import (
     calculate_osse, calculate_osse_curve, calculate_rosse, calculate_rosse_curve,
+    rosse_axial_layout,
 )
 from hornlab_mesher.text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, ATH_AXIAL_RULE_KEY, ATH_AXIAL_CURRENT, ATH_DEFAULT_CORNER_SEGMENTS
 
@@ -82,6 +83,19 @@ def test_ath_exported_points_or_explicit_import_refusal(name):
         assert rows.shape == (16, 10)
         phi = rows[0, 2]
         stations = rows[:, 3]
+        if params["type"] == "R-OSSE" and params["slotLength"] != 0:
+            # The fixture's station column encodes the historical composite
+            # parameter (including a cylindrical slot interval), not an ATH
+            # coordinate. Decode it into v2's translated-body parameter;
+            # exported x/y/z, byte hashes and physical tolerance stay exact.
+            historical = dict(params)
+            historical.pop(TEXT_IMPORT_VERSION_KEY)
+            old = rosse_axial_layout(historical, phi)
+            current = rosse_axial_layout(params, phi)
+            axial = stations / old.t_max * old.full_length
+            body = axial >= old.ext_len + old.slot_len - 1e-9
+            axial = np.where(body, axial-old.slot_len, axial)
+            stations = axial / current.full_length * current.t_max
         expected = np.column_stack((rows[:, 6], np.hypot(rows[:, 4], rows[:, 5])))
         for actual in (
             np.array([scalar(t, phi, params) for t in stations]),

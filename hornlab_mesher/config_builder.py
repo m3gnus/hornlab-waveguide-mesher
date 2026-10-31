@@ -41,6 +41,10 @@ from .profile_sampling import (
     ACOUSTIC_AXIAL_STATIONS_KEY,
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
     ACOUSTIC_MORPH_START_KEY,
+    retain_ath_morph_construction,
+    ACOUSTIC_MORPH_DIMENSIONS_KEY,
+    ACOUSTIC_MORPH_ANGLE_MAP_KEY,
+    ACOUSTIC_EXTENSION_SEGMENTS_KEY,
     ACOUSTIC_ROSSE_MORPH_STATION_KEY,
     MORPH_KEEPS_SLOT_KEY,
     build_point_grid_arrays,
@@ -1294,6 +1298,12 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         # Carry the sampling rule as plain transport data for dictionary consumers.
         if ATH_AXIAL_RULE_KEY in config:
             common[ATH_AXIAL_RULE_KEY] = config[ATH_AXIAL_RULE_KEY]
+        # Ephemeral construction retained before a consumer changes density.
+        for key in (ACOUSTIC_MORPH_DIMENSIONS_KEY, ACOUSTIC_MORPH_ANGLE_MAP_KEY,
+                    ACOUSTIC_MORPH_START_KEY, ACOUSTIC_ROSSE_MORPH_STATION_KEY,
+                    ACOUSTIC_AXIAL_STATIONS_KEY):
+            if key in config:
+                common[key] = config[key]
     common.update(ath_controls)
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True
@@ -2043,8 +2053,42 @@ def _requested_axial_layout(
         "slice_map": slice_map,
         "morph_start": morph_start,
         "rosse_morph_station": rosse_station if morph_possible else None,
+        "morph_half_dimensions": grid.get("morph_half_dimensions"),
+        "morph_angle_map": grid.get("morph_angle_map"),
         "stations": stations,
     }
+
+
+def _retain_requested_layout(params: Mapping[str, Any], requested: Mapping[str, Any]) -> dict[str, Any]:
+    """Use one requested construction for adaptive solve and preview grids."""
+    working = retain_ath_morph_construction(params, requested)
+    if requested["morph_start"] is not None:
+        working[ACOUSTIC_MORPH_START_KEY] = requested["morph_start"]
+    if requested["rosse_morph_station"] is not None:
+        working[ACOUSTIC_ROSSE_MORPH_STATION_KEY] = requested["rosse_morph_station"]
+    if requested["stations"]:
+        working[ACOUSTIC_AXIAL_STATIONS_KEY] = list(requested["stations"])
+    return working
+
+
+def retain_ath_import_construction(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze a sampling-dependent ATH no-shrink design before changing density.
+
+    Consumers must call this on the authored config, before replacing angular,
+    corner or axial budgets. The returned private data is transient, not a saved
+    geometry stamp or a new evaluator.
+    """
+    from .profile_morph import _ath_no_shrink_active
+
+    params, formula, _ = build_geometry_params(config)
+    if not _ath_no_shrink_active(params):
+        return dict(config)
+    requested = _requested_axial_layout(params, formula)
+    if requested["morph_angle_map"] is None:
+        # No boundary expansion occurred: retain the established preview
+        # construction for imports outside this correction.
+        return dict(config)
+    return _retain_requested_layout(config, requested)
 
 
 def _build_acoustic_sampling_grid(
@@ -2093,13 +2137,7 @@ def _build_acoustic_sampling_grid(
         # morph start it snapped to (a different map would snap elsewhere) and
         # the rings that must exist -- that start and every subdomain
         # interface. Preview and solve then describe one surface.
-        stations = list(requested["stations"])
-        if requested["morph_start"] is not None:
-            working[ACOUSTIC_MORPH_START_KEY] = requested["morph_start"]
-        if requested["rosse_morph_station"] is not None:
-            working[ACOUSTIC_ROSSE_MORPH_STATION_KEY] = requested["rosse_morph_station"]
-        if stations:
-            working[ACOUSTIC_AXIAL_STATIONS_KEY] = stations
+        working = _retain_requested_layout(working, requested)
     if formula == "FREEFORM":
         working[FREEFORM_CONTINUOUS_COLLAPSE_KEY] = True
     if not working.get("zMapPoints") and formula != "FREEFORM" and not working.get("throat_adapter"):
@@ -2158,6 +2196,12 @@ def _build_acoustic_sampling_grid(
     best: tuple[dict[str, Any], dict[str, Any]] | None = None
     trims_left = 6
     for attempt in range(attempts):
+        if formula in {"OSSE", "R-OSSE"} and uses_v2_text_import_geometry(working):
+            # Ten rows define the authored extension. The solve fit must
+            # subdivide those same straight segments to meet its chord bound,
+            # including the longer slot/extension joining segment.
+            working[ACOUSTIC_EXTENSION_SEGMENTS_KEY] = max(
+                10, 10 * int(math.ceil(int(working["lengthSegments"]) / 10)))
         grid = build_point_grid(working, defer_osse_offset_repair=formula == "OSSE")
         _check_effective_grid_caps(grid, density)
         n_phi = int(grid["grid_n_phi"])
