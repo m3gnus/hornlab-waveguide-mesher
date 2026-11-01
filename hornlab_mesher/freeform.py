@@ -20,7 +20,7 @@ this module therefore remains cheap and does not load SciPy.
 
 from __future__ import annotations
 
-from .errors import control_refusal, profile_refusal
+from .errors import InternalInvariantError, control_refusal, profile_refusal
 
 
 import copy
@@ -1917,9 +1917,9 @@ def validate_outer_offset_grid(
     inner = np.asarray(inner_points, dtype=float)
     outer = np.asarray(outer_points, dtype=float)
     if inner.shape != outer.shape or inner.ndim != 3 or inner.shape[2] != 3:
-        raise ValueError(f"{label} outer offset grid does not match the inner grid")
+        raise InternalInvariantError(f"{label} outer offset grid does not match the inner grid")
     if not np.all(np.isfinite(outer)):
-        raise ValueError(f"{label} outer offset grid contains non-finite coordinates")
+        raise InternalInvariantError(f"{label} outer offset grid contains non-finite coordinates")
 
     phi_count = inner.shape[0] if full_circle else inner.shape[0] - 1
     for i in range(phi_count):

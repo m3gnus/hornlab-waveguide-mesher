@@ -12,6 +12,13 @@ class ConfigError(ValueError):
     """Configuration could not be resolved (legacy catch boundary)."""
 
 
+class InternalInvariantError(ConfigError):
+    """A broken generated-geometry assumption, private to developer diagnostics.
+
+    Keep both ConfigError and ValueError catch contracts, including fit retries.
+    """
+
+
 class UserRefusal(ConfigError):
     """A setting the user can change, with its control and a concrete remedy."""
 

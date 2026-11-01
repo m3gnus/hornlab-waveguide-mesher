@@ -1,5 +1,7 @@
 """Atomic two-source export with one sewn scattering shell, never shell stacking."""
 
+from .errors import InternalInvariantError
+
 import hashlib
 import json
 import math
@@ -158,7 +160,7 @@ def _worker(stage):
                 < 1e-6
             ]
             if len(ring) != 1:
-                raise ValueError("source must attach to one actual circular boundary")
+                raise InternalInvariantError("source must attach to one actual circular boundary")
             apertures.append(ring[0])
             chains.append(chain)
         w, h, z = assembly.width_mm / 2, assembly.height_mm / 2, assembly.front_z_mm
@@ -227,7 +229,7 @@ def _worker(stage):
                 and np.max(abs(np.asarray(occ.getBoundingBox(2, t)) - bounds)) < 1e-6
             ]
             if len(candidates) != 1:
-                raise ValueError("sewn assembly mapping is ambiguous")
+                raise InternalInvariantError("sewn assembly mapping is ambiguous")
             remapped[key] = candidates[0]
         old_new = {
             **{t: remapped[("patch", k)] for k, t in patch_faces.items()},
@@ -248,7 +250,7 @@ def _worker(stage):
             ]
             for a, b in pairwise(boundaries):
                 if not a & b:
-                    raise ValueError(
+                    raise InternalInvariantError(
                         "assembly source/horn/baffle joins must share actual OCC edges"
                     )
                 joins.append(len(a & b))
@@ -260,7 +262,7 @@ def _worker(stage):
             step.read_text(encoding="utf-8"),
         )
         if count != len(handles):
-            raise ValueError("assembly must export its exact sewn shell inventory")
+            raise InternalInvariantError("assembly must export its exact sewn shell inventory")
         step.write_text(
             step_text.replace(
                 "ADVANCED_BREP_SHAPE_REPRESENTATION(",
@@ -396,7 +398,7 @@ def _worker(stage):
         if assembly.horn_wall is not None:
             actual_area = wall_face_area(gmsh, rigid_roles["horn-wall"], assembly.horn_wall)
             if abs(actual_area - assembly.horn_wall.area_mm2) > 1e-7 * max(1, actual_area):
-                raise ValueError("general horn CAD area contradicts the canonical axial fit")
+                raise InternalInvariantError("general horn CAD area contradicts the canonical axial fit")
         manifest = {
             "version": 1,
             "producer": "native",

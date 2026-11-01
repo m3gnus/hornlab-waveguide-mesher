@@ -849,10 +849,10 @@ def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
     tolerance is the OCC geometric tolerance in millimetres, so endpoint
     roundoff cannot let two rings reach a consumer as coincident topology.
     """
-    from .config_parser import ConfigError
+    from .errors import InternalInvariantError
 
     if not np.all(np.isfinite(points)):
-        raise ConfigError("throat stretch composite meridian has non-finite points")
+        raise InternalInvariantError("throat stretch composite meridian has non-finite points")
     tolerance = 1e-7
     starts, ends = points[:-1], points[1:]
     delta = ends - starts

@@ -8,6 +8,7 @@ translation layer.
 
 from __future__ import annotations
 
+from .controls import control_label
 from .errors import family_refusal, UserRefusal, control_refusal, numeric_refusal
 
 import tempfile
@@ -1706,7 +1707,7 @@ def _mesh_density_from_config(
     return density
 
 
-def _num_or_default(value: Any, default: float) -> float:
+def _num_or_default(value: Any, default: float, *, control: str) -> float:
     """Numeric param with an explicit unset check.
 
     ``0`` is a meaningful value for several params (``sourceShape = 0`` is the
@@ -1714,7 +1715,12 @@ def _num_or_default(value: Any, default: float) -> float:
     """
     if value is None or (isinstance(value, str) and not value.strip()):
         return float(default)
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        label = control_label(control)
+        raise control_refusal(str(exc), label, f"Enter a plain number in {label}.",
+                              message=f"{label} needs a plain number.") from exc
 
 
 def _interfaces_from_params(
@@ -1772,7 +1778,7 @@ def _interfaces_from_params(
         requested_last_ring = len(requested_map) - 1
     else:
         requested_last_ring = max(
-            1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
+            1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring, control="lengthSegments")))
         )
     for slice_index, offset in zip(slices, offsets):
         # Imported text configs address grid slices; keep valid indices and ignore
@@ -2714,9 +2720,9 @@ def resolve_geometry(
         vertical_offset_mm=float(grid.get("vertical_offset_mm", 0.0) or 0.0),
         freeform_axis_samples_mm=freeform_axis_samples_mm,
         freeform_report=freeform_report,
-        source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
-        source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
-        source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
+        source_shape=int(_num_or_default(params.get("sourceShape"), 1, control="sourceShape")),
+        source_radius_mm=_num_or_default(params.get("sourceRadius"), -1, control="sourceRadius"),
+        source_curv=int(_num_or_default(params.get("sourceCurv"), 0, control="sourceCurv")),
         source_auto_angle_deg=source_auto_angle_deg,
         interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
         interfaces=interfaces,
