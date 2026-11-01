@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .errors import ConfigError, UserRefusal, ath_refusal
+
 import ast
 import json
 import logging
@@ -24,8 +26,6 @@ except ModuleNotFoundError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-class ConfigError(ValueError):
-    pass
 
 
 ATH_LF_BLOCKS = frozenset({"LFSource.A", "LFSource.B", "LFSource.Below"})
@@ -42,9 +42,9 @@ def ath_enclosure_dim(value):
     try:
         values = tuple(float(part) for part in parts)
     except (ValueError, OverflowError) as exc:
-        raise ConfigError("Mesh.Enclosure.Dim must contain four positive finite distances (+X, +Y, -X, -Y)") from exc
+        raise ath_refusal("Mesh.Enclosure.Dim must contain four positive finite distances (+X, +Y, -X, -Y)") from exc
     if len(values) != 4 or any(not np.isfinite(v) or v <= 0 for v in values):
-        raise ConfigError("Mesh.Enclosure.Dim must contain four positive finite distances (+X, +Y, -X, -Y)")
+        raise ath_refusal("Mesh.Enclosure.Dim must contain four positive finite distances (+X, +Y, -X, -Y)")
     return values
 
 
@@ -69,9 +69,9 @@ def ath_enclosure_sources(items, *, quadrants=None):
             try:
                 value = float(raw)
             except (TypeError, ValueError, OverflowError) as exc:
-                raise ConfigError(f"{prefix}.{field} must be finite") from exc
+                raise ath_refusal(f"{prefix}.{field} must be finite") from exc
             if not np.isfinite(value):
-                raise ConfigError(f"{prefix}.{field} must be finite")
+                raise ath_refusal(f"{prefix}.{field} must be finite")
             return value
         radius = number("Radius", 0)
         if radius == 0:
@@ -79,7 +79,7 @@ def ath_enclosure_sources(items, *, quadrants=None):
             continue
         resolution = number("Resolution", 10)
         if radius < 0 or resolution <= 0:
-            raise ConfigError(f"{prefix} Radius and Resolution must be positive")
+            raise ath_refusal(f"{prefix} Radius and Resolution must be positive")
         ath = {"key": key}
         weight = number("DrivingWeight", 1)
         if prefix + ".DrivingWeight" in items:
@@ -89,7 +89,7 @@ def ath_enclosure_sources(items, *, quadrants=None):
         if prefix + ".SID" in items:
             sid = number("SID", 0)
             if sid != int(sid) or sid < 0:
-                raise ConfigError(f"{prefix}.SID must be a nonnegative integer; omit an unassigned SID")
+                raise ath_refusal(f"{prefix}.SID must be a nonnegative integer; omit an unassigned SID")
             if sid == 0:
                 notes.append(("Mesh.Enclosure." + prefix + ".SID", "0",
                               "SID 0 is reserved for the waveguide; LF SID is left unset. ATH SID=0 polars select HF."))
@@ -120,7 +120,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
         return tomllib.loads(text)
     if suffix in {".cfg", ".txt"}:
         return parse_text_config(text)
-    raise ConfigError(f"unsupported config extension {suffix!r}; use .toml, .json, .cfg, or .txt")
+    raise ath_refusal(f"unsupported config extension {suffix!r}; use .toml, .json, .cfg, or .txt")
 
 
 def _maybe_number(value: Any) -> Any:
@@ -145,7 +145,7 @@ def _eval_constant_param(value: Any) -> float:
     if isinstance(value, str):
         tree = ast.parse(value.replace("^", "**"), mode="eval")
         if any(isinstance(node, ast.Name) and node.id == "p" for node in ast.walk(tree)):
-            raise ValueError("azimuth-varying expression")
+            raise ath_refusal("azimuth-varying expression")
     return eval_param(value)
 
 
@@ -178,15 +178,13 @@ def _parse_ath_blocks(
                     blocks[stack[0]][name] = ""
             else:
                 if name in _PROFILE_BLOCKS and name in blocks:
-                    raise ConfigError(
-                        f"{name} = {{...}} is a second profile beside {name}; only one profile block is supported"
-                    )
+                    raise ath_refusal(f"{name} = {{...}} is a second profile beside {name}; only one profile block is supported")
                 blocks.setdefault(name, {})
             stack.append(name)
             continue
         if line == "}":
             if not stack:
-                raise ConfigError(f"line {lineno}: '}}' closes no block")
+                raise ath_refusal(f"line {lineno}: '}}' closes no block")
             stack.pop()
             continue
         if "=" not in line:
@@ -195,14 +193,10 @@ def _parse_ath_blocks(
             # Ignored subtrees and unsupported script blocks keep their own
             # handling, including the named refusal for an unsupported block.
             if not stack:
-                raise ConfigError(
-                    f"line {lineno}: cannot read {line!r}; expected 'key = value' or 'name = {{'"
-                )
+                raise ath_refusal(f"line {lineno}: cannot read {line!r}; expected 'key = value' or 'name = {{'")
             if len(stack) == 1 and stack[0] in (*_PROFILE_BLOCKS, *_KNOWN_BLOCKS):
-                raise ConfigError(
-                    f"line {lineno}: block {stack[0]!r} cannot read {line!r}; "
-                    "expected 'key = value' or 'name = {'"
-                )
+                raise ath_refusal(f"line {lineno}: block {stack[0]!r} cannot read {line!r}; "
+                    "expected 'key = value' or 'name = {'")
             continue
         key, value = (part.strip() for part in line.split("=", 1))
         if not stack:
@@ -212,7 +206,7 @@ def _parse_ath_blocks(
         elif len(stack) == 2 and stack[0] == "Mesh.Enclosure" and stack[1] in ATH_LF_BLOCKS:
             blocks[stack[0]][f"{stack[1]}.{key}"] = value
     if stack:
-        raise ConfigError(f"block {stack[-1]!r} is never closed")
+        raise ath_refusal(f"block {stack[-1]!r} is never closed")
     return blocks, flat, nested
 
 
@@ -539,12 +533,10 @@ def _reject_unrecognised_ath_items(
     for item, lookup in unknown:
         reason = _ath_refusal_reason(lookup, candidates)
         details.append(f"{item} ({reason})" if reason else item)
-    raise ConfigError(
-        "unsupported item(s) in ATH config: "
+    raise ath_refusal("unsupported item(s) in ATH config: "
         + "; ".join(details)
         + ". These items are not supported and may affect the model. "
-        "Remove them, or prefix a name with '_' to disable it."
-    )
+        "Remove them, or prefix a name with '_' to disable it.")
 
 
 # Recognised ``Mesh.*`` keys. Kept beside the mapping tables in
@@ -646,30 +638,26 @@ def _reject_unsupported_ath_keys(
         or key.startswith("Source.Velocity.")
     )
     if multi_source_keys:
-        raise ConfigError(
-            "multi-source ATH configs are not supported by this mesher "
-            f"(saw {', '.join(multi_source_keys)}); only the single cap/disc throat source is implemented"
-        )
+        raise ath_refusal("multi-source ATH configs are not supported by this mesher "
+            f"(saw {', '.join(multi_source_keys)}); only the single cap/disc throat source is implemented")
     throat_profile = _maybe_number(profile_items.get("Throat.Profile", flat.get("Throat.Profile")))
     if throat_profile is not None and throat_profile != 1:
-        raise ConfigError(
-            f"Throat.Profile = {throat_profile} is not supported; only the OS-SE profile (1) is implemented"
-        )
+        raise ath_refusal(f"Throat.Profile = {throat_profile} is not supported; only the OS-SE profile (1) is implemented")
     rollback_keys = sorted(
         key
         for key in {*flat, *profile_items, *blocks}
         if key == "Rollback" or key.startswith("Rollback.")
     )
     if rollback_keys:
-        raise ConfigError(f"Rollback is not supported by this mesher (saw {', '.join(rollback_keys)})")
+        raise ath_refusal(f"Rollback is not supported by this mesher (saw {', '.join(rollback_keys)})")
     rear_shape = _maybe_number(mesh_items.get("RearShape"))
     if rear_shape is not None and rear_shape not in {1, 3}:
-        raise ConfigError(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) and Opus rear (3) are implemented")
+        raise ath_refusal(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) and Opus rear (3) are implemented")
     # The user guide spells the throat-extension slice count ``ThroatSegments``;
     # current ATH builds read ``ThroatExtSegments``.
     for throat_segments in ("ThroatSegments", "ThroatExtSegments"):
         if throat_segments in mesh_items:
-            raise ConfigError(f"Mesh.{throat_segments} is not supported; remove it or use Mesh.ZMapPoints")
+            raise ath_refusal(f"Mesh.{throat_segments} is not supported; remove it or use Mesh.ZMapPoints")
 
     # Every other key in this namespace is read through an explicit whitelist,
     # so an unrecognised one was silently discarded and the mesher used its
@@ -692,12 +680,10 @@ def _reject_unsupported_ath_keys(
         for key in unknown:
             close = get_close_matches(key, sorted(_KNOWN_MESH_KEYS), n=1, cutoff=0.7)
             details.append(f"Mesh.{key}" + (f" (did you mean Mesh.{close[0]}?)" if close else ""))
-        raise ConfigError(
-            "unrecognised mesh key(s): "
+        raise ath_refusal("unrecognised mesh key(s): "
             + ", ".join(details)
             + ". They would be ignored and the mesher would silently use its "
-            "defaults, so the mesh would not match the config."
-        )
+            "defaults, so the mesh would not match the config.")
 
 
 def _warn_ignored_ath_keys(
@@ -744,6 +730,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         v2_geometry = imported_geometry and saved_geometry_version != TEXT_IMPORT_V1
         axial_rule, ath_version = ath_axial_sampling_rule(content) if imported_geometry and saved_geometry_version != TEXT_IMPORT_V1 else (None, None)
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from exc
     blocks, flat, nested = _parse_ath_blocks(content)
     # These C functions have an output argument as well as a return value;
@@ -760,7 +748,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             for node in ast.walk(tree):
                 if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                         and node.func.id in {"frexp", "modf"}):
-                    raise ConfigError(f"{key}: function {node.func.id} returns two values and is not supported")
+                    raise ath_refusal(f"{key}: function {node.func.id} returns two values and is not supported")
     # Field precedence must not conceal an unsupported coefficient in an
     # enabled section. Wholly ignored subtrees have unrelated member names.
     for items in (flat, *(items for name, items in blocks.items() if not _ath_item_ignored(name, block=True))):
@@ -788,12 +776,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
         formula = "OSSE"
         profile_items = flat
     if formula is None:
-        raise ConfigError(
-            _missing_ath_profile_details(flat, blocks)
+        raise ath_refusal(_missing_ath_profile_details(flat, blocks)
             + "text config must contain an OSSE or R-OSSE block "
             "(ICW is not available via the ATH text format; configure it through the "
-            "dict/contract path, e.g. build_from_config({'profile': {'formula': 'ICW', ...}}))"
-        )
+            "dict/contract path, e.g. build_from_config({'profile': {'formula': 'ICW', ...}}))")
 
     # ATH reads Throat.Ext.* and Slot.Length ONLY at top level, even for
     # block-style configs (verified against ath.exe: an R-OSSE block copy is
@@ -804,10 +790,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         extension_keys = ("Throat.Ext.Length", "Throat.Ext.Angle", "Slot.Length")
         in_block = [key for key in extension_keys if key in blocks[profile_block]]
         if in_block:
-            raise ConfigError(
-                f"{', '.join(in_block)} must be top-level keys — ATH ignores them inside "
-                f"the {formula} block; move them out of the block"
-            )
+            raise ath_refusal(f"{', '.join(in_block)} must be top-level keys — ATH ignores them inside "
+                f"the {formula} block; move them out of the block")
         merged_profile = dict(profile_items)
         for key in extension_keys:
             if key in flat:
@@ -917,15 +901,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
         try:
             radius = _eval_constant_param(diameter) / 2.0
         except (SyntaxError, TypeError, ValueError, OverflowError) as exc:
-            raise ConfigError(
-                f"Throat.Diameter must be a positive finite number; got {diameter!r}. "
+            raise ath_refusal(f"Throat.Diameter must be a positive finite number; got {diameter!r}. "
                 "Use a numeric value or constant numeric expression in millimetres; "
-                "azimuth-varying diameter expressions are not supported."
-            ) from exc
+                "azimuth-varying diameter expressions are not supported.") from exc
         if not np.isfinite(radius) or radius <= 0:
-            raise ConfigError(
-                f"Throat.Diameter must be a positive finite number that yields a positive radius; got {diameter!r}"
-            )
+            raise ath_refusal(f"Throat.Diameter must be a positive finite number that yields a positive radius; got {diameter!r}")
         common_profile.setdefault("r0", radius)
 
     if formula == "OSSE":
@@ -970,11 +950,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
 
     if v2_geometry and profile_block == "OSSE" and "r0" in blocks["OSSE"]:
         if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", blocks["OSSE"]["r0"].strip()):
-            raise ConfigError("OSSE.r0 must be a literal number; ATH reads only a leading number from expressions")
+            raise ath_refusal("OSSE.r0 must be a literal number; ATH reads only a leading number from expressions")
 
     if formula == "OSSE":
         if "L" not in profile:
-            raise ConfigError("ATH OSSE text configs must set Length")
+            raise ath_refusal("ATH OSSE text configs must set Length")
         if imported_geometry and saved_geometry_version is None:
             # ATH permits source-only models with Length = 0, but this text
             # importer cannot build them. Catch a constant zero before the
@@ -986,10 +966,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
             except (SyntaxError, TypeError, ValueError, ArithmeticError):
                 source_only = False
             if source_only:
-                raise ConfigError(
-                    "OSSE Length = 0 describes a source-only model, which this ATH text importer "
-                    "does not support; use a positive Length"
-                )
+                raise ath_refusal("OSSE Length = 0 describes a source-only model, which this ATH text importer "
+                    "does not support; use a positive Length")
         if "OSSE" in blocks:
             # ATH V2025-12 and V2026-09a ignore OSSE.Rot and read only
             # top-level Rot. Saved v1/native text retains its authoring mapping.
@@ -1050,9 +1028,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
         try:
             nac = Decimal(flat["NAC"])
             if not nac.is_finite() or nac != nac.to_integral_value():
-                raise ValueError("expected an integer")
+                raise ath_refusal("expected an integer")
         except (InvalidOperation, ValueError) as exc:
-            raise ConfigError(f"NAC must be a finite integer, got {flat['NAC']!r}") from exc
+            raise ath_refusal(f"NAC must be a finite integer, got {flat['NAC']!r}") from exc
         mesh["_athNacPresent"] = True
         logger.warning(
             "[hornlab-mesher] NAC present: preserving Mesh.AngularSegments without "
@@ -1073,10 +1051,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
                 # Bound magnitude before integer conversion, and retain the
                 # original token so float rounding cannot erase a fraction.
                 if not np.isfinite(float(part)) or not number.is_finite() or number != number.to_integral_value():
-                    raise ValueError("expected a finite integral value")
+                    raise ath_refusal("expected a finite integral value")
                 shifted.append(str(int(number) + 1))
             except (InvalidOperation, ValueError, OverflowError) as exc:
-                raise ConfigError(f"Mesh.SubdomainSlices must be finite integers, got {part!r}") from exc
+                raise ath_refusal(f"Mesh.SubdomainSlices must be finite integers, got {part!r}") from exc
         mesh["subdomainSlices"] = ",".join(shifted)
 
     zmap_points = mesh_items.get("ZMapPoints", mesh_items.get("ZMap"))
@@ -1134,9 +1112,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             if len(parts) < 4:
                 # ATH documents last-value repetition for the resolution lists
                 # only; what it does with a short Spacing is not established.
-                raise ConfigError(
-                    f"Mesh.Enclosure Spacing = {spacing} must list four margins (+x, +y, -x, -y)"
-                )
+                raise ath_refusal(f"Mesh.Enclosure Spacing = {spacing} must list four margins (+x, +y, -x, -y)")
             if len(parts) >= 4:
                 enclosure.update(
                     {
@@ -1155,7 +1131,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         if ath_shape == 2:
             source["sourceShape"] = 0
         elif ath_shape != 1:
-            raise ConfigError(f"Source.Shape = {ath_shape!r} is not supported; use 1 (cap) or 2 (flat disc)")
+            raise ath_refusal(f"Source.Shape = {ath_shape!r} is not supported; use 1 (cap) or 2 (flat disc)")
     if "sourceVelocity" in source:
         # ATH enum: 1 = normal to the element surface, 2 = axial (pistonic
         # motion along z). It selects a boundary condition rather than
@@ -1166,15 +1142,11 @@ def parse_text_config(content: str) -> dict[str, Any]:
         # consumer that does model velocity direction sees what was asked for.
         ath_velocity = source["sourceVelocity"]
         if ath_velocity == 2:
-            raise ConfigError(
-                "Source.Velocity = 2 (axial source motion) is not supported by this mesher; "
-                "only 1 (normal to the element surface) is implemented"
-            )
+            raise ath_refusal("Source.Velocity = 2 (axial source motion) is not supported by this mesher; "
+                "only 1 (normal to the element surface) is implemented")
         if ath_velocity != 1:
-            raise ConfigError(
-                f"Source.Velocity = {ath_velocity!r} is not supported; "
-                "use 1 (normal to the element surface)"
-            )
+            raise ath_refusal(f"Source.Velocity = {ath_velocity!r} is not supported; "
+                "use 1 (normal to the element surface)")
 
     nested_names = {path[-1]: {} for path in nested if not _ath_nested_ignored(path)
                     and not (len(path) == 2 and path[0] == "Mesh.Enclosure" and path[1] in ATH_LF_BLOCKS)}
@@ -1193,48 +1165,46 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if sim_type is None:
         sim_type = 2 if enclosure or not imported_geometry or saved_geometry_version is not None else 1
     if sim_type not in (1, 2):
-        raise ConfigError(
-            f"ABEC.SimType = {sim_type!r} is not supported; use 1 (infinite baffle) or 2 (free standing)"
-        )
+        raise ath_refusal(f"ABEC.SimType = {sim_type!r} is not supported; use 1 (infinite baffle) or 2 (free standing)")
     if sim_type == 1 and enclosure:
-        raise ConfigError("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
+        raise ath_refusal("ABEC.SimType = 1 (infinite baffle) cannot be combined with Mesh.Enclosure")
 
     # Import-only surfaces measured against ATH V2026-09a output.
     roundover = blocks.get("Mesh.Roundover")
     if "Roundover" in mesh_items and _maybe_number(mesh_items["Roundover"]) != 0:
-        raise ConfigError("Mesh.Roundover scalar form is unsupported: ATH requires a Radius/Segments block")
+        raise ath_refusal("Mesh.Roundover scalar form is unsupported: ATH requires a Radius/Segments block")
     if any(key.startswith("Roundover.") for key in mesh_items):
-        raise ConfigError("Mesh.Roundover members must be in a Mesh.Roundover block")
+        raise ath_refusal("Mesh.Roundover members must be in a Mesh.Roundover block")
     if roundover is not None:
         unknown = sorted(key for key in roundover if key not in {"Radius", "Segments"} and not _ath_item_disabled(key))
         if unknown:
-            raise ConfigError("unsupported item(s) in ATH config: Mesh.Roundover member(s): " + ", ".join("Mesh.Roundover." + key for key in unknown))
+            raise ath_refusal("unsupported item(s) in ATH config: Mesh.Roundover member(s): " + ", ".join("Mesh.Roundover." + key for key in unknown))
         try:
             radius = float(roundover.get("Radius", "nan"))
             segments = float(roundover.get("Segments", "5"))
         except ValueError as exc:
-            raise ConfigError("Mesh.Roundover.Radius/Segments must be finite numbers") from exc
+            raise ath_refusal("Mesh.Roundover.Radius/Segments must be finite numbers") from exc
         if not np.isfinite(radius) or radius <= 0:
-            raise ConfigError("Mesh.Roundover.Radius must be finite and > 0")
+            raise ath_refusal("Mesh.Roundover.Radius must be finite and > 0")
         if not np.isfinite(segments) or segments < 1 or segments != int(segments):
-            raise ConfigError("Mesh.Roundover.Segments must be a finite integer >= 1")
+            raise ath_refusal("Mesh.Roundover.Segments must be a finite integer >= 1")
         mesh["athRoundover"] = {"radius": radius, "segments": int(segments)}
     active = roundover is not None or mesh.get("athRearShape") == 3
     if active:
         if _maybe_number(source_items.get("Shape")) == 2:
-            raise ConfigError("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+            raise ath_refusal("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
         feature = "Mesh.Roundover" if roundover is not None else "Mesh.RearShape = 3"
         if not imported_geometry:
-            raise ConfigError(feature + " requires ATH import geometry interpretation")
+            raise ath_refusal(feature + " requires ATH import geometry interpretation")
         if enclosure or "Mesh.Enclosure" in blocks:
-            raise ConfigError(feature + " with Mesh.Enclosure is unsupported: the ATH free-standing lip/rear cannot attach to an enclosure")
+            raise ath_refusal(feature + " with Mesh.Enclosure is unsupported: the ATH free-standing lip/rear cannot attach to an enclosure")
         if sim_type == 1:
-            raise ConfigError(feature + " with ABEC.SimType = 1 / infinite baffle is unsupported: this path requires free-standing topology")
+            raise ath_refusal(feature + " with ABEC.SimType = 1 / infinite baffle is unsupported: this path requires free-standing topology")
         circ_profile = flat.get("ABEC.SimProfile", flat.get("Simulation.SimProfile"))
         if "CircSym" in flat or (circ_profile is not None and _maybe_number(circ_profile) == 0):
-            raise ConfigError(feature + " with CircSym / ABEC.SimProfile = 0 is unsupported: circumferential topology has not been measured")
+            raise ath_refusal(feature + " with CircSym / ABEC.SimProfile = 0 is unsupported: circumferential topology has not been measured")
         if roundover is not None and formula != "OSSE":
-            raise ConfigError("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
+            raise ath_refusal("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
     if not imported_geometry and mesh.get("athRearShape") == 1:
         # Historically accepted native saved CFGs can spell the inactive default.
         mesh.pop("athRearShape")
@@ -1244,21 +1214,21 @@ def parse_text_config(content: str) -> dict[str, Any]:
             try:
                 value = float(value)
             except (ValueError, TypeError) as exc:
-                raise ConfigError("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite") from exc
+                raise ath_refusal("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite") from exc
             if not np.isfinite(value) or (key.endswith("Step") and value <= 0):
-                raise ConfigError("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite" + (" and > 0" if key.endswith("Step") else ""))
+                raise ath_refusal("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite" + (" and > 0" if key.endswith("Step") else ""))
             if key == "athRearFrontOffset" and value < 0:
-                raise ConfigError("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
+                raise ath_refusal("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
             mesh[key] = value
     if mesh.get("athRearShape") != 3 and any(key in mesh for key in ("athRearFrontOffset", "athRearStep")):
-        raise ConfigError("Mesh.RearShape.FrontOffset/Step require Mesh.RearShape = 3")
+        raise ath_refusal("Mesh.RearShape.FrontOffset/Step require Mesh.RearShape = 3")
     if mesh.get("athRearShape") == 3:
         try:
             wall = float(mesh["wallThickness"])
         except (ValueError, TypeError) as exc:
-            raise ConfigError("Mesh.WallThickness for Mesh.RearShape = 3 must be finite") from exc
+            raise ath_refusal("Mesh.WallThickness for Mesh.RearShape = 3 must be finite") from exc
         if not np.isfinite(wall):
-            raise ConfigError("Mesh.WallThickness for Mesh.RearShape = 3 must be finite")
+            raise ath_refusal("Mesh.WallThickness for Mesh.RearShape = 3 must be finite")
         mesh["wallThickness"] = min(1000, max(.1, wall))
         if mesh["wallThickness"] != wall:
             logger.warning("[hornlab-mesher] Mesh.RearShape = 3 clamps Mesh.WallThickness to %g mm", mesh["wallThickness"])

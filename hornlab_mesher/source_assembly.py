@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from urllib.parse import quote
 
+from .errors import control_refusal
 from .front_baffle import FrontBaffle
 from .source_contour import SourceContour, digest
 
@@ -43,19 +44,19 @@ class SourceAssembly:
         ):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError("assembly dimensions must be finite numbers")
+                raise control_refusal("assembly dimensions must be finite numbers", 'Enclosure dimensions', 'Enter finite Width, Height, Depth and source dimensions.', message='An assembly dimension is not finite.')
             if name == "aperture_radius_mm" and self.woofer is None:
                 if value != 0:
                     raise ValueError("horn-only assembly requires zero unused woofer aperture")
             elif name != "front_z_mm" and value <= 0:
-                raise ValueError("assembly dimensions must be positive")
+                raise control_refusal("assembly dimensions must be positive", 'Enclosure dimensions', 'Enter positive Width, Height, Depth and source radii.', message='An assembly dimension is zero or negative.')
             object.__setattr__(self, name, float(value) if value else 0.0)
         for name in ("horn_xy_mm", "woofer_xy_mm"):
             value = getattr(self, name)
             if len(value) != 2 or any(
                 type(x) not in (int, float) or not math.isfinite(x) for x in value
             ):
-                raise ValueError("assembly placement must be a finite XY pair")
+                raise control_refusal("assembly placement must be a finite XY pair", 'Source position', 'Enter finite Horizontal and Vertical source positions.', message='A source position is not finite.')
             object.__setattr__(self, name, tuple(float(x) if x else 0.0 for x in value))
         if not isinstance(self.horn, SourceContour) or (self.woofer is not None and not isinstance(
             self.woofer, SourceContour
@@ -78,27 +79,27 @@ class SourceAssembly:
             if (abs(self.horn_wall.throat_radius_mm - self.horn.points[-1].r_mm) > 1e-8
                     or self.horn_wall.length_mm != self.horn_length_mm
                     or self.horn_wall.mouth_radius_mm != self.mouth_radius_mm):
-                raise ValueError("source rim or assembly datums contradict resolved general horn wall")
+                raise control_refusal("source rim or assembly datums contradict resolved general horn wall", "Source radius", "Match Source radius to the current horn Throat radius, or copy the current horn profile again.", message="The source rim does not match the current horn throat.")
             # Positive convex-hull margins certify the complete wall envelope,
             # including R-OSSE rollback outside the front aperture plane.
             radial_poles = [p[0] for p in self.horn_wall.poles_mm]
             if min(radial_poles) < self.horn.points[-1].r_mm - 1e-8:
-                raise ValueError("general horn wall cannot constrict inside the source footprint")
+                raise control_refusal("general horn wall cannot constrict inside the source footprint", 'Throat radius', 'Reduce the source Radius or increase the horn Throat radius.', message='The horn narrows inside the source footprint.')
             radial_envelope = max(radial_poles)
             if (min(self.width_mm / 2 - abs(self.horn_xy_mm[0]),
                     self.height_mm / 2 - abs(self.horn_xy_mm[1])) - radial_envelope <= .1):
-                raise ValueError("general horn wall must clear every enclosure side by more than 0.1 mm")
+                raise control_refusal("general horn wall must clear every enclosure side by more than 0.1 mm", 'Enclosure dimensions', 'Increase Width or Height, or move the horn inward to leave more than 0.1 mm clearance.', message='The horn reaches a side of the enclosure.')
             if max(self.horn_wall.radii_at_z(self.horn_length_mm)) > self.mouth_radius_mm + 1e-8:
                 raise ValueError("general horn wall intersects the front baffle outside its aperture")
             if min(p[1] for p in self.horn_wall.poles_mm) + self.depth_mm - self.horn_length_mm <= .1:
-                raise ValueError("general horn wall must clear the enclosure back by more than 0.1 mm")
+                raise control_refusal("general horn wall must clear the enclosure back by more than 0.1 mm", 'Enclosure depth', 'Increase Depth to leave more than 0.1 mm clearance behind the horn.', message='The horn reaches the back of the enclosure.')
             if self.woofer is not None and math.dist(self.horn_xy_mm, self.woofer_xy_mm) - radial_envelope - self.aperture_radius_mm <= .1:
-                raise ValueError("general horn wall must clear the woofer aperture by more than 0.1 mm")
+                raise control_refusal("general horn wall must clear the woofer aperture by more than 0.1 mm", 'Woofer position', 'Move the woofer away from the horn to leave more than 0.1 mm clearance.', message='The horn reaches the woofer opening.')
         rim = self.horn.points[-1].r_mm
         if self.mouth_radius_mm - rim <= 0.1:
-            raise ValueError("horn mouth must exceed throat radius by more than 0.1 mm")
+            raise control_refusal("horn mouth must exceed throat radius by more than 0.1 mm", 'Mouth radius', 'Increase Mouth radius to more than 0.1 mm above Throat radius.', message='Mouth radius is too close to or smaller than Throat radius.')
         if self.horn_length_mm - max(0, self.horn.axial_bounds_mm[1]) <= 0.1:
-            raise ValueError("horn source must clear mouth by more than 0.1 mm")
+            raise control_refusal("horn source must clear mouth by more than 0.1 mm", 'Horn length', 'Increase Horn length or reduce source Height to leave more than 0.1 mm clearance.', message='The source reaches the horn mouth.')
         if (
             self.depth_mm - self.horn_length_mm + min(0, self.horn.axial_bounds_mm[0])
             <= 0.1

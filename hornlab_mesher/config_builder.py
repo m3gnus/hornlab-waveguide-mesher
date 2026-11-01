@@ -8,6 +8,8 @@ translation layer.
 
 from __future__ import annotations
 
+from .errors import UserRefusal, control_refusal, numeric_refusal
+
 import tempfile
 
 import logging
@@ -164,9 +166,9 @@ def _float(
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{names[0]} must be numeric, got {value!r}") from exc
+        raise numeric_refusal(names[0], f"{names[0]} must be numeric, got {value!r}", integer=False) from exc
     if not np.isfinite(out):
-        raise ConfigError(f"{names[0]} must be finite, got {value!r}")
+        raise numeric_refusal(names[0], f"{names[0]} must be finite, got {value!r}", integer=False)
     return out
 
 
@@ -179,9 +181,9 @@ def _optional_float(
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{names[0]} must be numeric, got {value!r}") from exc
+        raise numeric_refusal(names[0], f"{names[0]} must be numeric, got {value!r}", integer=False) from exc
     if not np.isfinite(out):
-        raise ConfigError(f"{names[0]} must be finite, got {value!r}")
+        raise numeric_refusal(names[0], f"{names[0]} must be finite, got {value!r}", integer=False)
     return out
 
 
@@ -189,11 +191,9 @@ def _numeric_param(value: Any, *, name: str) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(
-            f"{name} must be numeric when deriving a driver adapter, got {value!r}"
-        ) from exc
+        raise numeric_refusal(name, f"{name} must be numeric when deriving a driver adapter, got {value!r}", integer=False) from exc
     if not np.isfinite(out):
-        raise ConfigError(f"{name} must be finite, got {value!r}")
+        raise numeric_refusal(name, f"{name} must be finite, got {value!r}", integer=False)
     return out
 
 
@@ -215,14 +215,14 @@ def _scalar_or_expr(
 
 def _integer(value: Any, *, name: str) -> int:
     if isinstance(value, (bool, np.bool_)):
-        raise ConfigError(f"{name} must be an integer, got {value!r}")
+        raise numeric_refusal(name, f"{name} must be an integer, got {value!r}", integer=True)
     try:
         out = int(value)
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ConfigError(f"{name} must be an integer, got {value!r}") from exc
+        raise numeric_refusal(name, f"{name} must be an integer, got {value!r}", integer=True) from exc
     if not np.isfinite(numeric) or numeric != out:
-        raise ConfigError(f"{name} must be an integer, got {value!r}")
+        raise numeric_refusal(name, f"{name} must be an integer, got {value!r}", integer=True)
     return out
 
 
@@ -250,6 +250,8 @@ def _normalise_formula(value: Any) -> str:
     try:
         return _normalise_formula_common(value)
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from None
 
 
@@ -331,16 +333,14 @@ def _validate_coverage_angles(params: Mapping[str, Any], formula: str) -> None:
         try:
             minimum, maximum = _coverage_angle_extrema(str(params[key]))
         except ValueError as exc:
-            raise ConfigError(f"{label} ({key}): {exc}. Change the expression.") from exc
+            raise control_refusal(f"{label} ({key}): {exc}. Change the expression.", label, f"Change {label} to a finite expression within its allowed angles.", message=f"{label} contains an expression WG cannot evaluate.") from exc
         offending = maximum if maximum[0] >= 90 else minimum if minimum[0] <= lower else None
         if offending is not None:
             angle, p = offending
             requirement = "below 90°" if key == "a" and angle >= 90 else f"above {lower}° and below 90°"
-            raise ConfigError(
-                f"{label} ({key}) reaches {angle:.1f}° near p = {math.degrees(p):.1f}°; "
+            raise control_refusal(f"{label} ({key}) reaches {angle:.1f}° near p = {math.degrees(p):.1f}°; "
                 f"{formula} needs it {requirement} everywhere. "
-                f"Change the expression so it stays {requirement}."
-            )
+                f"Change the expression so it stays {requirement}.", label, f"Change {label} so it stays {requirement}.", message=f"{label} reaches {angle:.1f}°; it must stay {requirement} everywhere.")
 
 
 def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:
@@ -723,7 +723,7 @@ def _enclosure_from_config(
     depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if depth <= 0.0:
         if enclosure.get("woofers"):
-            raise ConfigError("enclosure.woofers requires positive enclosure depth")
+            raise control_refusal("enclosure.woofers requires positive enclosure depth", 'Enclosure depth', 'Increase Enclosure depth above zero, or disable the woofers.', message='Woofers need an enclosure with positive depth.')
         return None
     from .enclosure_woofers import woofer_from_config
 
@@ -847,7 +847,7 @@ def _apply_driver_adapter(
             "driver adapter requires both driver and waveguide throat diameters"
         )
     if driver_radius <= 0.0 or waveguide_radius <= 0.0:
-        raise ConfigError("driver and waveguide throat diameters must be > 0")
+        raise control_refusal("driver and waveguide throat diameters must be > 0", 'Driver exit diameter', 'Enter positive Driver exit diameter and Throat diameter.', message='The driver or throat diameter is zero or negative.')
     if waveguide_radius < driver_radius:
         raise ConfigError(
             "driver adapter cannot shrink from waveguide throat to driver throat"
@@ -870,7 +870,7 @@ def _apply_driver_adapter(
         common.get("throatExtAngle", 0.0), name="throatExtAngle"
     )
     if ext_len <= 0.0 and abs(ext_angle_deg) <= 1.0e-12:
-        raise ConfigError("driver adapter requires throatExtLength or throatExtAngle")
+        raise control_refusal("driver adapter requires throatExtLength or throatExtAngle", 'Throat extension length', 'Set Throat extension length or Throat extension angle.', message='The driver adapter needs a length or angle.')
     if ext_len <= 0.0:
         tan_angle = np.tan(np.deg2rad(ext_angle_deg))
         if tan_angle <= 1.0e-12:
@@ -912,7 +912,7 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
     ]
     if names:
         joined = "/".join(names)
-        raise ConfigError(f"formula ICW does not support throat extension ({joined})")
+        raise control_refusal(f"formula ICW does not support throat extension ({joined})", 'Throat extension', 'Clear Throat extension length and Throat extension angle, or choose a different horn family.', message='ICW cannot use a throat extension.')
 
 
 def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
@@ -968,6 +968,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     try:
         adapter = normalize_adapter(_pick(config, profile, names=("throat_adapter",), default=None))
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from exc
     if adapter is not None:
         straight_aliases = (
@@ -1034,10 +1036,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             quadrants = _normalise_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
             px, py, nx, ny = enclosure_obj.dim_mm
             if (quadrants in {"1", "14"} and px != nx) or (quadrants in {"1", "12"} and py != ny):
-                raise ConfigError("reduced domain requires symmetric enclosure Dim on every cut axis")
+                raise control_refusal("reduced domain requires symmetric enclosure Dim on every cut axis", 'Enclosure margins', 'Use matching opposite enclosure margins, or choose Full model in Symmetry.', message='The enclosure margins do not match across a symmetry plane.')
         enc_depth = enclosure_obj.depth_mm
     elif mode == "enclosure":
-        raise ConfigError("enclosure mode requires enclosure.depth_mm > 0")
+        raise control_refusal("enclosure mode requires enclosure.depth_mm > 0", 'Enclosure depth', 'Increase Enclosure depth above zero.', message='The enclosure has zero or negative depth.')
 
     default_wall = (0.0 if mode in {"bare", "enclosure", "infinite-baffle"} else
                     5.0 if imported_geometry and (mesh.get("athRoundover") or mesh.get("athRearShape") == 3) else 6.0)
@@ -1062,6 +1064,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             if wall_thickness != input_wall:
                 logger.warning("[hornlab-mesher] Mesh.RearShape = 3 clamps Mesh.WallThickness to %g mm", wall_thickness)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     z_map_points = _pick(
         mesh,
@@ -1087,6 +1091,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 length_segments, z_map_points, prefer_endpoint_controls=imported_geometry
             )
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     default_sampling_mode = "zmap" if z_map_points is not None else "ath-default-zmap" if imported_defaults else "uniform"
     angular_segments = _int(
@@ -1444,6 +1450,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         try:
             _validate_freeform_config(common)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
 
     if formula in {"OSSE", "R-OSSE"}:
@@ -1465,6 +1473,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         try:
             construction = resolve_adapter(common)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
         common["construction_fingerprint"] = construction.fingerprint
     if common.get("athRoundover") or common.get("athRearShape") == 3:
@@ -1472,6 +1482,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         try:
             validate_combinations(common)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     return common, formula, mode
 
@@ -1625,7 +1637,7 @@ def _mesh_density_from_config(
     )
     deviation = mesh.get("surface_deviation_mm")
     if isinstance(deviation, bool):
-        raise ConfigError("surface_deviation_mm must be a finite positive number or null")
+        raise control_refusal("surface_deviation_mm must be a finite positive number or null", 'Surface deviation', 'Enter a positive finite Surface deviation, or turn it Off.', message='Surface deviation must be positive when enabled.')
     density = MeshDensity(
         surface_deviation_mm=_optional_float(mesh, names=("surface_deviation_mm",)),
         throat_res_mm=_float(
@@ -1687,6 +1699,8 @@ def _mesh_density_from_config(
     try:
         validate_mesh_density(density)
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from exc
     return density
 
@@ -2505,7 +2519,7 @@ def resolve_geometry(
     params, formula, mode = build_geometry_params(config)
     requested_woofers = _section(config, "enclosure").get("woofers")
     if requested_woofers and mode != "enclosure":
-        raise ConfigError("enclosure.woofers requires enclosure mode")
+        raise control_refusal("enclosure.woofers requires enclosure mode", 'Mounting', 'Change Mounting to Waveguide in enclosure, or disable the woofers.', message='Woofers need an enclosure front baffle.')
     if "controlsAdapter" in params:
         from .adapter_controls import resolve
         return resolve(config, params, allow_large_mesh)
@@ -2675,6 +2689,8 @@ def resolve_geometry(
                     params, density, mesh, topology_mode, inner_points, restored_outer, rear,
                 )
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     if formula == "FREEFORM" and freeform_corner_z(freeform_geometry):
         from .corner_wall import CornerWall, corner_geometry_class

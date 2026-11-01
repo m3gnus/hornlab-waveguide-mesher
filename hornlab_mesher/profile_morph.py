@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .errors import control_refusal
+
 import math
 from typing import Any, Callable, Literal, Mapping, NamedTuple
 
@@ -29,7 +31,7 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
         return 0.0
     aspect = eval_param(params.get("gcurveAspectRatio"), p, 1.0)
     if aspect <= 0.0:
-        raise ValueError("gcurveAspectRatio must be positive")
+        raise control_refusal("gcurveAspectRatio must be positive", 'Guiding curve aspect ratio', 'Enter a positive Guiding curve aspect ratio.', message='Guiding curve aspect ratio is zero or negative.')
 
     rotation = math.radians(eval_param(params.get("gcurveRot"), p, 0.0))
     pr = p - rotation
@@ -53,9 +55,7 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
         # the GCurve.SF.* fields unseen. A single value means "not given":
         # Waveguide Generator writes ``GCurve.SF = 0`` and sends it back as the
         # string "0" after a save/reopen, with the SF.a..n3 fields in force.
-        raise ValueError(
-            f"GCurve.SF needs six values (a, b, m, n1, n2, n3), got {len(sf)}"
-        )
+        raise control_refusal(f"GCurve.SF needs six values (a, b, m, n1, n2, n3), got {len(sf)}", 'Guiding curve superformula', 'Enter six values for the Guiding curve superformula.', message='The guiding curve superformula needs six numbers.')
     if len(sf) >= 6:
         sf_a, sf_b, sf_m1, sf_n1, sf_n2, sf_n3 = sf[:6]
         sf_m2 = sf_m1
@@ -528,10 +528,8 @@ def _resolve_morph_half_dimensions(
     if imported and not ath_boundary_expansion and not _is_true(params.get("morphAllowShrinkage")) and (
         half_width < raw_half_width - 1.0e-9 or half_height < raw_half_height - 1.0e-9
     ):
-        raise ValueError(
-            "Imported Morph.AllowShrinkage=0 with smaller target dimensions has no qualified construction; "
-            "use Morph.AllowShrinkage=1 for the specified target or author a native no-shrink configuration"
-        )
+        raise control_refusal("Imported Morph.AllowShrinkage=0 with smaller target dimensions has no qualified construction; "
+            "use Morph.AllowShrinkage=1 for the specified target or author a native no-shrink configuration", 'Allow shrinkage', 'Increase Target width and Target height, or enable Allow shrinkage in the ATH text.', message='The imported no-shrink morph cannot use a target smaller than its mouth.')
     if not imported and not _is_true(params.get("morphAllowShrinkage")):
         half_width = max(half_width, raw_half_width)
         half_height = max(half_height, raw_half_height)
@@ -638,7 +636,7 @@ def _morph_target_radius_at_angle(
     )
     if target == 3:
         if half_width <= 0.0 or half_height <= 0.0:
-            raise ValueError("superellipse Morph target dimensions must be positive")
+            raise control_refusal("superellipse Morph target dimensions must be positive", 'Target dimensions', 'Enter positive Target width and Target height.', message='The superellipse morph has a zero or negative target dimension.')
         exponent = min(
             16.0,
             max(2.0, eval_param(params.get("morphExponent"), phi, 2.0)),
@@ -712,9 +710,7 @@ def _morph_rate(params: Mapping[str, Any], phi: float) -> float:
 
     rate = eval_param(params.get("morphRate"), phi, 3.0)
     if not rate >= 0.0:
-        raise ValueError(
-            f"Morph.Rate must be >= 0, got {rate:g} at phi={math.degrees(phi) % 360.0:.1f} deg"
-        )
+        raise control_refusal(f"Morph.Rate must be >= 0, got {rate:g} at phi={math.degrees(phi) % 360.0:.1f} deg", 'Morph rate', 'Enter a nonnegative Morph rate, or change its expression to stay nonnegative.', message='Morph rate becomes negative around the mouth.')
     if uses_current_ath_axial_sampling(params):
         # ATH V2026-09a: "Morph.Rate set too small, using 1.01" below 1.01.
         return max(rate, ATH_MIN_MORPH_RATE)

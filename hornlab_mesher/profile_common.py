@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from .errors import control_refusal
+
+
 import ast
 import math
 import operator
@@ -266,7 +269,7 @@ def _eval_text_param(text: str, p: float) -> float:
         # Name the reason when it is ours to give (an overflowing power, an
         # unknown name); arithmetic faults keep the plain message.
         reason = f": {exc}" if isinstance(exc, ValueError) and str(exc) else ""
-        raise ValueError(f"invalid parameter expression {text!r}{reason}") from exc
+        raise control_refusal(f"invalid parameter expression {text!r}{reason}", "Parameter expression", "Correct the expression in the edited parameter; use numbers, p and the supported math functions.", message="A parameter expression could not be evaluated.") from exc
 
 
 def eval_param(value: Any, p: float = 0.0, default: float = 0.0) -> float:
@@ -338,7 +341,7 @@ def _osse_radius(z: float, p: float, params: Mapping[str, Any], *, r0: float, a_
 
     radicand = (k * r0) ** 2 + 2 * k * r0 * z * math.tan(a0) + (z**2) * (math.tan(a) ** 2)
     if radicand < 0.0:
-        raise ValueError(_osse_undefined_message(z, p, a_deg, a0_deg))
+        raise control_refusal(_osse_undefined_message(z, p, a_deg, a0_deg), "Throat angle", "Increase Throat angle or shorten Horn length so the profile stays real through its full length.", message="The OSSE profile cannot form a real radius with this throat angle and length.")
     base = math.sqrt(radicand)
     base += r0 * (1 - k)
     if z <= 0 or n <= 0 or q <= 0 or L <= 0:
@@ -385,9 +388,7 @@ def _osse_radius_curve(
         # The scalar path raises here (math.sqrt); NumPy would return NaN with
         # only a RuntimeWarning, and that NaN geometry travelled all the way
         # to OCC/gmsh before failing with an unrelated message.
-        raise ValueError(
-            _osse_undefined_message(float(z[np.argmax(negative)]), p, a_deg, a0_deg)
-        )
+        raise control_refusal(_osse_undefined_message(float(z[np.argmax(negative)]), p, a_deg, a0_deg), "Throat angle", "Increase Throat angle or shorten Horn length so the profile stays real through its full length.", message="The OSSE profile cannot form a real radius with this throat angle and length.")
     base = np.sqrt(radicand)
     base += r0 * (1 - k)
     if n <= 0 or q <= 0 or L <= 0:

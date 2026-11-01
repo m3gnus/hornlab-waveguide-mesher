@@ -55,6 +55,7 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import BSpline
 from scipy.optimize import least_squares
 
+from ..errors import control_refusal
 from .core import (
     DEFAULT_DEGREE,
     MONO_EPS,
@@ -208,24 +209,20 @@ class ICWTargets:
             self.theta1_deg = self.rollback_theta_max_deg
 
         if self.kappa_abs_max is not None and self.kappa_abs_max <= 0.0:
-            raise ValueError(f"kappa_abs_max must be > 0, got {self.kappa_abs_max}")
+            raise control_refusal(f"kappa_abs_max must be > 0, got {self.kappa_abs_max}", 'Maximum absolute curvature', 'Enter a positive Maximum absolute curvature, or clear it.', message='Maximum absolute curvature must be above zero.')
         if self.dkappa_ds_abs_max is not None and self.dkappa_ds_abs_max <= 0.0:
-            raise ValueError(f"dkappa_ds_abs_max must be > 0, got {self.dkappa_ds_abs_max}")
+            raise control_refusal(f"dkappa_ds_abs_max must be > 0, got {self.dkappa_ds_abs_max}", 'Maximum curvature slope', 'Enter a positive Maximum curvature slope, or clear it.', message='Maximum curvature slope must be above zero.')
         if self.theta_max_deg is not None and not (90.0 < self.theta_max_deg <= 180.0):
-            raise ValueError(
-                f"theta_max_deg must be in (90, 180] degrees, got {self.theta_max_deg}"
-            )
+            raise control_refusal(f"theta_max_deg must be in (90, 180] degrees, got {self.theta_max_deg}", 'Maximum wall angle', 'Change Maximum wall angle in Profile.', message='Maximum wall angle must be above 90° and at most 180°.')
 
         if self.coverage_angle_deg is not None:
             if self.mode != TerminationMode.FLAT_BAFFLE:
-                raise ValueError("coverage_angle_deg is supported only for mode='flat_baffle'")
+                raise control_refusal("coverage_angle_deg is supported only for mode='flat_baffle'", 'Coverage angle', 'Choose Flat baffle in Termination, or turn Coverage angle off.', message='Coverage angle can be used only with a Flat baffle termination.')
             if not (0.0 < self.hold_start < self.hold_end < 1.0):
-                raise ValueError("coverage hold window must satisfy 0 < hold_start < hold_end < 1")
+                raise control_refusal("coverage hold window must satisfy 0 < hold_start < hold_end < 1", 'Coverage hold', 'Set Coverage hold start below Coverage hold end, with both between zero and one.', message='The coverage hold must start after zero, end before one and have a positive span.')
             if not (self.theta0_deg < self.coverage_angle_deg < 90.0):
-                raise ValueError(
-                    "coverage_angle_deg must lie between theta0_deg and 90 deg "
-                    f"(got theta0_deg={self.theta0_deg}, coverage_angle_deg={self.coverage_angle_deg})"
-                )
+                raise control_refusal("coverage_angle_deg must lie between theta0_deg and 90 deg "
+                    f"(got theta0_deg={self.theta0_deg}, coverage_angle_deg={self.coverage_angle_deg})", 'Coverage angle', 'Increase Coverage angle above Throat angle, or reduce Throat angle; keep Coverage angle below 90°.', message='Coverage angle must be greater than Throat angle and less than 90°.')
 
     # --- derived radian helpers ---
     @property

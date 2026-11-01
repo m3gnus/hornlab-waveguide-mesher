@@ -9,6 +9,8 @@ import json
 import math
 from dataclasses import asdict, dataclass
 
+from .errors import control_refusal
+
 FEATURE = "native-source-contour-v1"
 
 
@@ -39,7 +41,7 @@ class ContourPoint:
             value = float(getattr(self, key))
             object.__setattr__(self, key, 0.0 if value == 0 else value)
         if not all(math.isfinite(x) for x in (self.r_mm, self.z_mm)) or self.r_mm < 0:
-            raise ValueError("point coordinates must be finite with nonnegative radius")
+            raise control_refusal("point coordinates must be finite with nonnegative radius", 'Source points', 'Enter finite coordinates and nonnegative Radius for each source point.', message='A source point has an invalid coordinate or negative radius.')
 
 
 @dataclass(frozen=True)
@@ -96,9 +98,9 @@ class SourceContour:
         ) != len(self.segments):
             raise ValueError("point and patch IDs must be unique")
         if self.points[0].r_mm != 0 or self.points[-1].z_mm != 0:
-            raise ValueError("contour requires a pole and an exact z=0 rim attachment")
+            raise control_refusal("contour requires a pole and an exact z=0 rim attachment", 'Source contour', 'Place the first point on the axis and the final rim at zero depth.', message='The source contour does not run from its centre to its attachment rim.')
         if not any(s.role == "moving" for s in self.segments):
-            raise ValueError("a source requires at least one moving patch")
+            raise control_refusal("a source requires at least one moving patch", 'Patch role', 'Set at least one patch to Moving.', message='The source has no moving patch.')
         for i, segment in enumerate(self.segments):
             a, b = self.points[i : i + 2]
             if (segment.start, segment.end) != (a.id, b.id) or b.r_mm <= a.r_mm:
@@ -121,7 +123,7 @@ class SourceContour:
                     or critical
                     or -radius * math.sin(start + sweep / 2) * sweep <= 0
                 ):
-                    raise ValueError("arc folds in radius or exceeds a semicircle")
+                    raise control_refusal("arc folds in radius or exceeds a semicircle", 'Arc', 'Shorten the arc or move its centre so it does not fold back in radius.', message='An arc folds back in radius or covers more than half a circle.')
 
     def arc(self, index):
         segment = self.segments[index]
@@ -132,7 +134,7 @@ class SourceContour:
             math.hypot(b.r_mm - cr, b.z_mm - cz),
         )
         if ra <= 1e-9 or abs(ra - rb) > 1e-9 * max(1, ra):
-            raise ValueError("arc endpoints must lie on the same nonzero circle")
+            raise control_refusal("arc endpoints must lie on the same nonzero circle", 'Arc centre', 'Move Arc centre so both endpoints lie on the same circle.', message='The arc endpoints are not on the same nonzero circle.')
         start = math.atan2(a.z_mm - cz, a.r_mm - cr)
         end = math.atan2(b.z_mm - cz, b.r_mm - cr)
         sweep = (end - start) % (2 * math.pi)
@@ -221,13 +223,13 @@ class ContourDrive:
             self, "weights", tuple((k, float(v)) for k, v in self.weights)
         )
         if self.motion not in {"normal", "axial"}:
-            raise ValueError("motion must be normal or axial")
+            raise control_refusal("motion must be normal or axial", 'Motion', 'Choose Normal or Axial under Motion.', message='The source motion is unavailable.')
         if len(dict(self.weights)) != len(self.weights) or not self.weights:
             raise ValueError("weights must have unique patch IDs")
         for key, value in self.weights:
             _id(key)
             if not math.isfinite(value):
-                raise ValueError("patch weights must be finite")
+                raise control_refusal("patch weights must be finite", 'Patch weights', 'Enter a finite Weight for each moving patch.', message='A patch weight is not a finite number.')
 
     def validate(self, contour):
         if set(dict(self.weights)) != {
@@ -269,13 +271,13 @@ def dome(
             land_width_mm,
         )
     ):
-        raise ValueError("preset dimensions must be finite")
+        raise control_refusal("preset dimensions must be finite", 'Source dimensions', 'Enter finite numbers in the source dimensions.', message='A source dimension is not a finite number.')
     if (
         radius_mm <= 0
         or not 0 < height_mm <= radius_mm
         or min(surround_width_mm, land_width_mm) < 0
     ):
-        raise ValueError("invalid dome dimensions")
+        raise control_refusal("invalid dome dimensions", 'Dome dimensions', 'Set Radius above zero and Height above zero and no greater than Radius; keep Surround width and Land width nonnegative.', message='Dome dimensions cannot form a spherical cap.')
     center_z = (height_mm**2 - radius_mm**2) / (2 * height_mm)
     points = [
         ContourPoint("pole", 0, height_mm),
@@ -316,7 +318,7 @@ def cone(
         or not 0 < cap_radius_mm < radius_mm
         or depth_mm < 0
     ):
-        raise ValueError("invalid independent cone dimensions")
+        raise control_refusal("invalid independent cone dimensions", 'Cone dimensions', 'Set Cap radius above zero and below Radius, and set Depth to zero or more.', message='Cone dimensions cannot form this cone and cap.')
     cap = dome(cap_radius_mm, cap_height_mm)
     points = [
         ContourPoint("pole", 0, cap_height_mm - depth_mm),
@@ -345,7 +347,7 @@ def _finish(points, segments, width, depth, land):
         or (width == 0 and depth != 0)
         or abs(depth) > width / 2
     ):
-        raise ValueError("invalid surround or land dimensions")
+        raise control_refusal("invalid surround or land dimensions", 'Surround dimensions', 'Set Surround width and Land width to zero or more, and enter a finite Surround depth.', message='The surround or land dimensions are invalid.')
     if width:
         a = points[-1]
         points.append(ContourPoint("surround.rim", a.r_mm + width, 0))

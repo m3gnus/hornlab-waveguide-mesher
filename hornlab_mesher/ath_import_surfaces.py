@@ -3,6 +3,8 @@
 The authored grid is the authority: its chord angles, not analytic derivatives
 or a refined sampling grid, determine both the lip and the rear rings.
 """
+from .errors import UserRefusal
+
 from dataclasses import dataclass
 import math
 import numpy as np
@@ -150,6 +152,8 @@ def resolve(config, params, formula, mode, allow_large_mesh):
     try:
         data = build_point_grid_arrays(params)
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from exc
     inner, normals = data["inner_grid"], data["ath_normals"]
     outer, apex, selected = None, None, []
@@ -159,6 +163,8 @@ def resolve(config, params, formula, mode, allow_large_mesh):
                 params.get("athRearFrontOffset", 40), params.get("athRearStep", 25),
                 profile_zero_z=data.get("ath_profile_zero_z"), closed=data["full_circle"])
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     mesh = _section(config, "mesh")
     if _mesh_surface_fit(mesh) == "approximate":

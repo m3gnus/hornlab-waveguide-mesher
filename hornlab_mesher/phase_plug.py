@@ -4,6 +4,8 @@ import math
 from dataclasses import asdict, dataclass
 from urllib.parse import quote
 
+from .errors import control_refusal
+
 FEATURE = "native-phase-plug-passages-v1"
 
 
@@ -32,18 +34,18 @@ class PhasePlug:
                 continue
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError("passive dimensions must be finite numbers")
+                raise control_refusal("passive dimensions must be finite numbers", 'Phase plug dimensions', 'Enter finite phase plug positions and radii.', message='A phase plug dimension is not finite.')
             object.__setattr__(self, name, float(value) if value else 0.0)
         if self.z1_mm - self.z0_mm <= 0.1:
-            raise ValueError("passive body length must exceed 0.1 mm")
+            raise control_refusal("passive body length must exceed 0.1 mm", 'Phase plug length', 'Move its end planes more than 0.1 mm apart.', message='The phase plug is too short.')
         if min(self.inner0_mm, self.inner1_mm) < 0:
-            raise ValueError("passive inner radii cannot be negative")
+            raise control_refusal("passive inner radii cannot be negative", 'Phase plug inner radius', 'Enter nonnegative Inner radii.', message='A phase plug inner radius is negative.')
         if (self.inner0_mm == 0) != (self.inner1_mm == 0):
-            raise ValueError("central and annular topology cannot change along a body")
+            raise control_refusal("central and annular topology cannot change along a body", 'Phase plug inner radius', 'Use zero at both Inner radii for a solid body, or positive values at both ends for an annular body.', message='The phase plug changes between solid and annular along its length.')
         if min(self.outer0_mm - self.inner0_mm, self.outer1_mm - self.inner1_mm) <= 0.1:
-            raise ValueError("passive thickness must exceed 0.1 mm")
+            raise control_refusal("passive thickness must exceed 0.1 mm", 'Phase plug thickness', 'Increase Outer radius or reduce Inner radius to leave more than 0.1 mm thickness at both ends.', message='The phase plug wall is too thin.')
         if self.inner0_mm and min(self.inner0_mm, self.inner1_mm) <= 0.1:
-            raise ValueError("annular inner passage radius must exceed 0.1 mm")
+            raise control_refusal("annular inner passage radius must exceed 0.1 mm", 'Phase plug inner radius', 'Increase both Inner radii above 0.1 mm.', message='The phase plug inner passage is too narrow.')
 
     def to_dict(self):
         return asdict(self)
@@ -146,7 +148,7 @@ def validate_passages(assembly):
         if assembly.horn_wall is not None else gap / math.sqrt(
             1 + max(abs(slope), abs(outer_slope)) ** 2))
     if min(clearances.values()) <= 0.1:
-        raise ValueError("every phase-plug passage must clear by more than 0.1 mm")
+        raise control_refusal("every phase-plug passage must clear by more than 0.1 mm", 'Phase plug passages', 'Change the phase plug radii or positions to leave more than 0.1 mm in each passage.', message='Two phase plug surfaces are too close together.')
     return clearances
 
 

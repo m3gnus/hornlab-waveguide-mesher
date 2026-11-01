@@ -20,6 +20,9 @@ this module therefore remains cheap and does not load SciPy.
 
 from __future__ import annotations
 
+from .errors import control_refusal, profile_refusal
+
+
 import copy
 import json
 import math
@@ -389,7 +392,7 @@ class FreeformGeometry:
         thickness = float(wall_thickness_mm)
         limit = float(margin)
         if not math.isfinite(thickness) or thickness <= 0.0:
-            raise ValueError("FREEFORM wall thickness must be finite and > 0 mm")
+            raise control_refusal("FREEFORM wall thickness must be finite and > 0 mm", "Wall thickness", "Enter a positive finite Wall thickness.", message="Wall thickness must be greater than zero.")
         if not math.isfinite(limit) or not (0.0 < limit < 1.0):
             raise ValueError("FREEFORM shell curvature margin must lie in (0, 1)")
         cache_key = (thickness, limit)
@@ -543,11 +546,11 @@ def _finite_float(value: Any, field: str) -> float:
             raise TypeError("boolean values are not numeric profile controls")
         result = float(value)
     except (OverflowError, TypeError, ValueError) as exc:
-        raise ValueError(
+        raise profile_refusal(
             f"FREEFORM {field} must be a finite number, got {value!r}"
         ) from exc
     if not math.isfinite(result):
-        raise ValueError(f"FREEFORM {field} must be finite, got {value!r}")
+        raise profile_refusal(f"FREEFORM {field} must be finite, got {value!r}")
     return result
 
 
@@ -610,7 +613,7 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
                 raise ValueError(f"FREEFORM {label}.angleOutDeg is only allowed on interior corners")
             angle_out = _finite_float(obj["angleOutDeg"], f"{label}.angleOutDeg")
             if not -90 < angle_out < 90:
-                raise ValueError(f"FREEFORM {label}.angleOutDeg must be in (-90, 90) degrees")
+                raise profile_refusal(f"FREEFORM {label}.angleOutDeg must be in (-90, 90) degrees")
         angles_out.append(angle_out)
         for key, values, illegal in (("handleIn", handles_in, index == 0),
                                      ("handleOut", handles_out, index == len(points) - 1)):
@@ -627,11 +630,11 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
             hi, ho = np.asarray(handles_in[-1]), np.asarray(handles_out[-1])
             ni, no = np.linalg.norm(hi), np.linalg.norm(ho)
             if ni == 0 or no == 0:
-                raise ValueError(f"FREEFORM {label} smooth handles must be nonzero, collinear and opposite")
+                raise profile_refusal(f"FREEFORM {label} smooth handles must be nonzero, collinear and opposite")
             hi, ho = hi / ni, ho / no
             deviation = math.atan2(abs(float(hi[0]*ho[1]-hi[1]*ho[0])), -float(hi @ ho))
             if deviation > 1e-9:
-                raise ValueError(f"FREEFORM {label} smooth handles must be collinear and opposite within 1e-9 rad")
+                raise profile_refusal(f"FREEFORM {label} smooth handles must be collinear and opposite within 1e-9 rad")
         if isinstance(row, Mapping):
             if "z" not in row or "r" not in row:
                 raise ValueError(f"FREEFORM {label} requires z and r")
@@ -661,18 +664,14 @@ def _parse_anchors(profile: Mapping[str, Any], plane: str) -> _ParsedAnchors:
             )
             if not angle_allowed:
                 anchor_kind = "endpoint" if is_endpoint else "interior anchor"
-                raise ValueError(
-                    f"FREEFORM profile{plane}.points[{index}].angleDeg must be in "
+                raise profile_refusal(f"FREEFORM profile{plane}.points[{index}].angleDeg must be in "
                     f"{lower_bracket}-90, 90{upper_bracket} degrees for an "
-                    f"{anchor_kind}, got {angle:g}"
-                )
+                    f"{anchor_kind}, got {angle:g}")
             angles_deg[index] = angle
     if np.any(anchors[:, 1] <= 0.0):
-        raise ValueError(f"FREEFORM profile{plane} anchor radii must all be > 0 mm")
+        raise profile_refusal(f"FREEFORM profile{plane} anchor radii must all be > 0 mm")
     if np.any(np.diff(anchors[:, 0]) <= 0.0):
-        raise ValueError(
-            f"FREEFORM profile{plane} anchor z values must be strictly increasing"
-        )
+        raise profile_refusal(f"FREEFORM profile{plane} anchor z values must be strictly increasing")
     return _ParsedAnchors(anchors, angles_deg, tuple(joins), tuple(angles_out),
                           tuple(handles_in), tuple(handles_out))
 
@@ -705,10 +704,8 @@ def _parse_endpoint_values(
                 default = math.degrees(math.atan2(chord[1], chord[0]))
             angle = _finite_float(profile.get(field_name, default), f"profile{plane}.{field_name}")
             if not -90.0 <= angle <= 90.0:
-                raise ValueError(
-                    f"FREEFORM profile{plane}.{field_name} must be in [-90, 90] degrees, "
-                    f"got {angle:g}"
-                )
+                raise profile_refusal(f"FREEFORM profile{plane}.{field_name} must be in [-90, 90] degrees, "
+                    f"got {angle:g}")
         effective.append(angle)
     return effective[0], effective[1]
 
@@ -864,7 +861,7 @@ def _plane_spline_violations(
 def _validate_plane_spline(plane: _PlaneSpline) -> None:
     violations = _plane_spline_violations(plane.name, plane.anchors, plane.spline)
     if violations:
-        raise ValueError(violations[0].message)
+        raise profile_refusal(violations[0].message)
 
 
 def _build_plane_spline(
@@ -955,7 +952,7 @@ def _build_plane_spline(
         violations = violations_for(speed_factors)
 
     if violations:
-        raise ValueError(violations[0].message)
+        raise profile_refusal(violations[0].message)
 
     # Recover each handle independently after the coupled reduction.  Every
     # retained lower bound is globally feasible, and 24 bisections resolve f
@@ -1214,7 +1211,7 @@ def _resolve_plane(
 
     def refuse(failure: _SplineViolation) -> None:
         z0, z1 = anchors[failure.segment:failure.segment+2, 0]
-        raise ValueError(f"FREEFORM profile{name} span {failure.segment} "
+        raise profile_refusal(f"FREEFORM profile{name} span {failure.segment} "
                          f"z=[{z0:g}, {z1:g}] mm: " + failure.message)
 
     minimum_failures: dict[int, _SplineViolation] = {}
@@ -1316,7 +1313,7 @@ def _resolve_plane(
         if failure.overshoot and np.any(explicit[failure.segment]):
             continue
         z0, z1 = anchors[failure.segment:failure.segment+2, 0]
-        raise ValueError(f"FREEFORM profile{name} span {failure.segment} "
+        raise profile_refusal(f"FREEFORM profile{name} span {failure.segment} "
                          f"z=[{z0:g}, {z1:g}] mm: " + failure.message)
     plane.beziers.setflags(write=False)
     return plane
@@ -1338,9 +1335,9 @@ def freeform_insert_anchor(
     original = _resolve_plane("H", parsed, *endpoints, force_extended=True)
     z = _finite_float(z, "insert z")
     if z <= parsed.points[0, 0] or z >= parsed.points[-1, 0] or np.any(parsed.points[:, 0] == z):
-        raise ValueError("FREEFORM insert z must be strictly inside a span, not on an anchor")
+        raise control_refusal("FREEFORM insert z must be strictly inside a span, not on an anchor", "Insert anchor", "Choose a point between two existing anchors.", message="The insertion point lies outside a span or on an existing anchor.")
     if len(parsed.points) == 64:
-        raise ValueError("FREEFORM insertion would exceed 64 anchors")
+        raise control_refusal("FREEFORM insertion would exceed 64 anchors", "Profile anchors", "Remove an anchor before inserting another.", message="This profile already has 64 anchors.")
     span = int(_plane_span_indices(original, np.asarray(z)))
     controls = _plane_beziers(original)
     s = float(_bezier_parameters_at_z(controls[span:span+1], np.asarray([z]))[0])
@@ -1635,10 +1632,8 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
                 f"crossSections[{index}].exponent",
             )
             if not (2.0 <= exponent <= 16.0):
-                raise ValueError(
-                    f"FREEFORM crossSections[{index}].exponent must be in [2, 16], "
-                    f"got {exponent:g}"
-                )
+                raise profile_refusal(f"FREEFORM crossSections[{index}].exponent must be in [2, 16], "
+                    f"got {exponent:g}")
             station["exponent"] = exponent
         elif shape == "rounded_rectangle":
             if "cornerRadiusMm" not in raw_station:
@@ -1651,28 +1646,22 @@ def _normalise_stations(value: Any) -> list[dict[str, Any]]:
                 f"crossSections[{index}].cornerRadiusMm",
             )
             if corner_radius <= 0.0:
-                raise ValueError(
-                    f"FREEFORM crossSections[{index}].cornerRadiusMm must be > 0 mm, "
-                    f"got {corner_radius:g}"
-                )
+                raise profile_refusal(f"FREEFORM crossSections[{index}].cornerRadiusMm must be > 0 mm, "
+                    f"got {corner_radius:g}")
             station["cornerRadiusMm"] = corner_radius
         stations.append(station)
 
     if stations[0]["t"] != 0.0:
-        raise ValueError("FREEFORM crossSections first station must have t == 0")
+        raise profile_refusal("FREEFORM crossSections first station must have t == 0")
     if stations[0]["shape"] != "ellipse":
-        raise ValueError(
-            "FREEFORM crossSections first station shape must be circle or ellipse"
-        )
+        raise profile_refusal("FREEFORM crossSections first station shape must be circle or ellipse")
     if stations[-1]["t"] != 1.0:
-        raise ValueError("FREEFORM crossSections last station must have t == 1")
+        raise profile_refusal("FREEFORM crossSections last station must have t == 1")
     if any(
         float(stations[index + 1]["t"]) <= float(stations[index]["t"])
         for index in range(len(stations) - 1)
     ):
-        raise ValueError(
-            "FREEFORM crossSections station t values must be strictly increasing"
-        )
+        raise profile_refusal("FREEFORM crossSections station t values must be strictly increasing")
     return stations
 
 
@@ -1955,14 +1944,10 @@ def validate_outer_offset_grid(
                     detail = "degenerate inner and outer normals"
                 else:
                     detail = f"a degenerate {'inner' if inner_bad else 'outer'} normal"
-                raise ValueError(
-                    f"{label} generated outer offset grid has {detail} near "
-                    f"azimuth row {i}, axial interval {ring}"
-                )
-            raise ValueError(
-                f"{label} generated outer offset grid has a normal flip "
-                f"near azimuth row {i}, axial interval {ring}"
-            )
+                raise control_refusal(f"{label} generated outer offset grid has {detail} near "
+                    f"azimuth row {i}, axial interval {ring}", "Profile", "Adjust the local profile so nearby sections remain distinct.", message="The inner or outer surface collapses in part.")
+            raise control_refusal(f"{label} generated outer offset grid has a normal flip "
+                f"near azimuth row {i}, axial interval {ring}", "Wall thickness", "Reduce Wall thickness, soften the profile bend, or choose Bare shell in Mounting.", message="The outer wall folds over itself at a tight bend of the profile.")
 
     # Shared-z FREEFORM cannot hide a non-local axial overlap in Cartesian z;
     # checking every generated meridian in (z, radius) catches offset rollback.
@@ -1978,10 +1963,8 @@ def validate_outer_offset_grid(
     cleared = _polylines_cannot_self_intersect(meridians, closed=False)
     for i in np.flatnonzero(~cleared):
         if _polyline_self_intersects_2d(meridians[i], closed=False):
-            raise ValueError(
-                f"{label} generated outer offset grid self-intersects "
-                f"near azimuth row {i}"
-            )
+            raise control_refusal(f"{label} generated outer offset grid self-intersects "
+                f"near azimuth row {i}", "Wall thickness", "Reduce Wall thickness, soften the profile bend, or choose Bare shell in Mounting.", message="The outer wall folds over itself at a tight bend of the profile.")
 
     # Each input ring is star-shaped about the axis but need not be convex (a
     # rectangle morph dents its flat sides). Its outward offset must still not
@@ -1991,10 +1974,8 @@ def validate_outer_offset_grid(
     cleared = _polylines_cannot_self_intersect(rings, closed=full_circle)
     for j in np.flatnonzero(~cleared):
         if _polyline_self_intersects_2d(rings[j], closed=full_circle):
-            raise ValueError(
-                f"{label} generated outer offset grid self-intersects "
-                f"on axial ring {j}"
-            )
+            raise control_refusal(f"{label} generated outer offset grid self-intersects "
+                f"on axial ring {j}", "Wall thickness", "Reduce Wall thickness, soften the profile bend, or choose Bare shell in Mounting.", message="The outer wall folds over itself at a tight bend of the profile.")
 
 
 def _smootherstep(value: Any) -> Any:
@@ -2185,10 +2166,8 @@ def _validate_station_corner_radii(geometry: FreeformGeometry) -> None:
             radius, limit, rel_tol=relative_tolerance, abs_tol=0.0
         )
         if below_lower or above_upper:
-            raise ValueError(
-                f"FREEFORM crossSections[{index}].cornerRadiusMm must be in "
-                f"[{lower:g}, {limit:g}] mm at station t={t:g}, got {radius:g} mm"
-            )
+            raise profile_refusal(f"FREEFORM crossSections[{index}].cornerRadiusMm must be in "
+                f"[{lower:g}, {limit:g}] mm at station t={t:g}, got {radius:g} mm")
 
         active_t, active_z, weights, limits = _station_corner_radius_samples(
             geometry, index
@@ -2202,13 +2181,11 @@ def _validate_station_corner_radii(geometry: FreeformGeometry) -> None:
         feasible[constrained] = limits[constrained] / weights[constrained]
         binding_index = int(np.argmin(feasible))
         max_feasible = float(feasible[binding_index])
-        raise ValueError(
-            f"FREEFORM crossSections[{index}].cornerRadiusMm={radius:g} mm exceeds "
+        raise profile_refusal(f"FREEFORM crossSections[{index}].cornerRadiusMm={radius:g} mm exceeds "
             f"the weight-aware local limit at binding t={float(active_t[binding_index]):g}, "
             f"z={float(active_z[binding_index]):g} mm (local limit "
             f"{float(limits[binding_index]):g} mm); maximum feasible cornerRadiusMm "
-            f"for this station is {max_feasible:g} mm"
-        )
+            f"for this station is {max_feasible:g} mm")
 
 
 def _geometry_with_station_corner(
@@ -2438,24 +2415,18 @@ def _build_freeform_geometry(
         rel_tol=0.0,
         abs_tol=z_tolerance,
     ):
-        raise ValueError(
-            "FREEFORM profileH and profileV must share the same first anchor z"
-        )
+        raise control_refusal("FREEFORM profileH and profileV must share the same first anchor z", 'Profile anchors', 'Align the first anchors of Horizontal profile and Vertical profile.', message='Horizontal and Vertical profiles start at different positions.')
     if not math.isclose(
         float(anchors_h[-1, 0]),
         float(anchors_v[-1, 0]),
         rel_tol=0.0,
         abs_tol=z_tolerance,
     ):
-        raise ValueError(
-            "FREEFORM profileH and profileV must share the same last anchor z"
-        )
+        raise control_refusal("FREEFORM profileH and profileV must share the same last anchor z", 'Profile anchors', 'Align the last anchors of Horizontal profile and Vertical profile.', message='Horizontal and Vertical profiles end at different positions.')
     throat_difference = abs(float(anchors_h[0, 1] - anchors_v[0, 1]))
     if throat_difference > 1.0e-6:
-        raise ValueError(
-            "FREEFORM profileH and profileV throat radii must be equal within 1e-6 mm "
-            f"(difference is {throat_difference:g} mm)"
-        )
+        raise control_refusal("FREEFORM profileH and profileV throat radii must be equal within 1e-6 mm "
+            f"(difference is {throat_difference:g} mm)", 'Throat radius', 'Use the same Throat radius in both profiles.', message='Horizontal and Vertical profiles have different throat radii.')
 
     default_throat_angle = _finite_float(params.get("a0", 15.5), "a0")
     endpoint_h = _parse_endpoint_values(profile_h, parsed_h, "H", default_throat_angle)
@@ -2525,8 +2496,8 @@ def _build_freeform_geometry(
     cuts = freeform_corner_z(geometry, interior=True)
     for left, right in zip(cuts[:-1], cuts[1:]):
         if right - left < MIN_INTERIOR_CORNER_SPACING_MM:
-            raise ValueError(f"FREEFORM interior corners z={left:g} mm and z={right:g} mm "
-                             f"must be at least {MIN_INTERIOR_CORNER_SPACING_MM:g} mm apart")
+            raise control_refusal(f"FREEFORM interior corners z={left:g} mm and z={right:g} mm "
+                             f"must be at least {MIN_INTERIOR_CORNER_SPACING_MM:g} mm apart", 'Profile anchors', 'Move the corner anchors farther apart in the profile.', message='Two interior corners are too close together.')
     _validate_station_corner_radii(geometry)
 
     convexity_samples = _convexity_ingest_samples(stations)
@@ -2550,13 +2521,11 @@ def _build_freeform_geometry(
             # guards. What still has to hold is that positive radius.
             collapsed_t = _first_non_positive_radius_t(geometry, convexity_samples)
             if collapsed_t is not None:
-                raise ValueError(
-                    "FREEFORM morph to the rectangle target collapses the outline "
+                raise control_refusal("FREEFORM morph to the rectangle target collapses the outline "
                     f"through the axis near t={collapsed_t:g}; reduce how far the "
                     "target departs from the drawn mouth, or set "
                     "morphAllowShrinkage to 0 so the target cannot be smaller "
-                    "than the mouth"
-                )
+                    "than the mouth", 'Target shape', 'Move Target width and Target height closer to the drawn mouth, or turn Allow shrinkage off.', message='The rectangle morph collapses the outline through the axis.')
             # A sharp corner cannot be sampled on top of a rounded-rectangle
             # station: the corner-tangency azimuths the station pins jump to
             # the target's vertex at the mouth ring, and the acoustic fit
@@ -2568,20 +2537,16 @@ def _build_freeform_geometry(
             if sharp_target and any(
                 station["shape"] == "rounded_rectangle" for station in stations
             ):
-                raise ValueError(
-                    "FREEFORM rounded-rectangle crossSections stations cannot be "
+                raise control_refusal("FREEFORM rounded-rectangle crossSections stations cannot be "
                     "combined with a sharp rectangle morph target; use ellipse "
                     "or circle stations, or give the morph a corner radius "
-                    "(morphCorner > 0)"
-                )
+                    "(morphCorner > 0)", 'Target shape', 'Increase Morph corner radius, or choose circle or ellipse in Cross sections.', message='Rounded rectangle cross sections cannot morph to a sharp rectangle.')
             geometry._nonconvex_rect_morph = True
         elif morph_induced:
             target_name = {2: "circle", 3: "superellipse"}[geometry._morph_target]
-            raise ValueError(
-                f"FREEFORM morph to the {target_name} target produces a non-convex "
+            raise control_refusal(f"FREEFORM morph to the {target_name} target produces a non-convex "
                 f"outline near t={offending_t:g}; reduce how far the target "
-                "departs from the drawn mouth"
-            )
+                "departs from the drawn mouth", 'Target shape', 'Move Target width and Target height closer to the drawn mouth.', message='The morph produces an outline that bends inward.')
         else:
             diagnostic_geometry = geometry
             if unmorphed_violations:
@@ -2591,11 +2556,9 @@ def _build_freeform_geometry(
             corner_hint = _minimum_feasible_corner_radius_hint(
                 diagnostic_geometry, convexity_samples, offending_t
             )
-            raise ValueError(
-                f"FREEFORM crossSections span {span} produces a non-convex outline "
+            raise control_refusal(f"FREEFORM crossSections span {span} produces a non-convex outline "
                 f"near t={offending_t:g}; adjust its shape, aspect, or corner setting"
-                f"{corner_hint}"
-            )
+                f"{corner_hint}", 'Cross sections', 'Adjust Shape, Exponent or Corner radius in the named Cross sections rows.', message='A cross section outline bends inward between its rows.')
 
     for plane in (geometry._profile_h, geometry._profile_v):
         for array in (
@@ -2710,11 +2673,9 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
         and source_radius > 0.0
         and source_radius < scaled_throat_radius
     ):
-        raise ValueError(
-            "FREEFORM rounded-cap sourceRadius must be at least the scaled throat "
+        raise control_refusal("FREEFORM rounded-cap sourceRadius must be at least the scaled throat "
             f"radius ({source_radius:g} mm requested, scaled throat radius "
-            f"{scaled_throat_radius:g} mm from {throat_radius:g} mm at scale {scale:g})"
-        )
+            f"{scaled_throat_radius:g} mm from {throat_radius:g} mm at scale {scale:g})", 'Source radius', 'Increase Source radius to at least the scaled Throat radius.', message='The rounded source radius is smaller than the scaled throat.')
 
     wall_thickness = float(eval_param(profile_params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(profile_params.get("encDepth") or 0.0)
@@ -2726,14 +2687,12 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
         )
         if not bool(report["ok"]):
             kappa_1, kappa_2 = report["principalCurvaturesPerMm"]
-            raise ValueError(
-                "FREEFORM outward wall offset fails the surface-curvature guard near "
+            raise control_refusal("FREEFORM outward wall offset fails the surface-curvature guard near "
                 f"t={float(report['offendingT']):.4f}, "
                 f"phi={float(report['offendingPhiDeg']):.2f} deg: "
                 "max(0, -wallThickness*kappa_i)="
                 f"{float(report['maxThicknessTimesPrincipalCurvature']):.3f} "
-                f">= margin=0.400 (kappa=[{kappa_1:.6g}, {kappa_2:.6g}] 1/mm)"
-            )
+                f">= margin=0.400 (kappa=[{kappa_1:.6g}, {kappa_2:.6g}] 1/mm)", 'Wall thickness', 'Reduce Wall thickness or soften the profile bend.', message='The wall is too thick for a tight bend in this profile.')
     return geometry
 
 
