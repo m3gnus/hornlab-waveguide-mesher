@@ -662,6 +662,12 @@ velocity direction.
 
 ## ATH Text Import Boundary
 
+Fresh external imports select `ath-2026-09a-v3`. Explicit saved v2 stamps and
+persisted v2 dictionaries keep `ath-2026-09a-v2` without migration. V3 inherits
+the v2 defaults below, and alone enables the ATH transform/sampling corrections
+in [ATH import controls](ath-import-controls.md). Switching an existing design
+to v3 is an explicit geometry change; loading it never switches the stamp.
+
 V2 ATH V2026-09a import defaults differ from native authoring: OSSE `a=45`,
 `a0=0`, `s=0.5`; R-OSSE `R=200`, `a=40`, `a0=0`, `r=0.25`, `m=0.9`,
 `b=0.4`, `q=3.5`. OSSE-block `r0` must be a literal signed decimal number,
@@ -693,7 +699,7 @@ Imported text mappings include:
   enclosure is rejected).
 - Geometry transforms: flat `Scale` (multiplies all linear geometry after
   profile evaluation), constant positive `Scale.Z` (overrides `Scale` on z
-  for v2 imports), and `Mesh.VerticalOffset` (+y translation after scale).
+  for v3 imports), and `Mesh.VerticalOffset` (+y translation after scale).
 - Profile: `Coverage.Angle`, `Throat.Angle`, `Throat.Diameter`,
   `Length`, `Term.n`, `Term.s`, `Term.q`, `Term.k`, `OS.k`,
   `Throat.Ext.Length`, `Throat.Ext.Angle`, `Slot.Length`, `Rot`, `OS.h`
@@ -704,7 +710,7 @@ Imported text mappings include:
   `Mesh.Quadrants`, `Mesh.ThroatResolution`, `Mesh.MouthResolution`,
   `Mesh.RearResolution`, `Mesh.SubdomainSlices` (shifted by one onto grid
   rings), `Mesh.InterfaceOffset`, `Mesh.InterfaceResolution`,
-  `Mesh.SamplingMode`, `Mesh.ZMapPoints`, and v2 `Mesh.ThroatExtSegments`
+  `Mesh.SamplingMode`, `Mesh.ZMapPoints`, and v3 `Mesh.ThroatExtSegments`
   (1–4096 extension intervals, default 10; the old `ThroatSegments` spelling
   is refused). See [ATH import controls](ath-import-controls.md).
 - `NAC`: a finite integer. Its presence suppresses the angular corner-budget
@@ -812,20 +818,22 @@ Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `FusionRotaryProfile = {}`, named enclosure plans, `Plan` inside
 `Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
 of the other formula. `Dim` inside `Mesh.Enclosure` is imported as the
-enclosure dimensions. V2 `Scale.Z` accepts positive finite constants and
+enclosure dimensions. V3 `Scale.Z` accepts positive finite constants and
 constant expressions, and overrides global `Scale` on the axial coordinate.
 A unit axial scale is reported as ignored only when global `Scale` is also
 one. Expressions referring to azimuth `p` remain refused, including those
 equal to one at `p = 0`; they must not silently become a constant scale.
-Saved v1/native text retains its earlier refusal. A fresh ATH OSSE file
+Saved v1/native text retains its earlier refusal. Saved v2 retains its unit
+scale no-op, including beside a nonunit global scale, and refuses active axial
+scaling. A fresh ATH OSSE file
 whose `Length` is a constant zero describes a source-only model; the importer
-refuses it by name. Saved WG text keeps its earlier parse. V2 OSSE and R-OSSE honour top-level `Rot` beside a profile block;
+refuses it by name. Saved WG text keeps its earlier parse. V2 OSSE and V3 OSSE/R-OSSE honour top-level `Rot` beside a profile block;
 ATH ignores in-block `Rot`, including an explicit zero, and the importer
 reports `OSSE.Rot` as unused. This rule is measured on V2025-12 and V2026-09a;
 saved v1/native text retains its authoring precedence. `Rot` inside an
 `R-OSSE` block, and `arcterm` or `trunc` at top level beside `R-OSSE`, are
 reported as ignored: ATH V2026-09a ignores them there and exports a
-byte-identical grid. Finite top-level R-OSSE rotation, including azimuth
+byte-identical grid. Under v3, finite top-level R-OSSE rotation, including azimuth
 expressions, rotates the body around the nominal throat join and leaves the
 extension straight. Other unverified top-level profile keys (`Throat.Diameter`,
 `Coverage.Angle`, `Length` beside `R-OSSE`) remain refused. A file with multiple profile blocks is refused, including
@@ -907,7 +915,7 @@ for its strict canonical inputs, physical domain, preview certificates and expor
 | `Mesh.RearShape.FrontOffset` | Finite nonnegative millimetres, default 40; requires RearShape 3. Stored as `mesh.athRearFrontOffset`. |
 | `Mesh.RearShape.Step` | Finite positive millimetres, default 25; requires RearShape 3. Stored as `mesh.athRearStep`. |
 
-Active lip/Opus data require the retained `ath-2026-09a-v2` import marker. They do not
+Active lip/Opus data require a retained v2 or v3 import marker. They do not
 map onto native `mesh.mouth_roundover_radius_mm`. Unknown Roundover members,
 R-OSSE lip, enclosure/infinite-baffle/CircSym compositions, and free-standing
 subdomain interfaces and `Mesh.SurfaceFit = approximate` are named refusals. RearShape 2/5, RearCubic, OpusRear,

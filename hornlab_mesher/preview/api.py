@@ -35,7 +35,7 @@ from numpy.typing import NDArray
 from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds, retain_ath_import_construction
 from ..builders.point_grid_freestanding import _restored_outer_throat_points
 from ..rear_compatibility import freestanding_rear_ring
-from ..text_import import uses_text_import_geometry
+from ..text_import import uses_text_import_geometry, uses_v3_text_import_geometry
 from ..profile_sampling import _outer_offset_shell
 from ..profiles import eval_param
 from ..viewport import build_viewport_geometry_from_config, _set_flush_viewport_ring
@@ -867,7 +867,8 @@ def build_preview_geometry(
             )
             from .source_cap import _source_geometry
 
-            source_geometry = _source_geometry(parsed_params, output["formula"], selected_inner)
+            source_params = parsed_params if uses_v3_text_import_geometry(parsed_params) else output["params"]
+            source_geometry = _source_geometry(source_params, output["formula"], selected_inner)
             throat_radius = float(np.mean(np.linalg.norm(source_ring[:, :2] - source_axis[:2], axis=1)))
             height = _source_cap_height(throat_radius, source_geometry)
             radius = _source_cap_radius(throat_radius, source_geometry)
@@ -886,7 +887,7 @@ def build_preview_geometry(
         while not polygon_source:
             cap_surface, cap_fidelity, source_details = _source_cap(
                 selected_inner,
-                parsed_params,
+                parsed_params if uses_v3_text_import_geometry(parsed_params) else output["params"],
                 output["formula"],
                 cap_intervals,
                 closed_phi=closed_phi,

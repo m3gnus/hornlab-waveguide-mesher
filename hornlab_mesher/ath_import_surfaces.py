@@ -12,8 +12,8 @@ from .geometry import PointGridHornGeometry
 
 def validate_combinations(params):
     """Refuse compositions awaiting measured ATH lip/rear witnesses."""
-    from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
-    if params.get(TEXT_IMPORT_VERSION_KEY) != TEXT_IMPORT_VERSION:
+    from .text_import import uses_v2_text_import_geometry
+    if not uses_v2_text_import_geometry(params):
         raise ValueError("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-09a-v2")
     for key, name, inactive in (("scale", "Scale", 1),
                                ("athAxialScale", "Scale.Z", 1),

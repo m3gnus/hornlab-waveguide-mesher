@@ -68,6 +68,7 @@ from .text_import import (
     ATH_DEFAULT_CORNER_SEGMENTS,
     uses_current_ath_axial_sampling,
     uses_v2_text_import_geometry,
+    uses_v3_text_import_geometry,
 )
 from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
@@ -478,7 +479,7 @@ def _validate_formula_specific_keys(
             raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
         return
 
-    names = (("L_mm", "L", "n", "s") if uses_v2_text_import_geometry(config)
+    names = (("L_mm", "L", "n", "s") if uses_v3_text_import_geometry(config)
              else ("L_mm", "L", "n", "s", "rot_deg", "rot"))
     if not stretch_is_inactive({key: _pick(profile, config, names=(key,), default=0)
                                 for key in ("s1", "s2")}):
@@ -930,6 +931,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     imported_geometry = uses_text_import_geometry(config)
     imported_defaults = _uses_import_geometry_defaults(config)
     v2_defaults = imported_defaults and uses_v2_text_import_geometry(config)
+    v3_defaults = imported_defaults and uses_v3_text_import_geometry(config)
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config)
     from .adapter_controls import configuration as controls_configuration
@@ -1309,8 +1311,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 common[key] = config[key]
     common.update(ath_controls)
     if "athAxialScale" in config:
-        if not v2_defaults:
-            raise ConfigError("Scale.Z requires current ATH import geometry")
+        if not v3_defaults:
+            raise ConfigError("Scale.Z requires ath-2026-09a-v3; explicitly reimport a copy with that stamp to change its geometry")
         axis = _numeric_param(config["athAxialScale"], name="Scale.Z")
         if not math.isfinite(axis) or axis <= 0:
             raise ConfigError("Scale.Z must be a positive finite constant")
@@ -1319,8 +1321,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         common["athAxialScale"] = axis
     ext_segments = _pick(mesh, config, names=("athThroatExtSegments",), default=None)
     if ext_segments is not None:
-        if not v2_defaults:
-            raise ConfigError("Mesh.ThroatExtSegments requires current ATH import geometry")
+        if not v3_defaults:
+            raise ConfigError("Mesh.ThroatExtSegments requires ath-2026-09a-v3; explicitly reimport a copy with that stamp to change its geometry")
         if formula == "OSSE" and not uses_current_ath_axial_sampling(config):
             raise ConfigError("Mesh.ThroatExtSegments requires the current ATH OSSE sampling rule")
         from .text_import import ath_throat_extension_segments
@@ -1450,7 +1452,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 "tmax": _scalar_or_expr(profile, config, names=("tmax",), default=1.0),
             }
         )
-        if v2_defaults and _has_any(profile, config, names=("rot_deg", "rot")):
+        if v3_defaults and _has_any(profile, config, names=("rot_deg", "rot")):
             common["rot"] = _scalar_or_expr(profile, config, names=("rot_deg", "rot"), default=0)
             if isinstance(common["rot"], (int, float)) and not math.isfinite(common["rot"]):
                 raise ConfigError("Rot must be finite")
@@ -1858,7 +1860,7 @@ def _source_auto_angle_deg(params: Mapping[str, Any], formula: str) -> float:
             return adapter.payload["exit_half_angle_deg"]
     if formula == "FREEFORM":
         return _freeform_source_auto_angle_deg(build_freeform_geometry(params).report())
-    if uses_v2_text_import_geometry(params) and (
+    if uses_v3_text_import_geometry(params) and (
             "athAxialScale" in params or "athThroatExtSegments" in params
             or (formula == "R-OSSE" and params.get("rot", 0) != 0)):
         # ATH fits the automatic wavefront to the authored first wall chord,

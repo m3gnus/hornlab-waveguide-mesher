@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from .freeform import build_freeform_geometry
 from .config_parser import ConfigError
 from .throat_stretch import canonical_stretch_params, stretch_coefficients, validate_stretch_composition
-from .text_import import uses_text_import_geometry, uses_v2_text_import_geometry, ath_throat_extension_segments
+from .text_import import uses_text_import_geometry, uses_v2_text_import_geometry, uses_v3_text_import_geometry, ath_throat_extension_segments
 from .profile_common import (
     _DEFAULTS,
     _lossless_key_value,
@@ -1024,7 +1024,7 @@ def calculate_rosse(
     # and the main curve/mouth are unchanged by it. The old code enlarged the
     # main throat instead (r0 + ext*tan), changing L and the mouth.
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
-    rot = eval_param(params.get("rot"), p, 0.0) if uses_v2_text_import_geometry(params) else 0.0
+    rot = eval_param(params.get("rot"), p, 0.0) if uses_v3_text_import_geometry(params) else 0.0
 
     if ext_len <= 0.0 and slot_len <= 0.0:
         x, y = _calculate_rosse_main(t, p, params)
@@ -1046,9 +1046,14 @@ def calculate_rosse(
             # ATH's last extension segment joins row 9 to the translated
             # body throat. Retain that straight physical segment when a
             # consumer subdivides the authored extension intervals.
-            segments = ath_throat_extension_segments(params)
-            progress = max(0.0, segments * axial_pos / ext_len - (segments - 1))
-            dx, dy = _rotate_meridian(layout.body_offset, 0.0, rot, 0.0, 0.0)
+            if uses_v3_text_import_geometry(params):
+                segments = ath_throat_extension_segments(params)
+                progress = max(0.0, segments * axial_pos / ext_len - (segments - 1))
+                dx, dy = _rotate_meridian(layout.body_offset, 0.0, rot, 0.0, 0.0)
+            else:
+                # Preserve V2's floating-point association as well as its curve.
+                progress = max(0.0, (axial_pos / ext_len - 0.9) / 0.1)
+                dx, dy = layout.body_offset, 0.0
             x += dx * progress
             y += dy * progress
         return x, y
@@ -1061,7 +1066,7 @@ def calculate_rosse(
     if uses_v2_text_import_geometry(params):
         main_t = max(0.0, main_t)
     x, y = _calculate_rosse_main(main_t, p, params)
-    x += ext_len + slot_len + layout.body_offset
+    x = x + ext_len + slot_len + layout.body_offset
     return _rotate_meridian(x, y, rot, ext_len, r0_base) if rot != 0 else (x, y)
 
 
@@ -1088,7 +1093,7 @@ def calculate_rosse_curve(
     if s1 != 0.0 and s2 != 0.0:
         _verify_rosse_stretch_junction(params, p, r0_base, ext_len, slot_len, ext_angle)
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
-    rot = eval_param(params.get("rot"), p, 0.0) if uses_v2_text_import_geometry(params) else 0.0
+    rot = eval_param(params.get("rot"), p, 0.0) if uses_v3_text_import_geometry(params) else 0.0
 
     if ext_len <= 0.0 and slot_len <= 0.0:
         x, y = _rosse_main_curve(t, _rosse_main_coefficients(p, params))
@@ -1112,9 +1117,13 @@ def calculate_rosse_curve(
     x[in_ext] = axial_pos[in_ext]
     y[in_ext] = r0_throat + axial_pos[in_ext] * math.tan(ext_angle)
     if layout.body_offset != 0.0:
-        segments = ath_throat_extension_segments(params)
-        progress = np.maximum(0.0, segments * axial_pos[in_ext] / ext_len - (segments - 1))
-        dx, dy = _rotate_meridian(layout.body_offset, 0.0, rot, 0.0, 0.0)
+        if uses_v3_text_import_geometry(params):
+            segments = ath_throat_extension_segments(params)
+            progress = np.maximum(0.0, segments * axial_pos[in_ext] / ext_len - (segments - 1))
+            dx, dy = _rotate_meridian(layout.body_offset, 0.0, rot, 0.0, 0.0)
+        else:
+            progress = np.maximum(0.0, (axial_pos[in_ext] / ext_len - 0.9) / 0.1)
+            dx, dy = layout.body_offset, 0.0
         x[in_ext] += dx * progress
         y[in_ext] += dy * progress
     x[in_slot] = axial_pos[in_slot]

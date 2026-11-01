@@ -1,0 +1,394 @@
+{
+  "base": "746c6b1ca6b8782d018d5b86b0f7c5e5cadca2bd",
+  "stamp": "ath-2026-09a-v2",
+  "equality": "exact float64 grid values and source angle/radius/height; no geometry tolerance",
+  "cases": [
+    {
+      "name": "OSSE-n9-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n9-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n9-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n9-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n12-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n12-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n12-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n12-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n20-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n20-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n20-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n20-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n30-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n30-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n30-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n30-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n37-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n37-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "OSSE-n37-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-n37-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n9-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n9-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n9-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n9-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n12-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n12-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n12-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n12-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n20-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n20-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n20-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n20-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n30-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n30-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n30-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n30-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n37-ext0-rot0",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n37-ext0-rot1",
+      "source_cap": [
+        6.0,
+        38.2670889340225,
+        0.20963111713216165
+      ]
+    },
+    {
+      "name": "R-OSSE-n37-ext1-rot0",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "R-OSSE-n37-ext1-rot1",
+      "source_cap": [
+        6.0,
+        36.76296907102844,
+        0.20139139114402838
+      ]
+    },
+    {
+      "name": "OSSE-unit-axis-global3",
+      "source_cap": [
+        6.0,
+        114.80126680206752,
+        0.6288933513964992
+      ]
+    }
+  ],
+  "sha256": {
+    "grids.npz": "85317e1bfb44838ccd8f685848b7da1b740235ba147afa8276caafd90c5f8984",
+    "OSSE-n12-ext0-rot0.cfg": "be2cce366dc38d7412526344f34912c6c69727793882ffaf33334bceed508a1b",
+    "OSSE-n12-ext0-rot1.cfg": "93fa35f7fef527a046dca75ff27a6dc950507ce61c2eadb9f33925d7e46ef3a4",
+    "OSSE-n12-ext1-rot0.cfg": "861465343fbabcfedc496fb79b428c074dc3004137e8b1c6ebe9ceac3e36c1da",
+    "OSSE-n12-ext1-rot1.cfg": "d22e3d8a1fd68c5a7679d495cb081073cff4afc5c0288f899b6a888112e63099",
+    "OSSE-n20-ext0-rot0.cfg": "9629cabf3900a0053278773afea3610b309a64b204db9281934f1c12a5614fbb",
+    "OSSE-n20-ext0-rot1.cfg": "40b423a2448b4e5a85ec5ca67f321f134b403f8e31b8977f1e3b8e7a35e71a30",
+    "OSSE-n20-ext1-rot0.cfg": "61d022104196afae7ce193e5c49c89cffbe033cf4bc6858b5b8e64477e237b50",
+    "OSSE-n20-ext1-rot1.cfg": "9160783e47bf014f6b65142b2a01cb248d9d4baeb9660cdd3da4916401907cbe",
+    "OSSE-n30-ext0-rot0.cfg": "1b57aa89480e54c0c6cbb5d57971101a523ccf9126504324fb454a9510054bb3",
+    "OSSE-n30-ext0-rot1.cfg": "3527d7732e0ba8a150158bf83d3788d0995834e63bb05fcd1f79e14da4e47274",
+    "OSSE-n30-ext1-rot0.cfg": "c8568487c338f13e8b1121db5f01d00dac5d8b556f9422b0af8ce227a6a64366",
+    "OSSE-n30-ext1-rot1.cfg": "933c4c5361c36f041070cbffe05d8d90435365a4f8827baed5781fc78c3e2ac9",
+    "OSSE-n37-ext0-rot0.cfg": "a207bc736fad82228c1cbe1e480dce4128dd1773cfe981660c6b80074de408c7",
+    "OSSE-n37-ext0-rot1.cfg": "fba7fc2841e0331ff11a51f7f9c229c322eb5c24b53330e29f9ae78cecd5e6e7",
+    "OSSE-n37-ext1-rot0.cfg": "37455c99f0f0a8a6be3cdea1c61c6dc146b453409af4ca545378a84ffecded7f",
+    "OSSE-n37-ext1-rot1.cfg": "a933ae3c60800d6afd7b75e262a5d0eee4294076e1643b166230eeff88b1b819",
+    "OSSE-n9-ext0-rot0.cfg": "14e7b4203717bb58fcef394e886b63984641ba8d1f4948b3fe77f7f5bf10c38f",
+    "OSSE-n9-ext0-rot1.cfg": "3259d59edd4f4338c95b4efd8f790dfc1f95e786e3e4d1861e26ec5bce7f4dab",
+    "OSSE-n9-ext1-rot0.cfg": "3bbd3c5e409981a1e9b846e8ed517aa1c015652d45eddf9da65b598563c4c75b",
+    "OSSE-n9-ext1-rot1.cfg": "b985d4ed1228e46591305a4d3378ac798fc397e1d9996a5b427057ea96bcba8e",
+    "OSSE-unit-axis-global3.cfg": "92360c5a379a05d88f952e27b115e2ba048b4dbdb12a649cb01b62ab630a8541",
+    "R-OSSE-n12-ext0-rot0.cfg": "b87eb266085bbf4bf6205dc8383abba0d5b4e92a3e32b1dfd73567bf05662498",
+    "R-OSSE-n12-ext0-rot1.cfg": "fc60355821e59b739c4e5ca96f7cb2ec3a4d776017d1da8c6d3fa84a235ddfcf",
+    "R-OSSE-n12-ext1-rot0.cfg": "b083f3b3acb7aad41f823653003ec94761a6f5e0b436aa9213175b6af4d8b4b0",
+    "R-OSSE-n12-ext1-rot1.cfg": "65c11a97c3619c2d1287e99ba76b74f17d84f636533639e06e0365145e76362e",
+    "R-OSSE-n20-ext0-rot0.cfg": "27f3689e66739728e1beff2be430f6ad6098949ad5d57a71cd54819d22b70397",
+    "R-OSSE-n20-ext0-rot1.cfg": "ca2d9c6000b1fc552d7a96ae67e76181f86bd2dec6505d276ae66973f3a8c50e",
+    "R-OSSE-n20-ext1-rot0.cfg": "8b3999bbb7fcb968ca14bb7a44cab2f1330d4ccfbae68f36772e672a51125ac4",
+    "R-OSSE-n20-ext1-rot1.cfg": "1d8cbf2b7d2361b308b14a7f860e7a385da07fd32e4069165631400b025344cc",
+    "R-OSSE-n30-ext0-rot0.cfg": "a485957e16a2ea503bc21c29b38e3cee906410fa93aec695966b65435bce97ed",
+    "R-OSSE-n30-ext0-rot1.cfg": "9ae0cf3a31c75496cbce7faab73459b1ca5066a2546bb23f12cd69bbbe25c915",
+    "R-OSSE-n30-ext1-rot0.cfg": "bdbc3aad56aa7fd91a34d3476ccb4911e3ad3fba3ae6bf48cc43076c1a3e92a5",
+    "R-OSSE-n30-ext1-rot1.cfg": "f00d6675a8ac81a098a7cce2e8a893ed2c32315c1e9aa5d920f0bb4696eb8889",
+    "R-OSSE-n37-ext0-rot0.cfg": "9961c27ed3b7eaaf6ebb417c3664c6f99c8e717eb36de318cad2cb117420a2fd",
+    "R-OSSE-n37-ext0-rot1.cfg": "4389eb4211ffe1e67953c8e3add9e57610c08e2d040f11990e98326b844e4ae5",
+    "R-OSSE-n37-ext1-rot0.cfg": "7c86d3601ecd2b2c200969ac672e932980afbeb1e06fda346603e3bca6d7bbec",
+    "R-OSSE-n37-ext1-rot1.cfg": "2ae673e2ced580e36a188ae27abb5db84fdb9473b133dbd25441b5c1e9c1282b",
+    "R-OSSE-n9-ext0-rot0.cfg": "3ef8c481c81a785e2799539fec63ae8bb19fa00df3239e612c4a0285bd141f7a",
+    "R-OSSE-n9-ext0-rot1.cfg": "d1281272b602158be0618889f6551529dcbc61469809dcfaf65b863742c47608",
+    "R-OSSE-n9-ext1-rot0.cfg": "ab0254e17c7382b93be870dae8e6d1a386ef290aa374331f45ac5a886d8ffb12",
+    "R-OSSE-n9-ext1-rot1.cfg": "b1651d73455147ea6e2a4b93e719e38e28e0157b148b2c69aa2a79176ab4b4d0",
+    "scalar-rosse.npz": "b5201b687f86a3f76f428c120907f3ba9ead48b85f18f86a4b3d36d67a6c82ed"
+  },
+  "scalar_rosse_params": {
+    "type": "R-OSSE",
+    "R": 150,
+    "r0": 12.7,
+    "a0": 15.5,
+    "a": 50,
+    "k": 1,
+    "q": 3.4,
+    "r": 0.4,
+    "b": 0.2,
+    "m": 0.85,
+    "throatExtLength": 10.3,
+    "slotLength": 12.7
+  }
+}

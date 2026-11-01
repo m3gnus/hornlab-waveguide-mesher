@@ -741,6 +741,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
         imported_geometry = text_uses_import_geometry(content)
         saved_geometry_version = text_geometry_version(content)
         v2_geometry = imported_geometry and saved_geometry_version != TEXT_IMPORT_V1
+        v3_geometry = imported_geometry and saved_geometry_version in (None, TEXT_IMPORT_VERSION)
         axial_rule, ath_version = ath_axial_sampling_rule(content) if imported_geometry and saved_geometry_version != TEXT_IMPORT_V1 else (None, None)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
@@ -828,7 +829,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
                 pass
         if unit_axial_scale:
             known_flat.add("Scale.Z")
-            if _maybe_number(flat.get("Scale", 1)) == 1:
+            if not v3_geometry or _maybe_number(flat.get("Scale", 1)) == 1:
                 _report_ignored_ath_item(
                     "Scale.Z", "a unit axial scale does not change the geometry",
                     value=flat["Scale.Z"],
@@ -836,7 +837,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             else:
                 # An explicit unit axis still overrides a nonunit global Scale.
                 axial_scale = 1.0
-        elif "Scale.Z" in flat:
+        elif "Scale.Z" in flat and v3_geometry:
             try:
                 axial_scale = _eval_constant_param(flat["Scale.Z"])
                 if not np.isfinite(axial_scale) or axial_scale <= 0:
@@ -860,7 +861,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # L and ignores a top-level Length beside it: the exported grid is
             # byte-identical with and without the key (ath.exe V2026-08c).
             known_flat.update(("Length", "Rot"))
-        elif v2_geometry or _maybe_number(flat.get("Rot")) == 0:
+        elif v3_geometry or _maybe_number(flat.get("Rot")) == 0:
             # Current imports have measured top-level R-OSSE rotation. Older
             # contracts still admit only an explicit inactive numeric zero.
             known_flat.add("Rot")
@@ -1022,7 +1023,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             profile.setdefault("s", 0.5)
 
     if v2_geometry and formula == "R-OSSE":
-        if "Rot" in flat and _maybe_number(flat["Rot"]) != 0:
+        if v3_geometry and "Rot" in flat and _maybe_number(flat["Rot"]) != 0:
             profile.update(mapped(flat, (("Rot", "rot"),)))
         for key, value in {"R": 200, "a": 40, "a0": 0, "r": .25, "m": .9, "b": .4, "q": 3.5}.items():
             profile.setdefault(key, value)
@@ -1059,8 +1060,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
         ),
     )
     if "ThroatExtSegments" in mesh_items:
-        if not v2_geometry:
-            raise ConfigError("Mesh.ThroatExtSegments requires current ATH import geometry")
+        if not v3_geometry:
+            raise ConfigError("Mesh.ThroatExtSegments requires ath-2026-09a-v3; keep the saved design unchanged or explicitly reimport a copy with the v3 stamp")
         if formula == "OSSE" and axial_rule == ATH_AXIAL_LEGACY:
             raise ConfigError("Mesh.ThroatExtSegments requires the current ATH OSSE sampling rule")
         try:

@@ -6,7 +6,8 @@ from typing import Any, Mapping
 
 TEXT_IMPORT_VERSION_KEY = "_textImportVersion"
 TEXT_IMPORT_V1 = "ath-2026-08c-v1"
-TEXT_IMPORT_VERSION = "ath-2026-09a-v2"
+TEXT_IMPORT_V2 = "ath-2026-09a-v2"
+TEXT_IMPORT_VERSION = "ath-2026-09a-v3"
 NATIVE_GEOMETRY_VERSION = "native-v1"
 GEOMETRY_STAMP_LABEL = "Waveguide Generator geometry-interpretation:"
 ATH_AXIAL_RULE_KEY = "_athAxialSamplingRule"
@@ -57,7 +58,13 @@ def uses_current_ath_axial_sampling(values: Mapping[str, Any]) -> bool:
 
 
 def uses_v2_text_import_geometry(values: Mapping[str, Any]) -> bool:
-    """Select current import geometry independently of the ATH sampling echo."""
+    """V2 geometry rules inherited by V3, independent of the sampling echo."""
+    return (uses_text_import_geometry(values)
+            and values.get(TEXT_IMPORT_VERSION_KEY) in (TEXT_IMPORT_V2, TEXT_IMPORT_VERSION))
+
+
+def uses_v3_text_import_geometry(values: Mapping[str, Any]) -> bool:
+    """Only V3 selects corrections that move previously saved V2 designs."""
     return (uses_text_import_geometry(values)
             and values.get(TEXT_IMPORT_VERSION_KEY) == TEXT_IMPORT_VERSION)
 
@@ -105,7 +112,7 @@ def text_geometry_version(content: str) -> str | None:
     if len(versions) > 1:
         raise ValueError("conflicting geometry interpretation stamps")
     version = next(iter(versions), None)
-    if version not in (None, NATIVE_GEOMETRY_VERSION, TEXT_IMPORT_V1, TEXT_IMPORT_VERSION):
+    if version not in (None, NATIVE_GEOMETRY_VERSION, TEXT_IMPORT_V1, TEXT_IMPORT_V2, TEXT_IMPORT_VERSION):
         raise ValueError(f"unsupported geometry interpretation {version!r}")
     return version
 
@@ -114,7 +121,7 @@ def text_uses_import_geometry(content: str) -> bool:
     """Select explicit saved interpretation or the historical dialect rule."""
     version = text_geometry_version(content)
     if version is not None:
-        return version in (TEXT_IMPORT_V1, TEXT_IMPORT_VERSION)
+        return version in (TEXT_IMPORT_V1, TEXT_IMPORT_V2, TEXT_IMPORT_VERSION)
     return re.search(r";\s*(?:Parameter|MWG) config", content, re.IGNORECASE) is None
 
 
@@ -123,7 +130,7 @@ def uses_text_import_geometry(values: Mapping[str, Any]) -> bool:
     version = values.get(TEXT_IMPORT_VERSION_KEY)
     if version is None:
         return False
-    if version not in (TEXT_IMPORT_V1, TEXT_IMPORT_VERSION):
+    if version not in (TEXT_IMPORT_V1, TEXT_IMPORT_V2, TEXT_IMPORT_VERSION):
         raise ValueError(f"unsupported text import geometry version {version!r}")
     rule = values.get(ATH_AXIAL_RULE_KEY)
     if rule not in (None, ATH_AXIAL_LEGACY, ATH_AXIAL_CURRENT):

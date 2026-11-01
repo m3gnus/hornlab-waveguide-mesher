@@ -25,7 +25,8 @@ from .profile_common import (
 )
 from .offset_envelope import regularize_outer_offset
 from .text_import import (uses_text_import_geometry, uses_current_ath_axial_sampling,
-                          uses_v2_text_import_geometry, ath_throat_extension_segments)
+                          uses_v2_text_import_geometry, uses_v3_text_import_geometry,
+                          ath_throat_extension_segments)
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -548,7 +549,7 @@ def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndar
         formula = _normalise_formula(params.get("type", "OSSE"))
         if formula == "OSSE" and uses_current_ath_axial_sampling(params):
             return _ath_osse_import_zmap(n_length), mode
-        if formula == "R-OSSE" and uses_current_ath_axial_sampling(params):
+        if formula == "R-OSSE" and uses_v3_text_import_geometry(params) and uses_current_ath_axial_sampling(params):
             return _ath_import_zmap(n_length, formula), mode
         return _ath_default_zmap(n_length, formula), mode
     if mode == "zmap":
@@ -1918,7 +1919,9 @@ def build_point_grid_arrays(
         else:
             t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
         if ((formula == "R-OSSE" and uses_v2_text_import_geometry(params))
-                or (formula == "OSSE" and uses_current_ath_axial_sampling(params))):
+                or (formula == "OSSE" and uses_current_ath_axial_sampling(params)
+                    and (uses_v3_text_import_geometry(params)
+                         or eval_param(params.get("rot"), 0.0, 0.0) != 0.0))):
             if formula == "OSSE":
                 _, total, extension, _ = osse_length_config(params, 0.0)
             else:
@@ -2123,8 +2126,8 @@ def build_point_grid_arrays(
         inner *= geom_scale
     if "athAxialScale" in params:
         axis = float(params["athAxialScale"])
-        if not uses_v2_text_import_geometry(params) or not math.isfinite(axis) or axis <= 0:
-            raise ValueError("Scale.Z requires current ATH import geometry and a positive finite constant")
+        if not uses_v3_text_import_geometry(params) or not math.isfinite(axis) or axis <= 0:
+            raise ValueError("Scale.Z requires ath-2026-09a-v3 and a positive finite constant; explicitly reimport a copy with the v3 stamp")
         # An explicit ATH Scale.Z replaces global Scale on z; xy still uses
         # Scale. Apply it after morphing, before wall normals/offsets.
         inner[:, :, 2] *= axis / geom_scale

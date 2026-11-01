@@ -1,9 +1,17 @@
 # ATH import transforms and extension sampling
 
-These additions belong to the `ath-2026-09a-v2` import contract. Native
-authoring and saved v1 imports retain their preceding interpretation. The
+These additions belong to the `ath-2026-09a-v3` import contract. Native
+authoring and saved v1/v2 imports retain their preceding interpretation. The
 captured reference is ATH V2026-09a; this is a bounded geometry comparison,
 not a claim of complete ATH support or identical triangulation.
+
+The existing `_textImportVersion` field and saved CFG comment stamp select
+this behavior. Fresh external imports receive v3. Explicit v2 files and
+persisted v2 dictionaries remain v2 through loading, copying and JSON
+round trips; there is no automatic upgrade. Selecting v3 for a saved design
+is an explicit geometry change, so reimport a copy only when that change is
+intended. In particular, saved v2 keeps its old R-OSSE table, unrotated OSSE
+extension stations, nominal source curvature and unit `Scale.Z` no-op.
 
 ## Independent axial scale
 
@@ -41,10 +49,10 @@ omits the driver-end rows for zero, crashes for a negative count, and truncates
 fractions; these are deliberately not imported as valid extension controls.
 `Mesh.ThroatSegments` remains refused: V2026-09a ignores that older spelling.
 
-Current imported R-OSSE default body stations use the cubic map with controls
+V3 imported R-OSSE default body stations use the cubic map with controls
 (.26,.15), (.46,.49), sampled at parameter increments of .001 before
 abscissa inversion. This replaces interpolation of a 20-interval table;
-native and saved v1 sampling retain that table. Explicit custom maps retain
+native and saved v1/v2 sampling retain that table. Explicit custom maps retain
 their existing behavior.
 
 ## Source and terminal validation
