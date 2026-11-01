@@ -54,7 +54,7 @@ def configuration(config, resolver):
     allowed = {
         "root": {"formula", "type", "axial_scale", "scale", "throat_adapter", "profile", "mesh", "source", "mode", "quadrants", "vertical_offset_mm", "output", "path", "output_path"},
         "profile": {"formula", "type", "L_mm", "r0_mm", "a_deg", "a0_deg", "k", "s"},
-        "mesh": {"wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "scale_to_metres", "topology_mode", "surface_fit", "max_triangles", "allow_large_mesh", "quadrants", "vertical_offset_mm"},
+        "mesh": {"wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "surface_deviation_mm", "scale_to_metres", "topology_mode", "surface_fit", "max_triangles", "allow_large_mesh", "quadrants", "vertical_offset_mm"},
         "source": {"source_shape", "source_radius_mm", "source_curv"},
     }
     for name, section in (("root", config), *((k, config.get(k, {})) for k in ("profile", "mesh", "source"))):
@@ -63,7 +63,7 @@ def configuration(config, resolver):
         extras = set(section)-allowed[name]
         if extras:
             _fail(f"unsupported {name} controls: {', '.join(sorted(map(str, extras)))}.")
-        for key in set(section)-{"formula", "type", "throat_adapter", "profile", "mesh", "source", "mode", "quadrants", "topology_mode", "surface_fit", "scale_to_metres", "allow_large_mesh", "output", "path", "output_path"}:
+        for key in set(section)-{"formula", "type", "throat_adapter", "profile", "mesh", "source", "mode", "quadrants", "topology_mode", "surface_fit", "scale_to_metres", "allow_large_mesh", "output", "path", "output_path", "surface_deviation_mm"}:
             _number(section[key], key)
     if "axial_scale" not in config or "throat_adapter" not in config:
         _fail("the formula requires root axial_scale and an active root throat_adapter.")

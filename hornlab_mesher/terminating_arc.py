@@ -92,7 +92,7 @@ def validate_density(density):
     if type(density) is not MeshDensity:
         _fail("direct density must be MeshDensity or None.")
     defaults=MeshDensity()
-    allowed={"throat_res_mm","mouth_res_mm","rear_res_mm","max_triangles","allow_large_mesh"}
+    allowed={"throat_res_mm","mouth_res_mm","rear_res_mm","max_triangles","allow_large_mesh","surface_deviation_mm"}
     for name,value in asdict(density).items():
         if name not in allowed and (type(value) is not type(getattr(defaults,name)) or value != getattr(defaults,name)):
             _fail(f"unsupported direct density control {name}.")

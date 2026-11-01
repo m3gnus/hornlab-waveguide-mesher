@@ -467,6 +467,8 @@ class MeshDensity:
     interface_res_mm: float | None = None
     min_size_mm: float | None = None
     max_size_mm: float | None = None
+    # Absent in saved designs and ATH imports: preserve their sizing exactly.
+    surface_deviation_mm: float | None = None
     # Full-domain-equivalent triangle budget.  Reduced symmetry models divide
     # this ceiling by their mirror multiplier.  The mesher never changes the
     # mm targets to meet it: a clearly excessive estimate fails before Gmsh,
@@ -493,6 +495,7 @@ def validate_mesh_density(density: MeshDensity) -> None:
         "rear_res_mm": density.rear_res_mm,
     }
     optional_positive = {
+        "surface_deviation_mm": density.surface_deviation_mm,
         "interface_res_mm": density.interface_res_mm,
         "min_size_mm": density.min_size_mm,
         "max_size_mm": density.max_size_mm,
@@ -508,6 +511,8 @@ def validate_mesh_density(density: MeshDensity) -> None:
         if value is not None
         and (not math.isfinite(float(value)) or float(value) <= 0.0)
     )
+    if isinstance(density.surface_deviation_mm, bool):
+        invalid.append("surface_deviation_mm")
     if invalid:
         raise ValueError(
             "mesh resolution values must be finite and > 0: " + ", ".join(invalid)

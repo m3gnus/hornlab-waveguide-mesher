@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 import numpy as np
@@ -208,6 +208,27 @@ class PreviewSurfaceV1:
 class PreviewGeometryV1:
     surfaces: list[PreviewSurfaceV1]
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        from ..quality import element_shape_report
+
+        # Reuse the preview owner's measured master-surface chord bound.
+        # A missing or incomplete bound stays explicit, never a zero gap.
+        fidelity = self.metadata.get("fidelity", {})
+        certificate = {}
+        for surface in self.surfaces:
+            measured = fidelity.get(surface.role, {})
+            certificate[surface.role] = {
+                "element_shape": asdict(element_shape_report(
+                    surface.positions, surface.indices.reshape(-1, 3), sample_limit=0,
+                )),
+                "surface_deviation": {
+                    "method": "preview master-surface chord bound",
+                    "peak_mm": measured.get("max_chord_error_mm_achieved"),
+                    "measurement_complete": measured.get("measurement_complete", False),
+                },
+            }
+        object.__setattr__(self, "metadata", {**self.metadata, "tessellation": certificate})
 
 
 @dataclass(frozen=True)

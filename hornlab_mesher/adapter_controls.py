@@ -78,7 +78,7 @@ def configuration(config, resolver):
     allowed = {
         "root": {"formula", "type", "profile", "mesh", "source", "throat_adapter", "mode", "scale", "quadrants", "vertical_offset_mm", "output", "path", "output_path"},
         "profile": {"formula", "type", "L_mm", "r0_mm", "a_deg", "a0_deg", "k", "s"},
-        "mesh": {"wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "max_triangles", "allow_large_mesh", "scale_to_metres", "topology_mode", "surface_fit", "quadrants", "vertical_offset_mm"},
+        "mesh": {"wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "surface_deviation_mm", "max_triangles", "allow_large_mesh", "scale_to_metres", "topology_mode", "surface_fit", "quadrants", "vertical_offset_mm"},
         "source": {"source_shape"},
     }
     for name, section in (("root", config), ("profile", profile), ("mesh", mesh), ("source", source)):
@@ -437,7 +437,7 @@ def validate_density(density):
     if type(density.allow_large_mesh) is not bool:fail("allow_large_mesh must be a boolean.")
     default=MeshDensity()
     for field in fields(default):
-        if field.name in {"throat_res_mm","mouth_res_mm","rear_res_mm","max_triangles","allow_large_mesh"}:continue
+        if field.name in {"throat_res_mm","mouth_res_mm","rear_res_mm","max_triangles","allow_large_mesh","surface_deviation_mm"}:continue
         value,expected=getattr(density,field.name),getattr(default,field.name)
         if type(value) is not type(expected) or value!=expected:fail(f"unsupported active density control {field.name}.")
     return density

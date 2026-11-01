@@ -5,6 +5,7 @@ import tempfile
 import threading
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Callable
 
 import meshio
 import numpy as np
@@ -58,6 +59,13 @@ _GMSH_LOCK = threading.RLock()
 
 class MesherError(Exception):
     pass
+
+
+class _DensityEstimateReady(Exception):
+    """Stop the shared build after density configuration, before generation."""
+
+    def __init__(self, metadata):
+        self.metadata = dict(metadata)
 
 
 # Options the pipeline sets itself, or that would silently override the
@@ -207,6 +215,7 @@ def build_mesh(
     scale_to_metres: bool = True,
     *,
     measure_profile_deviation: bool = False,
+    surface_deviation_triangle_budget: int = 256,
 ) -> Path:
     """Build a tagged, validated Gmsh ``.msh`` file."""
 
@@ -216,6 +225,7 @@ def build_mesh(
         output_path,
         scale_to_metres=scale_to_metres,
         measure_profile_deviation=measure_profile_deviation,
+        surface_deviation_triangle_budget=surface_deviation_triangle_budget,
     )[0]
 
 
@@ -227,6 +237,8 @@ def build_mesh_with_info(
     quality_gate: str = "report",
     *,
     measure_profile_deviation: bool = False,
+    surface_deviation_triangle_budget: int = 256,
+    after_density: Callable[[BuiltGeometry], None] | None = None,
 ) -> tuple[Path, MeshInfo]:
     """Build a ``.msh`` file and return it with the inspection info.
 
@@ -300,6 +312,7 @@ def build_mesh_with_info(
         staged_path: Path | None = None
         previous_model = None
         owned_model = None
+        initial_views: set[int] | None = None
         try:
             if not gmsh.isInitialized():
                 # interruptible=False skips gmsh's SIGINT handler, which only
@@ -355,7 +368,10 @@ def build_mesh_with_info(
                 if acoustic_geometry.freeform_report is not None:
                     built.metadata["freeformReport"] = acoustic_geometry.freeform_report
 
+            initial_views = set(map(int, gmsh.view.getTags()))
             configure_density(built, mesh_density)
+            if after_density is not None:
+                after_density(built)
             if controls is not None or getattr(acoustic_geometry, "arc_meridian", None) is not None:
                 gmsh.option.setNumber("Mesh.MinimumCirclePoints", 16)
             add_physical_groups(built.surface_groups)
@@ -404,6 +420,25 @@ def build_mesh_with_info(
                 from .facet_fit import repair_fitted_wall_mesh
 
                 repair_fitted_wall_mesh(built.mesh_surface_groups)
+
+            from .tessellation import measure_surface_deviation
+            if controls is not None:
+                # The native owner already certifies every curved branch facet;
+                # its only other surface is the exact planar driver disk.
+                # Reuse that stronger continuous bound instead of an expensive
+                # OCC projection pass over the same surface of revolution.
+                total = len(gmsh.model.mesh.getElementsByType(2)[0])
+                built.metadata["surface_deviation"] = {
+                    "method": "existing native continuous branch facet bound; planar driver disk",
+                    "peak_mm": built.metadata["controlsMeshChordBoundMm"],
+                    "peak_is_upper_bound": True,
+                    "triangle_count": total,
+                    "sampled_triangle_count": 0,
+                    "certified_triangle_count": total,
+                }
+            else:
+                built.metadata["surface_deviation"] = measure_surface_deviation(gmsh, triangle_budget=surface_deviation_triangle_budget)
+            built.metadata["surface_deviation_mm"] = mesh_density.surface_deviation_mm
 
             with tempfile.NamedTemporaryFile(
                 prefix="hornlab-mesher-raw-", suffix=".msh", delete=False
@@ -500,7 +535,7 @@ def build_mesh_with_info(
             info = replace(info, path=out_path)
             build_succeeded = True
             return out_path, info
-        except ConfigError:
+        except (ConfigError, _DensityEstimateReady):
             # Configuration refusals are actionable ValueErrors for callers
             # (including preview/solve HTTP handlers), not OCC build failures.
             raise
@@ -515,6 +550,9 @@ def build_mesh_with_info(
                 staged_path.unlink(missing_ok=True)
             if owns_out_path and not build_succeeded:
                 out_path.unlink(missing_ok=True)
+            if initial_views is not None and gmsh.isInitialized():
+                for view in set(map(int, gmsh.view.getTags())) - initial_views:
+                    gmsh.view.remove(view)
             if initialized_here and gmsh.isInitialized():
                 with preserve_native_windows_path():
                     gmsh.finalize()

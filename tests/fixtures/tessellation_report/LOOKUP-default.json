@@ -1,0 +1,56 @@
+{
+  "formula": "LOOKUP",
+  "mode": "freestanding",
+  "profile": {
+    "formula": "LOOKUP",
+    "lookupProfile": [
+      [
+        0.0,
+        12.7
+      ],
+      [
+        120.0,
+        140.0
+      ]
+    ],
+    "a0": 0.0
+  },
+  "mesh": {
+    "angularSegments": 40.0,
+    "lengthSegments": 20.0,
+    "cornerSegments": 4.0,
+    "samplingMode": "uniform",
+    "quadrants": 1234,
+    "wallThickness": 5.0,
+    "throatResolution": 6.0,
+    "mouthResolution": 15.0,
+    "rearResolution": 40.0,
+    "apertureResolutionScale": 1.0,
+    "maxTriangles": 50000.0,
+    "allowLargeMesh": 0.0,
+    "encFrontResolution": 25.0,
+    "encBackResolution": 40.0,
+    "verticalOffset": 0.0,
+    "surfaceFit": "interpolate",
+    "scaleToMetres": true
+  },
+  "cross_section": {
+    "exponent": 2.0,
+    "aspectRatio": 1.0
+  },
+  "morph": {
+    "morphTarget": 0.0,
+    "morphWidth": 0.0,
+    "morphHeight": 0.0,
+    "morphCorner": 0.0,
+    "morphRate": 3.0,
+    "morphFixed": 0.0,
+    "morphAllowShrinkage": 0.0
+  },
+  "gcurve": {},
+  "source": {
+    "sourceShape": 1.0,
+    "sourceRadius": -1.0,
+    "sourceCurv": 0.0
+  }
+}

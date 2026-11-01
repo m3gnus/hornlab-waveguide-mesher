@@ -8,6 +8,8 @@ translation layer.
 
 from __future__ import annotations
 
+import tempfile
+
 import logging
 import math
 from dataclasses import dataclass, field, replace
@@ -1621,7 +1623,11 @@ def _mesh_density_from_config(
         names=("allow_large_mesh", "allowLargeMesh"),
         default=False,
     )
+    deviation = mesh.get("surface_deviation_mm")
+    if isinstance(deviation, bool):
+        raise ConfigError("surface_deviation_mm must be a finite positive number or null")
     density = MeshDensity(
+        surface_deviation_mm=_optional_float(mesh, names=("surface_deviation_mm",)),
         throat_res_mm=_float(
             mesh,
             config,
@@ -2767,6 +2773,8 @@ def build_from_config(
     *,
     allow_large_mesh: bool | None = None,
     measure_profile_deviation: bool = False,
+    surface_deviation_triangle_budget: int = 256,
+    after_density=None,
 ) -> BuildResult:
     """Build a mesh, optionally measuring the fitted FREEFORM wall deviation.
 
@@ -2793,6 +2801,8 @@ def build_from_config(
             output_path,
             scale_to_metres=resolved.scale_to_metres,
             measure_profile_deviation=measure_profile_deviation,
+            surface_deviation_triangle_budget=surface_deviation_triangle_budget,
+            after_density=after_density,
         )
     except TriangleBudgetExceeded:
         # A budget refusal is not a fit failure: the other fit meshes about the
@@ -2836,6 +2846,8 @@ def build_from_config(
             output_path,
             scale_to_metres=resolved.scale_to_metres,
             measure_profile_deviation=measure_profile_deviation,
+            surface_deviation_triangle_budget=surface_deviation_triangle_budget,
+            after_density=after_density,
         )
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     freeform_report = resolved.freeform_report
@@ -2862,6 +2874,22 @@ def build_from_config(
             **({"surfaceFit": fit_used} if fit_used is not None else {}),
         },
     )
+
+
+def estimate_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Observe the ordinary density pass without generating or writing a mesh."""
+    from .mesher import _DensityEstimateReady
+
+    def observe(built):
+        raise _DensityEstimateReady(built.metadata)
+
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            build_from_config(config, Path(directory) / "estimate.msh",
+                              allow_large_mesh=True, after_density=observe)
+    except _DensityEstimateReady as ready:
+        return ready.metadata
+    raise RuntimeError("mesh build did not provide a density estimate")
 
 
 __all__ = [

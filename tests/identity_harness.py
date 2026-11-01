@@ -143,12 +143,30 @@ def assert_mesh_and_step_bytes(base_tree, tmp_path, name, config, *, native=Fals
         (current / 'out.step').read_bytes()
     ), name
     if native:
-        for artifact in ('params.json', 'metadata.json', 'preview.json'):
+        for artifact in ('params.json', 'metadata.json'):
             assert (base / artifact).read_bytes() == (current / artifact).read_bytes(), (
                 name, artifact,
             )
+        base_preview = json.loads((base / 'preview.json').read_text())
+        current_preview = json.loads((current / 'preview.json').read_text())
+        if 'tessellation' not in base_preview['metadata']:
+            # S5 adds read-only reports. Every array, normal, index and existing
+            # metadata entry retains the same identity check.
+            certificate = current_preview['metadata'].pop('tessellation')
+            assert certificate
+            assert all('element_shape' in entry and 'surface_deviation' in entry
+                       for entry in certificate.values())
+        assert base_preview == current_preview, (name, 'preview.json')
         base_build = json.loads((base / 'build.json').read_text())
         current_build = json.loads((current / 'build.json').read_text())
+        if 'surface_deviation' not in base_build:
+            report = current_build.pop('surface_deviation')
+            assert (report['sampled_triangle_count'] > 0 or
+                    report.get('peak_is_upper_bound') is True and
+                    report['certified_triangle_count'] == report['triangle_count'])
+            assert report['peak_mm'] >= 0
+        if 'surface_deviation_mm' not in base_build:
+            assert current_build.pop('surface_deviation_mm') is None
         for key in BUILD_METADATA_ALLOWED_TIGHTER:
             # This certificate is the only allowed build-metadata change.
             # Allow 1e-8 mm absolute increase to cover its numerical guard

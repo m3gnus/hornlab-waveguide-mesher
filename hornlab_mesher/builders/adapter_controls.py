@@ -9,6 +9,8 @@ from ..geometry import BuiltGeometry
 from ..tags import PhysicalGroup
 
 
+MESH_CHORD_BOUND_MM = .01
+
 def build_controls(geometry):
     validate_geometry(geometry)
     gmsh=require_gmsh();occ=gmsh.model.occ;m=geometry.controls_meridian
@@ -75,7 +77,7 @@ def certify_arrays(m,points,triangles,surfaces,branch_tags,*,check_normals=False
         Muu,Mr,rmax,_,_=m.interval_bounds(branch,u.min(axis=1),u.max(axis=1))
         bound=(Muu*du**2+2*Mr*du*da+rmax*da**2)/8+residual
         current=float(bound.max())
-        if not np.all(np.isfinite(bound)) or current>.01:
+        if not np.all(np.isfinite(bound)) or current>MESH_CHORD_BOUND_MM:
             raise ValueError(f"exact controls {branch} facets exceed the 0.01 mm continuous geometric bound ({current:.8g}); refine the mm resolutions")
         reports[branch]={"triangleCount":len(t),"chordBoundMm":current,"vertexResidualBoundMm":float(residual.max())}
         worst=max(worst,current)
@@ -108,9 +110,16 @@ def certify_occ_mesh(m,built):
 def configure_density(built,density):
     """Local derivative sizing is heuristic; publication uses the hard bound."""
     import gmsh
-    from ..density import _record_and_check_triangle_estimate,_surface_area_mm2,TRIANGLES_PER_AREA_OVER_H2
+    from ..density import _record_and_check_triangle_estimate,_surface_area_mm2,TRIANGLES_PER_AREA_OVER_H2,surface_deviation_field
     m=built.controls_meridian;tags=built.metadata["controlsBranchSurfaceTags"]
     fields=[];sizes=[];regions=[];records=[]
+    # The native owner already enforces a stronger continuous bound. A looser
+    # requested deviation cannot improve it and need not perturb seam sizing.
+    built.metadata["surface_deviation_mm"]=density.surface_deviation_mm
+    deviation_field,caps=None,{}
+    if density.surface_deviation_mm is not None and density.surface_deviation_mm < MESH_CHORD_BOUND_MM:
+        deviation_field,caps=surface_deviation_field(built,density)
+    if deviation_field is not None:fields.append(deviation_field)
     # Small fixed intervals keep whole-interval bounds useful for unordered
     # polygons. Unresolved derivative hulls are subdivided before allocation.
     for branch in ("cubic","body"):
@@ -147,7 +156,7 @@ def configure_density(built,density):
             nodes,weights=np.polynomial.legendre.leggauss(8);u=lo+(nodes+1)*(hi-lo)/2
             p,d,_=m.branch(branch,u);area=math.pi*(hi-lo)*float(np.dot(weights,p[:,1]*np.linalg.norm(d,axis=1)))
             total+=area/(h*h)
-        area=_surface_area_mm2(tags[branch]);effective=math.sqrt(area/total)
+        area=_surface_area_mm2(tags[branch]);effective=min(math.sqrt(area/total),min((caps[t] for t in tags[branch] if t in caps),default=float("inf")))
         regions.append((area,effective,branch+" exact wall"));records.append({"branch":branch,"intervalCount":len(intervals),"minimumSizeMm":min(row[2] for row in intervals),"effectiveAreaSizeMm":effective})
     source=built.mesh_surface_groups["throat_disc"]
     field=gmsh.model.mesh.field.add("MathEval");gmsh.model.mesh.field.setString(field,"F",str(density.throat_res_mm))

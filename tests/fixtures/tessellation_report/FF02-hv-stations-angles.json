@@ -1,0 +1,97 @@
+{
+  "cross_section": {
+    "aspectRatio": 1.0,
+    "exponent": 2.0
+  },
+  "formula": "FREEFORM",
+  "gcurve": {},
+  "mesh": {
+    "allowLargeMesh": false,
+    "angularSegments": "40",
+    "apertureResolutionScale": "1",
+    "cornerSegments": "4",
+    "encBackResolution": 40.0,
+    "encFrontResolution": 25.0,
+    "lengthSegments": "20",
+    "maxTriangles": 22000,
+    "mouthResolution": "15",
+    "quadrants": 1234,
+    "rearResolution": "40",
+    "samplingMode": "uniform",
+    "scaleToMetres": true,
+    "surfaceFit": "approximate",
+    "throatResolution": "6",
+    "verticalOffset": 0.0,
+    "wallThickness": "5"
+  },
+  "mode": "freestanding",
+  "morph": {
+    "morphAllowShrinkage": "0",
+    "morphCorner": "0",
+    "morphFixed": "0",
+    "morphHeight": "0",
+    "morphRate": "3",
+    "morphTarget": "0",
+    "morphWidth": "0"
+  },
+  "profile": {
+    "crossSections": [
+      {
+        "shape": "ellipse",
+        "t": "0"
+      },
+      {
+        "shape": "ellipse",
+        "t": "1"
+      }
+    ],
+    "formula": "FREEFORM",
+    "inflectionPolicy": "warn",
+    "profileH": {
+      "mouthAngleDeg": "75",
+      "points": [
+        [
+          0.0,
+          "12.7"
+        ],
+        [
+          42.0,
+          "40",
+          "30"
+        ],
+        [
+          84.0,
+          "95"
+        ],
+        [
+          120.0,
+          "160"
+        ]
+      ],
+      "throatAngleDeg": "12"
+    },
+    "profileV": {
+      "mouthAngleDeg": "55",
+      "points": [
+        [
+          0.0,
+          "12.7"
+        ],
+        [
+          48.0,
+          "30"
+        ],
+        [
+          120.0,
+          "95"
+        ]
+      ],
+      "throatAngleDeg": "8"
+    }
+  },
+  "source": {
+    "sourceCurv": "0",
+    "sourceRadius": "-1",
+    "sourceShape": 1.0
+  }
+}

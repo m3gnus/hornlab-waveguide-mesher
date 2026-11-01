@@ -1,0 +1,40 @@
+{
+  "cross_section": {
+    "aspectRatio": 1.0,
+    "exponent": 2.0
+  },
+  "formula": "OSSE",
+  "gcurve": {},
+  "mesh": {
+    "allowLargeMesh": false,
+    "angularSegments": "32",
+    "lengthSegments": "20",
+    "maxTriangles": 22000,
+    "quadrants": 1234,
+    "scaleToMetres": true,
+    "surfaceFit": "interpolate",
+    "verticalOffset": 0.0,
+    "wallThickness": 0.0
+  },
+  "mode": "bare",
+  "morph": {
+    "morphCorner": 12.6,
+    "morphFixed": "0.2",
+    "morphRate": "3",
+    "morphTarget": "1"
+  },
+  "profile": {
+    "L": 84.0,
+    "_athLengthMode": "total",
+    "a": "50 - 15*sin(p)**2",
+    "a0": "10",
+    "formula": "OSSE",
+    "k": "1",
+    "n": "4",
+    "q": "0.995",
+    "r0": 8.889999999999999,
+    "s": "0.5",
+    "throatProfile": "1"
+  },
+  "source": {}
+}

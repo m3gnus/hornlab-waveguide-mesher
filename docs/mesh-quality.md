@@ -215,3 +215,37 @@ on both trees — so that branch's meridian bound did not engage for this
 configuration. That is worth reconciling against the branch's own reported
 1,630 → 2,644 triangle change on what appears to be the same stock R-OSSE, but it
 is noted rather than chased here.
+
+## Surface deviation control and reports
+
+`mesh.surface_deviation_mm` optionally adds the shared OCC curvature field to
+the existing millimetre sizing fields. Missing or null leaves those fields
+unchanged. The field uses the tighter target where the two overlap, clipped
+to one eighth of the smallest active resolution and the largest active
+resolution.
+It changes tessellation, not the construction grid or fitted surface.
+
+Parametric sizing reserves 65% of the requested deviation for unstructured
+triangle edge overshoot and trim-boundary coverage. Parametric fields use
+64-point axial-end-biased surface grids, separate surface views and a constant curve cap so coincident construction
+seams receive the same sizing. CAD keeps the combined view and its sampling. The earlier centroid-only trial did not measure the
+larger gaps at edge midpoints. CAD retains its existing field and 0.15 mm default.
+
+Every solve records `surface_deviation_mm` and `surface_deviation` beside the
+existing `quality.element_shape` report. Deviation is measured with the shared
+barycentric lattice projected to each facet's originating OCC face. Routine
+builds sample deterministically with a 256-triangle budget; the report carries
+both the total and sampled triangle counts. This is an observed sampled maximum,
+not a continuous error certificate. Pass `surface_deviation_triangle_budget=0`
+to `build_from_config` for exhaustive facet measurements. These reports never
+change the mesh or add a deviation warning. Exact native adapter controls reuse
+their existing continuous branch facet certificate and planar source, explicitly
+labelled as an upper bound, rather than repeating slow OCC projections.
+
+Preview metadata records `tessellation` by role, reusing the preview's existing
+master-surface chord bound and the shared element-shape report. An unavailable
+or incomplete chord bound remains explicit. No preview arrays change.
+Native adapter controls already enforce a 0.01 mm continuous facet bound. A
+looser requested deviation keeps that existing sizing; a tighter request adds
+the shared field to it. The report labels the reused certificate as an upper
+bound and records its covered facet count separately from sampled facets.

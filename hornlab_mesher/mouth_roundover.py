@@ -75,7 +75,7 @@ def configuration(config, resolver):
     allowed = {
         "root": {"formula", "type", "profile", "mesh", "source", "mode", "scale", "quadrants", "vertical_offset_mm", "throat_adapter"}|({"axial_scale"} if "axial" in features else set()),
         "profile": {"formula", "type", "L_mm", "r0_mm", "a_deg", "a0_deg", "k", "s", "n", "q", "throat_adapter"},
-        "mesh": {KEY, "wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "scale_to_metres", "topology_mode", "surface_fit", "max_triangles", "allow_large_mesh", "quadrants", "vertical_offset_mm"},
+        "mesh": {KEY, "wall_thickness_mm", "angular_segments", "length_segments", "throat_res_mm", "mouth_res_mm", "rear_res_mm", "surface_deviation_mm", "scale_to_metres", "topology_mode", "surface_fit", "max_triangles", "allow_large_mesh", "quadrants", "vertical_offset_mm"},
         "source": {"source_shape", "source_radius_mm", "source_curv"},
     }
     for name, section in (("root", config), ("profile", profile), ("mesh", mesh), ("source", config.get("source", {}))):

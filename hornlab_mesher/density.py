@@ -325,6 +325,7 @@ def _enclosure_triangle_regions(
     back_edge_size: float | None,
     front_panels: list[int],
     back_panels: list[int],
+    surface_size_caps: dict[int, float] | None = None,
 ) -> list[tuple[float, float, str]]:
     regions: list[tuple[float, float, str]] = []
     consumed: set[int] = set()
@@ -339,6 +340,12 @@ def _enclosure_triangle_regions(
                 continue
             consumed.add(tag)
             tags.append(tag)
+        if surface_size_caps:
+            for tag in tags:
+                area = _surface_area_mm2([tag])
+                if area > 0.0:
+                    regions.append((area, min(float(size), surface_size_caps.get(tag, float(size))), label))
+            return
         area = _surface_area_mm2(tags)
         if area > 0.0:
             regions.append((area, float(size), label))
@@ -460,6 +467,7 @@ def _generic_triangle_regions(
     lip_size: float | None = None,
     arc_size: float | None = None,
     surface_areas_mm2: dict[int, float] | None = None,
+    surface_size_caps: dict[int, float] | None = None,
 ) -> list[tuple[float, float, str]]:
     """Area/size regions for non-enclosure pre-mesh cost prediction.
 
@@ -489,13 +497,15 @@ def _generic_triangle_regions(
             return
         tags = [int(tag) for tag in surface_tags if int(tag) not in consumed]
         consumed.update(tags)
-        if group is not None and group in fields:
+        if surface_size_caps or (group is not None and group in fields):
             for tag in tags:
                 area = surface_area([tag])
-                sampled = _sampled_effective_size_mm(tag, fields[group])
+                sampled = _sampled_effective_size_mm(tag, fields[group]) if group in fields else None
+                effective = float(sampled if sampled is not None else size)
+                effective = min(effective, (surface_size_caps or {}).get(tag, effective))
                 if area > 0.0:
                     regions.append(
-                        (area, float(sampled if sampled is not None else size), label)
+                        (area, effective, label)
                     )
             return
         area = surface_area(tags)
@@ -815,6 +825,70 @@ def _cross_section_radius_expression(axis: str) -> str:
     return f"sqrt({other[0]}^2 + {other[1]}^2)"
 
 
+def surface_deviation_field(geometry: BuiltGeometry, density: MeshDensity):
+    """Apply the optional shared curvature field and expose its estimate sizes."""
+    import gmsh
+
+    from .tessellation import sagitta_background_view
+
+    geometry.metadata["surface_deviation_mm"] = density.surface_deviation_mm
+    caps: dict[int, float] = {}
+    if density.surface_deviation_mm is None:
+        return None, caps
+    # The full facet lattice includes edge midpoints. Reserve 65% for the
+    # unstructured triangles' edge-length overshoot missed by centroid trials.
+    views: dict[int, int] = {}
+    minimum_sizes: dict[int, float] = {}
+    user_sizes = [density.throat_res_mm, density.mouth_res_mm, density.rear_res_mm,
+                  density.interface_res_mm or density.mouth_res_mm]
+    if geometry.enclosure_bounds:
+        user_sizes.extend(_parse_quadrant_resolutions(density.enc_front_res_mm, density.mouth_res_mm))
+        user_sizes.extend(_parse_quadrant_resolutions(density.enc_back_res_mm, density.mouth_res_mm))
+    size_min = 0.125 * min(user_sizes)
+    size_max = max(user_sizes)
+    sagitta_background_view(
+        gmsh, deviation_mm=0.35 * density.surface_deviation_mm,
+        size_min_mm=size_min,
+        size_max_mm=size_max, size_report=caps,
+        samples=64,
+        end_bias=True,
+        cover_trim_boundary=True,
+        surface_views=views,
+        minimum_size_report=minimum_sizes,
+    )
+    fields = []
+    curves = [int(tag) for _, tag in gmsh.model.getEntities(1)]
+    for surface, view in views.items():
+        field = gmsh.model.mesh.field.add("PostView")
+        gmsh.model.mesh.field.setNumber(field, "ViewTag", view)
+        restricted = gmsh.model.mesh.field.add("Restrict")
+        gmsh.model.mesh.field.setNumber(restricted, "InField", field)
+        gmsh.model.mesh.field.setNumbers(restricted, "SurfacesList", [surface])
+        gmsh.model.mesh.field.setNumber(restricted, "IncludeBoundary", 0)
+        fields.append(restricted)
+    # Coincident construction seams can have distinct curve tags and last-bit
+    # coordinate differences. A constant shared cap keeps their nodes identical
+    # instead of letting a view-cell boundary choose different size levels.
+    curve_size = min(minimum_sizes.values())
+    curve_field = gmsh.model.mesh.field.add("MathEval")
+    gmsh.model.mesh.field.setString(curve_field, "F", f"{curve_size:.12g}")
+    curve_restrict = gmsh.model.mesh.field.add("Restrict")
+    gmsh.model.mesh.field.setNumber(curve_restrict, "InField", curve_field)
+    gmsh.model.mesh.field.setNumbers(curve_restrict, "CurvesList", curves)
+    gmsh.model.mesh.field.setNumber(curve_restrict, "IncludeBoundary", 0)
+    fields.append(curve_restrict)
+    minimum = gmsh.model.mesh.field.add("Min")
+    gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
+    geometry.metadata["surface_deviation_sizing"] = {
+        "field_deviation_mm": 0.35 * density.surface_deviation_mm,
+        "size_min_mm": size_min, "size_max_mm": size_max,
+        "curve_size_mm": curve_size,
+        "grid_samples": 64,
+        "method": "per-face quantised curvature views; shared curve minimum",
+    }
+    return minimum, caps
+
+
 def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
     """Configure waveguide-compatible Gmsh mesh-size fields.
 
@@ -862,6 +936,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         )
     aperture_res_scale = validate_aperture_res_scale(density.aperture_res_scale)
     aperture_res = mouth_res * aperture_res_scale
+    deviation_field, surface_size_caps = surface_deviation_field(geometry, density)
 
     arc_sizing=geometry.metadata.get("terminatingArcSizing")
     arc_effective_size=None
@@ -933,6 +1008,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
             back_edge_size=back_edge_size,
             front_panels=front_panels,
             back_panels=back_panels,
+            surface_size_caps=surface_size_caps,
         )
 
         _record_and_check_triangle_estimate(geometry, density, triangle_regions)
@@ -1235,6 +1311,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
                           if "mouthRoundoverMeshSizeMm" in geometry.metadata else None),
                 arc_size=arc_effective_size,
                 surface_areas_mm2=geometry.metadata.get("surfaceAreasMm2"),
+                surface_size_caps=surface_size_caps,
             ),
         )
     add_field(
@@ -1484,6 +1561,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         corner_fields, corner_sizes = corner_size_fields(geometry, density)
         fields.extend(corner_fields)
 
+    if deviation_field is not None:
+        fields.append(deviation_field)
     if fields:
         minimum = gmsh.model.mesh.field.add("Min")
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
@@ -1515,6 +1594,8 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         float(density.min_size_mm) if density.min_size_mm else requested_min * 0.25,
         requested_min,
     )
+    if deviation_field is not None:
+        min_size = min(min_size, geometry.metadata["surface_deviation_sizing"]["size_min_mm"])
     max_size = max(
         float(density.max_size_mm) if density.max_size_mm else requested_max,
         requested_max,
