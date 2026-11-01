@@ -16,6 +16,7 @@ import pytest
 from hornlab_mesher import build_from_config
 from hornlab_mesher.config_builder import resolve_geometry
 from hornlab_mesher.edges import build_edge_table
+from hornlab_mesher.errors import UserRefusal
 from hornlab_mesher.enclosure_woofers import (
     EnclosureWoofer, PistonShape, certify_arrays,
 )
@@ -206,8 +207,10 @@ def test_finite_mouth_clearance(tmp_path, gap, allowed):
     if allowed:
         build_from_config(config,tmp_path/'clear.msh')
     else:
-        with pytest.raises(MesherError, match='0.1 mm clearance'):
+        with pytest.raises(MesherError, match='0.1 mm clearance') as error:
             build_from_config(config,tmp_path/'close.msh')
+        assert isinstance(error.value.user_refusal, UserRefusal)
+        assert error.value.user_refusal.next_step
 
 
 @pytest.mark.parametrize('gap,allowed', [(.05,False),(.15,True)])
@@ -223,8 +226,10 @@ def test_finite_outer_clearance(tmp_path, gap, allowed):
     if allowed:
         build_from_config(config,tmp_path/'clear.msh')
     else:
-        with pytest.raises(MesherError, match='0.1 mm clearance'):
+        with pytest.raises(MesherError, match='0.1 mm clearance') as error:
             build_from_config(config,tmp_path/'close.msh')
+        assert isinstance(error.value.user_refusal, UserRefusal)
+        assert error.value.user_refusal.next_step
 
 
 @pytest.mark.parametrize('gap', [-1.,0.,.05])
@@ -232,8 +237,10 @@ def test_finite_interwoofer_clearance(tmp_path, gap):
     config = assembly_config()
     a,b = config['enclosure']['woofers']
     b.update(x_mm=a['x_mm']+a['radius_mm']+b['radius_mm']+gap, y_mm=a['y_mm'])
-    with pytest.raises(MesherError, match='apertures overlap'):
+    with pytest.raises(MesherError, match='apertures overlap') as error:
         build_from_config(config,tmp_path/'close.msh')
+    assert isinstance(error.value.user_refusal, UserRefusal)
+    assert error.value.user_refusal.next_step
 
 
 def test_deep_collar_intersection_refused(tmp_path):
@@ -241,8 +248,10 @@ def test_deep_collar_intersection_refused(tmp_path):
     config['profile']['lookupProfile'] = [[0,12.7],[30,200],[80,150],[120,100]]
     config['enclosure']['space_l_mm'] = config['enclosure']['space_r_mm'] = 200
     config['enclosure']['woofers'] = [dict(radiator_id='lf-b',x_mm=0.,y_mm=-165.,radius_mm=35.,shape={'kind':'piston','recess_mm':100.})]
-    with pytest.raises(MesherError, match='intersects horn wall'):
+    with pytest.raises(MesherError, match='intersects horn wall') as error:
         build_from_config(config,tmp_path/'intersect.msh')
+    assert isinstance(error.value.user_refusal, UserRefusal)
+    assert error.value.user_refusal.next_step
 
 
 def test_immutable_typed_contract_and_unique_ids():

@@ -279,6 +279,8 @@ def test_import_corpus_equal_base_except_documented_rotation_changes(case):
             parse_text_config(text)
         return
     if case['id'] in UNVERIFIED_ROSSE_ROT_VARIANTS:
+        # These captures describe the saved v2 contract; v3 Rot has its own parity witnesses.
+        text = '; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n' + text
         with pytest.raises(ConfigError, match=r'unsupported item.*\bRot\b'):
             parse_text_config(text)
         return

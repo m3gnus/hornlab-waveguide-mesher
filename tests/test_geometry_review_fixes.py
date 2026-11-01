@@ -577,7 +577,8 @@ _ATH_EXTENSION_Z = [
 
 
 def test_morph_behind_a_throat_extension_matches_ath(tmp_path):
-    params, _formula = _ath_text_params(tmp_path, "ext_morph", _ATH_EXTENSION_MORPH_CFG)
+    params, _formula = _ath_text_params(tmp_path, "ext_morph",
+        "; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n" + _ATH_EXTENSION_MORPH_CFG)
     params = {
         **params,
         "athParitySampling": False,

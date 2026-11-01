@@ -10,6 +10,7 @@ from typing import Mapping
 import numpy as np
 
 from .config_parser import ConfigError
+from .errors import control_refusal, numeric_refusal
 
 FORMULA = "SOURCE-DISK"
 MODE = "standalone-source"
@@ -18,13 +19,13 @@ HARD_TRIANGLE_LIMIT = 200_000
 
 def _number(value, name):
     if type(value) not in (int, float):
-        raise ValueError(f"{name} must be a finite scalar number")
+        raise numeric_refusal(name, f"{name} must be a finite scalar number")
     try:
         number = float(value)
     except (OverflowError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite scalar number") from exc
+        raise numeric_refusal(name, f"{name} must be a finite scalar number") from exc
     if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite scalar number")
+        raise numeric_refusal(name, f"{name} must be a finite scalar number")
     return number
 
 
@@ -41,13 +42,13 @@ class StandaloneSourceGeometry:
         for name, value in asdict(self).items():
             object.__setattr__(self, name, _number(value, name))
         if not 0.1 <= self.radius_mm <= 200:
-            raise ValueError("radius_mm must be in [0.1, 200]")
+            raise control_refusal("radius_mm must be in [0.1, 200]", 'Source disk radius', 'Enter Source disk radius from 0.1 to 200 mm.', message='Source disk radius is outside the supported range.')
         if not self.radius_mm + 0.1 <= self.outer_radius_mm <= 500:
-            raise ValueError("outer_radius_mm must exceed radius_mm by at least 0.1 mm and be <=500")
+            raise control_refusal("outer_radius_mm must exceed radius_mm by at least 0.1 mm and be <=500", 'Source body radius', 'Set Source body radius at least 0.1 mm above Source disk radius and no greater than 500 mm.', message='The source rim is too small or too large.')
         if not 0.1 <= self.depth_mm <= 500:
-            raise ValueError("depth_mm must be in [0.1, 500]")
+            raise control_refusal("depth_mm must be in [0.1, 500]", 'Source body depth', 'Enter Source body depth from 0.1 to 500 mm.', message='Source body depth is outside the supported range.')
         if abs(self.vertical_offset_mm) > 10000:
-            raise ValueError("vertical_offset_mm magnitude must be <=10000")
+            raise control_refusal("vertical_offset_mm magnitude must be <=10000", 'Export vertical offset', 'Enter Export vertical offset between -10000 and 10000 mm.', message='Export vertical offset is outside the supported range.')
 
     @property
     def bounds(self):
@@ -109,7 +110,7 @@ def configuration(config):
         keys(config["output"], ("path","output_path"), "output")
     size = _number(mesh.get("size_mm",3.0), "mesh.size_mm")
     if not 0.1 <= size <= 50:
-        raise ConfigError("mesh.size_mm must be in [0.1, 50]")
+        raise control_refusal("mesh.size_mm must be in [0.1, 50]", 'Uniform source mesh size', 'Enter Uniform source mesh size from 0.1 to 50 mm.', message='Uniform source mesh size is outside the supported range.')
     for key in ("max_triangles","maxTriangles"):
         if key in mesh and (type(mesh[key]) is not int or not 0 < mesh[key] <= 10_000_000):
             raise ConfigError("standalone source max_triangles must be a positive integer <=10000000")
@@ -156,7 +157,7 @@ def validate_density(model, density):
     area = 2*math.pi*model.outer_radius_mm*(model.outer_radius_mm+model.depth_mm)
     estimate = 3*area/effective**2
     if estimate > HARD_TRIANGLE_LIMIT:
-        raise ValueError("standalone source estimated allocation exceeds the hard 200000 triangle envelope; increase mesh.size_mm or reduce the body")
+        raise control_refusal("standalone source estimated allocation exceeds the hard 200000 triangle envelope; increase mesh.size_mm or reduce the body", 'Uniform source mesh size', 'Increase Uniform source mesh size or reduce the source dimensions.', message='The source would exceed the supported mesh allocation.')
     if not density.allow_large_mesh and estimate > 2*density.max_triangles:
         from .mesher import TriangleBudgetExceeded
         raise TriangleBudgetExceeded("standalone source estimated triangles exceed mesh.max_triangles; increase mesh.size_mm, raise max_triangles or set allow_large_mesh=true")
@@ -184,6 +185,7 @@ def configure_density(built, density):
 def certify_mesh(model, path, units):
     """Check the published candidate, including topology and physical roles."""
     import meshio
+
     from .mesher import MesherError
     mesh = meshio.read(path,file_format="gmsh")
     points = np.asarray(mesh.points,dtype=float)*(1000 if units=="m" else 1)

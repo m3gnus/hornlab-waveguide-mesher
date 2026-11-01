@@ -786,7 +786,7 @@ def test_v2_coarse_imported_rear_uses_measured_warped_construction(quadrants):
     cfg = parse_ath_config(_asro2_ath_cfg_text(throat=10.0, mouth=16.0, rear=50.0))
     cfg['mesh']['quadrants'] = quadrants
     geometry = resolve_geometry(cfg).geometry
-    assert cfg['_textImportVersion'] == 'ath-2026-09a-v2'
+    assert cfg['_textImportVersion'] == 'ath-2026-09a-v3'
     assert np.ptp(geometry.ath_warped_rear_points[:, 2]) > 0
     assert geometry.ath_warped_rear_apex.shape == (3,)
 

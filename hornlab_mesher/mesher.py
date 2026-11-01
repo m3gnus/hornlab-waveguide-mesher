@@ -16,6 +16,7 @@ from .builders import (
 )
 from .builders._occ import add_physical_groups
 from .config_parser import ConfigError
+from .errors import UserRefusal
 from .density import (
     CLEARANCE_CAP_BUDGET_ADVICE,
     TriangleBudgetExceeded as _PremeshTriangleBudgetExceeded,
@@ -313,6 +314,7 @@ def build_mesh_with_info(
         previous_model = None
         owned_model = None
         initial_views: set[int] | None = None
+        woofer_refusal: UserRefusal | None = None
         try:
             if not gmsh.isInitialized():
                 # interruptible=False skips gmsh's SIGINT handler, which only
@@ -357,7 +359,13 @@ def build_mesh_with_info(
                 gmsh.option.setNumber(name, value)
             if getattr(getattr(acoustic_geometry, "enclosure", None), "woofers", ()):
                 from .enclosure_woofers import cut_woofers
-                cut_woofers(built, acoustic_geometry)
+                try:
+                    cut_woofers(built, acoustic_geometry)
+                except UserRefusal as exc:
+                    # These used to be ValueErrors wrapped as MesherError.
+                    # Preserve the automatic fit retry and its final type.
+                    woofer_refusal = exc
+                    raise ValueError(str(exc)) from exc
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
             if isinstance(acoustic_geometry, PointGridHornGeometry):
@@ -542,7 +550,10 @@ def build_mesh_with_info(
         except Exception as exc:
             if isinstance(exc, (TriangleBudgetExceeded, _PremeshTriangleBudgetExceeded)):
                 raise TriangleBudgetExceeded(f"mesh build failed: {exc}") from exc
-            raise MesherError(f"mesh build failed: {exc}") from exc
+            wrapped = MesherError(f"mesh build failed: {exc}")
+            if woofer_refusal is not None:
+                wrapped.user_refusal = woofer_refusal
+            raise wrapped from exc
         finally:
             if raw_path is not None:
                 raw_path.unlink(missing_ok=True)

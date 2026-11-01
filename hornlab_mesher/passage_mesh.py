@@ -1,5 +1,7 @@
 """Admission of every passive component and both sides of narrow passages."""
 
+from .errors import InternalInvariantError
+
 import math
 
 import numpy as np
@@ -107,9 +109,9 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
 
     points_mm, triangles = np.asarray(points_mm), np.asarray(triangles)
     if not assembly.phase_plugs:
-        raise ValueError("passage certification requires passive bodies")
+        raise InternalInvariantError("passage certification requires passive bodies")
     if not np.isfinite(points_mm).all():
-        raise ValueError("passage mesh vertices must be finite")
+        raise InternalInvariantError("passage mesh vertices must be finite")
     xyz = points_mm[triangles]
     edges = np.concatenate(
         [triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]]
@@ -119,12 +121,12 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
     )
     winding = np.bincount(inverse, weights=np.where(edges[:, 0] < edges[:, 1], 1, -1))
     if np.any(counts != 2) or np.any(winding != 0):
-        raise ValueError("passage components must be closed and consistently wound")
+        raise InternalInvariantError("passage components must be closed and consistently wound")
     if np.any(
         np.linalg.norm(np.cross(xyz[:, 1] - xyz[:, 0], xyz[:, 2] - xyz[:, 0]), axis=1)
         <= 1e-12
     ):
-        raise ValueError("passage mesh contains degenerate facets")
+        raise InternalInvariantError("passage mesh contains degenerate facets")
     graph = coo_matrix(
         (np.ones(len(unique)), (unique[:, 0], unique[:, 1])),
         shape=(len(points_mm), len(points_mm)),
@@ -133,10 +135,10 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
     labels = vertex_labels[triangles[:, 0]]
     actual = np.unique(labels)
     if len(actual) != 1 + len(assembly.phase_plugs):
-        raise ValueError("passage mesh component inventory contradicts recipe")
+        raise InternalInvariantError("passage mesh component inventory contradicts recipe")
     active_labels = np.unique(labels[np.asarray(source_tags, dtype=bool)])
     if len(active_labels) != 1:
-        raise ValueError("all moving sources must belong to the enclosure component")
+        raise InternalInvariantError("all moving sources must belong to the enclosure component")
     origin = assembly.parts[0][1]
     remaining = list(assembly.phase_plugs)
     clearances = validate_passages(assembly)
@@ -164,7 +166,7 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
             / 6
         )
         if volume <= 1e-10:
-            raise ValueError(
+            raise InternalInvariantError(
                 "every passage component must have outward orientation and positive volume"
             )
         if label == active_labels[0]:
@@ -235,7 +237,7 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
                 ):
                     matches.append((body, fns))
             if len(matches) != 1:
-                raise ValueError(
+                raise InternalInvariantError(
                     "passage component cannot be uniquely bound to a passive body"
                 )
             body, fns = matches[0]
@@ -262,7 +264,7 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
             # Whole-facet approximation gives a shell error; retain measured
             # volume rather than impose a mesh-independent relative threshold.
         if euler != expected_euler:
-            raise ValueError("passage component genus contradicts canonical topology")
+            raise InternalInvariantError("passage component genus contradicts canonical topology")
         maximum = max(maximum, bound)
         components.append(
             {

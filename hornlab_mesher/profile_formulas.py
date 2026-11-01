@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .errors import ath_refusal, control_refusal
 
 import json
 import math
@@ -161,11 +162,11 @@ def _osse_slot_radii(params: Mapping[str, Any], p: float, slot_len: float) -> tu
         int(round(eval_param(params.get("gcurveType"), p, 0.0))) in {1, 2}
         and eval_param(params.get("gcurveWidth"), p, 0.0) > 0.0
     ):
-        raise ValueError("Imported Slot.Length with an active guiding curve has no qualified construction")
+        raise control_refusal("Imported Slot.Length with an active guiding curve has no qualified construction", 'Straight slot length', 'Clear Straight slot length or turn Guiding curve off.', message='Imported straight slots cannot be combined with an active guiding curve.')
     slope = math.tan(_deg(params.get("a0"), p, 15.5)) if imported else 0.0
     main_radius = r0 + slot_len * slope
     if slot_len > 0.0 and (not math.isfinite(main_radius) or min(r0, main_radius) <= 0.0):
-        raise ValueError("Slot.Length taper reaches a non-positive throat radius")
+        raise control_refusal("Slot.Length taper reaches a non-positive throat radius", 'Straight slot length', 'Shorten Straight slot length or reduce Throat angle.', message='The straight slot taper reaches zero or negative throat radius.')
     return main_radius, slope
 
 
@@ -291,10 +292,8 @@ def _validate_osse_termination(params: Mapping[str, Any], p: float) -> None:
     for name, default in (("n", _DEFAULTS["n"]), ("q", _DEFAULTS["q"])):
         value = eval_param(params.get(name), p, default)
         if not value > 0.0:
-            raise ValueError(
-                f"OSSE termination parameter {name} must be > 0, got {value:g} at "
-                f"phi={math.degrees(p) % 360.0:.1f} deg"
-            )
+            raise control_refusal(f"OSSE termination parameter {name} must be > 0, got {value:g} at "
+                f"phi={math.degrees(p) % 360.0:.1f} deg", 'Termination curvature', 'Keep Termination curvature and Termination smoothness above zero in their expressions.', message='A termination parameter becomes zero or negative around the horn.')
 
 
 def _stretch_x(x: float, s1: float, s2: float) -> float:
@@ -376,7 +375,7 @@ def _validate_osse_stretch_composition(
 def _rotate_meridian(x, y, rot_deg, pivot, r0):
     """Rotate scalar or array coordinates about the nominal throat join."""
     if not math.isfinite(rot_deg):
-        raise ValueError("Rot must evaluate to a finite angle")
+        raise ath_refusal("Rot must evaluate to a finite angle")
     rot = math.radians(rot_deg)
     dx, dy = x - pivot, y - r0
     return (pivot + dx * math.cos(rot) - dy * math.sin(rot),
@@ -587,9 +586,7 @@ def osse_length_config(
     if not raw_L > 0.0:
         # A zero or negative length used to clamp to 0 and build a plain r0
         # tube (plus whatever extension/slot there was) with no warning.
-        raise ValueError(
-            f"OSSE Length must be > 0, got {raw_L:g} at phi={math.degrees(p) % 360.0:.1f} deg"
-        )
+        raise control_refusal(f"OSSE Length must be > 0, got {raw_L:g} at phi={math.degrees(p) % 360.0:.1f} deg", 'Horn length', 'Enter positive Horn length or change its expression to stay above zero.', message='Horn length becomes zero or negative around the horn.')
     ext_len = max(0.0, eval_param(params.get("throatExtLength"), p, 0.0))
     slot_len = max(0.0, eval_param(params.get("slotLength"), p, 0.0))
     length_mode = params.get(
@@ -600,12 +597,10 @@ def osse_length_config(
             # The slot is carved out of Length in this mode, so a slot at least
             # as long as Length leaves no OS-SE section at all: the horn used
             # to become a straight r0 tube without a word.
-            raise ValueError(
-                f"Slot.Length {slot_len:g} mm must be shorter than Length {raw_L:g} mm "
+            raise control_refusal(f"Slot.Length {slot_len:g} mm must be shorter than Length {raw_L:g} mm "
                 "in total length mode, where the slot is carved out of Length "
                 f"(phi={math.degrees(p) % 360.0:.1f} deg); shorten the slot or "
-                "lengthen the horn"
-            )
+                "lengthen the horn", 'Straight slot length', 'Shorten Straight slot length or increase Horn length.', message='Straight slot length is at least as long as Horn length in Total length mode.')
         # ATH adds Throat.Ext.Length on TOP of Length (the main horn and its mouth
         # radius are unchanged) but carves Slot.Length OUT of Length. So the main
         # section loses only the slot, and the total axial grows by the extension.
@@ -651,7 +646,7 @@ def _rosse_length(params: Mapping[str, Any], p: float) -> float:
         return (target**2 - c1) / c2
     discriminant = c2**2 - 4 * c3 * (c1 - target**2)
     if discriminant < 0.0:
-        raise ValueError("R is unreachable from r0 with these R-OSSE parameters")
+        raise control_refusal("R is unreachable from r0 with these R-OSSE parameters", 'Mouth radius', 'Increase Mouth radius or adjust Apex shift, Apex radius and Shape factor in Profile.', message='The R-OSSE profile cannot reach the requested Mouth radius.')
     return (math.sqrt(discriminant) - c2) / (2 * c3)
 
 
@@ -665,10 +660,8 @@ def _throat_extension_start_radius(r0_base: float, ext_len: float, ext_angle: fl
     """
     r0_throat = r0_base - ext_len * math.tan(ext_angle)
     if r0_throat < 0.0:
-        raise ValueError(
-            f"Throat.Ext.Length {ext_len:g} at Throat.Ext.Angle tapers below zero radius "
-            f"(implied driver-end radius {r0_throat:.3f} mm); shorten the extension or reduce the angle"
-        )
+        raise control_refusal(f"Throat.Ext.Length {ext_len:g} at Throat.Ext.Angle tapers below zero radius "
+            f"(implied driver-end radius {r0_throat:.3f} mm); shorten the extension or reduce the angle", 'Throat extension length', 'Shorten Throat extension length or reduce Throat extension angle.', message='The throat extension tapers to zero or negative radius at the driver.')
     return r0_throat
 
 
@@ -835,7 +828,7 @@ def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
     for t in roots(x, lambda t: point(t)[0]):
         z, r = point(t)
         if abs(z) <= tolerance and -tolerance <= r <= driver_radius + tolerance:
-            raise ConfigError("throat stretch main meridian has self-contact with the source/driver ring or disc")
+            raise control_refusal("throat stretch main meridian has self-contact with the source/driver ring or disc", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or adjust Throat extension length.', message='The stretched horn touches its source or driver.')
     for start, end, slope in ((0.0, ext_len, math.tan(ext_angle)),
                               (ext_len, prefix, 0.0)):
         if end <= start:
@@ -847,7 +840,7 @@ def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
         for t in roots(values, distance):
             z, _ = point(t)
             if start - tolerance <= z <= end + tolerance and abs(distance(t)) <= tolerance:
-                raise ConfigError("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints")
+                raise control_refusal("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
 
 
 def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
@@ -857,10 +850,10 @@ def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
     tolerance is the OCC geometric tolerance in millimetres, so endpoint
     roundoff cannot let two rings reach a consumer as coincident topology.
     """
-    from .config_parser import ConfigError
+    from .errors import InternalInvariantError
 
     if not np.all(np.isfinite(points)):
-        raise ConfigError("throat stretch composite meridian has non-finite points")
+        raise InternalInvariantError("throat stretch composite meridian has non-finite points")
     tolerance = 1e-7
     starts, ends = points[:-1], points[1:]
     delta = ends - starts
@@ -900,7 +893,7 @@ def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
             point_distance(b, starts[i], np.broadcast_to(delta[i], directions.shape)),
         ]) <= tolerance
         if np.any(crossing | contact):
-            raise ConfigError("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)")
+            raise control_refusal("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or soften the profile bend.', message='The stretched horn intersects itself or its source.')
 
 
 def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float64],
@@ -923,7 +916,7 @@ def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float
         fraction = d0[candidates] / (d0[candidates] - d1[candidates])
         crossing_x = x[:-1][candidates] + fraction * (x[1:][candidates] - x[:-1][candidates])
         if np.any((crossing_x > start) & (crossing_x < end)):
-            raise ConfigError("throat stretch main meridian intersects the extension/slot prefix")
+            raise control_refusal("throat stretch main meridian intersects the extension/slot prefix", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
 
 
 def _rosse_main_curve(
@@ -954,7 +947,7 @@ def _rosse_tmax(params: Mapping[str, Any]) -> float:
 
     t_max = float(eval_param(params.get("tmax"), 0.0, 1.0))
     if not (math.isfinite(t_max) and t_max > 0.0):
-        raise ValueError(f"R-OSSE tmax must be > 0, got {t_max!r}")
+        raise control_refusal(f"R-OSSE tmax must be > 0, got {t_max!r}", 'Truncation limit', 'Enter a positive Truncation limit in Profile.', message='Truncation limit is zero or negative.')
     return t_max
 
 
@@ -1331,20 +1324,18 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         coeffs = [float(eval_param(c, 0.0, 0.0)) for c in params["icw_coeffs"]]
         S = _icw_float(params, "icw_S")
         if S is None:
-            raise ValueError(
-                "ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)"
-            )
+            raise control_refusal("ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)", 'Direct curve arc length', 'Enter Direct curve arc length in Profile.', message='The imported ICW coefficients need an arc length.')
         coeffs_arr = np.asarray(coeffs, dtype=np.float64)
         # Direct mode bypasses solve_icw's feasibility gate, so validate the raw inputs and the
         # sampled meridian here. Otherwise a degenerate input (r0<=0, S<=0, non-finite coeffs, or
         # coeffs that drive the radius negative) builds a nonphysical curve that the caller would
         # score as valid instead of routing it to the infeasible/penalty path.
         if not np.all(np.isfinite(coeffs_arr)):
-            raise ValueError("ICW direct mode: icw_coeffs must all be finite")
+            raise control_refusal("ICW direct mode: icw_coeffs must all be finite", 'Imported ICW coefficients', 'Correct the imported ICW coefficient values to be finite before importing again.', message='A direct curvature coefficient is not finite.')
         if not (S > 0.0):
-            raise ValueError(f"ICW direct mode: icw_S must be > 0 mm, got {S}")
+            raise control_refusal(f"ICW direct mode: icw_S must be > 0 mm, got {S}", 'Direct curve arc length', 'Enter a positive Direct curve arc length in Profile.', message='Direct curve arc length is zero or negative.')
         if not (r0 > 0.0):
-            raise ValueError(f"ICW direct mode: r0 must be > 0 mm, got {r0}")
+            raise control_refusal(f"ICW direct mode: r0 must be > 0 mm, got {r0}", 'Throat radius', 'Enter a positive Throat radius in Profile.', message='Throat radius is zero or negative.')
         curve = ICWCurve(
             coeffs=coeffs_arr,
             S=float(S),
@@ -1361,10 +1352,8 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
             and np.all(np.isfinite(samp.r))
             and np.all(samp.r > 0.0)
         ):
-            raise ValueError(
-                "ICW direct mode: sampled meridian is non-finite or has non-positive radius "
-                "(degenerate icw_coeffs / icw_S)"
-            )
+            raise control_refusal("ICW direct mode: sampled meridian is non-finite or has non-positive radius "
+                "(degenerate icw_coeffs / icw_S)", 'Imported ICW coefficients', 'Correct the imported ICW coefficients or change Direct curve arc length so the radius stays above zero.', message='The direct curve reaches an invalid or nonpositive radius.')
         _icw_cache_store(key, curve)
         return curve
 
@@ -1374,7 +1363,7 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
     n_coeff_val = _icw_float(params, "n_coeff")
     coverage = _icw_float(params, "coverage_angle", "coverage_angle_deg")
     if coverage is not None and coverage < 0.0:
-        raise ValueError("coverage_angle must be non-negative; use 0 to disable coverage")
+        raise control_refusal("coverage_angle must be non-negative; use 0 to disable coverage", 'Coverage angle', 'Enter a nonnegative Coverage angle; use zero to turn coverage off.', message='Coverage angle is negative.')
     coverage_on = coverage is not None and coverage > 0.0
 
     target_kwargs: dict[str, Any] = {
@@ -1426,9 +1415,7 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         if x_setback is not None:
             target_kwargs["x_setback"] = float(x_setback)
     else:
-        raise ValueError(
-            f"ICW termination must be 'flat_baffle' or 'rollback', got {termination!r}"
-        )
+        raise control_refusal(f"ICW termination must be 'flat_baffle' or 'rollback', got {termination!r}", 'Termination', 'Choose Flat baffle or Rollback in Termination.', message='The ICW termination is unavailable.')
 
     targets = ICWTargets(**target_kwargs)
     solve_kwargs: dict[str, Any] = {}
@@ -1446,15 +1433,13 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
             solve_kwargs["n_coeff"] = n_coeff_int
     curve, report = solve_icw(targets, **solve_kwargs)
     if not report.feasible:
-        raise ValueError(
-            "ICW target set is infeasible: "
+        raise control_refusal("ICW target set is infeasible: "
             + "; ".join(report.violations)
             + (
                 f" (hint: {report.suggested_relaxation})"
                 if report.suggested_relaxation
                 else ""
-            )
-        )
+            ), 'Profile', 'Relax Mouth radius, Profile length or Coverage angle in Profile; for a rollback, also adjust Rollback depth and Tip setback.', message='The requested ICW targets cannot form a feasible profile.')
     _icw_cache_store(key, curve)
     return curve
 
@@ -1493,14 +1478,14 @@ def lookup_profile_array(params: Mapping[str, Any]) -> NDArray[np.float64]:
 
     raw = params.get("lookupProfile", params.get("lookup_profile"))
     if raw is None:
-        raise ValueError("LOOKUP formula requires a lookupProfile of [z, r] pairs")
+        raise control_refusal("LOOKUP formula requires a lookupProfile of [z, r] pairs", 'Lookup profile points', 'Add at least two Position and Radius pairs in Lookup profile points.', message='The lookup profile has no usable points.')
     lookup = np.asarray(raw, dtype=np.float64)
     if lookup.ndim != 2 or lookup.shape[1] != 2 or lookup.shape[0] < 2:
-        raise ValueError("lookupProfile must be an array of at least two [z, r] pairs")
+        raise control_refusal("lookupProfile must be an array of at least two [z, r] pairs", 'Lookup profile points', 'Add at least two Position and Radius pairs in Lookup profile points.', message='The lookup profile needs at least two point rows.')
     if not np.all(np.isfinite(lookup)):
-        raise ValueError("lookupProfile must contain only finite values")
+        raise control_refusal("lookupProfile must contain only finite values", 'Lookup profile points', 'Enter finite Position and Radius values in Lookup profile points.', message='A lookup profile point is not finite.')
     if np.any(np.diff(lookup[:, 0]) <= 0.0):
-        raise ValueError("lookupProfile z values must be strictly increasing")
+        raise control_refusal("lookupProfile z values must be strictly increasing", 'Lookup profile points', 'Put Lookup profile points in increasing Position order without duplicates.', message='Lookup profile positions do not increase from throat to mouth.')
     return lookup
 
 

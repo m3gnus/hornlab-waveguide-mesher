@@ -30,3 +30,6 @@ include = ["hornlab_mesher*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.setuptools.package-data]
+hornlab_mesher = ["control_labels.json"]

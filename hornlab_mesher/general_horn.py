@@ -4,6 +4,8 @@ The exact circular revolution intentionally removes the old tensor patch's
 angular circle approximation. It never replaces the nonlinear meridian by a cone.
 """
 
+from .errors import control_refusal
+
 import math
 from dataclasses import dataclass
 from functools import cached_property
@@ -32,13 +34,13 @@ class GeneralHornWall:
                 or not 0 <= self.circle_correction_bound_mm <= .15):
             raise ValueError("original angular circle fit correction exceeds 0.15 mm; refine the design angular sampling before attachment; for acoustic fits use finer throat/mouth resolutions in millimetres (AngularSegments may be overridden)")
         if type(self.degree) is not int or not 1 <= self.degree <= 3:
-            raise ValueError("general horn spline degree must be 1, 2 or 3")
+            raise control_refusal('general horn spline degree must be 1, 2 or 3', 'Horn configuration', 'Copy the current horn profile again, or use spline degree 1, 2 or 3 in the pasted Horn configuration.', message='General horn spline degree must be 1, 2 or 3.')
         if (not isinstance(self.knots, (tuple, list)) or not isinstance(self.poles_mm, (tuple, list))
                 or len(self.knots) > 4100
                 or any(type(x) not in (int, float) for x in self.knots)
                 or any(not isinstance(p, (tuple, list)) or len(p) != 2
                        or any(type(x) not in (int, float) for x in p) for p in self.poles_mm)):
-            raise ValueError("general horn spline coordinates must be finite numeric arrays")
+            raise control_refusal('general horn spline coordinates must be finite numeric arrays', 'Horn configuration', 'Copy the current horn profile again, or enter finite knot and pole coordinates in the pasted Horn configuration.', message='General horn spline coordinates must be finite numeric arrays.')
         knots, poles = np.asarray(self.knots), np.asarray(self.poles_mm)
         if (knots.ndim != 1 or poles.ndim != 2 or poles.shape[1] != 2
                 or not 2 <= len(poles) <= 4096
@@ -48,14 +50,14 @@ class GeneralHornWall:
                 or tuple(knots[:self.degree + 1]) != (0,) * (self.degree + 1)
                 or tuple(knots[-self.degree - 1:]) != (1,) * (self.degree + 1)
                 or np.any(poles[:, 0] <= 0) or abs(poles[0, 1]) > 1e-9):
-            raise ValueError("invalid canonical general horn spline")
+            raise control_refusal('invalid canonical general horn spline', 'Horn configuration', 'Copy the current horn profile again, or correct the knot and pole arrays in the pasted Horn configuration.', message='Invalid canonical general horn spline.')
         if self.formula not in ("OSSE", "ROSSE", "R-OSSE", "ICW", "FREEFORM"):
-            raise ValueError("unsupported general horn family")
+            raise control_refusal('unsupported general horn family', 'Horn configuration', 'Use OSSE, R-OSSE, ICW or FREEFORM for the attached horn.', message='Unsupported general horn family.')
         object.__setattr__(self, "knots", tuple(float(x) for x in knots))
         object.__setattr__(self, "poles_mm", tuple(tuple(float(x) for x in p) for p in poles))
         _, multiplicities = np.unique(knots[self.degree + 1:-self.degree - 1], return_counts=True)
         if np.any(multiplicities > self.degree):
-            raise ValueError("general horn interior knots must preserve meridian continuity")
+            raise control_refusal('general horn interior knots must preserve meridian continuity', 'Horn configuration', 'Copy the current horn profile again, or reduce repeated interior knots in the pasted Horn configuration.', message='General horn interior knots must preserve meridian continuity.')
         # A monotone meridian coordinate excludes self intersections while
         # allowing ordinary R-OSSE axial rollback with increasing radius.
         forward_z = all(np.min(np.diff(b[:, 1])) >= -1e-10 and b[-1, 1] > b[0, 1]
@@ -73,7 +75,7 @@ class GeneralHornWall:
                              bounds=[(-1, 1), (-1, 1), (0, None)], method="highs")
             if (not result.success or result.x[2] <= 1e-12
                     or float(np.min(tangents @ result.x[:2])) <= 1e-12):
-                raise ValueError("general horn attachment requires a provably simple meridian; this folded curve has no monotone projection")
+                raise control_refusal('general horn attachment requires a provably simple meridian; this folded curve has no monotone projection', 'Profile', 'Adjust the profile so it does not fold back before attaching it.', message='General horn attachment requires a provably simple meridian; this folded curve has no monotone projection.')
 
     @classmethod
     def from_config(cls, config):
@@ -88,16 +90,16 @@ class GeneralHornWall:
                 or g.outer_points is not None or g.enclosure is not None
                 or g.infinite_baffle or g.interfaces or g.vertical_offset_mm
                 or g.topology_mode != "acoustic"):
-            raise ValueError("general horn attachment requires a full bare resolved horn; existing shells, interfaces, placement, symmetry and authored terminals must be composed explicitly")
+            raise control_refusal('general horn attachment requires a full bare resolved horn; existing shells, interfaces, placement, symmetry and authored terminals must be composed explicitly', 'Profile', 'Use a full circular horn with Bare shell in Mounting, and remove symmetry cuts and added terminals before attaching it.', message='General horn attachment requires a full bare resolved horn; existing shells, interfaces, placement, symmetry and authored terminals must be composed explicitly.')
         xyz = np.asarray(g.inner_points)
         r, z = np.linalg.norm(xyz[..., :2], axis=-1), xyz[..., 2]
         if np.max(np.ptp(r, axis=0)) > 1e-8 or np.max(np.ptp(z, axis=0)) > 1e-8:
-            raise ValueError("general horn attachment requires a rotational wall and circular coaxial rims; noncircular or azimuth-varying geometry is unsupported")
+            raise control_refusal('general horn attachment requires a rotational wall and circular coaxial rims; noncircular or azimuth-varying geometry is unsupported', 'Profile', 'Use circular cross-sections and constant profile values around the horn before attaching it.', message='General horn attachment requires a rotational wall and circular coaxial rims; noncircular or azimuth-varying geometry is unsupported.')
         # Also bind the axis and angular rays; equal radii alone cannot prove this.
         directions = xyz[..., :2] / r[..., None]
         if (np.max(np.ptp(directions, axis=1)) > 1e-9
                 or np.linalg.norm(xyz[:, 0, :2].mean(axis=0)) > 1e-8):
-            raise ValueError("general horn attachment requires coaxial circular rings")
+            raise control_refusal('general horn attachment requires coaxial circular rings', 'Profile', 'Use circular cross-sections centred on the horn axis before attaching it.', message='General horn attachment requires coaxial circular rings.')
         meridian = np.column_stack((r[0], z[0] - z[0, 0]))
         degree = min(3, len(meridian) - 1)
         if g.surface_fit == "interpolate":
@@ -125,7 +127,7 @@ class GeneralHornWall:
         value = dict(value)
         version = value.pop("version", None)
         if type(version) is not int or version != 1:
-            raise ValueError("unsupported general horn wall version")
+            raise control_refusal('unsupported general horn wall version', 'Horn configuration', 'Open the horn in the WG version that saved it, then copy its current profile again.', message='Unsupported general horn wall version.')
         # Validate the version independently rather than accepting future payloads.
         return cls(**value)
 
@@ -218,7 +220,7 @@ class GeneralHornWall:
         """Lower bound to every finite body edge, including inlet/outlet faces."""
         zmid = (body.z0_mm + body.z1_mm) / 2
         if body.radius(zmid) >= self.radius_at_z(zmid):
-            raise ValueError("passive body lies outside the general horn")
+            raise control_refusal('passive body lies outside the general horn', 'Profile', 'Reduce the phase plug radii or move its end planes inside the horn.', message='Passive body lies outside the general horn.')
         a, b = self.chords[:, 0], self.chords[:, 1]
         direction = b - a
         best = math.inf

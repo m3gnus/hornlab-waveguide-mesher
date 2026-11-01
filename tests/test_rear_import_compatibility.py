@@ -518,6 +518,7 @@ def test_imported_rear_nonfinite_data_is_refused(value,field):
 @pytest.mark.parametrize('topology', ['acoustic','legacy'])
 def test_scaled_near_planar_sampling_route_disagreement_is_explicit_refusal(quadrants,topology):
     cfg=near_planar_config()
+    cfg[TEXT_IMPORT_VERSION_KEY]='ath-2026-09a-v2'
     cfg['scale']=0.1
     cfg['mesh']['wallThickness']=0.5
     cfg['mesh']['quadrants']=quadrants
@@ -597,7 +598,7 @@ REGRESSION_CASES = ['base', 'stretch', 'near', 'corner', 'bare', 'enclosure',
 
 @pytest.mark.parametrize('name', REGRESSION_CASES)
 @pytest.mark.parametrize('version,fixture', [('ath-2026-08c-v1', 'rear-v1.npz'),
-                                            (TEXT_IMPORT_VERSION, 'rear-imported.npz')])
+                                            ('ath-2026-09a-v2', 'rear-imported.npz')])
 def test_versioned_imported_grids_match_pinned_baselines(name, version, fixture):
     cfg = regression_config(name)
     cfg[TEXT_IMPORT_VERSION_KEY] = version
@@ -609,7 +610,7 @@ def test_versioned_imported_grids_match_pinned_baselines(name, version, fixture)
 @pytest.mark.parametrize('name,lod', [('corner', 'coarse'), ('corner', 'fine'),
                                     ('bare', 'coarse'), ('enclosure', 'coarse'), ('infinite-baffle', 'coarse')])
 @pytest.mark.parametrize('version,fixture', [('ath-2026-08c-v1', 'rear-v1.npz'),
-                                            (TEXT_IMPORT_VERSION, 'rear-imported.npz')])
+                                            ('ath-2026-09a-v2', 'rear-imported.npz')])
 def test_versioned_imported_previews_match_pinned_baselines(name, lod, version, fixture):
     cfg = regression_config(name)
     cfg[TEXT_IMPORT_VERSION_KEY] = version

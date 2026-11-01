@@ -8,6 +8,9 @@ translation layer.
 
 from __future__ import annotations
 
+from .controls import control_label
+from .errors import ath_refusal, family_refusal, UserRefusal, control_refusal, numeric_refusal
+
 import tempfile
 
 import logging
@@ -165,9 +168,9 @@ def _float(
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{names[0]} must be numeric, got {value!r}") from exc
+        raise numeric_refusal(names[0], f"{names[0]} must be numeric, got {value!r}", integer=False) from exc
     if not np.isfinite(out):
-        raise ConfigError(f"{names[0]} must be finite, got {value!r}")
+        raise numeric_refusal(names[0], f"{names[0]} must be finite, got {value!r}", integer=False)
     return out
 
 
@@ -180,9 +183,9 @@ def _optional_float(
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{names[0]} must be numeric, got {value!r}") from exc
+        raise numeric_refusal(names[0], f"{names[0]} must be numeric, got {value!r}", integer=False) from exc
     if not np.isfinite(out):
-        raise ConfigError(f"{names[0]} must be finite, got {value!r}")
+        raise numeric_refusal(names[0], f"{names[0]} must be finite, got {value!r}", integer=False)
     return out
 
 
@@ -190,11 +193,9 @@ def _numeric_param(value: Any, *, name: str) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(
-            f"{name} must be numeric when deriving a driver adapter, got {value!r}"
-        ) from exc
+        raise numeric_refusal(name, f"{name} must be numeric when deriving a driver adapter, got {value!r}", integer=False) from exc
     if not np.isfinite(out):
-        raise ConfigError(f"{name} must be finite, got {value!r}")
+        raise numeric_refusal(name, f"{name} must be finite, got {value!r}", integer=False)
     return out
 
 
@@ -216,14 +217,14 @@ def _scalar_or_expr(
 
 def _integer(value: Any, *, name: str) -> int:
     if isinstance(value, (bool, np.bool_)):
-        raise ConfigError(f"{name} must be an integer, got {value!r}")
+        raise numeric_refusal(name, f"{name} must be an integer, got {value!r}", integer=True)
     try:
         out = int(value)
         numeric = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ConfigError(f"{name} must be an integer, got {value!r}") from exc
+        raise numeric_refusal(name, f"{name} must be an integer, got {value!r}", integer=True) from exc
     if not np.isfinite(numeric) or numeric != out:
-        raise ConfigError(f"{name} must be an integer, got {value!r}")
+        raise numeric_refusal(name, f"{name} must be an integer, got {value!r}", integer=True)
     return out
 
 
@@ -251,6 +252,8 @@ def _normalise_formula(value: Any) -> str:
     try:
         return _normalise_formula_common(value)
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from None
 
 
@@ -332,16 +335,14 @@ def _validate_coverage_angles(params: Mapping[str, Any], formula: str) -> None:
         try:
             minimum, maximum = _coverage_angle_extrema(str(params[key]))
         except ValueError as exc:
-            raise ConfigError(f"{label} ({key}): {exc}. Change the expression.") from exc
+            raise control_refusal(f"{label} ({key}): {exc}. Change the expression.", label, f"Change {label} to a finite expression within its allowed angles.", message=f"{label} contains an expression WG cannot evaluate.") from exc
         offending = maximum if maximum[0] >= 90 else minimum if minimum[0] <= lower else None
         if offending is not None:
             angle, p = offending
             requirement = "below 90°" if key == "a" and angle >= 90 else f"above {lower}° and below 90°"
-            raise ConfigError(
-                f"{label} ({key}) reaches {angle:.1f}° near p = {math.degrees(p):.1f}°; "
+            raise control_refusal(f"{label} ({key}) reaches {angle:.1f}° near p = {math.degrees(p):.1f}°; "
                 f"{formula} needs it {requirement} everywhere. "
-                f"Change the expression so it stays {requirement}."
-            )
+                f"Change the expression so it stays {requirement}.", label, f"Change {label} so it stays {requirement}.", message=f"{label} reaches {angle:.1f}°; it must stay {requirement} everywhere.")
 
 
 def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:
@@ -350,6 +351,7 @@ def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:
             if name in source and source[name] is not None:
                 return True
     return False
+
 
 
 def _validate_formula_specific_keys(
@@ -375,11 +377,11 @@ def _validate_formula_specific_keys(
             "s2",
         )
         if _has_any(profile, config, names=names):
-            raise ConfigError(
+            raise family_refusal(
                 "formula FREEFORM does not accept OSSE/R-OSSE profile coefficient keys"
             )
         if "h" in profile and profile["h"] is not None:
-            raise ConfigError(
+            raise family_refusal(
                 "formula FREEFORM does not accept OSSE profile coefficient key h"
             )
         foreign_icw = sorted(
@@ -391,7 +393,7 @@ def _validate_formula_specific_keys(
             }
         )
         if foreign_icw:
-            raise ConfigError(
+            raise family_refusal(
                 "formula FREEFORM does not accept ICW profile coefficient keys: "
                 + ", ".join(foreign_icw)
             )
@@ -400,7 +402,7 @@ def _validate_formula_specific_keys(
     if formula == "OSSE":
         names = ("R_mm", "R", "tmax", "m", "r", "b")
         if _has_any(profile, config, names=names):
-            raise ConfigError(
+            raise family_refusal(
                 "R-OSSE-only profile keys are not valid with formula OSSE"
             )
         return
@@ -425,7 +427,7 @@ def _validate_formula_specific_keys(
             "b",
         )
         if _has_any(profile, config, names=names):
-            raise ConfigError("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
+            raise family_refusal("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
         # The lookup profile is the whole meridian: nothing prepends a throat
         # extension, slot or driver adapter to it, and no coverage/flare
         # coefficient shapes it. These were accepted and then silently ignored
@@ -453,7 +455,7 @@ def _validate_formula_specific_keys(
             if _has_any(profile, config, names=(name,))
         )
         if ignored:
-            raise ConfigError(
+            raise family_refusal(
                 "formula LOOKUP does not support "
                 + ", ".join(ignored)
                 + ": the lookupProfile defines the whole meridian, so these keys "
@@ -476,7 +478,7 @@ def _validate_formula_specific_keys(
         # top-level keys and are intentionally not part of this reject set.
         names = ("n", "s", "s1", "s2", "rot_deg", "rot", "m", "r", "b", "tmax")
         if _has_any(profile, config, names=names):
-            raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
+            raise family_refusal("OSSE/R-OSSE shape keys are not valid with formula ICW")
         return
 
     names = (("L_mm", "L", "n", "s") if uses_v3_text_import_geometry(config)
@@ -487,7 +489,7 @@ def _validate_formula_specific_keys(
         # A numeric zero rotation is harmless, just as on the text path.
         names = ("L_mm", "L", "n", "s")
     if _has_any(profile, config, names=names):
-        raise ConfigError("OSSE-only profile keys are not valid with formula R-OSSE")
+        raise family_refusal("OSSE-only profile keys are not valid with formula R-OSSE")
 
 
 def _static_float_or_none(value: Any) -> float | None:
@@ -636,7 +638,7 @@ def _validate_formula_features(
             cross, profile, config, names=("aspect_ratio", "aspectRatio"), default=1.0
         )
         if not _cross_section_is_circular(exponent, aspect_ratio):
-            raise ConfigError(GCURVE_CROSS_SECTION_CONFLICT)
+            raise control_refusal(GCURVE_CROSS_SECTION_CONFLICT, "Guiding curve mode", "Set Cross-section exponent to 2 and Cross-section aspect ratio to 1, or disable Guiding curve mode.", message="Guiding curves need a circular base cross-section.")
 
 
 def _enc_depth_mm(
@@ -725,7 +727,7 @@ def _enclosure_from_config(
     depth = _enc_depth_mm(config, mesh, enclosure, formula)
     if depth <= 0.0:
         if enclosure.get("woofers"):
-            raise ConfigError("enclosure.woofers requires positive enclosure depth")
+            raise control_refusal("enclosure.woofers requires positive enclosure depth", 'Enclosure depth', 'Increase Enclosure depth above zero, or disable the woofers.', message='Woofers need an enclosure with positive depth.')
         return None
     from .enclosure_woofers import woofer_from_config
 
@@ -849,7 +851,7 @@ def _apply_driver_adapter(
             "driver adapter requires both driver and waveguide throat diameters"
         )
     if driver_radius <= 0.0 or waveguide_radius <= 0.0:
-        raise ConfigError("driver and waveguide throat diameters must be > 0")
+        raise control_refusal("driver and waveguide throat diameters must be > 0", 'Driver exit diameter', 'Enter positive Driver exit diameter and Body throat radius.', message='The driver or throat diameter is zero or negative.')
     if waveguide_radius < driver_radius:
         raise ConfigError(
             "driver adapter cannot shrink from waveguide throat to driver throat"
@@ -872,7 +874,7 @@ def _apply_driver_adapter(
         common.get("throatExtAngle", 0.0), name="throatExtAngle"
     )
     if ext_len <= 0.0 and abs(ext_angle_deg) <= 1.0e-12:
-        raise ConfigError("driver adapter requires throatExtLength or throatExtAngle")
+        raise control_refusal("driver adapter requires throatExtLength or throatExtAngle", 'Throat extension length', 'Set Throat extension length or Throat extension angle.', message='The driver adapter needs a length or angle.')
     if ext_len <= 0.0:
         tan_angle = np.tan(np.deg2rad(ext_angle_deg))
         if tan_angle <= 1.0e-12:
@@ -914,7 +916,7 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
     ]
     if names:
         joined = "/".join(names)
-        raise ConfigError(f"formula ICW does not support throat extension ({joined})")
+        raise control_refusal(f"formula ICW does not support throat extension ({joined})", 'Throat extension length', 'Clear Throat extension length and Throat extension angle, or choose a different horn family.', message='ICW cannot use a throat extension.')
 
 
 def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
@@ -971,6 +973,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     try:
         adapter = normalize_adapter(_pick(config, profile, names=("throat_adapter",), default=None))
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from exc
     if adapter is not None:
         straight_aliases = (
@@ -1023,9 +1027,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         explicit_depth = (_has_any(enclosure, mesh, names=("depth_mm", "depth", "encDepth"))
                           or _has_any(config, names=depth_names))
         if explicit_depth and _enc_depth_mm(config, mesh, enclosure, formula) <= 0.0:
-            raise ConfigError(
-                "ATH enclosure depth <= 0 is unsupported: zero-thickness enclosure sheets are not implemented"
-            )
+            raise UserRefusal("ATH text", "The ATH enclosure has zero or negative Depth.",
+                "Set “Depth” above zero in “Mesh.Enclosure”, or remove “Mesh.Enclosure” from the ATH text.",
+                diagnostic="ATH enclosure depth <= 0 is unsupported: zero-thickness enclosure sheets are not implemented")
     mode = _normalise_mode(config, mesh, enclosure, formula)
     if adapter is not None and mode != "bare":
         raise ConfigError("Curved adapter refused: authored mode currently requires bare mode.")
@@ -1037,10 +1041,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             quadrants = _normalise_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
             px, py, nx, ny = enclosure_obj.dim_mm
             if (quadrants in {"1", "14"} and px != nx) or (quadrants in {"1", "12"} and py != ny):
-                raise ConfigError("reduced domain requires symmetric enclosure Dim on every cut axis")
+                raise control_refusal("reduced domain requires symmetric enclosure Dim on every cut axis", 'Enclosure and placement', 'Use matching opposite enclosure margins, or choose Full model in Symmetry.', message='The enclosure margins do not match across a symmetry plane.')
         enc_depth = enclosure_obj.depth_mm
     elif mode == "enclosure":
-        raise ConfigError("enclosure mode requires enclosure.depth_mm > 0")
+        raise control_refusal("enclosure mode requires enclosure.depth_mm > 0", 'Enclosure depth', 'Increase Enclosure depth above zero.', message='The enclosure has zero or negative depth.')
 
     default_wall = (0.0 if mode in {"bare", "enclosure", "infinite-baffle"} else
                     5.0 if imported_geometry and (mesh.get("athRoundover") or mesh.get("athRearShape") == 3) else 6.0)
@@ -1065,6 +1069,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             if wall_thickness != input_wall:
                 logger.warning("[hornlab-mesher] Mesh.RearShape = 3 clamps Mesh.WallThickness to %g mm", wall_thickness)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     z_map_points = _pick(
         mesh,
@@ -1090,6 +1096,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 length_segments, z_map_points, prefer_endpoint_controls=imported_geometry
             )
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     default_sampling_mode = "zmap" if z_map_points is not None else "ath-default-zmap" if imported_defaults else "uniform"
     angular_segments = _int(
@@ -1312,24 +1320,24 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
     common.update(ath_controls)
     if "athAxialScale" in config:
         if not v3_defaults:
-            raise ConfigError("Scale.Z requires ath-2026-09a-v3; explicitly reimport a copy with that stamp to change its geometry")
+            raise ath_refusal("Scale.Z requires ath-2026-09a-v3; explicitly reimport a copy with that stamp to change its geometry")
         axis = _numeric_param(config["athAxialScale"], name="Scale.Z")
         if not math.isfinite(axis) or axis <= 0:
-            raise ConfigError("Scale.Z must be a positive finite constant")
+            raise ath_refusal("Scale.Z must be a positive finite constant")
         if common.get("athRoundover") or common.get("athRearShape") == 3:
-            raise ConfigError("Scale.Z with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+            raise ath_refusal("Scale.Z with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
         common["athAxialScale"] = axis
     ext_segments = _pick(mesh, config, names=("athThroatExtSegments",), default=None)
     if ext_segments is not None:
         if not v3_defaults:
-            raise ConfigError("Mesh.ThroatExtSegments requires ath-2026-09a-v3; explicitly reimport a copy with that stamp to change its geometry")
+            raise ath_refusal("Mesh.ThroatExtSegments requires ath-2026-09a-v3; explicitly reimport a copy with that stamp to change its geometry")
         if formula == "OSSE" and not uses_current_ath_axial_sampling(config):
-            raise ConfigError("Mesh.ThroatExtSegments requires the current ATH OSSE sampling rule")
+            raise ath_refusal("Mesh.ThroatExtSegments requires the current ATH OSSE sampling rule")
         from .text_import import ath_throat_extension_segments
         try:
             common["athThroatExtSegments"] = ath_throat_extension_segments({"athThroatExtSegments": ext_segments})
         except ValueError as exc:
-            raise ConfigError(str(exc)) from exc
+            raise ath_refusal(str(exc)) from exc
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True
     _apply_driver_adapter(common, profile, config)
@@ -1455,7 +1463,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         if v3_defaults and _has_any(profile, config, names=("rot_deg", "rot")):
             common["rot"] = _scalar_or_expr(profile, config, names=("rot_deg", "rot"), default=0)
             if isinstance(common["rot"], (int, float)) and not math.isfinite(common["rot"]):
-                raise ConfigError("Rot must be finite")
+                raise ath_refusal("Rot must be finite")
         for key in ("m", "r", "b"):
             value = _pick(profile, config, names=(key,), default=None)
             if value is None and v2_defaults:
@@ -1471,6 +1479,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         try:
             _validate_freeform_config(common)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
 
     if formula in {"OSSE", "R-OSSE"}:
@@ -1492,6 +1502,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         try:
             construction = resolve_adapter(common)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
         common["construction_fingerprint"] = construction.fingerprint
     if common.get("athRoundover") or common.get("athRearShape") == 3:
@@ -1499,6 +1511,8 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         try:
             validate_combinations(common)
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     return common, formula, mode
 
@@ -1652,7 +1666,7 @@ def _mesh_density_from_config(
     )
     deviation = mesh.get("surface_deviation_mm")
     if isinstance(deviation, bool):
-        raise ConfigError("surface_deviation_mm must be a finite positive number or null")
+        raise control_refusal("surface_deviation_mm must be a finite positive number or null", 'Max surface deviation', 'Enter a positive finite Max surface deviation, or turn it Off.', message='Max surface deviation must be positive when enabled.')
     density = MeshDensity(
         surface_deviation_mm=_optional_float(mesh, names=("surface_deviation_mm",)),
         throat_res_mm=_float(
@@ -1714,11 +1728,13 @@ def _mesh_density_from_config(
     try:
         validate_mesh_density(density)
     except ValueError as exc:
+        if isinstance(exc, UserRefusal):
+            raise
         raise ConfigError(str(exc)) from exc
     return density
 
 
-def _num_or_default(value: Any, default: float) -> float:
+def _num_or_default(value: Any, default: float, *, control: str) -> float:
     """Numeric param with an explicit unset check.
 
     ``0`` is a meaningful value for several params (``sourceShape = 0`` is the
@@ -1726,7 +1742,12 @@ def _num_or_default(value: Any, default: float) -> float:
     """
     if value is None or (isinstance(value, str) and not value.strip()):
         return float(default)
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        label = control_label(control)
+        raise control_refusal(str(exc), label, f"Enter a plain number in {label}.",
+                              message=f"{label} needs a plain number.") from exc
 
 
 def _interfaces_from_params(
@@ -1784,7 +1805,7 @@ def _interfaces_from_params(
         requested_last_ring = len(requested_map) - 1
     else:
         requested_last_ring = max(
-            1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring)))
+            1, int(round(_num_or_default(params.get("lengthSegments"), fitted_last_ring, control="lengthSegments")))
         )
     for slice_index, offset in zip(slices, offsets):
         # Imported text configs address grid slices; keep valid indices and ignore
@@ -2005,12 +2026,13 @@ def _check_effective_grid_caps(grid: Mapping[str, Any], density: MeshDensity) ->
         ),
     ):
         if value > limit:
-            raise ConfigError(
+            raise control_refusal(
                 "the acoustic control grid needed for the requested mm resolution "
                 f"(throat {density.throat_res_mm:g} mm, mouth "
                 f"{density.mouth_res_mm:g} mm) is too large: {what} exceeds the "
-                f"limit of {limit:,}. Use a coarser throat/mouth resolution."
-            )
+                f"limit of {limit:,}. Use a coarser throat/mouth resolution.",
+                "Throat mesh resolution", "Increase Throat mesh resolution and Mouth mesh resolution to use a coarser mesh.",
+                message="The requested mesh resolution needs too many surface samples.")
 
 
 def _sampling_failure_message(
@@ -2544,7 +2566,7 @@ def resolve_geometry(
     params, formula, mode = build_geometry_params(config)
     requested_woofers = _section(config, "enclosure").get("woofers")
     if requested_woofers and mode != "enclosure":
-        raise ConfigError("enclosure.woofers requires enclosure mode")
+        raise control_refusal("enclosure.woofers requires enclosure mode", 'Mounting', 'Change Mounting to Waveguide in enclosure, or disable the woofers.', message='Woofers need an enclosure front baffle.')
     if "controlsAdapter" in params:
         from .adapter_controls import resolve
         return resolve(config, params, allow_large_mesh)
@@ -2636,11 +2658,10 @@ def resolve_geometry(
     if mode != "enclosure" and (
         _number_list(params.get("subdomainSlices")) or interface_offsets
     ):
-        raise ConfigError(
-            "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, "
-            "which are only supported for enclosure builds "
-            "(ATH's free-standing two-subdomain construction is not implemented)"
-        )
+        raise control_refusal(
+            "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, which are only supported for enclosure builds",
+            "Mounting", "Remove “Mesh.SubdomainSlices” and “Mesh.InterfaceOffset” from the imported configuration, or choose Waveguide in enclosure in Mounting.",
+            message="Free-standing models cannot include subdomain interfaces.")
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_quadrants(quadrants)
     source_auto_angle_deg = _source_auto_angle_deg(params, formula)
@@ -2711,6 +2732,8 @@ def resolve_geometry(
                     params, density, mesh, topology_mode, inner_points, restored_outer, rear,
                 )
         except ValueError as exc:
+            if isinstance(exc, UserRefusal):
+                raise
             raise ConfigError(str(exc)) from exc
     if formula == "FREEFORM" and freeform_corner_z(freeform_geometry):
         from .corner_wall import CornerWall, corner_geometry_class
@@ -2733,9 +2756,9 @@ def resolve_geometry(
         vertical_offset_mm=float(grid.get("vertical_offset_mm", 0.0) or 0.0),
         freeform_axis_samples_mm=freeform_axis_samples_mm,
         freeform_report=freeform_report,
-        source_shape=int(_num_or_default(params.get("sourceShape"), 1)),
-        source_radius_mm=_num_or_default(params.get("sourceRadius"), -1),
-        source_curv=int(_num_or_default(params.get("sourceCurv"), 0)),
+        source_shape=int(_num_or_default(params.get("sourceShape"), 1, control="sourceShape")),
+        source_radius_mm=_num_or_default(params.get("sourceRadius"), -1, control="sourceRadius"),
+        source_curv=int(_num_or_default(params.get("sourceCurv"), 0, control="sourceCurv")),
         source_auto_angle_deg=source_auto_angle_deg,
         interface_offset_mm=float(interface_offsets[0] if interface_offsets else 0.0),
         interfaces=interfaces,

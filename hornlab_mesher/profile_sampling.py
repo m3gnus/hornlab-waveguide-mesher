@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .errors import ath_refusal, control_refusal
 
 import functools
 import logging
@@ -435,7 +436,7 @@ def _classify_zmap_kind(
     steps = max(1, int(n_length))
     values = _zmap_number_list(z_map_points)
     if not values:
-        raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
+        raise control_refusal("zmap sampling requires zMapPoints/Mesh.ZMapPoints", "Z-map points", 'Enter increasing position pairs in Z-map points, or give one value per station from 0 to 1.', message='Z-map points does not contain a complete axial map.')
     # Versioned ATH imports interpret explicit endpoint pairs as controls.
     # Native maps retain the historical n+1 full-sample precedence. An
     # explicit zMapKind overrides either automatic interpretation.
@@ -459,7 +460,7 @@ def _custom_zmap(
     steps = max(1, int(n_length))
     values = _zmap_number_list(z_map_points)
     if not values:
-        raise ValueError("zmap sampling requires zMapPoints/Mesh.ZMapPoints")
+        raise control_refusal("zmap sampling requires zMapPoints/Mesh.ZMapPoints", "Z-map points", 'Enter increasing position pairs in Z-map points, or give one value per station from 0 to 1.', message='Z-map points does not contain a complete axial map.')
 
     kind = (
         _classify_zmap_kind(steps, values, prefer_endpoint_controls=prefer_endpoint_controls)
@@ -478,15 +479,15 @@ def _custom_zmap(
     if kind == "samples":
         sample_values = np.asarray(values, dtype=np.float64)
         if sample_values.size < 2:
-            raise ValueError("zMapPoints full sample map requires at least 2 values")
+            raise control_refusal("zMapPoints full sample map requires at least 2 values", "Z-map points", 'Enter increasing position pairs in Z-map points, or give one value per station from 0 to 1.', message='Z-map points does not contain a complete axial map.')
         if not np.all(np.isfinite(sample_values)):
-            raise ValueError("zMapPoints must contain finite values")
+            raise control_refusal("zMapPoints must contain finite values", "Z-map points", 'Enter finite values in Z-map points.', message='Z-map points contains a value that is not finite.')
         if not math.isclose(float(sample_values[0]), 0.0, abs_tol=1.0e-12) or not math.isclose(
             float(sample_values[-1]), 1.0, abs_tol=1.0e-12
         ):
-            raise ValueError("zMapPoints full sample map must start at 0 and end at 1")
+            raise control_refusal("zMapPoints full sample map must start at 0 and end at 1", "Z-map points", 'Start Z-map points at 0 and end it at 1.', message='The full Z-map points map does not run from zero to one.')
         if np.any(np.diff(sample_values) < -1.0e-12):
-            raise ValueError("zMapPoints samples must be non-decreasing")
+            raise control_refusal("zMapPoints samples must be non-decreasing", "Z-map points", 'Put Z-map points in increasing input order and keep output values nondecreasing.', message='Z-map points reverses direction or repeats an input position.')
         source_x = np.linspace(0.0, 1.0, sample_values.size, dtype=np.float64)
         out = np.interp(
             np.linspace(0.0, 1.0, steps + 1, dtype=np.float64),
@@ -495,7 +496,7 @@ def _custom_zmap(
         )
     else:
         if len(values) % 2 != 0:
-            raise ValueError("zMapPoints must be x,y control-point pairs or a full n+1 sample map")
+            raise control_refusal("zMapPoints must be x,y control-point pairs or a full n+1 sample map", "Z-map points", 'Enter increasing position pairs in Z-map points, or give one value per station from 0 to 1.', message='Z-map points does not contain a complete axial map.')
         controls = [(float(values[i]), float(values[i + 1])) for i in range(0, len(values), 2)]
         # ATH lists may include either endpoint. Interior-only native lists
         # retain their implicit endpoints, but explicit ones must not be
@@ -503,10 +504,10 @@ def _custom_zmap(
         for x, y in controls:
             if math.isclose(x, 0.0, rel_tol=0.0, abs_tol=1.0e-12):
                 if not math.isclose(y, 0.0, rel_tol=0.0, abs_tol=1.0e-12):
-                    raise ValueError("zMapPoints endpoint at x=0 must be (0,0)")
+                    raise control_refusal("zMapPoints endpoint at x=0 must be (0,0)", "Z-map points", 'Use 0,0 and 1,1 for any explicit endpoint pairs in Z-map points.', message='An endpoint in Z-map points does not map to the matching endpoint.')
             if math.isclose(x, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
                 if not math.isclose(y, 1.0, rel_tol=0.0, abs_tol=1.0e-12):
-                    raise ValueError("zMapPoints endpoint at x=1 must be (1,1)")
+                    raise control_refusal("zMapPoints endpoint at x=1 must be (1,1)", "Z-map points", 'Use 0,0 and 1,1 for any explicit endpoint pairs in Z-map points.', message='An endpoint in Z-map points does not map to the matching endpoint.')
         if not math.isclose(controls[0][0], 0.0, rel_tol=0.0, abs_tol=1.0e-12):
             controls.insert(0, (0.0, 0.0))
         if not math.isclose(controls[-1][0], 1.0, rel_tol=0.0, abs_tol=1.0e-12):
@@ -514,23 +515,23 @@ def _custom_zmap(
         xs = np.asarray([item[0] for item in controls], dtype=np.float64)
         ys = np.asarray([item[1] for item in controls], dtype=np.float64)
         if not np.all(np.isfinite(xs)) or not np.all(np.isfinite(ys)):
-            raise ValueError("zMapPoints must contain finite values")
+            raise control_refusal("zMapPoints must contain finite values", "Z-map points", 'Enter finite values in Z-map points.', message='Z-map points contains a value that is not finite.')
         if np.any(xs < -1.0e-12) or np.any(xs > 1.0 + 1.0e-12):
-            raise ValueError("zMapPoints x values must be within 0..1")
+            raise control_refusal("zMapPoints x values must be within 0..1", "Z-map points", 'Keep all coordinates in Z-map points between 0 and 1.', message='A Z-map points coordinate lies outside zero to one.')
         if np.any(ys < -1.0e-12) or np.any(ys > 1.0 + 1.0e-12):
-            raise ValueError("zMapPoints y values must be within 0..1")
+            raise control_refusal("zMapPoints y values must be within 0..1", "Z-map points", 'Keep all coordinates in Z-map points between 0 and 1.', message='A Z-map points coordinate lies outside zero to one.')
         if np.any(np.diff(xs) <= 1.0e-12):
-            raise ValueError("zMapPoints x values must be strictly increasing")
+            raise control_refusal("zMapPoints x values must be strictly increasing", "Z-map points", 'Put Z-map points in increasing input order and keep output values nondecreasing.', message='Z-map points reverses direction or repeats an input position.')
         if np.any(np.diff(ys) < -1.0e-12):
-            raise ValueError("zMapPoints y values must be non-decreasing")
+            raise control_refusal("zMapPoints y values must be non-decreasing", "Z-map points", 'Put Z-map points in increasing input order and keep output values nondecreasing.', message='Z-map points reverses direction or repeats an input position.')
         out = np.interp(np.linspace(0.0, 1.0, steps + 1, dtype=np.float64), xs, ys)
 
     if not np.all(np.isfinite(out)):
-        raise ValueError("zMapPoints must produce finite samples")
+        raise control_refusal("zMapPoints must produce finite samples", "Z-map points", 'Enter finite values in Z-map points.', message='Z-map points contains a value that is not finite.')
     if len(out) != steps + 1:
-        raise ValueError(f"zMapPoints produced {len(out)} samples; expected {steps + 1}")
+        raise control_refusal(f"zMapPoints produced {len(out)} samples; expected {steps + 1}", "Z-map points", 'Enter increasing position pairs in Z-map points, or give one value per station from 0 to 1.', message='Z-map points does not contain a complete axial map.')
     if np.any(np.diff(out) < -1.0e-12):
-        raise ValueError("zMapPoints samples must be non-decreasing")
+        raise control_refusal("zMapPoints samples must be non-decreasing", "Z-map points", 'Put Z-map points in increasing input order and keep output values nondecreasing.', message='Z-map points reverses direction or repeats an input position.')
     out[0] = 0.0
     out[-1] = 1.0
     return out
@@ -1182,11 +1183,10 @@ def _ath_rosse_morph_factors(
     rate = _morph_rate(params, phi)
     blend = (progress[index + 1 :] - start) / (1.0 - start)
     if start > 1.0 and rate != round(rate) and np.any(blend < 0.0):
-        raise ValueError(
-            "Morph.FixedPart starts this R-OSSE morph beyond the mouth's depth, "
-            f"where Morph.Rate {rate:g} has no real blend (ATH writes NaN). "
-            "Lower Morph.FixedPart or use a whole-number Morph.Rate."
-        )
+        raise control_refusal(
+            f"Morph.FixedPart starts this R-OSSE morph beyond the mouth's depth, where Morph.Rate {rate:g} has no real blend (ATH writes NaN). Lower Morph.FixedPart or use a whole-number Morph.Rate.",
+            "Fixed part", "Lower Fixed part or use a whole number in Morph rate.",
+            message="The morph starts beyond the mouth depth, where this Morph rate cannot blend the profile.")
     factors[index + 1 :] = np.power(blend, rate)
     return factors, index
 
@@ -1844,7 +1844,7 @@ def build_point_grid_arrays(
         raise ValueError("guiding curves are only supported with formula OSSE")
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
-        raise ValueError("lengthSegments must be a positive integer")
+        raise control_refusal('lengthSegments must be a positive integer', 'Surface length samples', 'Enter a positive whole number in Surface length samples.', message='Surface length samples is zero or negative.')
     exponent, aspect_ratio = _cross_section(params)
     if (
         formula == "OSSE"
@@ -2127,7 +2127,7 @@ def build_point_grid_arrays(
     if "athAxialScale" in params:
         axis = float(params["athAxialScale"])
         if not uses_v3_text_import_geometry(params) or not math.isfinite(axis) or axis <= 0:
-            raise ValueError("Scale.Z requires ath-2026-09a-v3 and a positive finite constant; explicitly reimport a copy with the v3 stamp")
+            raise ath_refusal("Scale.Z requires ath-2026-09a-v3 and a positive finite constant; explicitly reimport a copy with the v3 stamp")
         # An explicit ATH Scale.Z replaces global Scale on z; xy still uses
         # Scale. Apply it after morphing, before wall normals/offsets.
         inner[:, :, 2] *= axis / geom_scale
@@ -2219,6 +2219,10 @@ def build_point_grid_arrays(
                     else ""
                 )
                 if note:
+                    from .errors import UserRefusal
+                    if isinstance(exc, UserRefusal):
+                        exc.args = (f"{exc}; {note}",)
+                        raise
                     raise ValueError(f"{exc}; {note}") from exc
                 raise
         else:

@@ -24,15 +24,26 @@ from typing import Any, Mapping
 import numpy as np
 from numpy.typing import NDArray
 
-from ..config_parser import ConfigError
+from ..errors import UserRefusal
 from ..geometry import HornEnclosure
 from ._occ import require_gmsh
 
 logger = logging.getLogger(__name__)
 
 
-class EnclosureBaffleError(ConfigError):
+class EnclosureBaffleError(UserRefusal):
     """The resolved mouth leaves insufficient baffle beside a built wall."""
+
+    def __init__(self, message):
+        problem, separator, step = message.rpartition(". ")
+        if not separator:
+            problem, step = message, "Increase a Left, Right, Top or Bottom margin in Enclosure."
+        super().__init__("Enclosure margins", problem.rstrip(".") + ".", step,
+                         diagnostic=message)
+
+    def __reduce__(self):
+        return (type(self), (str(self),), self.__dict__ | {"args": self.args})
+
 
 
 # Minimum front-baffle ring (mm), also kept clear of the edge roundover.
