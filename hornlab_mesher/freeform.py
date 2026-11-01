@@ -1335,9 +1335,9 @@ def freeform_insert_anchor(
     original = _resolve_plane("H", parsed, *endpoints, force_extended=True)
     z = _finite_float(z, "insert z")
     if z <= parsed.points[0, 0] or z >= parsed.points[-1, 0] or np.any(parsed.points[:, 0] == z):
-        raise control_refusal("FREEFORM insert z must be strictly inside a span, not on an anchor", "Insert anchor", "Choose a point between two existing anchors.", message="The insertion point lies outside a span or on an existing anchor.")
+        raise control_refusal("FREEFORM insert z must be strictly inside a span, not on an anchor", 'Horizontal spline points', "Choose a point between two existing anchors.", message="The insertion point lies outside a span or on an existing anchor.")
     if len(parsed.points) == 64:
-        raise control_refusal("FREEFORM insertion would exceed 64 anchors", "Profile anchors", "Remove an anchor before inserting another.", message="This profile already has 64 anchors.")
+        raise control_refusal("FREEFORM insertion would exceed 64 anchors", 'Horizontal spline points', "Remove an anchor before inserting another.", message="This profile already has 64 anchors.")
     span = int(_plane_span_indices(original, np.asarray(z)))
     controls = _plane_beziers(original)
     s = float(_bezier_parameters_at_z(controls[span:span+1], np.asarray([z]))[0])
@@ -2415,14 +2415,14 @@ def _build_freeform_geometry(
         rel_tol=0.0,
         abs_tol=z_tolerance,
     ):
-        raise control_refusal("FREEFORM profileH and profileV must share the same first anchor z", 'Profile anchors', 'Align the first anchors of Horizontal profile and Vertical profile.', message='Horizontal and Vertical profiles start at different positions.')
+        raise control_refusal("FREEFORM profileH and profileV must share the same first anchor z", 'Horizontal spline points', 'Align the first anchors of Horizontal profile and Vertical profile.', message='Horizontal and Vertical profiles start at different positions.')
     if not math.isclose(
         float(anchors_h[-1, 0]),
         float(anchors_v[-1, 0]),
         rel_tol=0.0,
         abs_tol=z_tolerance,
     ):
-        raise control_refusal("FREEFORM profileH and profileV must share the same last anchor z", 'Profile anchors', 'Align the last anchors of Horizontal profile and Vertical profile.', message='Horizontal and Vertical profiles end at different positions.')
+        raise control_refusal("FREEFORM profileH and profileV must share the same last anchor z", 'Horizontal spline points', 'Align the last anchors of Horizontal profile and Vertical profile.', message='Horizontal and Vertical profiles end at different positions.')
     throat_difference = abs(float(anchors_h[0, 1] - anchors_v[0, 1]))
     if throat_difference > 1.0e-6:
         raise control_refusal("FREEFORM profileH and profileV throat radii must be equal within 1e-6 mm "
@@ -2497,7 +2497,7 @@ def _build_freeform_geometry(
     for left, right in zip(cuts[:-1], cuts[1:]):
         if right - left < MIN_INTERIOR_CORNER_SPACING_MM:
             raise control_refusal(f"FREEFORM interior corners z={left:g} mm and z={right:g} mm "
-                             f"must be at least {MIN_INTERIOR_CORNER_SPACING_MM:g} mm apart", 'Profile anchors', 'Move the corner anchors farther apart in the profile.', message='Two interior corners are too close together.')
+                             f"must be at least {MIN_INTERIOR_CORNER_SPACING_MM:g} mm apart", 'Horizontal spline points', 'Move the corner anchors farther apart in the profile.', message='Two interior corners are too close together.')
     _validate_station_corner_radii(geometry)
 
     convexity_samples = _convexity_ingest_samples(stations)

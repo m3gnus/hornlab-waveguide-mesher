@@ -36,9 +36,9 @@ class PistonShape:
             raise ValueError("invalid piston kind")
         _number(self.recess_mm, "woofer recess")
         if self.recess_mm < 0:
-            raise control_refusal("woofer recess must be nonnegative", 'Recess', 'Enter a nonnegative Recess in Sources and baffle.', message='Woofer recess is negative.')
+            raise control_refusal("woofer recess must be nonnegative", 'Enclosure and placement', 'Enter a nonnegative Recess in Sources and baffle.', message='Woofer recess is negative.')
         if 0 < self.recess_mm < .01:
-            raise control_refusal("woofer recess must be zero or at least 0.01 mm (vertex weld tolerance)", 'Recess', 'Set Recess to zero or at least 0.01 mm in Sources and baffle.', message='Woofer recess is too small to form a distinct surface.')
+            raise control_refusal("woofer recess must be zero or at least 0.01 mm (vertex weld tolerance)", 'Enclosure and placement', 'Set Recess to zero or at least 0.01 mm in Sources and baffle.', message='Woofer recess is too small to form a distinct surface.')
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class EnclosureWoofer:
         if self.resolution_mm is not None:
             _number(self.resolution_mm, "woofer resolution_mm")
             if self.resolution_mm <= 0:
-                raise control_refusal("woofer resolution_mm must be positive", 'Resolution', 'Enter a positive Resolution in Sources and baffle.', message='Woofer resolution must be positive.')
+                raise control_refusal("woofer resolution_mm must be positive", 'Enclosure mesh size', 'Enter a positive Resolution in Sources and baffle.', message='Woofer resolution must be positive.')
 
 
 def resolve_woofer_placements(
@@ -121,10 +121,10 @@ def resolve_woofer_placements(
                 raise control_refusal("spacing_to requires a nonzero direction from target", 'Spacing from', 'Move one woofer centre before setting Spacing from.', message='The two woofer centres coincide, so their spacing direction is undefined.')
             distance = spacing["distance_mm"]
             if not math.isfinite(distance) or distance <= 0:
-                raise control_refusal("spacing_to distance must be finite and positive", 'Spacing distance', 'Enter a positive Spacing distance in Sources and baffle.', message='Woofer spacing distance must be positive.')
+                raise control_refusal("spacing_to distance must be finite and positive", 'Spacing from', 'Enter a positive Spacing distance in Sources and baffle.', message='Woofer spacing distance must be positive.')
             x, y = tx + distance * dx / length, ty + distance * dy / length
         if not all(math.isfinite(v) for v in (x, y)):
-            raise control_refusal("placement must be finite", 'Woofer position', 'Enter finite Horizontal and Vertical positions in Sources and baffle.', message='A woofer position is not finite.')
+            raise control_refusal("placement must be finite", 'Enclosure and placement', 'Enter finite Horizontal and Vertical positions in Sources and baffle.', message='A woofer position is not finite.')
         visiting.remove(key)
         resolved[key] = (x, y)
         return x, y
@@ -235,7 +235,7 @@ def validate_woofer_domain(params, enclosure):
     if quadrants != "14" or any(w.x_mm != 0 for w in enclosure.woofers):
         raise control_refusal("woofers require full domain or x=0 half with every woofer centred on x=0", 'Symmetry', 'Choose Full model, or centre every woofer on the vertical symmetry plane and use that half model.', message='This woofer arrangement cannot use the chosen symmetry.')
     if not _symmetric_enclosure_x(enclosure):
-        raise control_refusal("woofer x=0 half requires symmetric left/right enclosure margins", 'Enclosure margins', 'Use equal Left and Right margins, or choose Full model.', message='The enclosure margins differ across the woofer symmetry plane.')
+        raise control_refusal("woofer x=0 half requires symmetric left/right enclosure margins", 'Enclosure and placement', 'Use equal Left and Right margins, or choose Full model.', message='The enclosure margins differ across the woofer symmetry plane.')
     from scipy.spatial import cKDTree
     from .profile_sampling import build_point_grid_arrays
     full = build_point_grid_arrays({**params, "quadrants": "1234"})
@@ -257,9 +257,9 @@ def cut_woofers(built, geometry):
     if half and (geometry.symmetry_planes != ("x",) or any(w.x_mm != 0 for w in woofers)):
         raise control_refusal("woofers require full domain or x=0 half with every woofer centred on x=0", 'Symmetry', 'Choose Full model, or centre every woofer on the vertical symmetry plane and use that half model.', message='This woofer arrangement cannot use the chosen symmetry.')
     if half and not _symmetric_enclosure_x(geometry.enclosure):
-        raise control_refusal("woofer x=0 half requires symmetric left/right enclosure margins", 'Enclosure margins', 'Use equal Left and Right margins, or choose Full model.', message='The enclosure margins differ across the woofer symmetry plane.')
+        raise control_refusal("woofer x=0 half requires symmetric left/right enclosure margins", 'Enclosure and placement', 'Use equal Left and Right margins, or choose Full model.', message='The enclosure margins differ across the woofer symmetry plane.')
     if set(built.surface_groups) - {1, 2, 3}:
-        raise control_refusal("woofer assembly does not support subdomain interfaces", 'Subdomain interfaces', 'Clear Subdomain interfaces before solving this assembly.', message='Woofer assemblies cannot include subdomain interfaces.')
+        raise control_refusal("woofer assembly does not support subdomain interfaces", 'Mounting', 'Remove the subdomain interfaces from the imported configuration before solving this assembly.', message='Woofer assemblies cannot include subdomain interfaces.')
     gmsh = require_gmsh()
     occ = gmsh.model.occ
     occ.synchronize()
@@ -283,12 +283,12 @@ def cut_woofers(built, geometry):
             raise control_refusal("woofer diaphragm reaches enclosure back", 'Enclosure depth', 'Increase Enclosure depth or reduce the woofer depth.', message='A woofer diaphragm reaches the back of the enclosure.')
         for other in woofers[:i]:
             if math.hypot(w.x_mm-other.x_mm, w.y_mm-other.y_mm) < w.radius_mm+other.radius_mm+CLEARANCE_MM-1e-8:
-                raise control_refusal("woofer apertures overlap or lack 0.1 mm clearance", 'Woofer position', 'Move the woofers farther apart or reduce Radius in Sources and baffle.', message='Two woofer openings overlap or have less than 0.1 mm clearance.')
+                raise control_refusal("woofer apertures overlap or lack 0.1 mm clearance", 'Enclosure and placement', 'Move the woofers farther apart or reduce Radius in Sources and baffle.', message='Two woofer openings overlap or have less than 0.1 mm clearance.')
         disc = _disc(occ, w, z, half)
         for curve in boundary:
             distance = occ.getDistance(2, disc, 1, curve)[0]
             if not math.isfinite(distance) or distance < CLEARANCE_MM-1e-8:
-                raise control_refusal("woofer aperture lacks 0.1 mm clearance to mouth/flat baffle boundary", 'Woofer position', 'Move the woofer or increase the enclosure margins to leave at least 0.1 mm clearance.', message='A woofer opening is too close to the horn mouth or baffle edge.')
+                raise control_refusal("woofer aperture lacks 0.1 mm clearance to mouth/flat baffle boundary", 'Enclosure and placement', 'Move the woofer or increase the enclosure margins to leave at least 0.1 mm clearance.', message='A woofer opening is too close to the horn mouth or baffle edge.')
         discs.append((2, disc))
     occ.remove(clearance_front, recursive=True)
     _, maps = occ.fragment(front, discs)
@@ -297,7 +297,7 @@ def cut_woofers(built, geometry):
     for w, patch in zip(woofers, patches):
         area = sum(occ.getMass(2, t) for t in patch & front_result)
         if patch-front_result or not math.isclose(area, math.pi*w.radius_mm**2/(2 if half else 1), rel_tol=1e-7):
-            raise control_refusal("woofer aperture is not wholly inside the flat front baffle (mouth/edge collision)", 'Woofer position', 'Move the woofer inward, reduce Radius or increase the enclosure margins.', message='A woofer opening extends outside the flat front baffle.')
+            raise control_refusal("woofer aperture is not wholly inside the flat front baffle (mouth/edge collision)", 'Enclosure and placement', 'Move the woofer inward, reduce Radius or increase the enclosure margins.', message='A woofer opening extends outside the flat front baffle.')
     old_front = {t for _, t in front}
     replacements = front_result-set().union(*patches)
     for groups in (built.surface_groups, built.mesh_surface_groups):
@@ -348,7 +348,7 @@ def cut_woofers(built, geometry):
             for wall in built.surface_groups[1] + built.surface_groups[2]:
                 distance = occ.getDistance(2, face, 2, wall)[0]
                 if not math.isfinite(distance) or distance < 1e-7:
-                    raise control_refusal("woofer diaphragm/collar intersects horn wall/source", 'Woofer position', 'Move the woofer away from the horn or reduce Recess.', message='A woofer diaphragm or collar intersects the horn.')
+                    raise control_refusal("woofer diaphragm/collar intersects horn wall/source", 'Enclosure and placement', 'Move the woofer away from the horn or reduce Recess.', message='A woofer diaphragm or collar intersects the horn.')
         built.surface_groups.setdefault(3, []).extend(sorted(collar))
         built.mesh_surface_groups["enclosure"].extend(sorted(collar))
         for segment, faces in segments.items():

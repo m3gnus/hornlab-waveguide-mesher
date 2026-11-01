@@ -23,7 +23,7 @@ def _stretch_refusal(diagnostic: str):
     text = text[0].upper() + text[1:]
     text = text.replace("is unverified and not supported", "cannot be used in this combination")
     return control_refusal(diagnostic, control_label("s1"),
-        "Set Throat stretch amount and Throat stretch sharpness to numbers from 0 to 10; set both to 0 to disable stretch before using the other profile features.",
+        "Set both Throat stretch amount and Throat stretch sharpness to 0 to disable stretch, or remove the conflicting profile feature, such as Straight slot length. For stretch alone, use numbers from 0 to 10.",
         message=text.rstrip(".") + ".")
 
 

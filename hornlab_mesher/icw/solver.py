@@ -220,7 +220,7 @@ class ICWTargets:
             if self.mode != TerminationMode.FLAT_BAFFLE:
                 raise control_refusal("coverage_angle_deg is supported only for mode='flat_baffle'", 'Coverage angle', 'Choose Flat baffle in Termination, or turn Coverage angle off.', message='Coverage angle can be used only with a Flat baffle termination.')
             if not (0.0 < self.hold_start < self.hold_end < 1.0):
-                raise control_refusal("coverage hold window must satisfy 0 < hold_start < hold_end < 1", 'Coverage hold', 'Set Coverage hold start below Coverage hold end, with both between zero and one.', message='The coverage hold must start after zero, end before one and have a positive span.')
+                raise control_refusal("coverage hold window must satisfy 0 < hold_start < hold_end < 1", 'Coverage angle', 'Set Coverage hold start below Coverage hold end, with both between zero and one.', message='The coverage hold must start after zero, end before one and have a positive span.')
             if not (self.theta0_deg < self.coverage_angle_deg < 90.0):
                 raise control_refusal("coverage_angle_deg must lie between theta0_deg and 90 deg "
                     f"(got theta0_deg={self.theta0_deg}, coverage_angle_deg={self.coverage_angle_deg})", 'Coverage angle', f"Increase Coverage angle above {control_label('icw.a0')}, or reduce {control_label('icw.a0')}; keep Coverage angle below 90°.", message=f"Coverage angle must be greater than {control_label('icw.a0')} and less than 90°.")

@@ -25,17 +25,17 @@ class FrontBaffle:
                 or not math.isfinite(value)
                 or value <= 0
             ):
-                raise control_refusal("baffle dimensions must be finite and positive", 'Enclosure dimensions', 'Enter positive Width, Height, Depth and Aperture radius.', message='An enclosure dimension is zero, negative or not finite.')
+                raise control_refusal("baffle dimensions must be finite and positive", 'Enclosure and placement', 'Enter positive Width, Height, Depth and Aperture radius.', message='An enclosure dimension is zero, negative or not finite.')
             object.__setattr__(self, name, float(value))
         if len(self.center_mm) != 3 or any(
             type(x) not in (int, float) or not math.isfinite(x) for x in self.center_mm
         ):
-            raise control_refusal("source center must be a finite XYZ vector", 'Source position', 'Enter finite Horizontal, Vertical and Depth positions.', message='The source position is not finite.')
+            raise control_refusal("source center must be a finite XYZ vector", 'Enclosure and placement', 'Enter finite Horizontal, Vertical and Depth positions.', message='The source position is not finite.')
         object.__setattr__(
             self, "center_mm", tuple(float(x) if x else 0.0 for x in self.center_mm)
         )
         if not isinstance(self.aperture_id, str) or not self.aperture_id.strip():
-            raise ValueError("aperture identity must be nonempty")
+            raise control_refusal('aperture identity must be nonempty', 'Enclosure and placement', 'Enter a nonempty aperture identifier in Identifiers.', message='Aperture identity must be nonempty.')
 
     def validate(self, contour):
         if self.aperture_radius_mm < contour.points[-1].r_mm:
@@ -46,7 +46,7 @@ class FrontBaffle:
         x, y, _ = self.center_mm
         clearance = min(self.width_mm / 2 - abs(x), self.height_mm / 2 - abs(y))
         if clearance - self.aperture_radius_mm <= 0.1:
-            raise control_refusal("aperture must clear every baffle edge by more than 0.1 mm", 'Source position', 'Move the source inward or increase Enclosure width and Enclosure height to leave more than 0.1 mm clearance.', message='The source opening is too close to a baffle edge.')
+            raise control_refusal("aperture must clear every baffle edge by more than 0.1 mm", 'Enclosure and placement', 'Move the source inward or increase Enclosure width and Enclosure height to leave more than 0.1 mm clearance.', message='The source opening is too close to a baffle edge.')
         if self.depth_mm + min(0, contour.axial_bounds_mm[0]) <= 0.1:
             raise control_refusal("source must clear the enclosure back by more than 0.1 mm", 'Enclosure depth', 'Increase Depth to leave more than 0.1 mm behind the source.', message='The source reaches the back of the enclosure.')
 
@@ -58,7 +58,7 @@ class FrontBaffle:
         value = dict(value)
         version = value.pop("version", None)
         if type(version) is not int or version != 1:
-            raise ValueError("unsupported front baffle version")
+            raise control_refusal('unsupported front baffle version', 'Enclosure and placement', 'Open the baffle in the WG version that saved it, then save it again before importing.', message='Unsupported front baffle version.')
         return cls(**value)
 
     def preview(self, contour, **sizes):

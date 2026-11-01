@@ -55,7 +55,7 @@ def _guiding_curve_target_radius(p: float, params: Mapping[str, Any]) -> float:
         # the GCurve.SF.* fields unseen. A single value means "not given":
         # Waveguide Generator writes ``GCurve.SF = 0`` and sends it back as the
         # string "0" after a save/reopen, with the SF.a..n3 fields in force.
-        raise control_refusal(f"GCurve.SF needs six values (a, b, m, n1, n2, n3), got {len(sf)}", 'Guiding curve superformula', 'Enter six values for the Guiding curve superformula.', message='The guiding curve superformula needs six numbers.')
+        raise control_refusal(f"GCurve.SF needs six values (a, b, m, n1, n2, n3), got {len(sf)}", 'Guiding curve mode', 'Enter six values for the Guiding curve superformula.', message='The guiding curve superformula needs six numbers.')
     if len(sf) >= 6:
         sf_a, sf_b, sf_m1, sf_n1, sf_n2, sf_n3 = sf[:6]
         sf_m2 = sf_m1
@@ -636,7 +636,7 @@ def _morph_target_radius_at_angle(
     )
     if target == 3:
         if half_width <= 0.0 or half_height <= 0.0:
-            raise control_refusal("superellipse Morph target dimensions must be positive", 'Target dimensions', 'Enter positive Target width and Target height.', message='The superellipse morph has a zero or negative target dimension.')
+            raise control_refusal("superellipse Morph target dimensions must be positive", 'Morph target', 'Enter positive Target width and Target height.', message='The superellipse morph has a zero or negative target dimension.')
         exponent = min(
             16.0,
             max(2.0, eval_param(params.get("morphExponent"), phi, 2.0)),

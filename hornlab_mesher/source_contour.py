@@ -27,7 +27,7 @@ def digest(value):
 
 def _id(value):
     if not isinstance(value, str) or not value or value.strip() != value:
-        raise ValueError("identities must be nonempty trimmed strings")
+        raise control_refusal('identities must be nonempty trimmed strings', 'Source contour', 'Enter nonempty point, patch, source and rim identifiers in Identifiers.', message='Identities must be nonempty trimmed strings.')
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class ContourPoint:
             value = float(getattr(self, key))
             object.__setattr__(self, key, 0.0 if value == 0 else value)
         if not all(math.isfinite(x) for x in (self.r_mm, self.z_mm)) or self.r_mm < 0:
-            raise control_refusal("point coordinates must be finite with nonnegative radius", 'Source points', 'Enter finite coordinates and nonnegative Radius for each source point.', message='A source point has an invalid coordinate or negative radius.')
+            raise control_refusal("point coordinates must be finite with nonnegative radius", 'Source contour', 'Enter finite coordinates and nonnegative Radius for each source point.', message='A source point has an invalid coordinate or negative radius.')
 
 
 @dataclass(frozen=True)
@@ -59,23 +59,23 @@ class ContourSegment:
         for value in (self.id, self.start, self.end):
             _id(value)
         if self.role not in {"moving", "rigid"} or self.kind not in {"line", "arc"}:
-            raise ValueError("invalid patch role or segment kind")
+            raise control_refusal('invalid patch role or segment kind', 'Source contour', 'Choose a line or arc and a Moving or Rigid patch role in Source contour.', message='Invalid patch role or segment kind.')
         if self.direction not in {"cw", "ccw"}:
-            raise ValueError("arc direction must be cw or ccw")
+            raise control_refusal('arc direction must be cw or ccw', 'Source contour', 'Choose clockwise or counterclockwise for the arc direction.', message='Arc direction must be cw or ccw.')
         if self.kind == "line" and self.center_mm is not None:
-            raise ValueError("lines cannot carry an arc center")
+            raise control_refusal('lines cannot carry an arc center', 'Source contour', 'Use an arc to set a centre, or remove the centre from the line.', message='Lines cannot carry an arc center.')
         if self.kind == "line":
             object.__setattr__(self, "direction", "ccw")
         if self.kind == "arc":
             if self.center_mm is None or len(self.center_mm) != 2:
-                raise ValueError("arcs require a radial/axial center")
+                raise control_refusal('arcs require a radial/axial center', 'Source contour', 'Enter Arc center radius and Arc center z for each arc.', message='Arcs require a radial/axial center.')
             object.__setattr__(
                 self,
                 "center_mm",
                 tuple(0.0 if float(x) == 0 else float(x) for x in self.center_mm),
             )
             if not all(math.isfinite(x) for x in self.center_mm):
-                raise ValueError("arc center must be finite")
+                raise control_refusal('arc center must be finite', 'Source contour', 'Enter finite values in Arc center radius and Arc center z.', message='Arc center must be finite.')
 
 
 @dataclass(frozen=True)
@@ -91,23 +91,21 @@ class SourceContour:
         object.__setattr__(self, "points", tuple(self.points))
         object.__setattr__(self, "segments", tuple(self.segments))
         if len(self.points) != len(self.segments) + 1 or not self.segments:
-            raise ValueError("contour must be one complete ordered meridian")
+            raise control_refusal('contour must be one complete ordered meridian', 'Source contour', 'Join each source point to the next with one patch from the axis to the rim.', message='Contour must be one complete ordered meridian.')
         if len(self.segments) > 256:
-            raise ValueError("source contour exceeds the 256-patch bound")
+            raise control_refusal('source contour exceeds the 256-patch bound', 'Source contour', 'Remove or combine patches to keep at most 256 patches in Source contour.', message='Source contour exceeds the 256-patch bound.')
         if len({p.id for p in self.points}) != len(self.points) or len(
             {s.id for s in self.segments}
         ) != len(self.segments):
-            raise ValueError("point and patch IDs must be unique")
+            raise control_refusal('point and patch IDs must be unique', 'Source contour', 'Give each point and patch a distinct identifier in Identifiers.', message='Point and patch IDs must be unique.')
         if self.points[0].r_mm != 0 or self.points[-1].z_mm != 0:
             raise control_refusal("contour requires a pole and an exact z=0 rim attachment", 'Source contour', 'Place the first point on the axis and the final rim at zero depth.', message='The source contour does not run from its centre to its attachment rim.')
         if not any(s.role == "moving" for s in self.segments):
-            raise control_refusal("a source requires at least one moving patch", 'Patch role', 'Set at least one patch to Moving.', message='The source has no moving patch.')
+            raise control_refusal("a source requires at least one moving patch", 'Source contour', 'Set at least one patch to Moving.', message='The source has no moving patch.')
         for i, segment in enumerate(self.segments):
             a, b = self.points[i : i + 2]
             if (segment.start, segment.end) != (a.id, b.id) or b.r_mm <= a.r_mm:
-                raise ValueError(
-                    "segments must join in strictly increasing radius (single-valued z(r))"
-                )
+                raise control_refusal('segments must join in strictly increasing radius (single-valued z(r))', 'Source contour', 'Join each point to the next and increase the radius from the axis to the rim.', message='Segments must join in strictly increasing radius (single-valued z(r)).')
             if segment.kind == "arc":
                 radius, start, sweep = self.arc(i)
                 # dr/dt must stay positive throughout the open arc. Check every
@@ -124,7 +122,7 @@ class SourceContour:
                     or critical
                     or -radius * math.sin(start + sweep / 2) * sweep <= 0
                 ):
-                    raise control_refusal("arc folds in radius or exceeds a semicircle", 'Arc', 'Shorten the arc or move its centre so it does not fold back in radius.', message='An arc folds back in radius or covers more than half a circle.')
+                    raise control_refusal("arc folds in radius or exceeds a semicircle", 'Source contour', 'Shorten the arc or move its centre so it does not fold back in radius.', message='An arc folds back in radius or covers more than half a circle.')
 
     def arc(self, index):
         segment = self.segments[index]
@@ -135,7 +133,7 @@ class SourceContour:
             math.hypot(b.r_mm - cr, b.z_mm - cz),
         )
         if ra <= 1e-9 or abs(ra - rb) > 1e-9 * max(1, ra):
-            raise control_refusal("arc endpoints must lie on the same nonzero circle", 'Arc centre', 'Move Arc centre so both endpoints lie on the same circle.', message='The arc endpoints are not on the same nonzero circle.')
+            raise control_refusal("arc endpoints must lie on the same nonzero circle", 'Arc center radius', 'Change Arc center radius and Arc center z so both endpoints lie on the same circle.', message='The arc endpoints are not on the same nonzero circle.')
         start = math.atan2(a.z_mm - cz, a.r_mm - cr)
         end = math.atan2(b.z_mm - cz, b.r_mm - cr)
         sweep = (end - start) % (2 * math.pi)
@@ -170,7 +168,7 @@ class SourceContour:
             != {"version", "physical_source_id", "rim_id", "points", "segments"}
             or value["version"] != 1
         ):
-            raise ValueError("unsupported source contour fields or version")
+            raise control_refusal('unsupported source contour fields or version', 'Source contour', 'Open the source in the WG version that saved it, then save it again before importing.', message='Unsupported source contour fields or version.')
         return cls(
             value["physical_source_id"],
             value["rim_id"],
@@ -226,7 +224,7 @@ class ContourDrive:
         if self.motion not in {"normal", "axial"}:
             raise control_refusal("motion must be normal or axial", 'Motion', 'Choose Normal or Axial under Motion.', message='The source motion is unavailable.')
         if len(dict(self.weights)) != len(self.weights) or not self.weights:
-            raise ValueError("weights must have unique patch IDs")
+            raise control_refusal('weights must have unique patch IDs', 'Source contour', 'Give each moving patch one weight and a distinct identifier in Source contour.', message='Weights must have unique patch IDs.')
         for key, value in self.weights:
             _id(key)
             if not math.isfinite(value):
@@ -236,9 +234,7 @@ class ContourDrive:
         if set(dict(self.weights)) != {
             s.id for s in contour.segments if s.role == "moving"
         }:
-            raise ValueError(
-                "drive must cover exactly the moving patches; rigid roles are independent of weight"
-            )
+            raise control_refusal('drive must cover exactly the moving patches; rigid roles are independent of weight', 'Source contour', 'Assign a weight to each Moving patch and remove weights from Rigid patches in Source contour.', message='Drive must cover exactly the moving patches; rigid roles are independent of weight.')
 
     @property
     def excitation_sha256(self):
@@ -272,13 +268,13 @@ def dome(
             land_width_mm,
         )
     ):
-        raise control_refusal("preset dimensions must be finite", 'Source dimensions', 'Enter finite numbers in the source dimensions.', message='A source dimension is not a finite number.')
+        raise control_refusal("preset dimensions must be finite", 'Source contour', 'Enter finite numbers in the source dimensions.', message='A source dimension is not a finite number.')
     if (
         radius_mm <= 0
         or not 0 < height_mm <= radius_mm
         or min(surround_width_mm, land_width_mm) < 0
     ):
-        raise control_refusal("invalid dome dimensions", 'Dome dimensions', f"Set {control_label('source.preset.radius_mm')} above zero and {control_label('source.preset.height_mm')} above zero and no greater than Radius; keep Surround width and {control_label('source.preset.land_width_mm')} nonnegative.", message='Dome dimensions cannot form a spherical cap.')
+        raise control_refusal("invalid dome dimensions", 'Source contour', f"Set {control_label('source.preset.radius_mm')} above zero and {control_label('source.preset.height_mm')} above zero and no greater than Radius; keep Surround width and {control_label('source.preset.land_width_mm')} nonnegative.", message='Dome dimensions cannot form a spherical cap.')
     center_z = (height_mm**2 - radius_mm**2) / (2 * height_mm)
     points = [
         ContourPoint("pole", 0, height_mm),
@@ -319,7 +315,7 @@ def cone(
         or not 0 < cap_radius_mm < radius_mm
         or depth_mm < 0
     ):
-        raise control_refusal("invalid independent cone dimensions", 'Cone dimensions', f"Set {control_label('source.preset.cap_radius_mm')} above zero and below Radius, and set {control_label('source.preset.depth_mm')} to zero or more.", message='Cone dimensions cannot form this cone and cap.')
+        raise control_refusal("invalid independent cone dimensions", 'Source contour', f"Set {control_label('source.preset.cap_radius_mm')} above zero and below Radius, and set {control_label('source.preset.depth_mm')} to zero or more.", message='Cone dimensions cannot form this cone and cap.')
     try:
         cap = dome(cap_radius_mm, cap_height_mm)
     except UserRefusal as exc:
@@ -353,7 +349,7 @@ def _finish(points, segments, width, depth, land):
         or (width == 0 and depth != 0)
         or abs(depth) > width / 2
     ):
-        raise control_refusal("invalid surround or land dimensions", 'Surround dimensions', 'Set Surround width and Rigid land width to zero or more. Keep the absolute Surround depth at most half the Surround width; when width is zero, depth must be zero.', message='The surround or land dimensions are invalid.')
+        raise control_refusal("invalid surround or land dimensions", 'Source contour', 'Set Surround width and Rigid land width to zero or more. Keep the absolute Surround depth at most half the Surround width; when width is zero, depth must be zero.', message='The surround or land dimensions are invalid.')
     if width:
         a = points[-1]
         points.append(ContourPoint("surround.rim", a.r_mm + width, 0))

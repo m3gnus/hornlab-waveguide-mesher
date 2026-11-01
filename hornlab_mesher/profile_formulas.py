@@ -827,7 +827,7 @@ def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
     for t in roots(x, lambda t: point(t)[0]):
         z, r = point(t)
         if abs(z) <= tolerance and -tolerance <= r <= driver_radius + tolerance:
-            raise control_refusal("throat stretch main meridian has self-contact with the source/driver ring or disc", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or adjust Throat extension length.', message='The stretched horn touches its source or driver.')
+            raise control_refusal("throat stretch main meridian has self-contact with the source/driver ring or disc", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or adjust Throat extension length.', message='The stretched horn touches its source or driver.')
     for start, end, slope in ((0.0, ext_len, math.tan(ext_angle)),
                               (ext_len, prefix, 0.0)):
         if end <= start:
@@ -839,7 +839,7 @@ def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
         for t in roots(values, distance):
             z, _ = point(t)
             if start - tolerance <= z <= end + tolerance and abs(distance(t)) <= tolerance:
-                raise control_refusal("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
+                raise control_refusal("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
 
 
 def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
@@ -892,7 +892,7 @@ def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
             point_distance(b, starts[i], np.broadcast_to(delta[i], directions.shape)),
         ]) <= tolerance
         if np.any(crossing | contact):
-            raise control_refusal("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or soften the profile bend.', message='The stretched horn intersects itself or its source.')
+            raise control_refusal("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or soften the profile bend.', message='The stretched horn intersects itself or its source.')
 
 
 def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float64],
@@ -915,7 +915,7 @@ def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float
         fraction = d0[candidates] / (d0[candidates] - d1[candidates])
         crossing_x = x[:-1][candidates] + fraction * (x[1:][candidates] - x[:-1][candidates])
         if np.any((crossing_x > start) & (crossing_x < end)):
-            raise control_refusal("throat stretch main meridian intersects the extension/slot prefix", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
+            raise control_refusal("throat stretch main meridian intersects the extension/slot prefix", 'Throat stretch amount', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
 
 
 def _rosse_main_curve(
@@ -1298,14 +1298,14 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
         coeffs = [float(eval_param(c, 0.0, 0.0)) for c in params["icw_coeffs"]]
         S = _icw_float(params, "icw_S")
         if S is None:
-            raise control_refusal("ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)", 'Direct curve arc length', 'Enter Direct curve arc length in Profile.', message='Direct curvature coefficients need an arc length.')
+            raise control_refusal("ICW direct mode (icw_coeffs) requires icw_S (arc length, mm)", 'Direct curve arc length', 'Enter Direct curve arc length in Profile.', message='The imported ICW coefficients need an arc length.')
         coeffs_arr = np.asarray(coeffs, dtype=np.float64)
         # Direct mode bypasses solve_icw's feasibility gate, so validate the raw inputs and the
         # sampled meridian here. Otherwise a degenerate input (r0<=0, S<=0, non-finite coeffs, or
         # coeffs that drive the radius negative) builds a nonphysical curve that the caller would
         # score as valid instead of routing it to the infeasible/penalty path.
         if not np.all(np.isfinite(coeffs_arr)):
-            raise control_refusal("ICW direct mode: icw_coeffs must all be finite", 'Direct curvature coefficients', 'Enter finite Direct curvature coefficients in Profile.', message='A direct curvature coefficient is not finite.')
+            raise control_refusal("ICW direct mode: icw_coeffs must all be finite", 'Imported ICW coefficients', 'Correct the imported ICW coefficient values to be finite before importing again.', message='A direct curvature coefficient is not finite.')
         if not (S > 0.0):
             raise control_refusal(f"ICW direct mode: icw_S must be > 0 mm, got {S}", 'Direct curve arc length', 'Enter a positive Direct curve arc length in Profile.', message='Direct curve arc length is zero or negative.')
         if not (r0 > 0.0):
@@ -1327,7 +1327,7 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
             and np.all(samp.r > 0.0)
         ):
             raise control_refusal("ICW direct mode: sampled meridian is non-finite or has non-positive radius "
-                "(degenerate icw_coeffs / icw_S)", 'Direct curvature coefficients', 'Change Direct curvature coefficients or Direct curve arc length so the radius stays above zero.', message='The direct curve reaches an invalid or nonpositive radius.')
+                "(degenerate icw_coeffs / icw_S)", 'Imported ICW coefficients', 'Correct the imported ICW coefficients or change Direct curve arc length so the radius stays above zero.', message='The direct curve reaches an invalid or nonpositive radius.')
         _icw_cache_store(key, curve)
         return curve
 
@@ -1413,7 +1413,7 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
                 f" (hint: {report.suggested_relaxation})"
                 if report.suggested_relaxation
                 else ""
-            ), 'ICW targets', 'Relax Mouth radius, Profile length or Coverage angle in Profile; for a rollback, also adjust Rollback depth and Tip setback.', message='The requested ICW targets cannot form a feasible profile.')
+            ), 'Profile', 'Relax Mouth radius, Profile length or Coverage angle in Profile; for a rollback, also adjust Rollback depth and Tip setback.', message='The requested ICW targets cannot form a feasible profile.')
     _icw_cache_store(key, curve)
     return curve
 

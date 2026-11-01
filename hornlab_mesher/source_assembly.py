@@ -44,19 +44,19 @@ class SourceAssembly:
         ):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value):
-                raise control_refusal("assembly dimensions must be finite numbers", 'Enclosure dimensions', 'Enter finite Width, Height, Depth and source dimensions.', message='An assembly dimension is not finite.')
+                raise control_refusal("assembly dimensions must be finite numbers", 'Enclosure and placement', 'Enter finite Width, Height, Depth and source dimensions.', message='An assembly dimension is not finite.')
             if name == "aperture_radius_mm" and self.woofer is None:
                 if value != 0:
-                    raise ValueError("horn-only assembly requires zero unused woofer aperture")
+                    raise control_refusal('horn-only assembly requires zero unused woofer aperture', 'Woofer aperture radius', 'Set Woofer aperture radius to zero, or add a woofer.', message='Horn-only assembly requires zero unused woofer aperture.')
             elif name != "front_z_mm" and value <= 0:
-                raise control_refusal("assembly dimensions must be positive", 'Enclosure dimensions', 'Enter positive Width, Height, Depth and source radii.', message='An assembly dimension is zero or negative.')
+                raise control_refusal("assembly dimensions must be positive", 'Enclosure and placement', 'Enter positive Width, Height, Depth and source radii.', message='An assembly dimension is zero or negative.')
             object.__setattr__(self, name, float(value) if value else 0.0)
         for name in ("horn_xy_mm", "woofer_xy_mm"):
             value = getattr(self, name)
             if len(value) != 2 or any(
                 type(x) not in (int, float) or not math.isfinite(x) for x in value
             ):
-                raise control_refusal("assembly placement must be a finite XY pair", 'Source position', 'Enter finite Horizontal and Vertical source positions.', message='A source position is not finite.')
+                raise control_refusal("assembly placement must be a finite XY pair", 'Enclosure and placement', 'Enter finite Horizontal and Vertical source positions.', message='A source position is not finite.')
             object.__setattr__(self, name, tuple(float(x) if x else 0.0 for x in value))
         if not isinstance(self.horn, SourceContour) or (self.woofer is not None and not isinstance(
             self.woofer, SourceContour
@@ -66,12 +66,10 @@ class SourceAssembly:
             self.horn.physical_source_id == self.woofer.physical_source_id
             or self.horn.rim_id == self.woofer.rim_id
         ):
-            raise ValueError(
-                "assembly physical source and rim identities must be distinct"
-            )
+            raise control_refusal('assembly physical source and rim identities must be distinct', 'Identifiers', 'Give the horn and woofer distinct source and rim identifiers.', message='Assembly physical source and rim identities must be distinct.')
         self.baffle.validate(self.woofer or self.horn)
         if self.woofer is None and self.woofer_xy_mm != (0, 0):
-            raise ValueError("horn-only assembly requires zero unused woofer placement")
+            raise control_refusal('horn-only assembly requires zero unused woofer placement', 'Enclosure and placement', 'Set the unused woofer position to zero, or add a woofer.', message='Horn-only assembly requires zero unused woofer placement.')
         if self.horn_wall is not None:
             from .general_horn import GeneralHornWall
             if not isinstance(self.horn_wall, GeneralHornWall):
@@ -88,13 +86,13 @@ class SourceAssembly:
             radial_envelope = max(radial_poles)
             if (min(self.width_mm / 2 - abs(self.horn_xy_mm[0]),
                     self.height_mm / 2 - abs(self.horn_xy_mm[1])) - radial_envelope <= .1):
-                raise control_refusal("general horn wall must clear every enclosure side by more than 0.1 mm", 'Enclosure dimensions', 'Increase Width or Height, or move the horn inward to leave more than 0.1 mm clearance.', message='The horn reaches a side of the enclosure.')
+                raise control_refusal("general horn wall must clear every enclosure side by more than 0.1 mm", 'Enclosure and placement', 'Increase Width or Height, or move the horn inward to leave more than 0.1 mm clearance.', message='The horn reaches a side of the enclosure.')
             if max(self.horn_wall.radii_at_z(self.horn_length_mm)) > self.mouth_radius_mm + 1e-8:
-                raise ValueError("general horn wall intersects the front baffle outside its aperture")
+                raise control_refusal('general horn wall intersects the front baffle outside its aperture', 'Horn mouth radius', 'Increase Horn mouth radius to fit the horn wall, or copy the current horn profile again.', message='General horn wall intersects the front baffle outside its aperture.')
             if min(p[1] for p in self.horn_wall.poles_mm) + self.depth_mm - self.horn_length_mm <= .1:
                 raise control_refusal("general horn wall must clear the enclosure back by more than 0.1 mm", 'Enclosure depth', 'Increase Depth to leave more than 0.1 mm clearance behind the horn.', message='The horn reaches the back of the enclosure.')
             if self.woofer is not None and math.dist(self.horn_xy_mm, self.woofer_xy_mm) - radial_envelope - self.aperture_radius_mm <= .1:
-                raise control_refusal("general horn wall must clear the woofer aperture by more than 0.1 mm", 'Woofer position', 'Move the woofer away from the horn to leave more than 0.1 mm clearance.', message='The horn reaches the woofer opening.')
+                raise control_refusal("general horn wall must clear the woofer aperture by more than 0.1 mm", 'Enclosure and placement', 'Move the woofer away from the horn to leave more than 0.1 mm clearance.', message='The horn reaches the woofer opening.')
         rim = self.horn.points[-1].r_mm
         if self.mouth_radius_mm - rim <= 0.1:
             raise control_refusal("horn mouth must exceed throat radius by more than 0.1 mm", 'Mouth radius', 'Increase Mouth radius to more than 0.1 mm above Throat radius.', message='Mouth radius is too close to or smaller than Throat radius.')
@@ -104,9 +102,7 @@ class SourceAssembly:
             self.depth_mm - self.horn_length_mm + min(0, self.horn.axial_bounds_mm[0])
             <= 0.1
         ):
-            raise ValueError(
-                "horn source must clear enclosure back by more than 0.1 mm"
-            )
+            raise control_refusal('horn source must clear enclosure back by more than 0.1 mm', 'Enclosure depth', 'Increase Enclosure depth to leave more than 0.1 mm behind the horn source.', message='Horn source must clear enclosure back by more than 0.1 mm.')
         if (
             min(
                 self.width_mm / 2 - abs(self.horn_xy_mm[0]),
@@ -115,18 +111,14 @@ class SourceAssembly:
             - self.mouth_radius_mm
             <= 0.1
         ):
-            raise ValueError(
-                "horn aperture must clear every baffle edge by more than 0.1 mm"
-            )
+            raise control_refusal('horn aperture must clear every baffle edge by more than 0.1 mm', 'Enclosure width', 'Increase Enclosure width and Enclosure height, or move the horn inward to leave more than 0.1 mm at every edge.', message='Horn aperture must clear every baffle edge by more than 0.1 mm.')
         if self.woofer is not None and (
             math.dist(self.horn_xy_mm, self.woofer_xy_mm)
             - self.mouth_radius_mm
             - self.aperture_radius_mm
             <= 0.1
         ):
-            raise ValueError(
-                "horn and woofer apertures must be separated by more than 0.1 mm"
-            )
+            raise control_refusal('horn and woofer apertures must be separated by more than 0.1 mm', 'Enclosure and placement', 'Move the woofer away from the horn to leave more than 0.1 mm between their openings.', message='Horn and woofer apertures must be separated by more than 0.1 mm.')
         from .phase_plug import validate_passages
 
         validate_passages(self)

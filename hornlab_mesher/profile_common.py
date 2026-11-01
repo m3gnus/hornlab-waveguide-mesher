@@ -269,7 +269,7 @@ def _eval_text_param(text: str, p: float) -> float:
         # Name the reason when it is ours to give (an overflowing power, an
         # unknown name); arithmetic faults keep the plain message.
         reason = f": {exc}" if isinstance(exc, ValueError) and str(exc) else ""
-        raise control_refusal(f"invalid parameter expression {text!r}{reason}", "Parameter expression", "Correct the expression in the edited parameter; use numbers, p and the supported math functions.", message="A parameter expression could not be evaluated.") from exc
+        raise control_refusal(f"invalid parameter expression {text!r}{reason}", 'Profile', "Correct the expression in the edited parameter; use numbers, p and the supported math functions.", message="A parameter expression could not be evaluated.") from exc
 
 
 def eval_param(value: Any, p: float = 0.0, default: float = 0.0) -> float:

@@ -28,24 +28,24 @@ class PhasePlug:
             or self.id != self.id.strip()
             or len(self.id) > 128
         ):
-            raise ValueError("passive body ID must be a nonempty trimmed string")
+            raise control_refusal('passive body ID must be a nonempty trimmed string', 'Phase plug and annular vanes', 'Enter a distinct nonempty identifier for each passive body in Identifiers.', message='Passive body ID must be a nonempty trimmed string.')
         for name in self.__dataclass_fields__:
             if name == "id":
                 continue
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value):
-                raise control_refusal("passive dimensions must be finite numbers", 'Phase plug dimensions', 'Enter finite phase plug positions and radii.', message='A phase plug dimension is not finite.')
+                raise control_refusal("passive dimensions must be finite numbers", 'Phase plug and annular vanes', 'Enter finite phase plug positions and radii.', message='A phase plug dimension is not finite.')
             object.__setattr__(self, name, float(value) if value else 0.0)
         if self.z1_mm - self.z0_mm <= 0.1:
-            raise control_refusal("passive body length must exceed 0.1 mm", 'Phase plug length', 'Move its end planes more than 0.1 mm apart.', message='The phase plug is too short.')
+            raise control_refusal("passive body length must exceed 0.1 mm", 'Phase plug and annular vanes', 'Move its end planes more than 0.1 mm apart.', message='The phase plug is too short.')
         if min(self.inner0_mm, self.inner1_mm) < 0:
-            raise control_refusal("passive inner radii cannot be negative", 'Phase plug inner radius', 'Enter nonnegative Inner radii.', message='A phase plug inner radius is negative.')
+            raise control_refusal("passive inner radii cannot be negative", 'Phase plug and annular vanes', 'Enter nonnegative Inner radii.', message='A phase plug inner radius is negative.')
         if (self.inner0_mm == 0) != (self.inner1_mm == 0):
-            raise control_refusal("central and annular topology cannot change along a body", 'Phase plug inner radius', 'Use zero at both Inner radii for a solid body, or positive values at both ends for an annular body.', message='The phase plug changes between solid and annular along its length.')
+            raise control_refusal("central and annular topology cannot change along a body", 'Phase plug and annular vanes', 'Use zero at both Inner radii for a solid body, or positive values at both ends for an annular body.', message='The phase plug changes between solid and annular along its length.')
         if min(self.outer0_mm - self.inner0_mm, self.outer1_mm - self.inner1_mm) <= 0.1:
-            raise control_refusal("passive thickness must exceed 0.1 mm", 'Phase plug thickness', 'Increase Outer radius or reduce Inner radius to leave more than 0.1 mm thickness at both ends.', message='The phase plug wall is too thin.')
+            raise control_refusal("passive thickness must exceed 0.1 mm", 'Phase plug and annular vanes', 'Increase Outer radius or reduce Inner radius to leave more than 0.1 mm thickness at both ends.', message='The phase plug wall is too thin.')
         if self.inner0_mm and min(self.inner0_mm, self.inner1_mm) <= 0.1:
-            raise control_refusal("annular inner passage radius must exceed 0.1 mm", 'Phase plug inner radius', 'Increase both Inner radii above 0.1 mm.', message='The phase plug inner passage is too narrow.')
+            raise control_refusal("annular inner passage radius must exceed 0.1 mm", 'Phase plug and annular vanes', 'Increase both Inner radii above 0.1 mm.', message='The phase plug inner passage is too narrow.')
 
     def to_dict(self):
         return asdict(self)
@@ -104,22 +104,18 @@ def validate_passages(assembly):
         or len(plugs) > 8
         or any(not isinstance(p, PhasePlug) for p in plugs)
     ):
-        raise ValueError(
-            "phase plugs must be a tuple of at most eight canonical bodies"
-        )
+        raise control_refusal('phase plugs must be a tuple of at most eight canonical bodies', 'Phase plug and annular vanes', 'Keep at most eight bodies in Phase plug and annular vanes.', message='Phase plugs must be a tuple of at most eight canonical bodies.')
     if len({p.id for p in plugs}) != len(plugs):
-        raise ValueError("passive body IDs must be distinct")
+        raise control_refusal('passive body IDs must be distinct', 'Phase plug and annular vanes', 'Give each passive body a distinct identifier in Identifiers.', message='Passive body IDs must be distinct.')
     if not plugs:
         return {}
     z0, z1 = plugs[0].z0_mm, plugs[0].z1_mm
     if any((p.z0_mm, p.z1_mm) != (z0, z1) for p in plugs):
-        raise ValueError("passage vanes must share inlet and outlet planes")
+        raise control_refusal('passage vanes must share inlet and outlet planes', 'Phase plug and annular vanes', 'Use the same Plug inlet Z and Plug outlet Z for every body.', message='Passage vanes must share inlet and outlet planes.')
     source = max(0, assembly.horn.axial_bounds_mm[1])
     clearances = {"source": z0 - source, "mouth": assembly.horn_length_mm - z1}
     if min(clearances.values()) <= 0.1:
-        raise ValueError(
-            "passive bodies must clear source and mouth by more than 0.1 mm"
-        )
+        raise control_refusal('passive bodies must clear source and mouth by more than 0.1 mm', 'Phase plug and annular vanes', 'Increase Plug inlet Z or reduce Plug outlet Z to leave more than 0.1 mm at the source and mouth.', message='Passive bodies must clear source and mouth by more than 0.1 mm.')
     throat = assembly.horn.points[-1].r_mm
     slope = (assembly.mouth_radius_mm - throat) / assembly.horn_length_mm
     previous = None
@@ -148,7 +144,7 @@ def validate_passages(assembly):
         if assembly.horn_wall is not None else gap / math.sqrt(
             1 + max(abs(slope), abs(outer_slope)) ** 2))
     if min(clearances.values()) <= 0.1:
-        raise control_refusal("every phase-plug passage must clear by more than 0.1 mm", 'Phase plug passages', 'Change the phase plug radii or positions to leave more than 0.1 mm in each passage.', message='Two phase plug surfaces are too close together.')
+        raise control_refusal("every phase-plug passage must clear by more than 0.1 mm", 'Phase plug and annular vanes', 'Change the phase plug radii or positions to leave more than 0.1 mm in each passage.', message='Two phase plug surfaces are too close together.')
     return clearances
 
 
@@ -194,7 +190,7 @@ def surface_targets(assembly, mesh_size_mm, refinement=1):
     if not assembly.phase_plugs:
         return targets
     if type(refinement) is not int or refinement not in (1, 2, 4):
-        raise ValueError("passage refinement must be 1, 2 or 4")
+        raise control_refusal('passage refinement must be 1, 2 or 4', 'Phase plug and annular vanes', 'Choose Standard, 2× finer or 4× finer in Passage refinement.', message='Passage refinement must be 1, 2 or 4.')
     if "collar" in assembly.rigid_areas():
         targets["collar"] = min(
             mesh_size_mm, math.sqrt(8 * tolerance / 4 * assembly.woofer.points[-1].r_mm)

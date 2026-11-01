@@ -38,6 +38,15 @@ def control_label(key: str) -> str:
     if identifier in CONTROL_CATALOG:
         return CONTROL_CATALOG[identifier]["label"]
     for control in reversed(list(CONTROL_CATALOG.values())):
-        if identifier in (control.get("path"), control["legacyKey"]):
+        if identifier in (control.get("path"), control["legacyKey"], control["label"]):
             return control["label"]
     raise KeyError(f"Unknown registered control: {key}")
+
+# Legacy FREEFORM spellings point to the same exported controls, never labels.
+PROFILE_CONTROL_KEYS = {
+    "throatAngleDeg": "freeform.throatAngle",
+    "mouthAngleDeg": "freeform.mouthAngle{plane}",
+    "profileH": "freeform.interiorH", "profileV": "freeform.interiorV",
+    "crossSections": "freeform.crossSections", "cornerRadiusMm": "morph.corner_radius",
+    "angleOutDeg": "editor.Out °", "angleDeg": "editor.In °",
+}

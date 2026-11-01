@@ -1830,7 +1830,7 @@ def build_point_grid_arrays(
         raise ValueError("guiding curves are only supported with formula OSSE")
     n_length = int(params.get("lengthSegments", 32))
     if n_length < 1:
-        raise ValueError("lengthSegments must be a positive integer")
+        raise control_refusal('lengthSegments must be a positive integer', 'Surface length samples', 'Enter a positive whole number in Surface length samples.', message='Surface length samples is zero or negative.')
     exponent, aspect_ratio = _cross_section(params)
     if (
         formula == "OSSE"

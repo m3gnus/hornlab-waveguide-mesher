@@ -43,7 +43,7 @@ def numeric_refusal(name: str, diagnostic: str, *, integer: bool = False) -> Use
 
 
 def control_refusal(diagnostic: str, field: str, next_step: str, *, message: str | None = None) -> UserRefusal:
-    return UserRefusal(field, message or diagnostic.rstrip(".") + ".", next_step, diagnostic=diagnostic)
+    return UserRefusal(control_label(field), message or diagnostic.rstrip(".") + ".", next_step, diagnostic=diagnostic)
 
 
 def ath_refusal(diagnostic: str) -> UserRefusal:
@@ -79,18 +79,17 @@ def ath_refusal(diagnostic: str) -> UserRefusal:
 def profile_refusal(diagnostic: str) -> UserRefusal:
     """Wording for authored FREEFORM controls, never for numerical invariants."""
     import re
-    field = "Horizontal profile" if "profileH" in diagnostic else "Vertical profile" if "profileV" in diagnostic else "Cross-section stations"
+    field = control_label("freeform.interiorH" if "profileH" in diagnostic else "freeform.interiorV" if "profileV" in diagnostic else "freeform.crossSections")
     text = diagnostic.replace("FREEFORM ", "")
-    for key, label in (("profileH", "Horizontal profile"), ("profileV", "Vertical profile"),
-                       ("crossSections", "Cross-section stations"), ("cornerRadiusMm", "Corner radius"),
-                       ("angleOutDeg", "Outgoing angle"), ("angleDeg", "Angle"),
-                       ("throatAngleDeg", "Throat angle"), ("mouthAngleDeg", "Mouth angle"),
-                       ("handleIn", "Incoming handle"), ("handleOut", "Outgoing handle")):
-        text = text.replace(key, label)
+    from .controls import PROFILE_CONTROL_KEYS
+    for key, identifier in PROFILE_CONTROL_KEYS.items():
+        text = text.replace(key, control_label(identifier.replace("{plane}", "V" if "profileV" in diagnostic else "H")))
+    text = text.replace("handleIn", "incoming tangent handle").replace("handleOut", "outgoing tangent handle")
     text = re.sub(r"\.points\[(\d+)\]", lambda m: f" anchor {int(m[1])+1}", text)
     text = re.sub(r"Cross-section stations\[(\d+)\]", lambda m: f"Cross-section stations row {int(m[1])+1}", text)
     text = text.replace(".t ", " Position ").replace(".exponent", " Exponent").replace(".shape", " Shape").replace(".join", " Join")
-    text = text.replace(".Corner radius", " Corner radius").replace(".Angle", " Angle").replace(".Outgoing angle", " Outgoing angle")
+    text = text.replace(".Corner radius", " Corner radius").replace(".Angle", " Angle").replace(".Out °", " Out °")
+    text = text.replace(".Horizontal", " Horizontal").replace(".Vertical", " Vertical")
     text = text.replace("anchor z values", "anchor positions").replace("non-positive radius", "zero or negative radius")
     text = re.sub(r"\.r\b", " Radius", text)
     text = re.sub(r"\.z\b", " Position", text)
@@ -109,7 +108,7 @@ def profile_refusal(diagnostic: str) -> UserRefusal:
         text = text.replace("within 1e-9 rad", "")
         step = f"Adjust the tangent handles in {field}; at a smooth anchor they must point in opposite directions along one line."
     elif "angle" in diagnostic.lower():
-        step = f"Enter an Angle within the stated range in {field}."
+        step = f"Enter an angle within the stated range in {field}."
     elif "radii must" in diagnostic:
         step = f"Enter positive anchor radii in {field}."
     elif "strictly increasing" in diagnostic:

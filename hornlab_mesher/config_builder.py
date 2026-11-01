@@ -848,7 +848,7 @@ def _apply_driver_adapter(
             "driver adapter requires both driver and waveguide throat diameters"
         )
     if driver_radius <= 0.0 or waveguide_radius <= 0.0:
-        raise control_refusal("driver and waveguide throat diameters must be > 0", 'Driver exit diameter', 'Enter positive Driver exit diameter and Throat diameter.', message='The driver or throat diameter is zero or negative.')
+        raise control_refusal("driver and waveguide throat diameters must be > 0", 'Driver exit diameter', 'Enter positive Driver exit diameter and Body throat radius.', message='The driver or throat diameter is zero or negative.')
     if waveguide_radius < driver_radius:
         raise ConfigError(
             "driver adapter cannot shrink from waveguide throat to driver throat"
@@ -913,7 +913,7 @@ def _reject_icw_throat_extension(common: Mapping[str, Any]) -> None:
     ]
     if names:
         joined = "/".join(names)
-        raise control_refusal(f"formula ICW does not support throat extension ({joined})", 'Throat extension', 'Clear Throat extension length and Throat extension angle, or choose a different horn family.', message='ICW cannot use a throat extension.')
+        raise control_refusal(f"formula ICW does not support throat extension ({joined})", 'Throat extension length', 'Clear Throat extension length and Throat extension angle, or choose a different horn family.', message='ICW cannot use a throat extension.')
 
 
 def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
@@ -1023,9 +1023,9 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         explicit_depth = (_has_any(enclosure, mesh, names=("depth_mm", "depth", "encDepth"))
                           or _has_any(config, names=depth_names))
         if explicit_depth and _enc_depth_mm(config, mesh, enclosure, formula) <= 0.0:
-            raise ConfigError(
-                "ATH enclosure depth <= 0 is unsupported: zero-thickness enclosure sheets are not implemented"
-            )
+            raise UserRefusal("ATH text", "The ATH enclosure has zero or negative Depth.",
+                "Set “Depth” above zero in “Mesh.Enclosure”, or remove “Mesh.Enclosure” from the ATH text.",
+                diagnostic="ATH enclosure depth <= 0 is unsupported: zero-thickness enclosure sheets are not implemented")
     mode = _normalise_mode(config, mesh, enclosure, formula)
     if adapter is not None and mode != "bare":
         raise ConfigError("Curved adapter refused: authored mode currently requires bare mode.")
@@ -1037,7 +1037,7 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             quadrants = _normalise_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
             px, py, nx, ny = enclosure_obj.dim_mm
             if (quadrants in {"1", "14"} and px != nx) or (quadrants in {"1", "12"} and py != ny):
-                raise control_refusal("reduced domain requires symmetric enclosure Dim on every cut axis", 'Enclosure margins', 'Use matching opposite enclosure margins, or choose Full model in Symmetry.', message='The enclosure margins do not match across a symmetry plane.')
+                raise control_refusal("reduced domain requires symmetric enclosure Dim on every cut axis", 'Enclosure and placement', 'Use matching opposite enclosure margins, or choose Full model in Symmetry.', message='The enclosure margins do not match across a symmetry plane.')
         enc_depth = enclosure_obj.depth_mm
     elif mode == "enclosure":
         raise control_refusal("enclosure mode requires enclosure.depth_mm > 0", 'Enclosure depth', 'Increase Enclosure depth above zero.', message='The enclosure has zero or negative depth.')

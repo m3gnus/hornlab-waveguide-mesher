@@ -516,7 +516,7 @@ def validate_mesh_density(density: MeshDensity) -> None:
     if isinstance(density.surface_deviation_mm, bool):
         invalid.append("surface_deviation_mm")
     if invalid:
-        raise control_refusal("mesh resolution values must be finite and > 0: " + ", ".join(invalid), "Mesh resolution", "Enter positive finite values for Throat mesh resolution, Mouth mesh resolution, Rear mesh resolution and enabled Max surface deviation.", message="One or more mesh resolutions are zero, negative or not finite.")
+        raise control_refusal("mesh resolution values must be finite and > 0: " + ", ".join(invalid), 'Throat mesh resolution', "Enter positive finite values for Throat mesh resolution, Mouth mesh resolution, Rear mesh resolution and enabled Max surface deviation.", message="One or more mesh resolutions are zero, negative or not finite.")
     validate_aperture_res_scale(density.aperture_res_scale)
     if (
         density.min_size_mm is not None

@@ -880,6 +880,550 @@
     "legacyKey": "extraKeys",
     "label": "Unknown flat keys"
   },
+  "section.Profile": {
+    "legacyKey": "Profile",
+    "label": "Profile"
+  },
+  "section.Throat": {
+    "legacyKey": "Throat",
+    "label": "Throat"
+  },
+  "section.Mouth": {
+    "legacyKey": "Mouth",
+    "label": "Mouth"
+  },
+  "section.Cross-section": {
+    "legacyKey": "Cross-section",
+    "label": "Cross-section"
+  },
+  "section.Mounting": {
+    "legacyKey": "Mounting",
+    "label": "Mounting"
+  },
+  "section.Imported ATH values": {
+    "legacyKey": "Imported ATH values",
+    "label": "Imported ATH values"
+  },
+  "section.Frequency sweep": {
+    "legacyKey": "Frequency sweep",
+    "label": "Frequency sweep"
+  },
+  "section.Directivity map": {
+    "legacyKey": "Directivity map",
+    "label": "Directivity map"
+  },
+  "section.Source excitation": {
+    "legacyKey": "Source excitation",
+    "label": "Source excitation"
+  },
+  "section.Solver": {
+    "legacyKey": "Solver",
+    "label": "Solver"
+  },
+  "section.Mesh": {
+    "legacyKey": "Mesh",
+    "label": "Mesh"
+  },
+  "section.Export": {
+    "legacyKey": "Export",
+    "label": "Export"
+  },
+  "editor.Advanced horn configuration": {
+    "legacyKey": "Advanced horn configuration",
+    "label": "Advanced horn configuration"
+  },
+  "editor.All dimensions": {
+    "legacyKey": "All dimensions",
+    "label": "All dimensions"
+  },
+  "editor.All patches": {
+    "legacyKey": "All patches",
+    "label": "All patches"
+  },
+  "editor.All points": {
+    "legacyKey": "All points",
+    "label": "All points"
+  },
+  "editor.Arc center radius": {
+    "legacyKey": "Arc center radius",
+    "label": "Arc center radius"
+  },
+  "editor.Arc center z": {
+    "legacyKey": "Arc center z",
+    "label": "Arc center z"
+  },
+  "editor.Arc direction": {
+    "legacyKey": "Arc direction",
+    "label": "Arc direction"
+  },
+  "editor.Assembly front layout": {
+    "legacyKey": "Assembly front layout",
+    "label": "Assembly front layout"
+  },
+  "editor.Attachment and export": {
+    "legacyKey": "Attachment and export",
+    "label": "Attachment and export"
+  },
+  "editor.Baffle": {
+    "legacyKey": "Baffle",
+    "label": "Baffle"
+  },
+  "editor.Centre spacing": {
+    "legacyKey": "Centre spacing",
+    "label": "Centre spacing"
+  },
+  "editor.Centre x": {
+    "legacyKey": "Centre x",
+    "label": "Centre x"
+  },
+  "editor.Centre y": {
+    "legacyKey": "Centre y",
+    "label": "Centre y"
+  },
+  "editor.Change Length": {
+    "legacyKey": "Change Length",
+    "label": "Change Length"
+  },
+  "editor.Clear parameter filter": {
+    "legacyKey": "Clear parameter filter",
+    "label": "Clear parameter filter"
+  },
+  "editor.Constraints on selection": {
+    "legacyKey": "Constraints on selection",
+    "label": "Constraints on selection"
+  },
+  "editor.Curve": {
+    "legacyKey": "Curve",
+    "label": "Curve"
+  },
+  "editor.Curve deviation": {
+    "legacyKey": "Curve deviation",
+    "label": "Curve deviation"
+  },
+  "editor.Delay": {
+    "legacyKey": "Delay",
+    "label": "Delay"
+  },
+  "editor.Diaphragm": {
+    "legacyKey": "Diaphragm",
+    "label": "Diaphragm"
+  },
+  "editor.Dimension": {
+    "legacyKey": "Dimension",
+    "label": "Dimension"
+  },
+  "editor.Dimension properties": {
+    "legacyKey": "Dimension properties",
+    "label": "Dimension properties"
+  },
+  "editor.Dimensions": {
+    "legacyKey": "Dimensions",
+    "label": "Dimensions"
+  },
+  "editor.Drive": {
+    "legacyKey": "Drive",
+    "label": "Drive"
+  },
+  "editor.Drive channel ID": {
+    "legacyKey": "Drive channel ID",
+    "label": "Drive channel ID"
+  },
+  "editor.Driving": {
+    "legacyKey": "Driving",
+    "label": "Driving"
+  },
+  "editor.Enabled": {
+    "legacyKey": "Enabled",
+    "label": "Enabled"
+  },
+  "editor.Enclosure and placement": {
+    "legacyKey": "Enclosure and placement",
+    "label": "Enclosure and placement"
+  },
+  "editor.Enclosure depth": {
+    "legacyKey": "Enclosure depth",
+    "label": "Enclosure depth"
+  },
+  "editor.Enclosure height": {
+    "legacyKey": "Enclosure height",
+    "label": "Enclosure height"
+  },
+  "editor.Enclosure mesh size": {
+    "legacyKey": "Enclosure mesh size",
+    "label": "Enclosure mesh size"
+  },
+  "editor.Enclosure width": {
+    "legacyKey": "Enclosure width",
+    "label": "Enclosure width"
+  },
+  "editor.Family": {
+    "legacyKey": "Family",
+    "label": "Family"
+  },
+  "editor.Fits into": {
+    "legacyKey": "Fits into",
+    "label": "Fits into"
+  },
+  "editor.Force full domain": {
+    "legacyKey": "Force full domain",
+    "label": "Force full domain"
+  },
+  "editor.Front Z": {
+    "legacyKey": "Front Z",
+    "label": "Front Z"
+  },
+  "editor.Front layout": {
+    "legacyKey": "Front layout",
+    "label": "Front layout"
+  },
+  "editor.Gap to mouth": {
+    "legacyKey": "Gap to mouth",
+    "label": "Gap to mouth"
+  },
+  "editor.Generated profile change": {
+    "legacyKey": "Generated profile change",
+    "label": "Generated profile change"
+  },
+  "editor.Has a value to fix": {
+    "legacyKey": "Has a value to fix",
+    "label": "Has a value to fix"
+  },
+  "editor.Horn + woofer assembly": {
+    "legacyKey": "Horn + woofer assembly",
+    "label": "Horn + woofer assembly"
+  },
+  "editor.Horn and woofer assembly editor": {
+    "legacyKey": "Horn and woofer assembly editor",
+    "label": "Horn and woofer assembly editor"
+  },
+  "editor.Horn configuration": {
+    "legacyKey": "Horn configuration",
+    "label": "Horn configuration"
+  },
+  "editor.Horn length": {
+    "legacyKey": "Horn length",
+    "label": "Horn length"
+  },
+  "editor.Horn mouth radius": {
+    "legacyKey": "Horn mouth radius",
+    "label": "Horn mouth radius"
+  },
+  "editor.Horn profile": {
+    "legacyKey": "Horn profile",
+    "label": "Horn profile"
+  },
+  "editor.Horn section": {
+    "legacyKey": "Horn section",
+    "label": "Horn section"
+  },
+  "editor.Identifiers": {
+    "legacyKey": "Identifiers",
+    "label": "Identifiers"
+  },
+  "editor.Import profile points": {
+    "legacyKey": "Import profile points",
+    "label": "Import profile points"
+  },
+  "editor.In °": {
+    "legacyKey": "In °",
+    "label": "In °"
+  },
+  "editor.Invert polarity": {
+    "legacyKey": "Invert polarity",
+    "label": "Invert polarity"
+  },
+  "editor.Join": {
+    "legacyKey": "Join",
+    "label": "Join"
+  },
+  "editor.Load assembly draft": {
+    "legacyKey": "Load assembly draft",
+    "label": "Load assembly draft"
+  },
+  "editor.Mesh size": {
+    "legacyKey": "Mesh size",
+    "label": "Mesh size"
+  },
+  "editor.More": {
+    "legacyKey": "More",
+    "label": "More"
+  },
+  "editor.Motion": {
+    "legacyKey": "Motion",
+    "label": "Motion"
+  },
+  "editor.Name": {
+    "legacyKey": "Name",
+    "label": "Name"
+  },
+  "editor.Out °": {
+    "legacyKey": "Out °",
+    "label": "Out °"
+  },
+  "editor.Passage refinement": {
+    "legacyKey": "Passage refinement",
+    "label": "Passage refinement"
+  },
+  "editor.Paste lookup points": {
+    "legacyKey": "Paste lookup points",
+    "label": "Paste lookup points"
+  },
+  "editor.Paste profile points": {
+    "legacyKey": "Paste profile points",
+    "label": "Paste profile points"
+  },
+  "editor.Patch": {
+    "legacyKey": "Patch",
+    "label": "Patch"
+  },
+  "editor.Phase plug and annular vanes": {
+    "legacyKey": "Phase plug and annular vanes",
+    "label": "Phase plug and annular vanes"
+  },
+  "editor.Phase plug passage section": {
+    "legacyKey": "Phase plug passage section",
+    "label": "Phase plug passage section"
+  },
+  "editor.Placement": {
+    "legacyKey": "Placement",
+    "label": "Placement"
+  },
+  "editor.Point": {
+    "legacyKey": "Point",
+    "label": "Point"
+  },
+  "editor.Point properties": {
+    "legacyKey": "Point properties",
+    "label": "Point properties"
+  },
+  "editor.Prescribed motion": {
+    "legacyKey": "Prescribed motion",
+    "label": "Prescribed motion"
+  },
+  "editor.Preset name": {
+    "legacyKey": "Preset name",
+    "label": "Preset name"
+  },
+  "editor.Radius": {
+    "legacyKey": "Radius",
+    "label": "Radius"
+  },
+  "editor.Recess": {
+    "legacyKey": "Recess",
+    "label": "Recess"
+  },
+  "editor.Role": {
+    "legacyKey": "Role",
+    "label": "Role"
+  },
+  "editor.Saved presets": {
+    "legacyKey": "Saved presets",
+    "label": "Saved presets"
+  },
+  "editor.Segment": {
+    "legacyKey": "Segment",
+    "label": "Segment"
+  },
+  "editor.Segment properties": {
+    "legacyKey": "Segment properties",
+    "label": "Segment properties"
+  },
+  "editor.Selection": {
+    "legacyKey": "Selection",
+    "label": "Selection"
+  },
+  "editor.Selection properties": {
+    "legacyKey": "Selection properties",
+    "label": "Selection properties"
+  },
+  "editor.Separate the vertical profile": {
+    "legacyKey": "Separate the vertical profile",
+    "label": "Separate the vertical profile"
+  },
+  "editor.Separate vertical profile": {
+    "legacyKey": "Separate vertical profile",
+    "label": "Separate vertical profile"
+  },
+  "editor.Shape": {
+    "legacyKey": "Shape",
+    "label": "Shape"
+  },
+  "editor.Show section descriptions": {
+    "legacyKey": "Show section descriptions",
+    "label": "Show section descriptions"
+  },
+  "editor.Sketch properties": {
+    "legacyKey": "Sketch properties",
+    "label": "Sketch properties"
+  },
+  "editor.Solve domain": {
+    "legacyKey": "Solve domain",
+    "label": "Solve domain"
+  },
+  "editor.Source attachment": {
+    "legacyKey": "Source attachment",
+    "label": "Source attachment"
+  },
+  "editor.Source contour": {
+    "legacyKey": "Source contour",
+    "label": "Source contour"
+  },
+  "editor.Source contour editor": {
+    "legacyKey": "Source contour editor",
+    "label": "Source contour editor"
+  },
+  "editor.Source meridian drawing": {
+    "legacyKey": "Source meridian drawing",
+    "label": "Source meridian drawing"
+  },
+  "editor.Source shape": {
+    "legacyKey": "Source shape",
+    "label": "Source shape"
+  },
+  "editor.Source summary": {
+    "legacyKey": "Source summary",
+    "label": "Source summary"
+  },
+  "editor.Sources": {
+    "legacyKey": "Sources",
+    "label": "Sources"
+  },
+  "editor.Spacing from": {
+    "legacyKey": "Spacing from",
+    "label": "Spacing from"
+  },
+  "editor.Start a Custom profile": {
+    "legacyKey": "Start a Custom profile",
+    "label": "Start a Custom profile"
+  },
+  "editor.Start from a shape": {
+    "legacyKey": "Start from a shape",
+    "label": "Start from a shape"
+  },
+  "editor.Value": {
+    "legacyKey": "Value",
+    "label": "Value"
+  },
+  "editor.Weight": {
+    "legacyKey": "Weight",
+    "label": "Weight"
+  },
+  "editor.Woofer aperture radius": {
+    "legacyKey": "Woofer aperture radius",
+    "label": "Woofer aperture radius"
+  },
+  "editor.mm from throat / %": {
+    "legacyKey": "mm from throat / %",
+    "label": "mm from throat / %"
+  },
+  "editor.n / radius": {
+    "legacyKey": "n / radius",
+    "label": "n / radius"
+  },
+  "editor.r mm": {
+    "legacyKey": "r mm",
+    "label": "r mm"
+  },
+  "editor.shape": {
+    "legacyKey": "shape",
+    "label": "shape"
+  },
+  "editor.z mm": {
+    "legacyKey": "z mm",
+    "label": "z mm"
+  },
+  "options.engine": {
+    "legacyKey": "engine",
+    "label": "Solver"
+  },
+  "options.accuracy": {
+    "legacyKey": "accuracy",
+    "label": "Accuracy"
+  },
+  "options.symmetry": {
+    "legacyKey": "symmetry",
+    "label": "Symmetry"
+  },
+  "options.solver_mode": {
+    "legacyKey": "solver_mode",
+    "label": "Solver mode"
+  },
+  "options.frequency_range": {
+    "legacyKey": "frequency_range",
+    "label": "Frequency range"
+  },
+  "options.num_frequencies": {
+    "legacyKey": "num_frequencies",
+    "label": "Frequency samples"
+  },
+  "options.frequencies_hz": {
+    "legacyKey": "frequencies_hz",
+    "label": "Solver frequencies in Hz"
+  },
+  "options.frequency_spacing": {
+    "legacyKey": "frequency_spacing",
+    "label": "Sweep spacing"
+  },
+  "options.adaptive_frequency_sampling": {
+    "legacyKey": "adaptive_frequency_sampling",
+    "label": "Adaptive frequency sampling (experimental)"
+  },
+  "options.mesh_ladder": {
+    "legacyKey": "mesh_ladder",
+    "label": "Per-band mesh ladder"
+  },
+  "options.mesh_validation_mode": {
+    "legacyKey": "mesh_validation_mode",
+    "label": "Mesh validation"
+  },
+  "options.ground_plane.enabled": {
+    "legacyKey": "ground_plane.enabled",
+    "label": "Ground plane"
+  },
+  "options.ground_plane.axis": {
+    "legacyKey": "ground_plane.axis",
+    "label": "Reflecting surface"
+  },
+  "options.ground_plane.height_m": {
+    "legacyKey": "ground_plane.height_m",
+    "label": "Height above surface"
+  },
+  "options.polar_config.angle_range": {
+    "legacyKey": "polar_config.angle_range",
+    "label": "Angle range"
+  },
+  "options.polar_config.angle_step": {
+    "legacyKey": "polar_config.angle_step",
+    "label": "Angular step"
+  },
+  "options.polar_config.distance": {
+    "legacyKey": "polar_config.distance",
+    "label": "Measurement distance"
+  },
+  "options.polar_config.norm_angle": {
+    "legacyKey": "polar_config.norm_angle",
+    "label": "Normalization angle"
+  },
+  "options.polar_config.inclination": {
+    "legacyKey": "polar_config.inclination",
+    "label": "Diagonal plane angle"
+  },
+  "options.polar_config.enabled_axes": {
+    "legacyKey": "polar_config.enabled_axes",
+    "label": "Directivity planes"
+  },
+  "options.polar_config.observation_origin": {
+    "legacyKey": "polar_config.observation_origin",
+    "label": "Measurement origin"
+  },
+  "options.polar_config.spherical_sampling": {
+    "legacyKey": "polar_config.spherical_sampling",
+    "label": "Keep 3D balloon result"
+  },
+  "options.polar_config.field_plane": {
+    "legacyKey": "polar_config.field_plane",
+    "label": "Keep field plane data"
+  },
   "source.preset.radius_mm": {
     "legacyKey": "radius_mm",
     "label": "Radius"
