@@ -752,7 +752,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
     # Field precedence must not conceal an unsupported coefficient in an
     # enabled section. Wholly ignored subtrees have unrelated member names.
     for items in (flat, *(items for name, items in blocks.items() if not _ath_item_ignored(name, block=True))):
-        stretch_coefficients({key: _maybe_number(items[key]) for key in ("s1", "s2") if key in items})
+        try:
+            stretch_coefficients({key: _maybe_number(items[key]) for key in ("s1", "s2") if key in items})
+        except ConfigError as exc:
+            raise ath_refusal(str(exc)) from exc
     formula = None
     profile_block: str | None = None
     profile_items: Mapping[str, str] = {}
@@ -1152,12 +1155,15 @@ def parse_text_config(content: str) -> dict[str, Any]:
                     and not (len(path) == 2 and path[0] == "Mesh.Enclosure" and path[1] in ATH_LF_BLOCKS)}
     _reject_unsupported_ath_keys(flat, profile_items, mesh_items, {**nested_names, **blocks})
 
-    validate_stretch_composition(
-        {**profile, **gcurve,
-         "rot": profile.get("rot", _maybe_number(flat.get("Rot", "0")))},
-        formula,
-        length_supplied="Length" in flat,
-    )
+    try:
+        validate_stretch_composition(
+            {**profile, **gcurve,
+             "rot": profile.get("rot", _maybe_number(flat.get("Rot", "0")))},
+            formula,
+            length_supplied="Length" in flat,
+        )
+    except ConfigError as exc:
+        raise ath_refusal(str(exc)) from exc
 
     # ABEC.SimType selects the mesh topology: 1 = infinite baffle (the ATH
     # default), 2 = free standing. An enclosure implies a free-standing sim.

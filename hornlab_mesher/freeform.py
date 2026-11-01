@@ -2525,7 +2525,7 @@ def _build_freeform_geometry(
                     f"through the axis near t={collapsed_t:g}; reduce how far the "
                     "target departs from the drawn mouth, or set "
                     "morphAllowShrinkage to 0 so the target cannot be smaller "
-                    "than the mouth", 'Target shape', 'Move Target width and Target height closer to the drawn mouth, or turn Allow shrinkage off.', message='The rectangle morph collapses the outline through the axis.')
+                    "than the mouth", 'Morph target', 'Move Target width and Target height closer to the drawn mouth, or turn Allow shrinkage off.', message='The rectangle morph collapses the outline through the axis.')
             # A sharp corner cannot be sampled on top of a rounded-rectangle
             # station: the corner-tangency azimuths the station pins jump to
             # the target's vertex at the mouth ring, and the acoustic fit
@@ -2540,13 +2540,13 @@ def _build_freeform_geometry(
                 raise control_refusal("FREEFORM rounded-rectangle crossSections stations cannot be "
                     "combined with a sharp rectangle morph target; use ellipse "
                     "or circle stations, or give the morph a corner radius "
-                    "(morphCorner > 0)", 'Target shape', 'Increase Morph corner radius, or choose circle or ellipse in Cross sections.', message='Rounded rectangle cross sections cannot morph to a sharp rectangle.')
+                    "(morphCorner > 0)", 'Morph target', 'Increase Corner radius, or choose circle or ellipse in Cross-section stations.', message='Rounded rectangle cross sections cannot morph to a sharp rectangle.')
             geometry._nonconvex_rect_morph = True
         elif morph_induced:
             target_name = {2: "circle", 3: "superellipse"}[geometry._morph_target]
             raise control_refusal(f"FREEFORM morph to the {target_name} target produces a non-convex "
                 f"outline near t={offending_t:g}; reduce how far the target "
-                "departs from the drawn mouth", 'Target shape', 'Move Target width and Target height closer to the drawn mouth.', message='The morph produces an outline that bends inward.')
+                "departs from the drawn mouth", 'Morph target', 'Move Target width and Target height closer to the drawn mouth.', message='The morph produces an outline that bends inward.')
         else:
             diagnostic_geometry = geometry
             if unmorphed_violations:
@@ -2558,7 +2558,7 @@ def _build_freeform_geometry(
             )
             raise control_refusal(f"FREEFORM crossSections span {span} produces a non-convex outline "
                 f"near t={offending_t:g}; adjust its shape, aspect, or corner setting"
-                f"{corner_hint}", 'Cross sections', 'Adjust Shape, Exponent or Corner radius in the named Cross sections rows.', message='A cross section outline bends inward between its rows.')
+                f"{corner_hint}", 'Cross-section stations', 'Adjust Shape, Exponent or Corner radius in the named Cross-section stations rows.', message='A cross section outline bends inward between its rows.')
 
     for plane in (geometry._profile_h, geometry._profile_v):
         for array in (

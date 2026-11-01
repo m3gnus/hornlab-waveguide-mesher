@@ -42,13 +42,13 @@ class StandaloneSourceGeometry:
         for name, value in asdict(self).items():
             object.__setattr__(self, name, _number(value, name))
         if not 0.1 <= self.radius_mm <= 200:
-            raise control_refusal("radius_mm must be in [0.1, 200]", 'Radius', 'Enter Radius from 0.1 to 200 mm.', message='Radius is outside the supported range.')
+            raise control_refusal("radius_mm must be in [0.1, 200]", 'Source disk radius', 'Enter Source disk radius from 0.1 to 200 mm.', message='Source disk radius is outside the supported range.')
         if not self.radius_mm + 0.1 <= self.outer_radius_mm <= 500:
-            raise control_refusal("outer_radius_mm must exceed radius_mm by at least 0.1 mm and be <=500", 'Outer radius', 'Set Outer radius at least 0.1 mm above Radius and no greater than 500 mm.', message='The source rim is too small or too large.')
+            raise control_refusal("outer_radius_mm must exceed radius_mm by at least 0.1 mm and be <=500", 'Source body radius', 'Set Source body radius at least 0.1 mm above Source disk radius and no greater than 500 mm.', message='The source rim is too small or too large.')
         if not 0.1 <= self.depth_mm <= 500:
-            raise control_refusal("depth_mm must be in [0.1, 500]", 'Depth', 'Enter Depth from 0.1 to 500 mm.', message='Depth is outside the supported range.')
+            raise control_refusal("depth_mm must be in [0.1, 500]", 'Source body depth', 'Enter Source body depth from 0.1 to 500 mm.', message='Source body depth is outside the supported range.')
         if abs(self.vertical_offset_mm) > 10000:
-            raise control_refusal("vertical_offset_mm magnitude must be <=10000", 'Vertical offset', 'Enter Vertical offset between -10000 and 10000 mm.', message='Vertical offset is outside the supported range.')
+            raise control_refusal("vertical_offset_mm magnitude must be <=10000", 'Export vertical offset', 'Enter Export vertical offset between -10000 and 10000 mm.', message='Export vertical offset is outside the supported range.')
 
     @property
     def bounds(self):

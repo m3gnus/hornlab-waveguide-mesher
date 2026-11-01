@@ -8,7 +8,7 @@ translation layer.
 
 from __future__ import annotations
 
-from .errors import UserRefusal, control_refusal, numeric_refusal
+from .errors import family_refusal, UserRefusal, control_refusal, numeric_refusal
 
 import tempfile
 
@@ -351,6 +351,7 @@ def _has_any(*sources: Mapping[str, Any], names: tuple[str, ...]) -> bool:
     return False
 
 
+
 def _validate_formula_specific_keys(
     formula: str,
     profile: Mapping[str, Any],
@@ -374,11 +375,11 @@ def _validate_formula_specific_keys(
             "s2",
         )
         if _has_any(profile, config, names=names):
-            raise ConfigError(
+            raise family_refusal(
                 "formula FREEFORM does not accept OSSE/R-OSSE profile coefficient keys"
             )
         if "h" in profile and profile["h"] is not None:
-            raise ConfigError(
+            raise family_refusal(
                 "formula FREEFORM does not accept OSSE profile coefficient key h"
             )
         foreign_icw = sorted(
@@ -390,7 +391,7 @@ def _validate_formula_specific_keys(
             }
         )
         if foreign_icw:
-            raise ConfigError(
+            raise family_refusal(
                 "formula FREEFORM does not accept ICW profile coefficient keys: "
                 + ", ".join(foreign_icw)
             )
@@ -399,7 +400,7 @@ def _validate_formula_specific_keys(
     if formula == "OSSE":
         names = ("R_mm", "R", "tmax", "m", "r", "b")
         if _has_any(profile, config, names=names):
-            raise ConfigError(
+            raise family_refusal(
                 "R-OSSE-only profile keys are not valid with formula OSSE"
             )
         return
@@ -424,7 +425,7 @@ def _validate_formula_specific_keys(
             "b",
         )
         if _has_any(profile, config, names=names):
-            raise ConfigError("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
+            raise family_refusal("formula LOOKUP does not accept OSSE/R-OSSE profile keys")
         # The lookup profile is the whole meridian: nothing prepends a throat
         # extension, slot or driver adapter to it, and no coverage/flare
         # coefficient shapes it. These were accepted and then silently ignored
@@ -452,7 +453,7 @@ def _validate_formula_specific_keys(
             if _has_any(profile, config, names=(name,))
         )
         if ignored:
-            raise ConfigError(
+            raise family_refusal(
                 "formula LOOKUP does not support "
                 + ", ".join(ignored)
                 + ": the lookupProfile defines the whole meridian, so these keys "
@@ -475,7 +476,7 @@ def _validate_formula_specific_keys(
         # top-level keys and are intentionally not part of this reject set.
         names = ("n", "s", "s1", "s2", "rot_deg", "rot", "m", "r", "b", "tmax")
         if _has_any(profile, config, names=names):
-            raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
+            raise family_refusal("OSSE/R-OSSE shape keys are not valid with formula ICW")
         return
 
     names = ("L_mm", "L", "n", "s", "rot_deg", "rot")
@@ -485,7 +486,7 @@ def _validate_formula_specific_keys(
         # A numeric zero rotation is harmless, just as on the text path.
         names = ("L_mm", "L", "n", "s")
     if _has_any(profile, config, names=names):
-        raise ConfigError("OSSE-only profile keys are not valid with formula R-OSSE")
+        raise family_refusal("OSSE-only profile keys are not valid with formula R-OSSE")
 
 
 def _static_float_or_none(value: Any) -> float | None:
@@ -634,7 +635,7 @@ def _validate_formula_features(
             cross, profile, config, names=("aspect_ratio", "aspectRatio"), default=1.0
         )
         if not _cross_section_is_circular(exponent, aspect_ratio):
-            raise ConfigError(GCURVE_CROSS_SECTION_CONFLICT)
+            raise control_refusal(GCURVE_CROSS_SECTION_CONFLICT, "Guiding curve mode", "Set Cross-section exponent to 2 and Cross-section aspect ratio to 1, or disable Guiding curve mode.", message="Guiding curves need a circular base cross-section.")
 
 
 def _enc_depth_mm(
@@ -1637,7 +1638,7 @@ def _mesh_density_from_config(
     )
     deviation = mesh.get("surface_deviation_mm")
     if isinstance(deviation, bool):
-        raise control_refusal("surface_deviation_mm must be a finite positive number or null", 'Surface deviation', 'Enter a positive finite Surface deviation, or turn it Off.', message='Surface deviation must be positive when enabled.')
+        raise control_refusal("surface_deviation_mm must be a finite positive number or null", 'Max surface deviation', 'Enter a positive finite Max surface deviation, or turn it Off.', message='Max surface deviation must be positive when enabled.')
     density = MeshDensity(
         surface_deviation_mm=_optional_float(mesh, names=("surface_deviation_mm",)),
         throat_res_mm=_float(
@@ -1982,12 +1983,13 @@ def _check_effective_grid_caps(grid: Mapping[str, Any], density: MeshDensity) ->
         ),
     ):
         if value > limit:
-            raise ConfigError(
+            raise control_refusal(
                 "the acoustic control grid needed for the requested mm resolution "
                 f"(throat {density.throat_res_mm:g} mm, mouth "
                 f"{density.mouth_res_mm:g} mm) is too large: {what} exceeds the "
-                f"limit of {limit:,}. Use a coarser throat/mouth resolution."
-            )
+                f"limit of {limit:,}. Use a coarser throat/mouth resolution.",
+                "Throat mesh resolution", "Increase Throat mesh resolution and Mouth mesh resolution to use a coarser mesh.",
+                message="The requested mesh resolution needs too many surface samples.")
 
 
 def _sampling_failure_message(
@@ -2611,11 +2613,10 @@ def resolve_geometry(
     if mode != "enclosure" and (
         _number_list(params.get("subdomainSlices")) or interface_offsets
     ):
-        raise ConfigError(
-            "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, "
-            "which are only supported for enclosure builds "
-            "(ATH's free-standing two-subdomain construction is not implemented)"
-        )
+        raise control_refusal(
+            "Mesh.SubdomainSlices/Mesh.InterfaceOffset request subdomain interfaces, which are only supported for enclosure builds",
+            "Mounting", "Remove “Mesh.SubdomainSlices” and “Mesh.InterfaceOffset” from the imported configuration, or choose Waveguide in enclosure in Mounting.",
+            message="Free-standing models cannot include subdomain interfaces.")
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_quadrants(quadrants)
     source_auto_angle_deg = azimuthal_mean(params.get("a0"), 15.5)

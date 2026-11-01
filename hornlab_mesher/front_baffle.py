@@ -46,7 +46,7 @@ class FrontBaffle:
         x, y, _ = self.center_mm
         clearance = min(self.width_mm / 2 - abs(x), self.height_mm / 2 - abs(y))
         if clearance - self.aperture_radius_mm <= 0.1:
-            raise control_refusal("aperture must clear every baffle edge by more than 0.1 mm", 'Source position', 'Move the source inward or increase Width and Height to leave more than 0.1 mm clearance.', message='The source opening is too close to a baffle edge.')
+            raise control_refusal("aperture must clear every baffle edge by more than 0.1 mm", 'Source position', 'Move the source inward or increase Enclosure width and Enclosure height to leave more than 0.1 mm clearance.', message='The source opening is too close to a baffle edge.')
         if self.depth_mm + min(0, contour.axial_bounds_mm[0]) <= 0.1:
             raise control_refusal("source must clear the enclosure back by more than 0.1 mm", 'Enclosure depth', 'Increase Depth to leave more than 0.1 mm behind the source.', message='The source reaches the back of the enclosure.')
 

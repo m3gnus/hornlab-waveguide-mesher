@@ -5,6 +5,8 @@ angular partition or OCC operation is changed for a profile without a corner.
 """
 from __future__ import annotations
 
+from .errors import control_refusal
+
 from dataclasses import dataclass
 import math
 from typing import Any
@@ -144,7 +146,7 @@ def mitred_outer_grid(inner: np.ndarray, wall: float, *, full_circle: bool,
         validate_outer_offset_grid(inner, outer, full_circle=full_circle)
     except ValueError as exc:
         label = ', '.join(f'{z:g}' for z in corner_z) or 'endpoints'
-        raise ValueError(f"FREEFORM corner z={label} mm: unsafe offset mitre: {exc}") from exc
+        raise control_refusal(f"FREEFORM corner z={label} mm: unsafe offset mitre: {exc}", "Wall thickness", "Reduce Wall thickness or soften the sharp profile corner.", message=f"The outer wall folds at the profile corner at {label} mm.") from exc
     return outer
 
 

@@ -827,7 +827,7 @@ def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
     for t in roots(x, lambda t: point(t)[0]):
         z, r = point(t)
         if abs(z) <= tolerance and -tolerance <= r <= driver_radius + tolerance:
-            raise control_refusal("throat stretch main meridian has self-contact with the source/driver ring or disc", 'Throat stretch', 'Reduce Horizontal throat stretch or Vertical throat stretch, or adjust Throat extension length.', message='The stretched horn touches its source or driver.')
+            raise control_refusal("throat stretch main meridian has self-contact with the source/driver ring or disc", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or adjust Throat extension length.', message='The stretched horn touches its source or driver.')
     for start, end, slope in ((0.0, ext_len, math.tan(ext_angle)),
                               (ext_len, prefix, 0.0)):
         if end <= start:
@@ -839,7 +839,7 @@ def _verify_rosse_source_contact(coefficients: _RosseMainCoefficients,
         for t in roots(values, distance):
             z, _ = point(t)
             if start - tolerance <= z <= end + tolerance and abs(distance(t)) <= tolerance:
-                raise control_refusal("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints", 'Throat stretch', 'Reduce Horizontal throat stretch or Vertical throat stretch, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
+                raise control_refusal("throat stretch main meridian has self-contact or self-intersection with the prefix, including its endpoints", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
 
 
 def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
@@ -892,7 +892,7 @@ def _verify_meridian_self_contact(points: NDArray[np.float64]) -> None:
             point_distance(b, starts[i], np.broadcast_to(delta[i], directions.shape)),
         ]) <= tolerance
         if np.any(crossing | contact):
-            raise control_refusal("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)", 'Throat stretch', 'Reduce Horizontal throat stretch or Vertical throat stretch, or soften the profile bend.', message='The stretched horn intersects itself or its source.')
+            raise control_refusal("throat stretch composite meridian has self-contact or self-intersection (including source/driver ring)", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or soften the profile bend.', message='The stretched horn intersects itself or its source.')
 
 
 def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float64],
@@ -915,7 +915,7 @@ def _verify_prefix_intersection(x: NDArray[np.float64], radius: NDArray[np.float
         fraction = d0[candidates] / (d0[candidates] - d1[candidates])
         crossing_x = x[:-1][candidates] + fraction * (x[1:][candidates] - x[:-1][candidates])
         if np.any((crossing_x > start) & (crossing_x < end)):
-            raise control_refusal("throat stretch main meridian intersects the extension/slot prefix", 'Throat stretch', 'Reduce Horizontal throat stretch or Vertical throat stretch, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
+            raise control_refusal("throat stretch main meridian intersects the extension/slot prefix", 'Throat stretch', 'Reduce Throat stretch amount or Throat stretch sharpness, or shorten Throat extension length and Straight slot length.', message='The stretched horn intersects its throat extension or straight slot.')
 
 
 def _rosse_main_curve(
@@ -1452,14 +1452,14 @@ def lookup_profile_array(params: Mapping[str, Any]) -> NDArray[np.float64]:
 
     raw = params.get("lookupProfile", params.get("lookup_profile"))
     if raw is None:
-        raise control_refusal("LOOKUP formula requires a lookupProfile of [z, r] pairs", 'Profile points', 'Add at least two Position and Radius pairs in Profile points.', message='The lookup profile has no usable points.')
+        raise control_refusal("LOOKUP formula requires a lookupProfile of [z, r] pairs", 'Lookup profile points', 'Add at least two Position and Radius pairs in Lookup profile points.', message='The lookup profile has no usable points.')
     lookup = np.asarray(raw, dtype=np.float64)
     if lookup.ndim != 2 or lookup.shape[1] != 2 or lookup.shape[0] < 2:
-        raise control_refusal("lookupProfile must be an array of at least two [z, r] pairs", 'Profile points', 'Add at least two Position and Radius pairs in Profile points.', message='The lookup profile needs at least two point rows.')
+        raise control_refusal("lookupProfile must be an array of at least two [z, r] pairs", 'Lookup profile points', 'Add at least two Position and Radius pairs in Lookup profile points.', message='The lookup profile needs at least two point rows.')
     if not np.all(np.isfinite(lookup)):
-        raise control_refusal("lookupProfile must contain only finite values", 'Profile points', 'Enter finite Position and Radius values in Profile points.', message='A lookup profile point is not finite.')
+        raise control_refusal("lookupProfile must contain only finite values", 'Lookup profile points', 'Enter finite Position and Radius values in Lookup profile points.', message='A lookup profile point is not finite.')
     if np.any(np.diff(lookup[:, 0]) <= 0.0):
-        raise control_refusal("lookupProfile z values must be strictly increasing", 'Profile points', 'Put Profile points in increasing Position order without duplicates.', message='Lookup profile positions do not increase from throat to mouth.')
+        raise control_refusal("lookupProfile z values must be strictly increasing", 'Lookup profile points', 'Put Lookup profile points in increasing Position order without duplicates.', message='Lookup profile positions do not increase from throat to mouth.')
     return lookup
 
 

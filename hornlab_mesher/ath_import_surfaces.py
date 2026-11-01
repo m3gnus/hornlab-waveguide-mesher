@@ -3,7 +3,7 @@
 The authored grid is the authority: its chord angles, not analytic derivatives
 or a refined sampling grid, determine both the lip and the rear rings.
 """
-from .errors import UserRefusal
+from .errors import UserRefusal, ath_refusal
 
 from dataclasses import dataclass
 import math
@@ -16,7 +16,7 @@ def validate_combinations(params):
     """Refuse compositions awaiting measured ATH lip/rear witnesses."""
     from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION
     if params.get(TEXT_IMPORT_VERSION_KEY) != TEXT_IMPORT_VERSION:
-        raise ValueError("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-09a-v2")
+        raise ath_refusal("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-09a-v2")
     for key, name, inactive in (("scale", "Scale", 1),
                                ("throatExtLength", "Throat.Ext.Length", 0),
                                ("throatExtAngle", "Throat.Ext.Angle", 0),
@@ -26,7 +26,7 @@ def validate_combinations(params):
         if not isinstance(value, (int, float)) or value != inactive:
             raise ValueError(f"{name} with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
     if params.get("sourceShape", 1) == 2:
-        raise ValueError("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+        raise ath_refusal("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
 
 
 def meridional_normals(points):
@@ -53,7 +53,7 @@ def append_lip(body, radius, segments, *, profile_zero=None):
     """Append uniformly scaled copies of the original, post-stretch mouth."""
     grid = np.asarray(body, dtype=float)
     if grid.shape[1] < 4:
-        raise ValueError("Mesh.Roundover requires Mesh.LengthSegments >= 3 for the mouth chord angle")
+        raise ath_refusal("Mesh.Roundover requires Mesh.LengthSegments >= 3 for the mouth chord angle")
     p0 = grid[0] if profile_zero is None else np.asarray(profile_zero)
     g1 = math.atan2(p0[-1, 2] - p0[-3, 2], p0[-1, 0] - p0[-3, 0])
     g2 = math.atan2(p0[-2, 2] - p0[-4, 2], p0[-2, 0] - p0[-4, 0])
@@ -90,10 +90,10 @@ def rear_rings(grid, normals, shape, wall, front_offset=40, step=25, *, profile_
     z = grid[0, :, 2] if profile_zero_z is None else profile_zero_z
     if shape == 3:
         if front_offset < 0:
-            raise ValueError("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
+            raise ath_refusal("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
         candidates = np.flatnonzero(z[:-1] <= z[-1] - front_offset)
         if not len(candidates):
-            raise ValueError("Mesh.RearShape.FrontOffset places the Opus front behind every body row; no rear loft can be built")
+            raise ath_refusal("Mesh.RearShape.FrontOffset places the Opus front behind every body row; no rear loft can be built")
         end = int(candidates[-1])
         shift = -10
     else:
@@ -138,17 +138,17 @@ def resolve(config, params, formula, mode, allow_large_mesh):
     from .profile_sampling import build_point_grid_arrays
     from .profiles import azimuthal_mean
     if mode not in {"freestanding", "bare"}:
-        raise ConfigError("Mesh.Roundover/RearShape = 3 require free-standing or bare import topology; enclosure/infinite baffle are unsupported")
+        raise ath_refusal("Mesh.Roundover/RearShape = 3 require free-standing or bare import topology; enclosure/infinite baffle are unsupported")
     if params.get("athRoundover") and formula != "OSSE":
-        raise ConfigError("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
+        raise ath_refusal("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
     if params.get("athRearShape") == 3 and mode != "freestanding":
-        raise ConfigError("Mesh.RearShape = 3 requires a free-standing wall")
+        raise ath_refusal("Mesh.RearShape = 3 requires a free-standing wall")
     if params.get("subdomainSlices") or params.get("interfaceOffset"):
-        raise ConfigError("Mesh.Roundover/RearShape = 3 with Mesh.SubdomainSlices/Mesh.InterfaceOffset is unsupported: free-standing subdomain interfaces are not implemented")
+        raise ath_refusal("Mesh.Roundover/RearShape = 3 with Mesh.SubdomainSlices/Mesh.InterfaceOffset is unsupported: free-standing subdomain interfaces are not implemented")
     wall = float(params["wallThickness"])
     lip = params.get("athRoundover")
     if lip and mode == "freestanding" and params.get("athRearShape", 1) == 1 and wall >= lip["radius"]:
-        raise ConfigError("Mesh.Roundover with RearShape = 1 requires Radius > Mesh.WallThickness: the outer lip would collapse or fold")
+        raise ath_refusal("Mesh.Roundover with RearShape = 1 requires Radius > Mesh.WallThickness: the outer lip would collapse or fold")
     try:
         data = build_point_grid_arrays(params)
     except ValueError as exc:
@@ -168,7 +168,7 @@ def resolve(config, params, formula, mode, allow_large_mesh):
             raise ConfigError(str(exc)) from exc
     mesh = _section(config, "mesh")
     if _mesh_surface_fit(mesh) == "approximate":
-        raise ConfigError("Mesh.SurfaceFit = approximate is unsupported for Mesh.Roundover / Mesh.RearShape = 3 imports: the authored ATH rings require interpolation")
+        raise ath_refusal("Mesh.SurfaceFit = approximate is unsupported for Mesh.Roundover / Mesh.RearShape = 3 imports: the authored ATH rings require interpolation")
     density = _mesh_density_from_config(config, allow_large_mesh=allow_large_mesh)
     geometry = AthImportedSurfaceGeometry(
         inner_points=inner, outer_points=data["outer_grid"],
@@ -197,26 +197,26 @@ def normalized_controls(mesh, wall):
                 if key in mesh}
     shape = controls.get("athRearShape", 1)
     if shape not in {1, 3}:
-        raise ValueError("Mesh.RearShape must be 1 or 3")
+        raise ath_refusal("Mesh.RearShape must be 1 or 3")
     lip = controls.get("athRoundover")
     if lip is not None:
         if not isinstance(lip, dict) or set(lip) - {"radius", "segments"}:
-            raise ValueError("Mesh.Roundover transport requires only Radius/Segments members")
+            raise ath_refusal("Mesh.Roundover transport requires only Radius/Segments members")
         try:
             radius = float(lip.get("radius", float("nan")))
             segments = float(lip.get("segments", 5))
         except (ValueError, TypeError) as exc:
-            raise ValueError("Mesh.Roundover.Radius/Segments must be finite numbers") from exc
+            raise ath_refusal("Mesh.Roundover.Radius/Segments must be finite numbers") from exc
         if not math.isfinite(radius) or radius <= 0:
-            raise ValueError("Mesh.Roundover.Radius must be finite and > 0")
+            raise ath_refusal("Mesh.Roundover.Radius must be finite and > 0")
         if not math.isfinite(segments) or segments < 1 or segments != int(segments):
-            raise ValueError("Mesh.Roundover.Segments must be a finite integer >= 1")
+            raise ath_refusal("Mesh.Roundover.Segments must be a finite integer >= 1")
         controls["athRoundover"] = {"radius": radius, "segments": int(segments)}
     if shape != 3 and any(key in controls for key in ("athRearFrontOffset", "athRearStep")):
-        raise ValueError("Mesh.RearShape.FrontOffset/Step require Mesh.RearShape = 3")
+        raise ath_refusal("Mesh.RearShape.FrontOffset/Step require Mesh.RearShape = 3")
     if shape == 3:
         if not math.isfinite(wall):
-            raise ValueError("Mesh.WallThickness for Mesh.RearShape = 3 must be finite")
+            raise ath_refusal("Mesh.WallThickness for Mesh.RearShape = 3 must be finite")
         wall = min(1000, max(.1, wall))
         for key, name, default in (("athRearFrontOffset", "FrontOffset", 40), ("athRearStep", "Step", 25)):
             try:
@@ -226,6 +226,6 @@ def normalized_controls(mesh, wall):
             if not math.isfinite(value) or (name == "Step" and value <= 0):
                 raise ValueError(f"Mesh.RearShape.{name} must be finite" + (" and > 0" if name == "Step" else ""))
             if name == "FrontOffset" and value < 0:
-                raise ValueError("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
+                raise ath_refusal("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
             controls[key] = value
     return controls, wall

@@ -484,7 +484,7 @@ def validate_aperture_res_scale(value: float) -> float:
 
     scale = float(value)
     if not math.isfinite(scale) or scale < 1.0:
-        raise control_refusal("aperture_res_scale must be finite and >= 1", "Aperture resolution scale", "Enter Aperture resolution scale of at least 1.", message="Aperture resolution scale must be a finite number of at least 1.")
+        raise control_refusal("aperture_res_scale must be finite and >= 1", "Aperture mesh scale", "Enter Aperture mesh scale of at least 1.", message="Aperture mesh scale must be a finite number of at least 1.")
     return scale
 
 
@@ -516,16 +516,16 @@ def validate_mesh_density(density: MeshDensity) -> None:
     if isinstance(density.surface_deviation_mm, bool):
         invalid.append("surface_deviation_mm")
     if invalid:
-        raise control_refusal("mesh resolution values must be finite and > 0: " + ", ".join(invalid), "Mesh resolution", "Enter positive finite values for Throat resolution, Mouth resolution, Rear resolution and enabled Surface deviation.", message="One or more mesh resolutions are zero, negative or not finite.")
+        raise control_refusal("mesh resolution values must be finite and > 0: " + ", ".join(invalid), "Mesh resolution", "Enter positive finite values for Throat mesh resolution, Mouth mesh resolution, Rear mesh resolution and enabled Max surface deviation.", message="One or more mesh resolutions are zero, negative or not finite.")
     validate_aperture_res_scale(density.aperture_res_scale)
     if (
         density.min_size_mm is not None
         and density.max_size_mm is not None
         and float(density.min_size_mm) > float(density.max_size_mm)
     ):
-        raise control_refusal("min_size_mm cannot exceed max_size_mm", "Minimum mesh size", "Reduce Minimum mesh size or increase Maximum mesh size.", message="Minimum mesh size exceeds Maximum mesh size.")
+        raise control_refusal("min_size_mm cannot exceed max_size_mm", "Mesh", "Restore the mesh defaults, or correct the minimum and maximum sizes in the imported configuration.", message="The minimum mesh size exceeds the maximum mesh size.")
     if density.max_triangles is not None and int(density.max_triangles) <= 0:
-        raise control_refusal("max_triangles must be > 0 or None", "Triangle limit", "Enter a positive Triangle limit, or clear it.", message="Triangle limit is zero or negative.")
+        raise control_refusal("max_triangles must be > 0 or None", "Triangle warning threshold", "Enter a positive Triangle warning threshold, or clear it.", message="Triangle warning threshold is zero or negative.")
 
 
 @dataclass

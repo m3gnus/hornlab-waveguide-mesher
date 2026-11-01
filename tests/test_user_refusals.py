@@ -31,7 +31,7 @@ def test_dome_dimensions_name_controls_and_remedy():
     with pytest.raises(UserRefusal) as caught:
         dome(radius_mm=12, height_mm=0)
     assert "Dome" in caught.value.user_message
-    assert "Height" in caught.value.next_step
+    assert "Dome height" in caught.value.next_step
 
 
 @pytest.mark.parametrize("family", ["icw", "lookup", "slot", "zmap", "baffle"])
@@ -44,7 +44,7 @@ def test_reachable_families_carry_named_remedies(family):
     from hornlab_mesher.config_builder import resolve_geometry
     calls = {
         "icw": (lambda: ICWTargets(mode="flat_baffle", r0=12.7, theta0_deg=15, coverage_angle_deg=90), "Coverage angle"),
-        "lookup": (lambda: lookup_profile_array({"lookupProfile": [[1, 2], [0, 3]]}), "Profile points"),
+        "lookup": (lambda: lookup_profile_array({"lookupProfile": [[1, 2], [0, 3]]}), "Lookup profile points"),
         "slot": (lambda: resolve_geometry({"formula": "OSSE", "L": 120, "a": 45, "slotLength": 120, "lengthMode": "total"}), "Straight slot length"),
         "zmap": (lambda: _custom_zmap(4, [0, 1, 1, 0]), "Z-map points"),
         "baffle": (lambda: (_ for _ in ()).throw(EnclosureBaffleError("A flush enclosure has no front baffle for a woofer.")), "Enclosure margins"),

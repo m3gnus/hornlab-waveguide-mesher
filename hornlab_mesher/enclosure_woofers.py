@@ -99,9 +99,9 @@ def resolve_woofer_placements(
         if key in resolved:
             return resolved[key]
         if key in visiting:
-            raise control_refusal("cyclic spacing_to relation", 'Spacing to', 'Clear Spacing to on one woofer in the loop.', message='The woofer spacing references form a loop.')
+            raise control_refusal("cyclic spacing_to relation", 'Spacing from', 'Clear Spacing from on one woofer in the loop.', message='The woofer spacing references form a loop.')
         if key not in by_id:
-            raise control_refusal("spacing_to target is missing", 'Spacing to', 'Choose a current woofer in Spacing to, or clear it.', message='The referenced woofer no longer exists.')
+            raise control_refusal("spacing_to target is missing", 'Spacing from', 'Choose a current woofer in Spacing from, or clear it.', message='The referenced woofer no longer exists.')
         visiting.add(key)
         w = by_id[key]
         p = w["placement"]
@@ -118,7 +118,7 @@ def resolve_woofer_placements(
             dx, dy = x - tx, y - ty
             length = math.hypot(dx, dy)
             if length == 0:
-                raise control_refusal("spacing_to requires a nonzero direction from target", 'Spacing to', 'Move one woofer centre before setting Spacing to.', message='The two woofer centres coincide, so their spacing direction is undefined.')
+                raise control_refusal("spacing_to requires a nonzero direction from target", 'Spacing from', 'Move one woofer centre before setting Spacing from.', message='The two woofer centres coincide, so their spacing direction is undefined.')
             distance = spacing["distance_mm"]
             if not math.isfinite(distance) or distance <= 0:
                 raise control_refusal("spacing_to distance must be finite and positive", 'Spacing distance', 'Enter a positive Spacing distance in Sources and baffle.', message='Woofer spacing distance must be positive.')

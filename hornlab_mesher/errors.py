@@ -5,6 +5,8 @@ logs. Applications display only the three explicit user-facing fields.
 """
 from __future__ import annotations
 
+from .controls import control_label
+
 
 class ConfigError(ValueError):
     """Configuration could not be resolved (legacy catch boundary)."""
@@ -28,32 +30,14 @@ class UserRefusal(ConfigError):
         self.__dict__.update(state)
 
 
-_CONTROL_LABELS = {
-    "a": "Mouth coverage angle", "a0": "Throat angle", "L": "Length", "L_mm": "Length",
-    "r0": "Throat radius", "r0_mm": "Throat radius", "R": "Radius", "R_mm": "Radius",
-    "scale": "Scale", "wallThickness": "Wall thickness", "wall_thickness_mm": "Wall thickness",
-    "throat_res_mm": "Throat resolution", "mouth_res_mm": "Mouth resolution", "rear_res_mm": "Rear resolution",
-    "surface_deviation_mm": "Surface deviation", "interface_res_mm": "Interface resolution",
-    "min_size_mm": "Minimum mesh size", "max_size_mm": "Maximum mesh size",
-    "driver_exit_diameter_mm": "Driver exit diameter", "exit_half_angle_deg": "Exit half angle",
-    "length_mm": "Adapter length", "join_t": "Body join fraction", "driver_handle_mm": "Driver handle",
-    "body_handle_mm": "Body handle", "radius_mm": "Radius", "outer_radius_mm": "Outer radius",
-    "depth_mm": "Depth", "height_mm": "Height", "vertical_offset_mm": "Vertical offset",
-    "angular_segments": "Angular segments", "length_segments": "Length segments",
-    "s1": "Horizontal throat stretch", "s2": "Vertical throat stretch",
-    "throatExtLength": "Throat extension length", "throatExtAngle": "Throat extension angle",
-    "slotLength": "Straight slot length", "max_triangles": "Triangle limit",
-    "aperture_res_scale": "Aperture resolution scale", "aspect_ratio": "Aspect ratio",
-    "exponent": "Cross-section exponent", "corner_segments": "Corner segments",
-    "depth_margin_mm": "Depth margin", "edge_mm": "Edge radius", "edge_type": "Edge shape",
-    "plan_n": "Enclosure exponent", "plan_type": "Enclosure shape", "simType": "Mounting",
-    "space_b_mm": "Bottom margin", "space_l_mm": "Left margin", "space_r_mm": "Right margin",
-    "space_t_mm": "Top margin", "wall thickness": "Wall thickness",
-}
-
-
 def numeric_refusal(name: str, diagnostic: str, *, integer: bool = False) -> UserRefusal:
-    label = _CONTROL_LABELS.get(name, "Profile value")
+    try:
+        label = control_label(name)
+    except KeyError:
+        # Advanced native inputs have no named UI control. Do not invent one.
+        kind = "whole number" if integer else "finite number"
+        return UserRefusal("Mesh", f"A mesh setting needs a {kind}.",
+                           "Restore the mesh defaults or correct the setting in the imported configuration.", diagnostic=diagnostic)
     kind = "whole number" if integer else "finite number"
     return UserRefusal(label, f"{label} needs a {kind}.", f"Enter a {kind} in {label}.", diagnostic=diagnostic)
 
@@ -67,7 +51,17 @@ def ath_refusal(diagnostic: str) -> UserRefusal:
     # frontend's raw-key filter from hiding the actual import remedy.
     import re
     text = re.sub(r"\b(?:[A-Z][A-Za-z0-9-]*\.)+[A-Za-z0-9_.-]+", lambda m: "“" + m[0] + "”", diagnostic)
-    if diagnostic.startswith("unsupported item(s)"):
+    if "Throat.Profile =" in diagnostic:
+        message, step = text, 'Set “Throat.Profile” to 1 (OS-SE), or mesh this file in ATH.'
+    elif "Source.Velocity = 2" in diagnostic:
+        message, step = text, 'Set “Source.Velocity” to 1 for normal motion, or use a workflow that supports axial source motion.'
+    elif "multi-source ATH configs" in diagnostic:
+        message, step = text, 'Remove “Source.Contours” and the additional source blocks to use one throat cap or disc, or mesh this multi-source model in ATH.'
+    elif "Mesh.RearShape =" in diagnostic and "only the full rear" in diagnostic:
+        message, step = text, 'Set “Mesh.RearShape” to 1 (full rear) or 3 (Opus rear), or mesh this rear shape in ATH.'
+    elif "Mesh.Roundover" in diagnostic or "Mesh.RearShape" in diagnostic:
+        message, step = text, 'Remove “Mesh.Roundover”, “Mesh.RearShape.FrontOffset” and “Mesh.RearShape.Step”, and set “Mesh.RearShape” to 1 for a plain rear, or mesh this lip/rear combination in ATH.'
+    elif diagnostic.startswith("unsupported item(s)"):
         message = text.replace("unsupported item(s) in ATH config:", "The ATH text contains unsupported settings:", 1)
         step = "Remove these settings from the ATH text, then import it again."
     elif "not supported" in diagnostic or "unsupported" in diagnostic:
@@ -85,16 +79,16 @@ def ath_refusal(diagnostic: str) -> UserRefusal:
 def profile_refusal(diagnostic: str) -> UserRefusal:
     """Wording for authored FREEFORM controls, never for numerical invariants."""
     import re
-    field = "Horizontal profile" if "profileH" in diagnostic else "Vertical profile" if "profileV" in diagnostic else "Cross sections"
+    field = "Horizontal profile" if "profileH" in diagnostic else "Vertical profile" if "profileV" in diagnostic else "Cross-section stations"
     text = diagnostic.replace("FREEFORM ", "")
     for key, label in (("profileH", "Horizontal profile"), ("profileV", "Vertical profile"),
-                       ("crossSections", "Cross sections"), ("cornerRadiusMm", "Corner radius"),
+                       ("crossSections", "Cross-section stations"), ("cornerRadiusMm", "Corner radius"),
                        ("angleOutDeg", "Outgoing angle"), ("angleDeg", "Angle"),
                        ("throatAngleDeg", "Throat angle"), ("mouthAngleDeg", "Mouth angle"),
                        ("handleIn", "Incoming handle"), ("handleOut", "Outgoing handle")):
         text = text.replace(key, label)
     text = re.sub(r"\.points\[(\d+)\]", lambda m: f" anchor {int(m[1])+1}", text)
-    text = re.sub(r"Cross sections\[(\d+)\]", lambda m: f"Cross sections row {int(m[1])+1}", text)
+    text = re.sub(r"Cross-section stations\[(\d+)\]", lambda m: f"Cross-section stations row {int(m[1])+1}", text)
     text = text.replace(".t ", " Position ").replace(".exponent", " Exponent").replace(".shape", " Shape").replace(".join", " Join")
     text = text.replace(".Corner radius", " Corner radius").replace(".Angle", " Angle").replace(".Outgoing angle", " Outgoing angle")
     text = text.replace("anchor z values", "anchor positions").replace("non-positive radius", "zero or negative radius")
@@ -121,7 +115,13 @@ def profile_refusal(diagnostic: str) -> UserRefusal:
     elif "strictly increasing" in diagnostic:
         step = f"Move each row's Position after the preceding row in {field}."
     elif "cornerRadiusMm" in diagnostic:
-        step = "Change Corner radius in the named Cross sections row to fit within the profile."
+        step = "Change Corner radius in the named Cross-section stations row to fit within the profile."
     else:
         step = f"Change the named value in {field} to meet this requirement."
     return UserRefusal(field, text.rstrip(". ") + ".", step, diagnostic=diagnostic)
+
+
+def family_refusal(diagnostic: str) -> UserRefusal:
+    return control_refusal(diagnostic, "Family",
+        "Choose the original Family for these settings, or create a new design in the selected Family and copy only its supported profile controls.",
+        message="These imported profile settings do not belong to the selected family.")

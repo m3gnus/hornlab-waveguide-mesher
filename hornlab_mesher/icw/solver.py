@@ -56,6 +56,7 @@ from scipy.interpolate import BSpline
 from scipy.optimize import least_squares
 
 from ..errors import control_refusal
+from ..controls import control_label
 from .core import (
     DEFAULT_DEGREE,
     MONO_EPS,
@@ -222,7 +223,7 @@ class ICWTargets:
                 raise control_refusal("coverage hold window must satisfy 0 < hold_start < hold_end < 1", 'Coverage hold', 'Set Coverage hold start below Coverage hold end, with both between zero and one.', message='The coverage hold must start after zero, end before one and have a positive span.')
             if not (self.theta0_deg < self.coverage_angle_deg < 90.0):
                 raise control_refusal("coverage_angle_deg must lie between theta0_deg and 90 deg "
-                    f"(got theta0_deg={self.theta0_deg}, coverage_angle_deg={self.coverage_angle_deg})", 'Coverage angle', 'Increase Coverage angle above Throat angle, or reduce Throat angle; keep Coverage angle below 90°.', message='Coverage angle must be greater than Throat angle and less than 90°.')
+                    f"(got theta0_deg={self.theta0_deg}, coverage_angle_deg={self.coverage_angle_deg})", 'Coverage angle', f"Increase Coverage angle above {control_label('icw.a0')}, or reduce {control_label('icw.a0')}; keep Coverage angle below 90°.", message=f"Coverage angle must be greater than {control_label('icw.a0')} and less than 90°.")
 
     # --- derived radian helpers ---
     @property

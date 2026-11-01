@@ -35,12 +35,14 @@ class EnclosureBaffleError(UserRefusal):
     """The resolved mouth leaves insufficient baffle beside a built wall."""
 
     def __init__(self, message):
-        super().__init__("Enclosure margins", message,
-                         "Increase the Left, Right, Top or Bottom margin in Enclosure.",
+        problem, separator, step = message.rpartition(". ")
+        if not separator:
+            problem, step = message, "Increase a Left, Right, Top or Bottom margin in Enclosure."
+        super().__init__("Enclosure margins", problem.rstrip(".") + ".", step,
                          diagnostic=message)
 
     def __reduce__(self):
-        return (type(self), (self.user_message,), self.__dict__ | {"args": self.args})
+        return (type(self), (str(self),), self.__dict__ | {"args": self.args})
 
 
 

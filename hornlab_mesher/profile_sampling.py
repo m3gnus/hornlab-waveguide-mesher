@@ -1169,11 +1169,10 @@ def _ath_rosse_morph_factors(
     rate = _morph_rate(params, phi)
     blend = (progress[index + 1 :] - start) / (1.0 - start)
     if start > 1.0 and rate != round(rate) and np.any(blend < 0.0):
-        raise ValueError(
-            "Morph.FixedPart starts this R-OSSE morph beyond the mouth's depth, "
-            f"where Morph.Rate {rate:g} has no real blend (ATH writes NaN). "
-            "Lower Morph.FixedPart or use a whole-number Morph.Rate."
-        )
+        raise control_refusal(
+            f"Morph.FixedPart starts this R-OSSE morph beyond the mouth's depth, where Morph.Rate {rate:g} has no real blend (ATH writes NaN). Lower Morph.FixedPart or use a whole-number Morph.Rate.",
+            "Fixed part", "Lower Fixed part or use a whole number in Morph rate.",
+            message="The morph starts beyond the mouth depth, where this Morph rate cannot blend the profile.")
     factors[index + 1 :] = np.power(blend, rate)
     return factors, index
 
@@ -2197,6 +2196,10 @@ def build_point_grid_arrays(
                     else ""
                 )
                 if note:
+                    from .errors import UserRefusal
+                    if isinstance(exc, UserRefusal):
+                        exc.args = (f"{exc}; {note}",)
+                        raise
                     raise ValueError(f"{exc}; {note}") from exc
                 raise
         else:

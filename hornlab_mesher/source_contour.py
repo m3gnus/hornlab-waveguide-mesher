@@ -9,7 +9,8 @@ import json
 import math
 from dataclasses import asdict, dataclass
 
-from .errors import control_refusal
+from .errors import UserRefusal, control_refusal
+from .controls import control_label
 
 FEATURE = "native-source-contour-v1"
 
@@ -229,7 +230,7 @@ class ContourDrive:
         for key, value in self.weights:
             _id(key)
             if not math.isfinite(value):
-                raise control_refusal("patch weights must be finite", 'Patch weights', 'Enter a finite Weight for each moving patch.', message='A patch weight is not a finite number.')
+                raise control_refusal("patch weights must be finite", 'Source contour', 'Enter a finite Weight for each moving patch.', message='A patch weight is not a finite number.')
 
     def validate(self, contour):
         if set(dict(self.weights)) != {
@@ -277,7 +278,7 @@ def dome(
         or not 0 < height_mm <= radius_mm
         or min(surround_width_mm, land_width_mm) < 0
     ):
-        raise control_refusal("invalid dome dimensions", 'Dome dimensions', 'Set Radius above zero and Height above zero and no greater than Radius; keep Surround width and Land width nonnegative.', message='Dome dimensions cannot form a spherical cap.')
+        raise control_refusal("invalid dome dimensions", 'Dome dimensions', f"Set {control_label('source.preset.radius_mm')} above zero and {control_label('source.preset.height_mm')} above zero and no greater than Radius; keep Surround width and {control_label('source.preset.land_width_mm')} nonnegative.", message='Dome dimensions cannot form a spherical cap.')
     center_z = (height_mm**2 - radius_mm**2) / (2 * height_mm)
     points = [
         ContourPoint("pole", 0, height_mm),
@@ -318,8 +319,13 @@ def cone(
         or not 0 < cap_radius_mm < radius_mm
         or depth_mm < 0
     ):
-        raise control_refusal("invalid independent cone dimensions", 'Cone dimensions', 'Set Cap radius above zero and below Radius, and set Depth to zero or more.', message='Cone dimensions cannot form this cone and cap.')
-    cap = dome(cap_radius_mm, cap_height_mm)
+        raise control_refusal("invalid independent cone dimensions", 'Cone dimensions', f"Set {control_label('source.preset.cap_radius_mm')} above zero and below Radius, and set {control_label('source.preset.depth_mm')} to zero or more.", message='Cone dimensions cannot form this cone and cap.')
+    try:
+        cap = dome(cap_radius_mm, cap_height_mm)
+    except UserRefusal as exc:
+        raise control_refusal(str(exc), control_label("source.preset.cap_height_mm"),
+            f"Set {control_label('source.preset.cap_height_mm')} above zero and no greater than {control_label('source.preset.cap_radius_mm')}.",
+            message="The dust cap cannot form a spherical cap.") from exc
     points = [
         ContourPoint("pole", 0, cap_height_mm - depth_mm),
         ContourPoint("cap.rim", cap_radius_mm, -depth_mm),
@@ -347,7 +353,7 @@ def _finish(points, segments, width, depth, land):
         or (width == 0 and depth != 0)
         or abs(depth) > width / 2
     ):
-        raise control_refusal("invalid surround or land dimensions", 'Surround dimensions', 'Set Surround width and Land width to zero or more, and enter a finite Surround depth.', message='The surround or land dimensions are invalid.')
+        raise control_refusal("invalid surround or land dimensions", 'Surround dimensions', 'Set Surround width and Rigid land width to zero or more. Keep the absolute Surround depth at most half the Surround width; when width is zero, depth must be zero.', message='The surround or land dimensions are invalid.')
     if width:
         a = points[-1]
         points.append(ContourPoint("surround.rim", a.r_mm + width, 0))

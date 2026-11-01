@@ -1,6 +1,7 @@
 """Shared stretch bounds and canonical identity of an inactive axial map."""
 
-from .errors import ath_refusal
+from .errors import control_refusal
+from .controls import control_label
 
 import math
 from functools import wraps
@@ -14,6 +15,18 @@ from typing import Any, Mapping
 STRETCH_COEFFICIENT_MAX = 10.0
 
 
+def _stretch_refusal(diagnostic: str):
+    text = diagnostic
+    for key, (name, _) in {**COMPOSITION_PROFILE_KEYS, **COMPOSITION_GUIDE_KEYS}.items():
+        text = text.replace(name, control_label(key))
+    text = text.replace("s1", control_label("s1")).replace("s2", control_label("s2"))
+    text = text[0].upper() + text[1:]
+    text = text.replace("is unverified and not supported", "cannot be used in this combination")
+    return control_refusal(diagnostic, control_label("s1"),
+        "Set Throat stretch amount and Throat stretch sharpness to numbers from 0 to 10; set both to 0 to disable stretch before using the other profile features.",
+        message=text.rstrip(".") + ".")
+
+
 def stretch_coefficients(params: Mapping[str, Any]) -> tuple[float, float]:
     """Validate both inputs before canonicalizing even a dormant pair.
 
@@ -25,17 +38,17 @@ def stretch_coefficients(params: Mapping[str, Any]) -> tuple[float, float]:
     for key in ("s1", "s2"):
         value = params.get(key, 0.0)
         if not isinstance(value, Real) or isinstance(value, bool):
-            raise ath_refusal(f"per-azimuth throat stretch is not supported yet; {key} must be a plain finite number")
+            raise _stretch_refusal(f"per-azimuth throat stretch is not supported yet; {key} must be a plain finite number")
         try:
             number = float(value)
         except (ValueError, OverflowError) as exc:
-            raise ath_refusal(f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}") from exc
+            raise _stretch_refusal(f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}") from exc
         if math.isfinite(number) and number < 0:
-            raise ath_refusal(f"throat stretch {key} must not be negative, got {value!r}: negative values "
+            raise _stretch_refusal(f"throat stretch {key} must not be negative, got {value!r}: negative values "
                 "are not supported (ATH accepts them, but they fold the profile back "
                 "through the throat for all but very small magnitudes)")
         if not math.isfinite(number) or not 0 <= number <= STRETCH_COEFFICIENT_MAX:
-            raise ath_refusal(f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}, got {value!r}")
+            raise _stretch_refusal(f"throat stretch {key} must be finite and >= 0 and <= {STRETCH_COEFFICIENT_MAX:g}, got {value!r}")
         values.append(number)
     return values[0], values[1]
 
@@ -89,7 +102,7 @@ def validate_supplied_stretch(config: Mapping[str, Any], formula: str) -> None:
                 message = "OSSE/R-OSSE shape keys are not valid with formula ICW"
             else:
                 message = f"formula {formula} does not accept OSSE/R-OSSE profile coefficient keys"
-            raise ath_refusal(message)
+            raise control_refusal(message, "Family", "Choose OSSE or R-OSSE in Family, or remove the throat stretch settings from the imported configuration.", message="This family cannot use throat stretch settings.")
 
 
 def validate_stretch_composition(params: Mapping[str, Any], formula: str,
@@ -103,28 +116,28 @@ def validate_stretch_composition(params: Mapping[str, Any], formula: str,
             continue
         value = params[key]
         if not isinstance(value, Real) or isinstance(value, bool):
-            raise ath_refusal(f"throat stretch does not support per-azimuth {name} yet; must be a plain finite number")
+            raise _stretch_refusal(f"throat stretch does not support per-azimuth {name} yet; must be a plain finite number")
         try:
             finite = math.isfinite(value)
         except (ValueError, OverflowError):
             finite = False
         if not finite:
-            raise ath_refusal(f"throat stretch {name} must be a plain finite number")
+            raise _stretch_refusal(f"throat stretch {name} must be a plain finite number")
     prefix = any(params.get(k, 0) != 0 for k in ("throatExtLength", "slotLength"))
     rotation = params.get("rot", 0) != 0
     guide = all(params.get(k, 0) != 0 for k in ("gcurveType", "gcurveWidth"))
     if rotation and (formula == "R-OSSE" or prefix):
-        raise ath_refusal("throat stretch with Rot and a prefix (or R-OSSE Rot) is unverified and not supported")
+        raise _stretch_refusal("throat stretch with Rot and a prefix (or R-OSSE Rot) is unverified and not supported")
     if formula == "OSSE" and params.get("slotLength", 0) != 0:
-        raise ath_refusal("throat stretch with OSSE Slot.Length is unverified and not supported")
+        raise _stretch_refusal("throat stretch with OSSE Slot.Length is unverified and not supported")
     if guide and (prefix or rotation):
-        raise ath_refusal("throat stretch with GCurve and a prefix or Rot is unverified and not supported")
+        raise _stretch_refusal("throat stretch with GCurve and a prefix or Rot is unverified and not supported")
     if formula == "R-OSSE" and (length_supplied or any(k in params for k in ("L", "L_mm", "Length"))):
-        raise ath_refusal("throat stretch with R-OSSE top-level Length is unverified and not supported")
+        raise _stretch_refusal("throat stretch with R-OSSE top-level Length is unverified and not supported")
 
 
 def stretch_config_errors(function):
-    """Keep public stretch failures within the ConfigError contract."""
+    """Retain the legacy diagnostic envelope; never turn program faults into user remedies."""
     @wraps(function)
     def wrapped(config, *args, **kwargs):
         from .config_parser import ConfigError
@@ -142,7 +155,7 @@ def stretch_config_errors(function):
                 coefficients = {key: _pick(profile, config, names=(key,), default=0.0)
                                 for key in ("s1", "s2")}
                 if not stretch_is_inactive(coefficients):
-                    raise ath_refusal(f"throat stretch geometry is invalid: {exc}") from exc
+                    raise ConfigError(f"throat stretch geometry is invalid: {exc}") from exc
             raise
     return wrapped
 
