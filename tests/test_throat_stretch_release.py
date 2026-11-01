@@ -479,10 +479,18 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
     resolved = cb.resolve_geometry(captured['config'])
     with np.load(Path(__file__).parent / 'fixtures/throat_stretch/base-resolved-arrays.npz') as arrays:
         expected = _captured_resolved_value(captured['asdict'], family, arrays)
+        # The optional sizing control was added after this frozen capture.
+        # Off must be explicit here; retain every captured value and tolerance.
+        assert resolved.density.surface_deviation_mm is None
+        assert 'surface_deviation_mm' not in expected['density']
+        expected['density']['surface_deviation_mm'] = None
         _assert_base_equal(_resolved_value(asdict(resolved)), expected)
     assert [f.name for f in fields(resolved.geometry)] == captured['geometry_fields']
     assert sorted(vars(resolved.geometry)) == captured['geometry_state_keys']
-    _assert_base_repr_equal(repr(resolved), captured['repr'])
+    expected_repr = captured['repr'].replace(
+        ', max_triangles=', ', surface_deviation_mm=None, max_triangles=', 1)
+    assert expected_repr != captured['repr']
+    _assert_base_repr_equal(repr(resolved), expected_repr)
 
 
 @pytest.mark.parametrize('case', BASE['zero_imports'], ids=lambda c: c['text'].split('Slot.Length = ')[1])
