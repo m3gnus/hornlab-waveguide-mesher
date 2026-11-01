@@ -1,0 +1,60 @@
+{
+  "cross_section": {
+    "aspectRatio": 1.0,
+    "exponent": 2.0
+  },
+  "formula": "ICW",
+  "gcurve": {},
+  "mesh": {
+    "allowLargeMesh": false,
+    "angularSegments": "40",
+    "apertureResolutionScale": "1",
+    "cornerSegments": "4",
+    "encBackResolution": 40.0,
+    "encFrontResolution": 25.0,
+    "lengthSegments": "20",
+    "maxTriangles": 22000,
+    "mouthResolution": "15",
+    "quadrants": 1234,
+    "rearResolution": "40",
+    "samplingMode": "uniform",
+    "scaleToMetres": true,
+    "surfaceFit": "interpolate",
+    "throatResolution": "6",
+    "verticalOffset": 0.0,
+    "wallThickness": "5"
+  },
+  "mode": "freestanding",
+  "morph": {
+    "morphAllowShrinkage": "0",
+    "morphCorner": "0",
+    "morphFixed": "0",
+    "morphHeight": "0",
+    "morphRate": "3",
+    "morphTarget": "0",
+    "morphWidth": "0"
+  },
+  "profile": {
+    "L": "120",
+    "R": "150",
+    "_athLengthMode": "profile",
+    "a": "0",
+    "a0": "15",
+    "depth": "100",
+    "formula": "ICW",
+    "k": "0",
+    "n_coeff": "6",
+    "q": "0",
+    "r0": "12.7",
+    "slotLength": "0",
+    "termination": "rollback",
+    "theta1_deg": "160",
+    "throatExtAngle": "0",
+    "throatExtLength": "0"
+  },
+  "source": {
+    "sourceCurv": "0",
+    "sourceRadius": "-1",
+    "sourceShape": 1.0
+  }
+}

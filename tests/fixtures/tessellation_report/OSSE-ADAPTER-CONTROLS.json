@@ -1,0 +1,44 @@
+{
+  "formula": "OSSE-ADAPTER-CONTROLS",
+  "mesh": {
+    "allow_large_mesh": true,
+    "max_triangles": 250000,
+    "mouth_res_mm": 15.0,
+    "rear_res_mm": 10.0,
+    "scale_to_metres": false,
+    "throat_res_mm": 5.0,
+    "wall_thickness_mm": 0
+  },
+  "mode": "bare",
+  "profile": {
+    "L_mm": 137,
+    "a0_deg": 6,
+    "a_deg": 37,
+    "k": 1.25,
+    "r0_mm": 17,
+    "s": 0
+  },
+  "scale": 0.01,
+  "source": {
+    "source_shape": 0
+  },
+  "throat_adapter": {
+    "contract_revision": 1,
+    "control_points_mm": [
+      [
+        -31.7,
+        16.2
+      ],
+      [
+        -22.1,
+        16.9
+      ],
+      [
+        -9.3,
+        20.4
+      ]
+    ],
+    "join_t": 0,
+    "mode": "controls"
+  }
+}

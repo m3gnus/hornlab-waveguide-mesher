@@ -1,0 +1,59 @@
+{
+  "cross_section": {
+    "aspectRatio": 1.0,
+    "exponent": 2.0
+  },
+  "formula": "R-OSSE",
+  "gcurve": {},
+  "mesh": {
+    "allowLargeMesh": false,
+    "angularSegments": "40",
+    "apertureResolutionScale": "1",
+    "cornerSegments": "4",
+    "encBackResolution": 40.0,
+    "encFrontResolution": 25.0,
+    "lengthSegments": "20",
+    "maxTriangles": 22000,
+    "mouthResolution": "15",
+    "quadrants": 1234,
+    "rearResolution": "40",
+    "samplingMode": "uniform",
+    "scaleToMetres": true,
+    "surfaceFit": "interpolate",
+    "throatResolution": "6",
+    "verticalOffset": 0.0,
+    "wallThickness": "5"
+  },
+  "mode": "freestanding",
+  "morph": {
+    "morphAllowShrinkage": "0",
+    "morphCorner": "0",
+    "morphFixed": "0",
+    "morphHeight": "0",
+    "morphRate": "3",
+    "morphTarget": "0",
+    "morphWidth": "0"
+  },
+  "profile": {
+    "R": "140",
+    "_athLengthMode": "profile",
+    "a": "25",
+    "a0": "15.5",
+    "b": "0.2",
+    "formula": "R-OSSE",
+    "k": "2",
+    "m": "0.85",
+    "q": "3.4",
+    "r": "0.4",
+    "r0": "12.7",
+    "slotLength": "0",
+    "throatExtAngle": "0",
+    "throatExtLength": "0",
+    "tmax": "1"
+  },
+  "source": {
+    "sourceCurv": "0",
+    "sourceRadius": "-1",
+    "sourceShape": 1.0
+  }
+}
