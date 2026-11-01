@@ -94,9 +94,12 @@ sampler reproduces the four affected archive parity cases.
 | RearShape 1 without a lip | A materially warped rear uses the measured throat normal-offset ring and a fan, preserving the analytic outer shell. Planar rears retain their construction. | Existing planar rear rule. |
 | OSSE `Slot.Length` | A conical prefix at slope `tan(a0)`. `r0` is its starting radius; the main profile starts at `r0 + slot*tan(a0)`. The slot is included in `Length`; the main termination uses `Length - slot`. | A cylindrical prefix at `r0`, added to the body length unless an explicit total-length mode is selected. |
 | R-OSSE `Slot.Length` | An axial translation of the main meridian, including signed lengths; no cylindrical slot rows and no body-parameter reallocation. With an extension, its ten pre-body rows stay in place and the body starts at `extension + slot`. | Existing cylindrical prefix and additive parameter allocation. |
-| R-OSSE `Throat.Ext.Length` | Retains ten uniformly spaced extension segments before the complete authored body map. The extension tapers back from the main throat radius. Existing OSSE sampling and rotation rules are unchanged. | Existing native sampling and rotation behavior. |
-| OSSE `Throat.Ext.Length` with `Rot` | The extension stays unrotated at its own angle; only the body rotates about its endpoint. Current rotated imports retain ten extension segments before the body map. | Existing native rotation behavior. |
+| R-OSSE `Throat.Ext.Length` | Retains `Mesh.ThroatExtSegments` uniformly spaced extension segments (default ten) before the complete authored body map. The extension tapers back from the main throat radius. | Existing native sampling and rotation behavior. |
+| OSSE `Throat.Ext.Length` | Current imports retain `Mesh.ThroatExtSegments` extension intervals (default ten) before the body map, with or without `Rot`. The extension stays unrotated; only the body rotates about its endpoint. | Existing native rotation and sampling behavior. |
 | OSSE-block `Rot` | Ignored with a warning naming `OSSE.Rot`; only top-level `Rot` applies. | Existing authored precedence. |
+| Top-level R-OSSE `Rot` | Finite scalar or azimuth-dependent rotation around the main throat join, preserving the straight extension. Block rotation stays ignored. | Retains its previous refusal. |
+| `Scale.Z` | Positive finite constant or constant expression overrides global `Scale` on z after morphing. With an explicit new control, source auto-curvature uses the authored first wall chord. | Retains its previous refusal. |
+| Default R-OSSE axial map | Quantized cubic with controls (.26,.15), (.46,.49), verified at 9, 10, 12, 20, 30 and 37 intervals. | Retains the historical table/interpolation. |
 | OSSE-block `r0` expression | Refused by name; ATH reads only a leading numeric token. Literal signed decimal/exponent numbers remain accepted. | Existing expression evaluation. |
 | R-OSSE morph | Each meridian blends additively in radius with `((u - u0)/(1 - u0))^Rate`, `u = z/z_mouth` from the end of any extension. `FixedPart` is compared with `z/z_max` and starts at the first station at or past it, never the throat; a Circle target ignores it. Along the rollback `u > 1`, so the factor exceeds one; a start beyond the mouth's z gives negative factors (a fractional `Rate` there is refused by name, as ATH writes NaN). ATH builds no Superellipse morph on R-OSSE, and builds a Rectangle unmorphed when the depth varies around the mouth (a size-dependent tolerance, not pinned); a Circle it always morphs. For those two cases WG uses its own R-OSSE morph, whenever the depth varies at all: ATH's construction there balloons the wall far past the mouth. | Existing morph behavior. |
 | Morph clamps | `Rate` below 1.01 is used as 1.01, `FixedPart` above 0.99 as 0.99, `TargetWidth`/`TargetHeight` above 1000 mm as 1000. An implicit rectangle half-size is `floor(mouth) + 1`. On OSSE a start on the mouth station moves the mouth alone onto the target. | `Rate` in `[0, 1)` and the other values as written. |
@@ -240,8 +243,9 @@ preview LODs reuse that construction. Between authored directions, refinement
 interpolates the source-direction correspondence; it does not derive a new
 ATH design from a different angular budget. `AllowShrinkage=1`, native
 authoring and saved v1 retain their preceding behavior. Current v2 R-OSSE slot/extension and inward rectangular no-shrink outputs
-intentionally change. OSSE extension allocation and non-expanding morph
-previews retain their prior output.
+intentionally change. Current OSSE extension allocation now also retains
+the independently counted extension rows, as described above; native/v1
+allocation and non-expanding morph previews retain their prior output.
 Existing coefficient, morph, archive, native/v1, mesh and STEP assertions
 retain their tolerances.
 

@@ -24,7 +24,8 @@ from .profile_common import (
     eval_param,
 )
 from .offset_envelope import regularize_outer_offset
-from .text_import import uses_text_import_geometry, uses_current_ath_axial_sampling, uses_v2_text_import_geometry
+from .text_import import (uses_text_import_geometry, uses_current_ath_axial_sampling,
+                          uses_v2_text_import_geometry, ath_throat_extension_segments)
 from .profile_formulas import (
     build_icw_curve,
     calculate_osse_curve,
@@ -354,10 +355,21 @@ def _ath_osse_import_zmap(n_length: int) -> np.ndarray:
     historical fitted curve misses stations by millimetres. Keep that older
     map for native callers explicitly requesting ATH sampling.
     """
+    return _ath_import_zmap(n_length, "OSSE")
+
+
+def _ath_import_zmap(n_length: int, formula: str) -> np.ndarray:
+    """Current imported cubic maps, quantized before abscissa inversion.
+
+    R-OSSE uses controls (.26,.15), (.46,.49). Interpolating the old
+    20-segment table moves off-budget stations by more than .1 mm.
+    """
+    x1, y1, x2, y2 = ((.78, .45, 1.38, 1.47) if formula == "R-OSSE"
+                       else (1.5, .3, 1.5, 2.76))
     s = np.arange(1001, dtype=np.float64) / 1000.0
     one_minus = 1.0 - s
-    x = 1.5 * s * one_minus**2 + 1.5 * s**2 * one_minus + s**3
-    y = 0.3 * s * one_minus**2 + 2.76 * s**2 * one_minus + s**3
+    x = x1 * s * one_minus**2 + x2 * s**2 * one_minus + s**3
+    y = y1 * s * one_minus**2 + y2 * s**2 * one_minus + s**3
     indices = np.searchsorted(x, np.linspace(0.0, 1.0, max(1, int(n_length)) + 1))
     return y[indices]
 
@@ -536,6 +548,8 @@ def _axial_sample_map(n_length: int, params: Mapping[str, Any]) -> tuple[np.ndar
         formula = _normalise_formula(params.get("type", "OSSE"))
         if formula == "OSSE" and uses_current_ath_axial_sampling(params):
             return _ath_osse_import_zmap(n_length), mode
+        if formula == "R-OSSE" and uses_current_ath_axial_sampling(params):
+            return _ath_import_zmap(n_length, formula), mode
         return _ath_default_zmap(n_length, formula), mode
     if mode == "zmap":
         return _custom_zmap(
@@ -1904,8 +1918,7 @@ def build_point_grid_arrays(
         else:
             t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
         if ((formula == "R-OSSE" and uses_v2_text_import_geometry(params))
-                or (formula == "OSSE" and uses_current_ath_axial_sampling(params)
-                    and eval_param(params.get("rot"), 0.0, 0.0) != 0.0)):
+                or (formula == "OSSE" and uses_current_ath_axial_sampling(params))):
             if formula == "OSSE":
                 _, total, extension, _ = osse_length_config(params, 0.0)
             else:
@@ -1915,7 +1928,8 @@ def build_point_grid_arrays(
                 # ATH V2026-09a adds ten extension segments before the
                 # authored body map, retaining the extension/body junction.
                 fraction = extension / total
-                segments = max(10, int(params.get(ACOUSTIC_EXTENSION_SEGMENTS_KEY, 10)))
+                authored_segments = ath_throat_extension_segments(params)
+                segments = max(authored_segments, int(params.get(ACOUSTIC_EXTENSION_SEGMENTS_KEY, authored_segments)))
                 t_unit_values = np.concatenate((np.linspace(0, fraction, segments+1)[:-1],
                                                fraction + (1-fraction)*t_unit_values))
         t_unit_values = _pin_axial_stations(
@@ -2107,6 +2121,13 @@ def build_point_grid_arrays(
         raise ValueError(f"Scale must be > 0, got {geom_scale!r}")
     if geom_scale != 1.0:
         inner *= geom_scale
+    if "athAxialScale" in params:
+        axis = float(params["athAxialScale"])
+        if not uses_v2_text_import_geometry(params) or not math.isfinite(axis) or axis <= 0:
+            raise ValueError("Scale.Z requires current ATH import geometry and a positive finite constant")
+        # An explicit ATH Scale.Z replaces global Scale on z; xy still uses
+        # Scale. Apply it after morphing, before wall normals/offsets.
+        inner[:, :, 2] *= axis / geom_scale
     # Mesh.VerticalOffset is a rigid +y placement translation. It is deliberately
     # NOT baked into the grid here: the reduced-domain snap and enclosure builders
     # assume the symmetry cut planes lie on the coordinate axes (x=0 / y=0), so the

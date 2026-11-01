@@ -101,7 +101,7 @@ def test_unit_axial_scale_is_reported_without_changing_import(unit, block, caplo
     assert f"ignoring Scale.Z = {unit}: a unit axial scale" in caplog.text
 
 
-@pytest.mark.parametrize("scale", ["1 - 0.5", "1 + sin(p)", "unknown"])
+@pytest.mark.parametrize("scale", ["0", "-1", "1 + sin(p)", "unknown"])
 def test_nonunit_or_unverified_axial_scale_is_refused(scale):
     with pytest.raises(ConfigError, match="Scale.Z"):
         parse_text_config(_rosse() + f"Scale.Z = {scale}\n")
@@ -130,7 +130,6 @@ def test_noop_items_keep_the_older_text_refusal(header, extra):
 @pytest.mark.parametrize(
     ("config", "named"),
     [
-        (FLAT_OSSE + "Scale.Z = 0.5\n", "Scale.Z"),
         (FLAT_OSSE + "Made.Up = 40\n", "Made.Up"),
         (FLAT_OSSE + "Throat.Ext.Length = 20\nThroat.Ext.Angle = 3\nThroat.Ext.Included = 1\n", "Throat.Ext.Included"),
         (FLAT_OSSE + "Throat.Ext.Ctrl = -41.8,17.7,-31.2,18.8,-18.7,20.4\n", "Throat.Ext.Ctrl"),
@@ -142,7 +141,6 @@ def test_noop_items_keep_the_older_text_refusal(header, extra):
         (FLAT_OSSE + "Profile = coords.txt\n", "Profile"),
         (FLAT_OSSE + "Coverage.Angel = 50\n", "Coverage.Angel"),
         (FLAT_OSSE + "Sorce.Shape = 2\n", "Sorce.Shape"),
-        (_rosse() + "Rot = 3\n", "Rot"),
         (_rosse() + "Length = 180\n", "Length"),
         (_rosse() + "Throat.Diameter = 25.4\n", "Throat.Diameter"),
         (_osse() + "Coverage.Angle = 50\n", "Coverage.Angle"),
@@ -207,8 +205,7 @@ def test_rosse_block_rotation_keeps_older_text_refusal(header):
 
 
 def test_rosse_block_rotation_does_not_hide_top_level_rotation():
-    with pytest.raises(ConfigError, match=r"unsupported item.*\bRot\b"):
-        parse_text_config(_rosse("  Rot = 30\n") + "Rot = 10\n")
+    assert parse_text_config(_rosse("  Rot = 30\n") + "Rot = 10\n")["profile"]["rot"] == 10
 
 
 @pytest.mark.parametrize("key", ["R", "m", "b", "tmax", "arcterm", "Scale"])
@@ -479,7 +476,7 @@ def test_morph_and_gcurve_namespaces_keep_their_warning(caplog: pytest.LogCaptur
     assert "Morph.Width" in caplog.text
 
 
-@pytest.mark.parametrize("key", ["ThroatSegments", "ThroatExtSegments"])
+@pytest.mark.parametrize("key", ["ThroatSegments"])
 def test_throat_segment_keys_name_the_replacement(key: str) -> None:
     with pytest.raises(ConfigError, match=rf"Mesh\.{key} is not supported.*ZMapPoints"):
         parse_text_config(FLAT_OSSE + f"Mesh.{key} = 4\n")

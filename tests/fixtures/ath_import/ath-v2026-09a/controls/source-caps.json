@@ -1,0 +1,59 @@
+{
+  "o-source-geo-z2": {
+    "pole_z_mm": 0.723,
+    "centre_z_mm": -111.164,
+    "radius_mm": 111.887
+  },
+  "o-source-geo-s3z2": {
+    "pole_z_mm": 6.344,
+    "centre_z_mm": -111.24,
+    "radius_mm": 117.58399999999999
+  },
+  "o-source-geo-seg4": {
+    "pole_z_mm": -9.484,
+    "centre_z_mm": -135.162,
+    "radius_mm": 135.678,
+    "inconsistent_extension_pole": true
+  },
+  "o-source-geo-explicit": {
+    "pole_z_mm": 0.81,
+    "centre_z_mm": -99.19,
+    "radius_mm": 100.0
+  },
+  "o-source-geo-curvneg": {
+    "pole_z_mm": -0.723,
+    "centre_z_mm": 111.164,
+    "radius_mm": 111.887
+  },
+  "r-source-geo-z2": {
+    "pole_z_mm": 1.308,
+    "centre_z_mm": -61.002,
+    "radius_mm": 62.31
+  },
+  "r-source-geo-s3z2": {
+    "pole_z_mm": 10.921,
+    "centre_z_mm": -61.002,
+    "radius_mm": 71.923
+  },
+  "r-source-geo-rot": {
+    "pole_z_mm": 3.714,
+    "centre_z_mm": -19.854,
+    "radius_mm": 23.567999999999998
+  },
+  "r-source-geo-seg4": {
+    "pole_z_mm": -9.484,
+    "centre_z_mm": -135.162,
+    "radius_mm": 135.678,
+    "inconsistent_extension_pole": true
+  },
+  "r-source-geo-explicit": {
+    "pole_z_mm": 0.81,
+    "centre_z_mm": -99.19,
+    "radius_mm": 100.0
+  },
+  "r-source-geo-curvneg": {
+    "pole_z_mm": -1.308,
+    "centre_z_mm": 61.002,
+    "radius_mm": 62.31
+  }
+}

@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from .freeform import build_freeform_geometry
 from .config_parser import ConfigError
 from .throat_stretch import canonical_stretch_params, stretch_coefficients, validate_stretch_composition
-from .text_import import uses_text_import_geometry, uses_v2_text_import_geometry
+from .text_import import uses_text_import_geometry, uses_v2_text_import_geometry, ath_throat_extension_segments
 from .profile_common import (
     _DEFAULTS,
     _lossless_key_value,
@@ -373,6 +373,16 @@ def _validate_osse_stretch_composition(
     _verify_stretch_junction(endpoint, (prefix + _stretch_x(0.0, s1, s2), radius))
 
 
+def _rotate_meridian(x, y, rot_deg, pivot, r0):
+    """Rotate scalar or array coordinates about the nominal throat join."""
+    if not math.isfinite(rot_deg):
+        raise ValueError("Rot must evaluate to a finite angle")
+    rot = math.radians(rot_deg)
+    dx, dy = x - pivot, y - r0
+    return (pivot + dx * math.cos(rot) - dy * math.sin(rot),
+            r0 + dx * math.sin(rot) + dy * math.cos(rot))
+
+
 def calculate_osse(
     z: float,
     p: float,
@@ -455,12 +465,8 @@ def calculate_osse(
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     imported_extension = uses_v2_text_import_geometry(params) and ext_len > 0
     if math.isfinite(rot_deg) and rot_deg != 0.0 and (not imported_extension or z > ext_len):
-        rot = math.radians(rot_deg)
         pivot = ext_len if imported_extension else 0.0
-        dx = x - pivot
-        dy = y - r0_base
-        x = pivot + dx * math.cos(rot) - dy * math.sin(rot)
-        y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+        x, y = _rotate_meridian(x, y, rot_deg, pivot, r0_base)
     # ATH V2025-12 stretches after Rot. Rot + prefix is refused above.
     # Keep the disabled path arithmetic unchanged.
     if z > ext_len + slot_len and s1 != 0.0 and s2 != 0.0:
@@ -556,13 +562,9 @@ def calculate_osse_curve(
     y = radius
     rot_deg = eval_param(params.get("rot"), p, 0.0)
     if math.isfinite(rot_deg) and rot_deg != 0.0:
-        rot = math.radians(rot_deg)
         imported_extension = uses_v2_text_import_geometry(params) and ext_len > 0
         pivot = ext_len if imported_extension else 0.0
-        dx = x - pivot
-        dy = y - r0_base
-        rotated_x = pivot + dx * math.cos(rot) - dy * math.sin(rot)
-        rotated_y = r0_base + dx * math.sin(rot) + dy * math.cos(rot)
+        rotated_x, rotated_y = _rotate_meridian(x, y, rot_deg, pivot, r0_base)
         x = np.where(z > ext_len, rotated_x, x) if imported_extension else rotated_x
         y = np.where(z > ext_len, rotated_y, y) if imported_extension else rotated_y
     if s1 != 0.0 and s2 != 0.0:
@@ -1022,10 +1024,12 @@ def calculate_rosse(
     # and the main curve/mouth are unchanged by it. The old code enlarged the
     # main throat instead (r0 + ext*tan), changing L and the mouth.
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
+    rot = eval_param(params.get("rot"), p, 0.0) if uses_v2_text_import_geometry(params) else 0.0
 
     if ext_len <= 0.0 and slot_len <= 0.0:
         x, y = _calculate_rosse_main(t, p, params)
-        return x + layout.body_offset, y
+        x += layout.body_offset
+        return _rotate_meridian(x, y, rot, 0.0, r0_base) if rot != 0 else (x, y)
 
     full_length = layout.full_length
     if full_length <= 1.0e-12:
@@ -1037,12 +1041,17 @@ def calculate_rosse(
     in_ext = axial_pos < ext_len - 1e-9 if uses_v2_text_import_geometry(params) else axial_pos <= ext_len
     if in_ext:
         x = axial_pos
+        y = r0_throat + axial_pos * math.tan(ext_angle)
         if layout.body_offset != 0.0:
             # ATH's last extension segment joins row 9 to the translated
             # body throat. Retain that straight physical segment when a
-            # consumer samples between the authored ten extension rows.
-            x += layout.body_offset * max(0.0, (axial_pos / ext_len - 0.9) / 0.1)
-        return x, r0_throat + axial_pos * math.tan(ext_angle)
+            # consumer subdivides the authored extension intervals.
+            segments = ath_throat_extension_segments(params)
+            progress = max(0.0, segments * axial_pos / ext_len - (segments - 1))
+            dx, dy = _rotate_meridian(layout.body_offset, 0.0, rot, 0.0, 0.0)
+            x += dx * progress
+            y += dy * progress
+        return x, y
     if slot_len > 0.0 and axial_pos <= ext_len + slot_len:
         return axial_pos, r0_base
 
@@ -1052,7 +1061,8 @@ def calculate_rosse(
     if uses_v2_text_import_geometry(params):
         main_t = max(0.0, main_t)
     x, y = _calculate_rosse_main(main_t, p, params)
-    return x + ext_len + slot_len + layout.body_offset, y
+    x += ext_len + slot_len + layout.body_offset
+    return _rotate_meridian(x, y, rot, ext_len, r0_base) if rot != 0 else (x, y)
 
 
 def calculate_rosse_curve(
@@ -1078,10 +1088,12 @@ def calculate_rosse_curve(
     if s1 != 0.0 and s2 != 0.0:
         _verify_rosse_stretch_junction(params, p, r0_base, ext_len, slot_len, ext_angle)
     r0_throat = _throat_extension_start_radius(r0_base, ext_len, ext_angle)
+    rot = eval_param(params.get("rot"), p, 0.0) if uses_v2_text_import_geometry(params) else 0.0
 
     if ext_len <= 0.0 and slot_len <= 0.0:
         x, y = _rosse_main_curve(t, _rosse_main_coefficients(p, params))
-        return x + layout.body_offset, y
+        x = x + layout.body_offset
+        return _rotate_meridian(x, y, rot, 0.0, r0_base) if rot != 0 else (x, y)
 
     full_length = layout.full_length
     if full_length <= 1.0e-12:
@@ -1098,9 +1110,13 @@ def calculate_rosse_curve(
     x = np.empty_like(t)
     y = np.empty_like(t)
     x[in_ext] = axial_pos[in_ext]
-    if layout.body_offset != 0.0:
-        x[in_ext] += layout.body_offset * np.maximum(0.0, (axial_pos[in_ext] / ext_len - 0.9) / 0.1)
     y[in_ext] = r0_throat + axial_pos[in_ext] * math.tan(ext_angle)
+    if layout.body_offset != 0.0:
+        segments = ath_throat_extension_segments(params)
+        progress = np.maximum(0.0, segments * axial_pos[in_ext] / ext_len - (segments - 1))
+        dx, dy = _rotate_meridian(layout.body_offset, 0.0, rot, 0.0, 0.0)
+        x[in_ext] += dx * progress
+        y[in_ext] += dy * progress
     x[in_slot] = axial_pos[in_slot]
     y[in_slot] = r0_base
     if main_length <= 1.0e-12:
@@ -1121,6 +1137,8 @@ def calculate_rosse_curve(
             _verify_prefix_intersection(x[in_main][order], main_y[order], r0_base,
                                         ext_len, slot_len, ext_angle)
         y[in_main] = main_y
+    if rot != 0:
+        x[in_main], y[in_main] = _rotate_meridian(x[in_main], y[in_main], rot, ext_len, r0_base)
     return x, y
 
 

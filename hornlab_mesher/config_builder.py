@@ -478,7 +478,8 @@ def _validate_formula_specific_keys(
             raise ConfigError("OSSE/R-OSSE shape keys are not valid with formula ICW")
         return
 
-    names = ("L_mm", "L", "n", "s", "rot_deg", "rot")
+    names = (("L_mm", "L", "n", "s") if uses_v2_text_import_geometry(config)
+             else ("L_mm", "L", "n", "s", "rot_deg", "rot"))
     if not stretch_is_inactive({key: _pick(profile, config, names=(key,), default=0)
                                 for key in ("s1", "s2")}):
         # The shared composition boundary already refused active R-OSSE Rot.
@@ -1307,6 +1308,26 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
             if key in config:
                 common[key] = config[key]
     common.update(ath_controls)
+    if "athAxialScale" in config:
+        if not v2_defaults:
+            raise ConfigError("Scale.Z requires current ATH import geometry")
+        axis = _numeric_param(config["athAxialScale"], name="Scale.Z")
+        if not math.isfinite(axis) or axis <= 0:
+            raise ConfigError("Scale.Z must be a positive finite constant")
+        if common.get("athRoundover") or common.get("athRearShape") == 3:
+            raise ConfigError("Scale.Z with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+        common["athAxialScale"] = axis
+    ext_segments = _pick(mesh, config, names=("athThroatExtSegments",), default=None)
+    if ext_segments is not None:
+        if not v2_defaults:
+            raise ConfigError("Mesh.ThroatExtSegments requires current ATH import geometry")
+        if formula == "OSSE" and not uses_current_ath_axial_sampling(config):
+            raise ConfigError("Mesh.ThroatExtSegments requires the current ATH OSSE sampling rule")
+        from .text_import import ath_throat_extension_segments
+        try:
+            common["athThroatExtSegments"] = ath_throat_extension_segments({"athThroatExtSegments": ext_segments})
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     if mesh.get("_athNacPresent") or config.get("_athNacPresent"):
         common["_athNacPresent"] = True
     _apply_driver_adapter(common, profile, config)
@@ -1429,6 +1450,10 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
                 "tmax": _scalar_or_expr(profile, config, names=("tmax",), default=1.0),
             }
         )
+        if v2_defaults and _has_any(profile, config, names=("rot_deg", "rot")):
+            common["rot"] = _scalar_or_expr(profile, config, names=("rot_deg", "rot"), default=0)
+            if isinstance(common["rot"], (int, float)) and not math.isfinite(common["rot"]):
+                raise ConfigError("Rot must be finite")
         for key in ("m", "r", "b"):
             value = _pick(profile, config, names=(key,), default=None)
             if value is None and v2_defaults:
@@ -1833,6 +1858,16 @@ def _source_auto_angle_deg(params: Mapping[str, Any], formula: str) -> float:
             return adapter.payload["exit_half_angle_deg"]
     if formula == "FREEFORM":
         return _freeform_source_auto_angle_deg(build_freeform_geometry(params).report())
+    if uses_v2_text_import_geometry(params) and (
+            "athAxialScale" in params or "athThroatExtSegments" in params
+            or (formula == "R-OSSE" and params.get("rot", 0) != 0)):
+        # ATH fits the automatic wavefront to the authored first wall chord,
+        # after rotation/scaling. Acoustic refinement must not change it.
+        authored = build_point_grid_arrays({**params, "wallThickness": 0,
+                                           "quadrants": "1234"})["inner_grid"]
+        radius = np.linalg.norm(authored[:, :2, :2], axis=2)
+        angles = np.arctan2(radius[:, 1] - radius[:, 0], authored[:, 1, 2] - authored[:, 0, 2])
+        return float(np.degrees(np.mean(angles)))
     return azimuthal_mean(params.get("a0"), 15.5)
 
 
@@ -2203,11 +2238,13 @@ def _build_acoustic_sampling_grid(
     trims_left = 6
     for attempt in range(attempts):
         if formula in {"OSSE", "R-OSSE"} and uses_v2_text_import_geometry(working):
-            # Ten rows define the authored extension. The solve fit must
+            # The requested intervals define the authored extension. The solve fit must
             # subdivide those same straight segments to meet its chord bound,
             # including the longer slot/extension joining segment.
+            from .text_import import ath_throat_extension_segments
+            authored_segments = ath_throat_extension_segments(working)
             working[ACOUSTIC_EXTENSION_SEGMENTS_KEY] = max(
-                10, 10 * int(math.ceil(int(working["lengthSegments"]) / 10)))
+                authored_segments, authored_segments * int(math.ceil(int(working["lengthSegments"]) / authored_segments)))
         grid = build_point_grid(working, defer_osse_offset_repair=formula == "OSSE")
         _check_effective_grid_caps(grid, density)
         n_phi = int(grid["grid_n_phi"])
@@ -2604,16 +2641,13 @@ def resolve_geometry(
         )
     quadrants = _normalised_quadrants(params.get("quadrants"))
     native_plane = _native_symmetry_plane_for_quadrants(quadrants)
-    source_auto_angle_deg = azimuthal_mean(params.get("a0"), 15.5)
+    source_auto_angle_deg = _source_auto_angle_deg(params, formula)
     adapter = resolve_adapter(params)
-    if adapter is not None:
-        source_auto_angle_deg = adapter.payload["exit_half_angle_deg"]
     freeform_axis_samples_mm: np.ndarray | None = None
     freeform_report: dict[str, Any] | None = None
     if formula == "FREEFORM":
         freeform_geometry = build_freeform_geometry(params)
         freeform_report = freeform_geometry.report()
-        source_auto_angle_deg = _freeform_source_auto_angle_deg(freeform_report)
         slice_map = np.asarray(grid.get("slice_map"), dtype=np.float64)
         z0 = float(freeform_geometry._profile_h.anchors[0, 0])
         analytic_z = z0 + slice_map * freeform_geometry.length_mm

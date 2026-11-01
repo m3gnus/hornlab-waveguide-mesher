@@ -16,6 +16,7 @@ def validate_combinations(params):
     if params.get(TEXT_IMPORT_VERSION_KEY) != TEXT_IMPORT_VERSION:
         raise ValueError("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-09a-v2")
     for key, name, inactive in (("scale", "Scale", 1),
+                               ("athAxialScale", "Scale.Z", 1),
                                ("throatExtLength", "Throat.Ext.Length", 0),
                                ("throatExtAngle", "Throat.Ext.Angle", 0),
                                ("rot", "Rot", 0),

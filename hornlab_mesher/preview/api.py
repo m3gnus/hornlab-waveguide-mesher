@@ -867,7 +867,7 @@ def build_preview_geometry(
             )
             from .source_cap import _source_geometry
 
-            source_geometry = _source_geometry(output["params"], output["formula"], selected_inner)
+            source_geometry = _source_geometry(parsed_params, output["formula"], selected_inner)
             throat_radius = float(np.mean(np.linalg.norm(source_ring[:, :2] - source_axis[:2], axis=1)))
             height = _source_cap_height(throat_radius, source_geometry)
             radius = _source_cap_radius(throat_radius, source_geometry)
@@ -886,7 +886,7 @@ def build_preview_geometry(
         while not polygon_source:
             cap_surface, cap_fidelity, source_details = _source_cap(
                 selected_inner,
-                output["params"],
+                parsed_params,
                 output["formula"],
                 cap_intervals,
                 closed_phi=closed_phi,

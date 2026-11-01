@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from .throat_stretch import canonical_stretch_params, validate_stretch_composition, stretch_coefficients
 from .text_import import TEXT_IMPORT_VERSION_KEY, TEXT_IMPORT_VERSION, TEXT_IMPORT_V1, text_uses_import_geometry, text_geometry_version
-from .text_import import ATH_AXIAL_RULE_KEY, ath_axial_sampling_rule
+from .text_import import ATH_AXIAL_RULE_KEY, ATH_AXIAL_LEGACY, ath_axial_sampling_rule, ath_throat_extension_segments
 from .profile_common import eval_param
 
 import numpy as np
@@ -667,9 +667,8 @@ def _reject_unsupported_ath_keys(
         raise ConfigError(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) and Opus rear (3) are implemented")
     # The user guide spells the throat-extension slice count ``ThroatSegments``;
     # current ATH builds read ``ThroatExtSegments``.
-    for throat_segments in ("ThroatSegments", "ThroatExtSegments"):
-        if throat_segments in mesh_items:
-            raise ConfigError(f"Mesh.{throat_segments} is not supported; remove it or use Mesh.ZMapPoints")
+    if "ThroatSegments" in mesh_items:
+        raise ConfigError("Mesh.ThroatSegments is not supported; remove it or use Mesh.ZMapPoints")
 
     # Every other key in this namespace is read through an explicit whitelist,
     # so an unrecognised one was silently discarded and the mesher used its
@@ -819,6 +818,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
     # level, so there the profile tables recognise top-level keys.
     known_flat: set[str] = set(_KNOWN_TOP_LEVEL_KEYS)
     known_profile: set[str] = {"Throat.Profile"}
+    axial_scale = None
     if v2_geometry:
         unit_axial_scale = False
         if "Scale.Z" in flat:
@@ -827,12 +827,23 @@ def parse_text_config(content: str) -> dict[str, Any]:
             except (SyntaxError, TypeError, ValueError, ArithmeticError):
                 pass
         if unit_axial_scale:
-            # ATH applies axial scale, but a unit scale leaves the output intact.
             known_flat.add("Scale.Z")
-            _report_ignored_ath_item(
-                "Scale.Z", "a unit axial scale does not change the geometry",
-                value=flat["Scale.Z"],
-            )
+            if _maybe_number(flat.get("Scale", 1)) == 1:
+                _report_ignored_ath_item(
+                    "Scale.Z", "a unit axial scale does not change the geometry",
+                    value=flat["Scale.Z"],
+                )
+            else:
+                # An explicit unit axis still overrides a nonunit global Scale.
+                axial_scale = 1.0
+        elif "Scale.Z" in flat:
+            try:
+                axial_scale = _eval_constant_param(flat["Scale.Z"])
+                if not np.isfinite(axial_scale) or axial_scale <= 0:
+                    raise ValueError("nonpositive scale")
+            except (SyntaxError, TypeError, ValueError, ArithmeticError) as exc:
+                raise ConfigError("Scale.Z must be a positive finite constant; azimuth-dependent axial scaling is not supported") from exc
+            known_flat.add("Scale.Z")
         if formula == "R-OSSE":
             for key in ("arcterm", "trunc"):
                 if key in flat:
@@ -849,13 +860,12 @@ def parse_text_config(content: str) -> dict[str, Any]:
             # L and ignores a top-level Length beside it: the exported grid is
             # byte-identical with and without the key (ath.exe V2026-08c).
             known_flat.update(("Length", "Rot"))
-        elif _maybe_number(flat.get("Rot")) == 0:
-            # An explicit numeric zero is the same as absent rotation. Do not
-            # admit expressions or nonzero R-OSSE rotation without ATH parity.
+        elif v2_geometry or _maybe_number(flat.get("Rot")) == 0:
+            # Current imports have measured top-level R-OSSE rotation. Older
+            # contracts still admit only an explicit inactive numeric zero.
             known_flat.add("Rot")
         if v2_geometry and formula == "R-OSSE" and "Rot" in blocks[profile_block]:
-            # ATH ignores rotation inside this block. Top-level rotation still
-            # has its own parity/refusal boundary below.
+            # ATH ignores rotation inside this block; top-level Rot owns it.
             known_profile.add("Rot")
             _report_ignored_ath_item(
                 f"{profile_block}.Rot", "ATH ignores rotation inside the R-OSSE block",
@@ -1012,6 +1022,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
             profile.setdefault("s", 0.5)
 
     if v2_geometry and formula == "R-OSSE":
+        if "Rot" in flat and _maybe_number(flat["Rot"]) != 0:
+            profile.update(mapped(flat, (("Rot", "rot"),)))
         for key, value in {"R": 200, "a": 40, "a0": 0, "r": .25, "m": .9, "b": .4, "q": 3.5}.items():
             profile.setdefault(key, value)
 
@@ -1046,6 +1058,16 @@ def parse_text_config(content: str) -> dict[str, Any]:
             ("RearShape.Step", "athRearStep"),
         ),
     )
+    if "ThroatExtSegments" in mesh_items:
+        if not v2_geometry:
+            raise ConfigError("Mesh.ThroatExtSegments requires current ATH import geometry")
+        if formula == "OSSE" and axial_rule == ATH_AXIAL_LEGACY:
+            raise ConfigError("Mesh.ThroatExtSegments requires the current ATH OSSE sampling rule")
+        try:
+            mesh["athThroatExtSegments"] = ath_throat_extension_segments(
+                {"athThroatExtSegments": mesh_items["ThroatExtSegments"]})
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
     if "NAC" in flat and saved_geometry_version != TEXT_IMPORT_V1:
         try:
             nac = Decimal(flat["NAC"])
@@ -1290,6 +1312,8 @@ def parse_text_config(content: str) -> dict[str, Any]:
     scale = _maybe_number(flat.get("Scale"))
     if scale is not None:
         config["scale"] = scale
+    if axial_scale is not None:
+        config["athAxialScale"] = axial_scale
     if morph:
         config["morph"] = morph
     if gcurve:

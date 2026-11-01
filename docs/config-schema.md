@@ -692,7 +692,8 @@ Imported text mappings include:
   is omitted; 2 = free standing; an enclosure implies 2; explicit 1 plus an
   enclosure is rejected).
 - Geometry transforms: flat `Scale` (multiplies all linear geometry after
-  profile evaluation) and `Mesh.VerticalOffset` (+y translation after scale).
+  profile evaluation), constant positive `Scale.Z` (overrides `Scale` on z
+  for v2 imports), and `Mesh.VerticalOffset` (+y translation after scale).
 - Profile: `Coverage.Angle`, `Throat.Angle`, `Throat.Diameter`,
   `Length`, `Term.n`, `Term.s`, `Term.q`, `Term.k`, `OS.k`,
   `Throat.Ext.Length`, `Throat.Ext.Angle`, `Slot.Length`, `Rot`, `OS.h`
@@ -703,7 +704,9 @@ Imported text mappings include:
   `Mesh.Quadrants`, `Mesh.ThroatResolution`, `Mesh.MouthResolution`,
   `Mesh.RearResolution`, `Mesh.SubdomainSlices` (shifted by one onto grid
   rings), `Mesh.InterfaceOffset`, `Mesh.InterfaceResolution`,
-  `Mesh.SamplingMode`, and `Mesh.ZMapPoints`.
+  `Mesh.SamplingMode`, `Mesh.ZMapPoints`, and v2 `Mesh.ThroatExtSegments`
+  (1–4096 extension intervals, default 10; the old `ThroatSegments` spelling
+  is refused). See [ATH import controls](ath-import-controls.md).
 - `NAC`: a finite integer. Its presence suppresses the angular corner-budget
   addition. Its value controls ATH's ring-spline splitting only and is ignored
   with a warning naming `NAC`; 0, 4, 10 and 25 give identical mesher grids.
@@ -809,23 +812,23 @@ Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `FusionRotaryProfile = {}`, named enclosure plans, `Plan` inside
 `Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
 of the other formula. `Dim` inside `Mesh.Enclosure` is imported as the
-enclosure dimensions. `Scale.Z` is refused unless it is a constant that
-evaluates to exactly 1; a unit axial scale is reported as ignored, because
-ATH V2026-09a exports the same grid with and without it. An expression that
-refers to the azimuth `p` is refused even when it is 1 at `p = 0`: ATH
-applies such a scale, not its value at one azimuth. A fresh ATH OSSE file
+enclosure dimensions. V2 `Scale.Z` accepts positive finite constants and
+constant expressions, and overrides global `Scale` on the axial coordinate.
+A unit axial scale is reported as ignored only when global `Scale` is also
+one. Expressions referring to azimuth `p` remain refused, including those
+equal to one at `p = 0`; they must not silently become a constant scale.
+Saved v1/native text retains its earlier refusal. A fresh ATH OSSE file
 whose `Length` is a constant zero describes a source-only model; the importer
-refuses it by name. Saved WG text keeps its earlier parse. V2 OSSE honours top-level `Rot` beside a profile block;
+refuses it by name. Saved WG text keeps its earlier parse. V2 OSSE and R-OSSE honour top-level `Rot` beside a profile block;
 ATH ignores in-block `Rot`, including an explicit zero, and the importer
 reports `OSSE.Rot` as unused. This rule is measured on V2025-12 and V2026-09a;
-saved v1/native text retains its authoring precedence. Top-level
-`Rot = 0` beside `R-OSSE` is accepted as inactive rotation. `Rot` inside an
+saved v1/native text retains its authoring precedence. `Rot` inside an
 `R-OSSE` block, and `arcterm` or `trunc` at top level beside `R-OSSE`, are
 reported as ignored: ATH V2026-09a ignores them there and exports a
-byte-identical grid. Nonzero or
-expression-valued top-level `Rot` beside `R-OSSE` is refused, as is any other
-unverified top-level profile key (`Throat.Diameter`, `Coverage.Angle`, `Length`
-beside `R-OSSE`). A file with multiple profile blocks is refused, including
+byte-identical grid. Finite top-level R-OSSE rotation, including azimuth
+expressions, rotates the body around the nominal throat join and leaves the
+extension straight. Other unverified top-level profile keys (`Throat.Diameter`,
+`Coverage.Angle`, `Length` beside `R-OSSE`) remain refused. A file with multiple profile blocks is refused, including
 repeated blocks of the same name. In-block `Throat.Profile = 1` is accepted
 in both profile families.
 
@@ -843,7 +846,7 @@ names the unsupported two-profile geometry, and `Lenght` suggests `Length`.
 
 Refused with their own messages: `Throat.Profile` other than 1 (OS-SE),
 `Rollback.*` (current ATH builds refuse it too), `Mesh.RearShape` other than 1 or 3,
-`Mesh.ThroatSegments` and `Mesh.ThroatExtSegments`, any other unrecognised
+`Mesh.ThroatSegments`, any other unrecognised
 `Mesh.*` key, `Source.Contours`, `LFSource*`, `Source.Velocity = 2`, and a
 `Mesh.Enclosure` `Spacing` with fewer than four values.
 

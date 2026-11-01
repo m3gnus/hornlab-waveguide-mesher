@@ -1,6 +1,7 @@
 """Versioned geometry interpretation retained by imported text configurations."""
 
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 TEXT_IMPORT_VERSION_KEY = "_textImportVersion"
@@ -14,6 +15,18 @@ ATH_AXIAL_CURRENT = "ath-v2025-12+"
 # ATH V2026-09a samples a rectangle-morph corner arc with five intervals when
 # Mesh.CornerSegments is absent, as it does for an explicit 6 (GridExport probes).
 ATH_DEFAULT_CORNER_SEGMENTS = 6
+
+
+def ath_throat_extension_segments(values: Mapping[str, Any]) -> int:
+    """Authored extension intervals, independent of acoustic subdivision."""
+    raw = values.get("athThroatExtSegments", 10)
+    try:
+        count = Decimal(str(raw))
+        if not count.is_finite() or count != count.to_integral_value() or not 1 <= count <= 4096:
+            raise ValueError("outside the supported interval")
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("Mesh.ThroatExtSegments must be an integer from 1 to 4096") from exc
+    return int(count)
 
 
 def ath_axial_sampling_rule(content: str) -> tuple[str, str | None]:
