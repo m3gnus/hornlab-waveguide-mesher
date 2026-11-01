@@ -99,6 +99,7 @@ def sagitta_background_view(
     for _, surface in gmsh.model.getEntities(2):
         first_payload = len(payloads)
         surface_levels = []
+        surface_areas = []
         lower, upper = gmsh.model.getParametrizationBounds(2, surface)
         if len(lower) < 2 or len(upper) < 2:
             continue
@@ -186,6 +187,12 @@ def sagitta_background_view(
                 size_max_mm,
             )
             surface_levels.append(level)
+            if size_report is not None:
+                # Integrate density over physical area, not parameter samples:
+                # endpoint clustering must not over-weight small curved returns.
+                surface_areas.append(0.5 * np.linalg.norm(
+                    np.cross(pts[1] - pts[0], pts[2] - pts[0]), axis=1,
+                ))
             payloads.append(
                 np.column_stack(
                     [pts[0][:, 0], pts[1][:, 0], pts[2][:, 0],
@@ -196,7 +203,10 @@ def sagitta_background_view(
             )
         if size_report is not None and surface_levels:
             levels = np.concatenate(surface_levels)
-            size_report[int(surface)] = float(1.0 / np.sqrt(np.mean(1.0 / levels**2)))
+            areas = np.concatenate(surface_areas)
+            total_area = float(np.sum(areas))
+            if total_area > 0:
+                size_report[int(surface)] = float(np.sqrt(total_area / np.sum(areas / levels**2)))
         if minimum_size_report is not None and surface_levels:
             minimum_size_report[int(surface)] = float(min(np.min(level) for level in surface_levels))
         if surface_views is not None and len(payloads) > first_payload:
@@ -327,3 +337,16 @@ def measure_surface_deviation(
         "peak_surface_type": peak_type,
         "peak_facet_longest_edge_mm": None if worst is None else worst[2],
     }
+
+
+def observe_surface_deviation(gmsh: Any, *, triangle_budget: int = 0) -> dict[str, Any]:
+    """Keep optional reporting failures outside mesh generation and fit fallback."""
+    try:
+        return measure_surface_deviation(gmsh, triangle_budget=triangle_budget)
+    except Exception as exc:  # noqa: BLE001 - an observation must never fail a build
+        return {
+            "available": False,
+            "failure": type(exc).__name__,
+            "triangle_count": 0,
+            "sampled_triangle_count": 0,
+        }

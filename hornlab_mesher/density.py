@@ -844,8 +844,8 @@ def surface_deviation_field(geometry: BuiltGeometry, density: MeshDensity):
     if geometry.enclosure_bounds:
         user_sizes.extend(_parse_quadrant_resolutions(density.enc_front_res_mm, density.mouth_res_mm))
         user_sizes.extend(_parse_quadrant_resolutions(density.enc_back_res_mm, density.mouth_res_mm))
-    size_min = 0.125 * min(user_sizes)
-    size_max = max(user_sizes)
+    size_min = max(0.125 * min(user_sizes), density.min_size_mm or 0.0)
+    size_max = max(*user_sizes, size_min)
     sagitta_background_view(
         gmsh, deviation_mm=0.35 * density.surface_deviation_mm,
         size_min_mm=size_min,
@@ -1594,7 +1594,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         float(density.min_size_mm) if density.min_size_mm else requested_min * 0.25,
         requested_min,
     )
-    if deviation_field is not None:
+    if deviation_field is not None and density.min_size_mm is None:
         min_size = min(min_size, geometry.metadata["surface_deviation_sizing"]["size_min_mm"])
     max_size = max(
         float(density.max_size_mm) if density.max_size_mm else requested_max,

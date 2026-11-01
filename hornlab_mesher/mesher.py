@@ -421,7 +421,7 @@ def build_mesh_with_info(
 
                 repair_fitted_wall_mesh(built.mesh_surface_groups)
 
-            from .tessellation import measure_surface_deviation
+            from .tessellation import observe_surface_deviation
             if controls is not None:
                 # The native owner already certifies every curved branch facet;
                 # its only other surface is the exact planar driver disk.
@@ -437,7 +437,7 @@ def build_mesh_with_info(
                     "certified_triangle_count": total,
                 }
             else:
-                built.metadata["surface_deviation"] = measure_surface_deviation(gmsh, triangle_budget=surface_deviation_triangle_budget)
+                built.metadata["surface_deviation"] = observe_surface_deviation(gmsh, triangle_budget=surface_deviation_triangle_budget)
             built.metadata["surface_deviation_mm"] = mesh_density.surface_deviation_mm
 
             with tempfile.NamedTemporaryFile(

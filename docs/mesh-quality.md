@@ -220,14 +220,18 @@ is noted rather than chased here.
 
 `mesh.surface_deviation_mm` optionally adds the shared OCC curvature field to
 the existing millimetre sizing fields. Missing or null leaves those fields
-unchanged. The field uses the tighter target where the two overlap, clipped
+unchanged. New horn designs default to Off; setting a value is an explicit
+opt-in. The field uses the tighter target where the two overlap, clipped
 to one eighth of the smallest active resolution and the largest active
-resolution.
+resolution, while respecting an explicit minimum size. A minimum can limit the
+achieved accuracy; the report retains the achieved gap rather than clamping it
+to the request.
 It changes tessellation, not the construction grid or fitted surface.
 
 Parametric sizing reserves 65% of the requested deviation for unstructured
 triangle edge overshoot and trim-boundary coverage. Parametric fields use
-64-point axial-end-biased surface grids, separate surface views and a constant curve cap so coincident construction
+64-point axial-end-biased surface grids, physical-area-weighted estimate caps,
+separate surface views and a constant curve cap so coincident construction
 seams receive the same sizing. CAD keeps the combined view and its sampling. The earlier centroid-only trial did not measure the
 larger gaps at edge midpoints. CAD retains its existing field and 0.15 mm default.
 
@@ -238,7 +242,8 @@ builds sample deterministically with a 256-triangle budget; the report carries
 both the total and sampled triangle counts. This is an observed sampled maximum,
 not a continuous error certificate. Pass `surface_deviation_triangle_budget=0`
 to `build_from_config` for exhaustive facet measurements. These reports never
-change the mesh or add a deviation warning. Exact native adapter controls reuse
+change the mesh or add a deviation warning. An observation failure is reported
+as unavailable and cannot fail mesh generation or trigger a fit retry. Exact native adapter controls reuse
 their existing continuous branch facet certificate and planar source, explicitly
 labelled as an upper bound, rather than repeating slow OCC projections.
 
