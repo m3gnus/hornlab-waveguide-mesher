@@ -1,19 +1,25 @@
 """Tessellate the authored ATH mesh patches without resampling their rings."""
 from __future__ import annotations
 
-from contextlib import contextmanager
 import math
 import time
-import uuid
+from contextlib import contextmanager
 
 import numpy as np
 
 from ..builders.point_grid_freestanding import _build_ath_import_surfaces
 from ..config_builder import resolve_geometry
+from ..gmsh_session import operation_model
 from ..mesher import _GMSH_LOCK, _PINNED_MESH_OPTIONS
 from ..native_env import preserve_native_windows_path
-from .contract import (PreviewGeometryV1, PreviewSurfaceV1, _API_VERSION,
-                       _METADATA_VERSION, _orient_indices_to_normals, _classify_triangle_orientation)
+from .contract import (
+    _API_VERSION,
+    _METADATA_VERSION,
+    PreviewGeometryV1,
+    PreviewSurfaceV1,
+    _classify_triangle_orientation,
+    _orient_indices_to_normals,
+)
 from .dimensions import DIMENSIONS_SAMPLING, dimension_metadata
 from .fidelity import _point_triangle_squared
 
@@ -37,30 +43,24 @@ def _model():
                'Mesh.Algorithm': 6}
     with _GMSH_LOCK:
         opened = not gmsh.isInitialized()
-        saved, previous, owned = {}, None, None
+        saved = {}
         try:
             if opened:
                 with preserve_native_windows_path():
                     gmsh.initialize(interruptible=False)
             else:
-                previous = gmsh.model.getCurrent()
                 saved = {name: gmsh.option.getNumber(name) for name in options}
             for name, value in options.items():
                 gmsh.option.setNumber(name, value)
-            owned = 'HornLabPreview-' + uuid.uuid4().hex
-            gmsh.model.add(owned)
-            yield gmsh
+            with operation_model(gmsh, initialized_here=opened, name='HornLabPreview'):
+                yield gmsh
         finally:
-            if opened:
-                gmsh.finalize()
-            else:
-                if owned is not None:
-                    gmsh.model.setCurrent(owned)
-                    gmsh.model.remove()
-                if previous:
-                    gmsh.model.setCurrent(previous)
-                for name, value in saved.items():
-                    gmsh.option.setNumber(name, value)
+            if gmsh.isInitialized():
+                if opened:
+                    gmsh.finalize()
+                else:
+                    for name, value in saved.items():
+                        gmsh.option.setNumber(name, value)
 
 
 def _roles(built, geometry):
