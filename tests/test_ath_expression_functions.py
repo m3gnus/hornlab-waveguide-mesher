@@ -13,6 +13,33 @@ from hornlab_mesher.profile_formulas import calculate_osse_curve
 FIXTURES = Path(__file__).parent / "fixtures/ath_import/ath-v2026-09a"
 
 
+def test_expression_is_parsed_and_validated_once_across_azimuths(monkeypatch):
+    from hornlab_mesher import profile_common as common
+
+    common._eval_text_param.cache_clear()
+    common._validated_param_expression.cache_clear()
+    parses, validations = [], []
+    original_parse = common.ast.parse
+    original_visit = common._PARAM_EXPRESSION_VALIDATOR.visit
+
+    def parse(*args, **kwargs):
+        parses.append(args[0])
+        return original_parse(*args, **kwargs)
+
+    def visit(tree):
+        if isinstance(tree, common.ast.Expression):
+            validations.append(tree)
+        return original_visit(tree)
+
+    monkeypatch.setattr(common.ast, 'parse', parse)
+    monkeypatch.setattr(common._PARAM_EXPRESSION_VALIDATOR, 'visit', visit)
+    for p in (0., .25, .75, 1., 2.):
+        assert eval_param(' 45+5*cos(p)^2 ', p) == 45+5*math.cos(p)**2
+        assert eval_param('45+5*cos(p)**2', p) == 45+5*math.cos(p)**2
+    assert parses == ['45+5*cos(p)**2']
+    assert len(validations) == 1
+
+
 @pytest.mark.parametrize("name", ["sf1", "sf2", "sf3"])
 def test_expression_matches_ath_at_every_exported_station(name):
     params = build_geometry_params(parse_text_config((FIXTURES / f"{name}.cfg").read_text()))[0]
