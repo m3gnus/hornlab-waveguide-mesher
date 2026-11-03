@@ -178,6 +178,16 @@ class FreeformGeometry:
 
     def cross_section_radius(self, phi_array: Any, t_scalar: float) -> np.ndarray:
         """Evaluate a station-blended outline at normalized axial position ``t``."""
+        return self._cross_section_radius(phi_array, t_scalar)
+
+    def _cross_section_radius(
+        self,
+        phi_array: Any,
+        t_scalar: float,
+        *,
+        radii: tuple[float, float] | None = None,
+    ) -> np.ndarray:
+        """Share outline evaluation with grids that already sampled H/V radii."""
         try:
             t = float(t_scalar)
         except (TypeError, ValueError) as exc:
@@ -193,11 +203,14 @@ class FreeformGeometry:
         if not np.all(np.isfinite(phi)):
             raise ValueError("FREEFORM cross-section phi values must all be finite")
 
-        z0 = float(self._profile_h.anchors[0, 0])
-        z = z0 + t * self.length_mm
-        r_h, r_v = self.evaluate_radii(np.asarray(z))
-        a = float(r_h)
-        b = float(r_v)
+        if radii is None:
+            z0 = float(self._profile_h.anchors[0, 0])
+            z = z0 + t * self.length_mm
+            r_h, r_v = self.evaluate_radii(np.asarray(z))
+            a = float(r_h)
+            b = float(r_v)
+        else:
+            a, b = radii
 
         blend = _resolve_active_station_blend(self.stations, t)
         first = self.stations[blend.first_index]
