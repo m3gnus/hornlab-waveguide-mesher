@@ -4,6 +4,7 @@ from .errors import ath_refusal, control_refusal
 import json
 import math
 from collections import OrderedDict
+from copy import deepcopy
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
@@ -1269,11 +1270,17 @@ def build_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> "ICWCurve":
        ``solve_icw``; raise ``ValueError`` (never a silent bad curve) if the
        returned ``FeasibilityReport`` is infeasible.
 
-    The result is cached (module-level memo keyed on the ICW-relevant params) so
-    the curve is solved/fit only once per profile. ``phi`` is accepted for API
+    The curve is cached privately and each call returns an independent mutable
+    copy, including its coefficient and knot arrays. It is solved/fit only once
+    per profile. ``phi`` is accepted for API
     symmetry with the other formulas but is unused in Phase 1 (ICW is
     phi-independent: no guiding curve / no per-phi expressions).
     """
+    return deepcopy(_cached_icw_curve(params, phi))
+
+
+def _cached_icw_curve(params: Mapping[str, Any], phi: float = 0.0) -> ICWCurve:
+    """Privately owned memo value; internal samplers must only read it."""
     key = _icw_cache_key(params)
     cached = _ICW_CURVE_CACHE.get(key)
     if cached is not None:

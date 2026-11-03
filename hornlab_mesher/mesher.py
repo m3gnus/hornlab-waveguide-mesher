@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import tempfile
 import threading
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from .builders import (
 from .builders._occ import add_physical_groups
 from .config_parser import ConfigError
 from .errors import UserRefusal
+from .gmsh_session import operation_model
 from .density import (
     CLEARANCE_CAP_BUDGET_ADVICE,
     TriangleBudgetExceeded as _PremeshTriangleBudgetExceeded,
@@ -305,14 +307,12 @@ def build_mesh_with_info(
         out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with _GMSH_LOCK:
+    with _GMSH_LOCK, ExitStack() as model_scope:
         initialized_here = False
         saved_options: dict[str, float] = {}
         build_succeeded = False
         raw_path: Path | None = None
         staged_path: Path | None = None
-        previous_model = None
-        owned_model = None
         initial_views: set[int] | None = None
         woofer_refusal: UserRefusal | None = None
         try:
@@ -341,13 +341,9 @@ def build_mesh_with_info(
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
-            if controls is not None and not initialized_here:
-                previous_model=gmsh.model.getCurrent()
-                owned_model="HornLabControlsMesh-"+__import__("uuid").uuid4().hex
-                gmsh.model.add(owned_model)
-            else:
-                gmsh.clear()
-                gmsh.model.add("HornLabMesher")
+            model_scope.enter_context(operation_model(
+                gmsh, initialized_here=initialized_here, name="HornLabMesher"
+            ))
 
             acoustic_geometry, acoustic_metadata = _acoustic_geometry(
                 geometry, mesh_density
@@ -570,9 +566,6 @@ def build_mesh_with_info(
             elif saved_options and gmsh.isInitialized():
                 for name, value in saved_options.items():
                     gmsh.option.setNumber(name, value)
-            if owned_model is not None and gmsh.isInitialized():
-                gmsh.model.setCurrent(owned_model);gmsh.model.remove()
-                if previous_model in gmsh.model.list():gmsh.model.setCurrent(previous_model)
 
 
 def load_mesh(path: str | Path) -> MeshInfo:
