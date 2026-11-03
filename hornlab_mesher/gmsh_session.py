@@ -1,4 +1,4 @@
-"""Model ownership shared by the mesh and CAD export pipelines."""
+"""Model ownership shared by the mesh, preview and CAD export pipelines."""
 
 from contextlib import contextmanager
 from uuid import uuid4
