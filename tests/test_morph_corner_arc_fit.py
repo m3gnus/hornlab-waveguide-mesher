@@ -19,7 +19,6 @@ from hornlab_mesher.config_builder import (
     _build_acoustic_sampling_grid,
     _corner_arc_edge_mask,
     _mesh_density_from_config,
-    _reshape_grid,
     build_from_config,
     build_geometry_params,
 )
@@ -87,9 +86,8 @@ def _acoustic_grid(config: dict):
 
 
 def _angular_ratios(grid, density) -> np.ndarray:
-    n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    points = grid["inner_grid"]
     ring_h = density.throat_res_mm + (
         density.mouth_res_mm - density.throat_res_mm
     ) * np.linspace(0.0, 1.0, n_length + 1)
@@ -374,9 +372,8 @@ def test_sagitta_stays_off_for_morph_because_a_sharp_target_has_a_real_vertex():
     (grid, _), density = _acoustic_grid(config)
     assert float(_angular_ratios(grid, density).max()) <= 1.0
 
-    n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    points = grid["inner_grid"]
     ring_h = density.throat_res_mm + (
         density.mouth_res_mm - density.throat_res_mm
     ) * np.linspace(0.0, 1.0, n_length + 1)

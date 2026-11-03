@@ -90,3 +90,31 @@ def test_the_list_form_keeps_its_published_key_order() -> None:
     assert list(listed)[:2] == ["inner_points", "outer_points"]
     assert "inner_grid" not in listed
     assert "outer_grid" not in listed
+
+
+@pytest.mark.parametrize('mouth', [False, True])
+def test_resolution_keeps_refinement_grids_as_owned_arrays(monkeypatch, mouth):
+    from hornlab_mesher import config_builder as builder
+    from hornlab_mesher import profile_sampling as sampling
+
+    def no_lists(*args, **kwargs):
+        pytest.fail('geometry refinement must use the existing array sampler')
+
+    monkeypatch.setattr(builder, 'build_point_grid', no_lists)
+    monkeypatch.setattr(sampling, 'build_point_grid', no_lists)
+    config = {'formula': 'OSSE', 'mode': 'freestanding',
+              'profile': {'L': 120, 'a': 45, 'a0': 10},
+              'mesh': {'angular_segments': 64, 'length_segments': 32,
+                       'wall_thickness_mm': 5}}
+    if mouth:
+        config['morph'] = {'morphTarget': 1, 'morphWidth': 320,
+                           'morphHeight': 240, 'morphCorner': 10,
+                           'morphAllowShrinkage': 1}
+    first = builder.resolve_geometry(config)
+    saved = first.geometry.inner_points.copy()
+    second = builder.resolve_geometry(config)
+    assert first.geometry.inner_points.dtype == np.float64
+    assert not np.shares_memory(first.geometry.inner_points, second.geometry.inner_points)
+    assert not np.shares_memory(first.geometry.inner_points, first.geometry.outer_points)
+    assert first.sampling_metadata == second.sampling_metadata
+    assert first.geometry.inner_points.tobytes() == saved.tobytes()

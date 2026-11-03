@@ -35,7 +35,8 @@ from .geometry import (
     _RetryInterpolatingFit,
     validate_mesh_density,
 )
-from .mesher import MesherError, TriangleBudgetExceeded, build_mesh_with_info
+from .mesher import MesherError  # noqa: F401 - retained compatibility export
+from .mesher import SurfaceFitError, TriangleBudgetExceeded, build_mesh_with_info
 from .profile_common import (
     _normalise_formula as _normalise_formula_common,
     _normalise_quadrants as _normalise_quadrants_common,
@@ -60,7 +61,8 @@ from .profile_sampling import (
     ath_angular_segments,
     freeform_azimuth_twist_note,
 )
-from .profiles import azimuthal_mean, build_point_grid, eval_param
+from .profiles import azimuthal_mean, eval_param
+from .profiles import build_point_grid  # noqa: F401 - retained compatibility export
 from .builders.point_grid_freestanding import (
     _freestanding_mouth_closure_points,
     _outer_wall_axial_ring_indices,
@@ -2179,7 +2181,7 @@ def _build_acoustic_sampling_grid(
 
     working = dict(params)
     if topology_mode != "acoustic":
-        grid = build_point_grid(working)
+        grid = build_point_grid_arrays(working)
         fold = grid.get("outer_offset_fold")
         return grid, {
             # A legacy-topology build detects an offset fold exactly as an
@@ -2214,7 +2216,7 @@ def _build_acoustic_sampling_grid(
         # expensive exterior envelope for them. All inner-fit checks below and
         # the final offset validation stay unchanged.
         if formula == "OSSE" and grid.get("outer_offset_fold"):
-            grid = build_point_grid(fitted_params)
+            grid = build_point_grid_arrays(fitted_params)
         fit_metadata = {}
         if interpolate_mouth:
             from .mouth_fit import refine_mouth_grid
@@ -2269,16 +2271,14 @@ def _build_acoustic_sampling_grid(
             authored_segments = ath_throat_extension_segments(working)
             working[ACOUSTIC_EXTENSION_SEGMENTS_KEY] = max(
                 authored_segments, authored_segments * int(math.ceil(int(working["lengthSegments"]) / authored_segments)))
-        grid = build_point_grid(working, defer_osse_offset_repair=formula == "OSSE")
+        grid = build_point_grid_arrays(working, defer_osse_offset_repair=formula == "OSSE")
         _check_effective_grid_caps(grid, density)
         n_phi = int(grid["grid_n_phi"])
         n_length = int(grid["grid_n_length"])
         # The outer freestanding grid is derived from the inner fit and can
         # contain intentional closure transitions. The inner acoustic boundary
         # is the fidelity authority; both surfaces receive the same sampling.
-        surfaces = [
-            _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
-        ]
+        surfaces = [grid["inner_grid"]]
 
         if formula == "FREEFORM":
             ring_t = np.asarray(grid.get("slice_map"), dtype=np.float64)
@@ -2523,11 +2523,10 @@ def _certify_imported_rear_route_agreement(
         params, density, topology_mode=other_mode,
         interpolate_mouth=_mesh_surface_fit(mesh) != "approximate",
     )
-    n_phi, n_length = int(other_grid["grid_n_phi"]), int(other_grid["grid_n_length"])
-    other_inner = _reshape_grid(other_grid["inner_points"], n_phi, n_length, "inner_points")
-    if other_grid.get("outer_points") is None:
+    other_inner = other_grid["inner_grid"]
+    if other_grid.get("outer_grid") is None:
         raise ValueError("ATH text import competing sampling route has no outer shell")
-    other_outer = _reshape_grid(other_grid["outer_points"], n_phi, n_length, "outer_points")
+    other_outer = other_grid["outer_grid"]
     other_outer = _restored_outer_throat_points(
         other_inner, other_outer, wall_thickness_mm=wall,
     )
@@ -2625,14 +2624,11 @@ def resolve_geometry(
         interpolate_mouth=_mesh_surface_fit(mesh) != "approximate",
     )
 
-    n_phi = int(grid["grid_n_phi"])
     n_length = int(grid["grid_n_length"])
-    inner_points = _reshape_grid(grid["inner_points"], n_phi, n_length, "inner_points")
+    inner_points = grid["inner_grid"]
     outer_points = None
-    if grid.get("outer_points") is not None and enclosure_obj is None:
-        outer_points = _reshape_grid(
-            grid["outer_points"], n_phi, n_length, "outer_points"
-        )
+    if grid.get("outer_grid") is not None and enclosure_obj is None:
+        outer_points = grid["outer_grid"]
     for name, points in (("inner", inner_points), ("outer", outer_points)):
         if points is not None and not np.all(np.isfinite(points)):
             bad = int(np.count_nonzero(~np.isfinite(points).all(axis=2)))
@@ -2869,10 +2865,9 @@ def build_from_config(
         # and can ship the inward-biased surface just because it landed under
         # the limit.
         raise
-    except MesherError:
-        # Automatic fitting can retry a geometry that the interpolating
-        # surface could not mesh. Keep this general recovery path even though
-        # the coarse small-horn sampling defect is covered in the mesher.
+    except SurfaceFitError:
+        # Only a construction/meshing failure can request another fit. Output
+        # and callback failures must propagate without changing the geometry.
         #
         # Only the automatic choice falls back. An explicit
         # ``surface_fit = "interpolate"`` still fails loudly, because someone

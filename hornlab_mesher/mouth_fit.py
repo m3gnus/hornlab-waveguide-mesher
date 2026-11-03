@@ -41,8 +41,7 @@ def refine_mouth_grid(params: Mapping[str, Any], grid: dict[str, Any]):
     if any(not isinstance(params.get(k, 0), (int, float))
            for k in ('morphWidth', 'morphHeight', 'morphCorner')):
         return grid, {}
-    points = np.asarray(grid['inner_points']).reshape(
-        grid['grid_n_phi'], grid['grid_n_length'] + 1, 3)
+    points = grid['inner_grid']
     a, b = np.max(np.abs(points[:, -1, :2]), axis=0)
     scale = float(params.get('scale', 1))
     radius = min(float(params.get('morphCorner', 0)) * scale, a, b)
@@ -83,9 +82,8 @@ def refine_mouth_grid(params: Mapping[str, Any], grid: dict[str, Any]):
                 f'rectangular morphed mouth cubic fit needs {len(selected)} profiles; '
                 f'the station limit is {_MAX_PROFILES}; coarsen throat/mouth '
                 'resolution (increase their mm values) or round the mouth corners')
-        candidate = sampling.build_point_grid(working)
-        points = np.asarray(candidate['inner_points']).reshape(
-            candidate['grid_n_phi'], candidate['grid_n_length']+1, 3)
+        candidate = sampling.build_point_grid_arrays(working)
+        points = candidate['inner_grid']
         n = len(points)
         count = len(q)-1
         groups = [list(range(n)) + ([0] if candidate['full_circle'] else [])]
@@ -114,10 +112,9 @@ def refine_mouth_grid(params: Mapping[str, Any], grid: dict[str, Any]):
             # Clearance sizing is a discretisation-scale probe, not a fit
             # tolerance. Adding arbitrarily close fit stations must not turn
             # its minimum three-point radius into a global shell size floor.
-            if grid.get('outer_points') is not None:
-                baseline_inner = np.asarray(grid['inner_points']).reshape(
-                    grid['grid_n_phi'], grid['grid_n_length']+1, 3)
-                baseline_outer = np.asarray(grid['outer_points']).reshape(baseline_inner.shape)
+            if grid.get('outer_grid') is not None:
+                baseline_inner = grid['inner_grid']
+                baseline_outer = grid['outer_grid']
                 candidate['outer_clearance_points'] = _restored_outer_throat_points(
                     baseline_inner, baseline_outer,
                     wall_thickness_mm=float(params.get('wallThickness', 0)))

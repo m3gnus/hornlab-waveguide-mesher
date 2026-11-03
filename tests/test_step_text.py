@@ -20,6 +20,27 @@ from hornlab_mesher.step_text import (
 _MODULE_PATH = Path(step_text.__file__)
 
 
+def test_labels_preserve_whitespace_and_do_not_add_entity_references():
+    text = """
+    #1 = ADVANCED_FACE('', (), #90, .T.);
+    #2 = ADVANCED_FACE('', (), #91, .T.);
+    #10 = OPEN_SHELL('shell #2', (#1));
+    #20 = OPEN_SHELL('', (#2));
+    #30 = SHELL_BASED_SURFACE_MODEL('driver #20', (#10));
+    #40 = SHELL_BASED_SURFACE_MODEL('HF  source', (#20));
+    #50 = SHELL_BASED_SURFACE_MODEL('it''s  #20; /* a label */', (#10));
+    """
+    expected = {'driver #20': [1], 'HF  source': [2],
+                "it's  #20; /* a label */": [1]}
+    assert parse_named_shell_faces_from_text(text) == expected
+    assert [(body.name, body.face_ids) for body in step_body_inventory(text)] == [
+        (name, tuple(faces)) for name, faces in expected.items()
+    ]
+    records = step_text.step_records(text)
+    assert records[40] == "SHELL_BASED_SURFACE_MODEL('HF  source', (#20))"
+    assert step_text.step_refs(records[50]) == [10]
+
+
 def test_step_text_imports_only_the_standard_library():
     """The whole point of the module: it must run where numpy cannot.
 

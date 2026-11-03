@@ -398,26 +398,6 @@ def _add_mouth_rim_surfaces(
     return surfaces
 
 
-def _rear_rim_points(
-    outer_points: np.ndarray,
-    *,
-    rear_z: float,
-) -> np.ndarray:
-    """Rear rim ring: the outer throat ring projected straight back to ``rear_z``.
-
-    Straight axial projection (constant x/y) keeps the rear cover inside the
-    reduced-domain quadrant — cut-plane rays stay exactly on their plane and the
-    seam boundary is a straight axial line gmsh cannot chord into the symmetry
-    plane. It also matches ATH's rear cover, which stays at the outer throat
-    radius (an earlier version extrapolated backwards along the flaring wall
-    rays, which both flared ~10 mm past ATH's rear cover and dipped below the
-    y=0 cut plane near the seam).
-    """
-    out = outer_points[:, 0, :].copy()
-    out[:, 2] = rear_z
-    return out
-
-
 def _add_rear_cap(
     builder: _SharedSurfaceBuilder,
     rear_points: np.ndarray,
