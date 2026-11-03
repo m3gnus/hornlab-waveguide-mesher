@@ -7,11 +7,12 @@ import logging
 import threading
 from collections import OrderedDict
 from concurrent.futures import Future
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
 
-from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds
+from ..config_builder import ResolvedGeometry, build_geometry_params, resolve_geometry, resolve_enclosure_bounds
 from ..builders.enclosure import EnclosureBaffleError, measure_enclosure_box_bounds
 from ..profiles import eval_param
 from ..profile_common import _symmetry_planes_for_quadrants
@@ -24,6 +25,44 @@ _DIMENSIONS_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _CACHE_LIMIT = 128
 _CACHE_LOCK = threading.RLock()
 _IN_FLIGHT: dict[str, Future] = {}
+
+
+@dataclass(frozen=True)
+class _ResolvedDimensionInput:
+    """Per-frame physical geometry; never retained in the readout cache."""
+
+    config: Mapping[str, Any]
+    resolved: ResolvedGeometry
+    enclosure_bounds: Mapping[str, float]
+
+    def matches(self, full: Mapping[str, Any]) -> bool:
+        if (self.resolved.quadrants != "1234"
+                or self.resolved.geometry.vertical_offset_mm != 0.0):
+            return False
+        try:
+            return _config_key(full) == _config_key(_measurement_frame(
+                copy.deepcopy(dict(self.config))
+            ))
+        except Exception:
+            # Transient construction data need not be JSON serializable. A
+            # failed reuse check must leave independent measurement available.
+            return False
+
+
+def _config_key(config: Mapping[str, Any]) -> str:
+    return json.dumps(dict(config), sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _measurement_frame(full: dict[str, Any]) -> dict[str, Any]:
+    mesh = full.get("mesh", {})
+    if not isinstance(mesh, Mapping):
+        raise TypeError("dimension measurement requires mesh to be a mapping")
+    # Measurement removes rigid placement at both supported locations.
+    full.pop("vertical_offset_mm", None)
+    full.pop("verticalOffset", None)
+    full["mesh"] = dict(mesh, quadrants="1234", vertical_offset_mm=0.0)
+    full["mesh"].pop("verticalOffset", None)
+    return full
 
 
 class _MeasurementWarnings(logging.Filter):
@@ -39,7 +78,9 @@ class _MeasurementWarnings(logging.Filter):
         )
 
 
-def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
+def canonical_dimensions(
+    config: Mapping[str, Any], resolved_input: _ResolvedDimensionInput | None = None,
+) -> dict[str, Any]:
     """Bound the full design's resolved controls, before CAD surface fitting."""
     from ..native_boundary import validate_native_boundary
     from ..axial_scale import configuration
@@ -72,14 +113,14 @@ def canonical_dimensions(config: Mapping[str, Any]) -> dict[str, Any]:
         model = AxialModel.from_params(axial[0])
         diameter = 2*float(model.body(model.length)[0][1])
         return {"mouth_opening":[diameter]*2,"horn_overall":[diameter,diameter,model.length]}
-    mesh = full.get("mesh", {})
-    if not isinstance(mesh, Mapping):
-        raise TypeError("dimension measurement requires mesh to be a mapping")
-    # Measurement removes rigid placement at both supported locations.
-    full.pop("vertical_offset_mm", None)
-    full.pop("verticalOffset", None)
-    full["mesh"] = dict(mesh, quadrants="1234", vertical_offset_mm=0.0)
-    full["mesh"].pop("verticalOffset", None)
+    full = _measurement_frame(full)
+    if resolved_input is not None and resolved_input.matches(full):
+        # Only domain and zero-placement aliases were normalized. Retained ATH
+        # construction, sampling, and all physical inputs must still match.
+        return _geometry_dimensions(
+            resolved_input.resolved.geometry,
+            enclosure_bounds=resolved_input.enclosure_bounds,
+        )
     loggers = [logging.getLogger(name) for name in (
         "hornlab_mesher.profile_sampling", "hornlab_mesher.builders.enclosure")]
     warning_filter = _MeasurementWarnings()
@@ -155,15 +196,19 @@ def _unavailable(exc: Exception) -> dict[str, Any]:
             "dimensions_error": str(exc) or type(exc).__name__}
 
 
-def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
+def dimension_metadata(
+    config: Mapping[str, Any], lod: str,
+    resolved_input: _ResolvedDimensionInput | None = None,
+) -> dict[str, Any]:
     """Coarse frames only look up; settled frames resolve each design once.
 
     Resolve an owned snapshot decoded from its immutable content key. Options and
-    visibility are deliberately excluded; no preview buffers enter this path.
+    visibility are deliberately excluded; only equivalent physical resolution
+    can be reused, never display-LOD buffers.
     Measurement errors are cached too. Build refusals propagate to the caller.
     """
     try:
-        key = json.dumps(dict(config), sort_keys=True, separators=(",", ":"), allow_nan=False)
+        key = _config_key(config)
         with _CACHE_LOCK:
             cached = _DIMENSIONS_CACHE.get(key)
             if cached is not None:
@@ -183,7 +228,8 @@ def dimension_metadata(config: Mapping[str, Any], lod: str) -> dict[str, Any]:
     try:
         try:
             snapshot = json.loads(key)
-            dimensions = canonical_dimensions(snapshot)
+            dimensions = (canonical_dimensions(snapshot) if resolved_input is None
+                          else canonical_dimensions(snapshot, resolved_input))
             if dimensions is None:
                 raise ValueError("canonical measurement returned no dimensions")
             result = {"dimensions_mm": dimensions, "dimensions_status": "current"}
