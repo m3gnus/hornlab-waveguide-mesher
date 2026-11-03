@@ -245,6 +245,16 @@ def validate_woofer_domain(params, enclosure):
         raise control_refusal("woofer x=0 half requires a horn symmetric about x=0", 'Symmetry', 'Choose Full model in Symmetry.', message='The horn is not symmetric across the woofer symmetry plane.')
 
 
+def _fragment_with_glue(gmsh, objects, tools):
+    """Use partial glue for coincident assembly joins, restoring caller options."""
+    previous = gmsh.option.getNumber("Geometry.OCCBooleanGlue")
+    try:
+        gmsh.option.setNumber("Geometry.OCCBooleanGlue", 1)
+        return gmsh.model.occ.fragment(objects, tools)
+    finally:
+        gmsh.option.setNumber("Geometry.OCCBooleanGlue", previous)
+
+
 def cut_woofers(built, geometry):
     """Cut the existing flat baffle and attach exact diaphragm surfaces."""
     from .builders._occ import require_gmsh
@@ -291,7 +301,7 @@ def cut_woofers(built, geometry):
                 raise control_refusal("woofer aperture lacks 0.1 mm clearance to mouth/flat baffle boundary", 'Enclosure and placement', 'Move the woofer or increase the enclosure margins to leave at least 0.1 mm clearance.', message='A woofer opening is too close to the horn mouth or baffle edge.')
         discs.append((2, disc))
     occ.remove(clearance_front, recursive=True)
-    _, maps = occ.fragment(front, discs)
+    _, maps = _fragment_with_glue(gmsh, front, discs)
     front_result = {t for mapping in maps[:len(front)] for d, t in mapping if d == 2}
     patches = [{t for d, t in mapping if d == 2} for mapping in maps[len(front):]]
     for w, patch in zip(woofers, patches):
@@ -381,7 +391,7 @@ def cut_woofers(built, geometry):
     # opt-in path performs the assembly boolean; horn-only output is untouched.
     occ.synchronize()
     faces = gmsh.model.getEntities(2)
-    _, mapping = occ.fragment(faces, [])
+    _, mapping = _fragment_with_glue(gmsh, faces, [])
     remap = {old: [t for d, t in new if d == 2] for (_, old), new in zip(faces, mapping)}
     _remap_groups(built.surface_groups, remap)
     _remap_groups(built.mesh_surface_groups, remap)

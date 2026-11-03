@@ -29,6 +29,44 @@ REFERENCE = json.loads((FIXTURES/'ath_reference.json').read_text())
 CASES = tuple(BASELINE['cases'])
 
 
+@pytest.mark.parametrize('previous', [0., 1., 2.])
+@pytest.mark.parametrize('fails', [False, True])
+def test_fragment_glue_restores_caller_option(previous, fails):
+    from types import SimpleNamespace
+    from hornlab_mesher.enclosure_woofers import _fragment_with_glue
+
+    class Options:
+        value = previous
+
+        def getNumber(self, name):
+            assert name == 'Geometry.OCCBooleanGlue'
+            return self.value
+
+        def setNumber(self, name, value):
+            assert name == 'Geometry.OCCBooleanGlue'
+            self.value = value
+
+    options = Options()
+    objects, tools = [(2, 10)], [(2, 20)]
+    result = ([(2, 30)], [[(2, 30)]])
+
+    def fragment(actual_objects, actual_tools):
+        assert options.value == 1
+        assert actual_objects is objects and actual_tools is tools
+        if fails:
+            raise RuntimeError('fragment failed')
+        return result
+
+    gmsh = SimpleNamespace(option=options, model=SimpleNamespace(
+        occ=SimpleNamespace(fragment=fragment)))
+    if fails:
+        with pytest.raises(RuntimeError, match='fragment failed'):
+            _fragment_with_glue(gmsh, objects, tools)
+    else:
+        assert _fragment_with_glue(gmsh, objects, tools) is result
+    assert options.value == previous
+
+
 def assembly_config(case='osse', shape='piston', recess=0.):
     config = copy.deepcopy(BASELINE['cases'][case]['config'])
     mouth = resolve_geometry(config).geometry.inner_points[:, -1]
