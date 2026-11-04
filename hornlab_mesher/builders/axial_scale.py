@@ -1,22 +1,11 @@
 """Author the certified absolute-axis meridian for both mesh and STEP."""
 import math
 
-import numpy as np
-
-from ._occ import require_gmsh, make_planar_fill_from_boundary
+from ._occ import hermite_controls, require_gmsh, make_planar_fill_from_boundary
 from ..axial_scale import FIT_TOL_MM
 from ..geometry import BuiltGeometry
 from ..normals import open_shell_wall_orientation_references
 from ..tags import PhysicalGroup
-
-
-def hermite_controls(stations, positions, derivatives):
-    """Cubic B-spline controls of the C1 Hermite interpolant through the stations."""
-    controls = [positions[0]]
-    for j, h in enumerate(np.diff(stations)):
-        controls.extend((positions[j]+h*derivatives[j]/3,
-                         positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
-    return controls
 
 
 def build_axial(geometry):

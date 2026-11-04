@@ -4,8 +4,7 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from ._occ import require_gmsh
-from .axial_scale import hermite_controls
+from ._occ import hermite_controls, require_gmsh
 from .circle_certificate import certify_circle_facets
 from ..composite_meridian import CircleArc
 from ..geometry import BuiltGeometry, MESH_ALGORITHM_FRONTAL_DELAUNAY

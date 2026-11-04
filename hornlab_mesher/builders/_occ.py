@@ -528,13 +528,19 @@ class _AngularPoleGrid:
         return self.points.ndim
 
 
+def hermite_controls(stations, positions, derivatives):
+    """Cubic B-spline controls of the C1 Hermite interpolant through the stations."""
+    controls = [positions[0]]
+    for j, h in enumerate(np.diff(stations)):
+        controls.extend((positions[j]+h*derivatives[j]/3,
+                         positions[j+1]-h*derivatives[j+1]/3, positions[j+1]))
+    return controls
+
+
 def _angular_hermite_poles(grid, derivative, parameters):
     """Convert angular cubic Hermite data to poles on the same existing patch."""
-    step = np.diff(parameters)[None, :, None] / 3
-    poles = np.empty((grid.shape[0], 3 * (grid.shape[1] - 1) + 1, grid.shape[2]))
-    poles[:, ::3] = grid
-    poles[:, 1::3] = grid[:, :-1] + step * derivative[:, :-1]
-    poles[:, 2::3] = grid[:, 1:] - step * derivative[:, 1:]
+    poles = np.stack(hermite_controls(
+        parameters, np.swapaxes(grid, 0, 1), np.swapaxes(derivative, 0, 1)), axis=1)
     # Shared endpoint derivatives make these Bezier pieces C1. Remove the
     # redundant endpoint pole at each join and use double interior knots, so
     # OCC sees that continuity instead of treating every data row as a crease.
