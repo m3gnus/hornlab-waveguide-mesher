@@ -1920,6 +1920,25 @@ def _polyline_self_intersects_2d(points: np.ndarray, *, closed: bool) -> bool:
     return False
 
 
+# The exact normal offset of a C2 surface folds where wallThickness*kappa
+# reaches 1 on the wall side; a sampled grid can hide the fold well before
+# that. Walls inside this long-standing margin keep their generated normal
+# offset byte for byte. Beyond it, where FREEFORM used to refuse, the
+# certified exterior envelope replaces it.
+OFFSET_FOLD_MARGIN = 0.4
+
+
+def offset_needs_envelope(geometry: "FreeformGeometry", wall_thickness_mm: float,
+                          scale: float = 1.0) -> bool:
+    """Whether a FREEFORM wall is thick enough to fold its normal offset."""
+
+    if wall_thickness_mm <= 0.0:
+        return False
+    report = geometry.surface_curvature_report(
+        wall_thickness_mm / scale, margin=OFFSET_FOLD_MARGIN)
+    return not bool(report["ok"])
+
+
 def validate_outer_offset_grid(
     inner_points: Any,
     outer_points: Any,
@@ -2697,22 +2716,9 @@ def _validate_freeform_config(profile_params: Mapping[str, Any]) -> FreeformGeom
             f"radius ({source_radius:g} mm requested, scaled throat radius "
             f"{scaled_throat_radius:g} mm from {throat_radius:g} mm at scale {scale:g})", 'Source radius', 'Increase Source radius to at least the scaled Throat radius.', message='The rounded source radius is smaller than the scaled throat.')
 
-    wall_thickness = float(eval_param(profile_params.get("wallThickness"), 0.0, 0.0))
-    enc_depth = float(profile_params.get("encDepth") or 0.0)
-    if wall_thickness > 0.0 and enc_depth <= 0.0:
-        geometry_scale = float(profile_params.get("scale") or 1.0)
-        report = geometry.surface_curvature_report(
-            wall_thickness / geometry_scale,
-            margin=0.4,
-        )
-        if not bool(report["ok"]):
-            kappa_1, kappa_2 = report["principalCurvaturesPerMm"]
-            raise control_refusal("FREEFORM outward wall offset fails the surface-curvature guard near "
-                f"t={float(report['offendingT']):.4f}, "
-                f"phi={float(report['offendingPhiDeg']):.2f} deg: "
-                "max(0, -wallThickness*kappa_i)="
-                f"{float(report['maxThicknessTimesPrincipalCurvature']):.3f} "
-                f">= margin=0.400 (kappa=[{kappa_1:.6g}, {kappa_2:.6g}] 1/mm)", 'Wall thickness', 'Reduce Wall thickness or soften the profile bend.', message='The wall is too thick for a tight bend in this profile.')
+    # Curvature diagnoses the normal correspondence, not the existence of a
+    # thick wall. The grid owner validates that correspondence and constructs
+    # the exterior envelope when it folds.
     return geometry
 
 

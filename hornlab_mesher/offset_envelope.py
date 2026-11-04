@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import collections
+import contextlib
+import contextvars
+import dataclasses
+import hashlib
+import threading
+import weakref
+
 import numpy as np
 
 
@@ -163,11 +171,19 @@ def _candidate_ray_intervals(triangles, z_values, direction, wall, lower, margin
     return starts, ends
 
 
-def _equivalent_azimuth_rows(inner, target_z, angles, *, full_circle, margin):
-    """Reuse a rotation only after the entire sampled surface proves it."""
+def _equivalent_azimuth_rows(inner, target_z, angles, *, full_circle, margin,
+                             revolution=False):
+    """Reuse a rotation only after the entire sampled surface proves it.
+
+    ``revolution`` additionally accepts every uniform row step of a full,
+    uniformly sampled surface of revolution: its center-fan triangulation
+    then maps onto itself under each step, so one row's rays are every row's.
+    """
     representatives = np.arange(len(angles))
     if not full_circle:
         return representatives
+    if revolution and _uniform_revolution(inner, target_z, angles, margin):
+        return np.zeros_like(representatives)
     period = 2.0 * np.pi
     for turn in (np.pi / 2.0, np.pi):
         desired = (angles + turn - angles[0]) % period + angles[0]
@@ -191,8 +207,253 @@ def _equivalent_azimuth_rows(inner, target_z, angles, *, full_circle, margin):
     return representatives
 
 
+def _uniform_revolution(inner, target_z, angles, margin):
+    """Whether every row is the same meridian at uniformly stepped azimuths."""
+    steps = np.diff(np.r_[angles, angles[0] + 2.0 * np.pi])
+    if np.any(np.abs(steps - steps[0]) > 64 * np.finfo(float).eps * 2.0 * np.pi):
+        return False
+    radius = np.linalg.norm(inner[:, :, :2], axis=2)
+    direction = np.stack((np.cos(angles), np.sin(angles)), axis=1)
+    off_meridian = (inner[:, :, 0] * direction[:, None, 1]
+                    - inner[:, :, 1] * direction[:, None, 0])
+    return bool(
+        np.all(np.abs(radius - radius[:1]) <= margin)
+        and np.all(np.abs(inner[:, :, 2] - inner[:1, :, 2]) <= margin)
+        and np.all(np.abs(off_meridian) <= margin)
+        # Station schedules derived from per-row normals differ by roundoff
+        # only; every row then shares the representative's schedule.
+        and np.all(np.abs(target_z - target_z[:1]) <= 1e-9 * max(1.0, float(np.max(np.abs(inner)))))
+    )
+
+
+def _revolution_band(inner, outer, wall, *, full_circle):
+    """A synthetic azimuth band that settles row 0 of a surface of revolution.
+
+    Returns ``(inner_band, outer_band, center, closed)`` or None. Both grids
+    must be one meridian (a full circle or any symmetry sector, at any
+    azimuths). The band repeats row 0's meridian at the grid's own step (the
+    finest step, rounded to divide the circle, for uneven rows) on both
+    sides, as far as a dilated triangle can reach (asin(wall/r) past its
+    vertices), or around the whole circle. A sector's cut planes therefore
+    never truncate it: every sector shares the full surface's envelope.
+    """
+    angles = np.unwrap(np.arctan2(inner[:, 0, 1], inner[:, 0, 0]))
+    if len(angles) < 2:
+        return None
+    steps = np.diff(np.r_[angles, angles[0] + 2.0 * np.pi] if full_circle else angles)
+    if np.any(steps <= 0.0):
+        return None
+    step = float(steps.min())
+    if np.any(np.abs(steps - step) > 64 * np.finfo(float).eps * 2.0 * np.pi):
+        # Unevenly spaced rows (an adaptive display grid): the band takes the
+        # finest spacing, rounded to divide the circle.
+        step = 2.0 * np.pi / np.ceil(2.0 * np.pi / step - 1e-9)
+    scale = max(1.0, float(np.max(np.abs(inner))), float(np.max(np.abs(outer))))
+    margin = 64 * np.finfo(float).eps * max(scale, wall)
+    inner_m = np.stack((np.linalg.norm(inner[:, :, :2], axis=2), inner[:, :, 2]), axis=2)
+    outer_m = np.stack((np.linalg.norm(outer[:, :, :2], axis=2), outer[:, :, 2]), axis=2)
+    direction = np.stack((np.cos(angles), np.sin(angles)), axis=1)
+    off_meridian = inner[:, :, 0] * direction[:, None, 1] - inner[:, :, 1] * direction[:, None, 0]
+    if (np.any(np.abs(inner_m - inner_m[:1]) > margin) or np.any(np.abs(off_meridian) > margin)
+            or np.any(np.abs(outer_m - outer_m[:1]) > 1e-9 * scale)):
+        return None
+    radius = inner_m[0, :, 0]
+    turns = 2.0 * np.pi / step
+    count = (int(np.ceil((float(np.max(np.arcsin(wall / radius))) + 2.0 * step) / step))
+             if np.all(radius > 2.0 * wall) else None)
+    closed = count is None or 2 * count + 1 >= turns
+    if closed:
+        # The wall reaches around the axis: the band is the whole circle.
+        if abs(turns - round(turns)) > 1e-9 * turns:
+            step = 2.0 * np.pi / np.ceil(turns)
+            turns = 2.0 * np.pi / step
+        count = 0
+        phi = angles[0] + step * np.arange(int(round(turns)))
+    else:
+        phi = angles[0] + step * np.arange(-count, count + 1)
+
+    def band(meridian):
+        out = np.empty((len(phi), meridian.shape[0], 3))
+        out[:, :, 0] = np.cos(phi)[:, None] * meridian[None, :, 0]
+        out[:, :, 1] = np.sin(phi)[:, None] * meridian[None, :, 0]
+        out[:, :, 2] = meridian[None, :, 1]
+        return out
+    return band(inner_m[0]), band(outer_m[0]), count, closed
+
+
+def _ray_pairs(selected, starts, ends):
+    """Expand per-triangle column intervals into (triangle, column) pairs."""
+    counts = ends - starts
+    indices = np.repeat(selected, counts)
+    groups = np.repeat(np.cumsum(counts) - counts, counts)
+    columns = np.repeat(starts, counts) + np.arange(len(indices)) - groups
+    return indices, columns
+
+
+def _accumulate_farthest(values, columns, intersections):
+    """Maximum of feature intersections per ray, in bounded temporary chunks."""
+    for start in range(0, len(columns), 16384):
+        selection = slice(start, start + 16384)
+        np.maximum.at(values, columns[selection], intersections(selection))
+
+
+def _axial_outer_envelope(inner, outer, wall, *, full_circle, revolution=False, rows=None):
+    """Expose the backward-facing exterior of a radial-monotone rollback.
+
+    A rolled mouth is multi-valued in z, so horizontal radial rays would lose
+    a branch of the wall. Axial rays through an ordered radius schedule retain
+    it. Face, cylinder and sphere intersections remain owned by
+    _offset_intersections; only the ray origins and candidate bounds differ.
+    """
+    radii = np.linalg.norm(inner[:, :, :2], axis=2)
+    if np.any(np.diff(radii, axis=1) <= 0.0):
+        raise ValueError(
+            "rolled-back offset requires increasing inner radii; both axial "
+            "and radial ray schedules reverse at this bend"
+        )
+    endpoints = np.linalg.norm(outer[:, (0, -1), :2], axis=2)
+    # The last ray runs through the mouth edge itself, so the shell ends on
+    # the bottom of that edge's ball and its final cells turn with the lip.
+    # A normal-offset end inside the rollback would leave them at right
+    # angles to the lip's last cells.
+    endpoints[:, 1] = np.maximum(endpoints[:, 1], radii[:, -1])
+    if np.any(endpoints[:, 1] <= endpoints[:, 0]):
+        raise ValueError("rolled-back offset has reversed throat/mouth radii")
+    # Spread rays by meridian arclength, not by radius: a rolled lip adds
+    # length while its radius barely changes, and rays bunched at one radius
+    # leave outer cells too short to keep the inner cells' orientation.
+    length = np.concatenate((np.zeros((len(inner), 1)), np.cumsum(
+        np.linalg.norm(np.diff(inner, axis=1), axis=2), axis=1)), axis=1)
+    progress = length / length[:, -1:]
+    targets = endpoints[:, :1] + progress * (endpoints[:, 1:] - endpoints[:, :1])
+    triangles = _triangles(inner, full_circle)
+    centers = triangles.mean(axis=1)
+    bounds = wall + np.linalg.norm(triangles - centers[:, None], axis=2).max(axis=1)
+    angles = np.unwrap(np.arctan2(inner[:, 0, 1], inner[:, 0, 0]))
+    margin = 64 * np.finfo(float).eps * max(float(np.max(np.abs(inner))), wall)
+    representatives = _equivalent_azimuth_rows(
+        inner, targets, angles, full_circle=full_circle, margin=margin,
+        revolution=revolution,
+    )
+    origin_z = float(np.max(inner[:, :, 2])) + 2 * wall
+    direction = np.array([0.0, 0.0, -1.0])
+    # Each dilated triangle lies within asin(wall/r) of its vertices'
+    # azimuths: sorted by azimuth, a row only examines its own window.
+    vertex_angles = np.unwrap(np.arctan2(triangles[:, :, 1], triangles[:, :, 0]), axis=1)
+    vertex_radii = np.linalg.norm(triangles[:, :, :2], axis=2)
+    spread = np.arcsin(np.minimum(wall / np.maximum(vertex_radii, wall), 1.0))
+    low = np.min(vertex_angles - spread, axis=1)
+    high = np.max(vertex_angles + spread, axis=1)
+    near_axis = np.any(vertex_radii <= wall, axis=1) | (high - low >= np.pi)
+    middle = ((low + high) / 2.0) % (2.0 * np.pi)
+    order = np.argsort(middle)
+    sorted_middle = middle[order]
+    half_width = float(np.max(((high - low) / 2.0)[~near_axis], initial=0.0)) + 1e-9
+    always = np.flatnonzero(near_axis)
+    result = np.empty_like(outer)
+    for row, angle in enumerate(angles):
+        if rows is not None and row not in rows:
+            continue
+        radial = np.array([np.cos(angle), np.sin(angle), 0.0])
+        result[row] = targets[row, :, None] * radial
+        if representatives[row] < row:
+            result[row, :, 2] = result[representatives[row], :, 2]
+            continue
+        transverse = np.array([-radial[1], radial[0], 0.0])
+        a = angle % (2.0 * np.pi)
+        windows = [(a - half_width, a + half_width)]
+        if a - half_width < 0.0:
+            windows.append((a - half_width + 2.0 * np.pi, 2.0 * np.pi))
+        if a + half_width > 2.0 * np.pi:
+            windows.append((0.0, a + half_width - 2.0 * np.pi))
+        nearby = np.concatenate([always] + [
+            order[np.searchsorted(sorted_middle, lo):np.searchsorted(sorted_middle, hi, side="right")]
+            for lo, hi in windows])
+        across = triangles[nearby] @ transverse
+        selected = nearby[
+            (across.min(axis=1) <= wall + margin)
+            & (across.max(axis=1) >= -wall - margin)
+        ]
+        along = triangles[selected] @ radial
+        starts = np.searchsorted(targets[row], along.min(axis=1) - wall - margin)
+        ends = np.searchsorted(targets[row], along.max(axis=1) + wall + margin,
+                               side="right")
+        indices, columns = _ray_pairs(selected, starts, ends)
+        # This meridian's own vertex balls belong to the offset body, so their
+        # lowest points bound each ray's exterior from below; a triangle whose
+        # dilation cannot reach below that bound cannot be the boundary.
+        meridian_r = inner[row] @ radial
+        reach = wall * wall - (targets[row][:, None] - meridian_r[None, :]) ** 2
+        distances = np.max(np.where(
+            reach >= 0.0, origin_z - inner[row, None, :, 2] + np.sqrt(np.maximum(reach, 0.0)),
+            -np.inf), axis=1)
+        # A centroid sphere containing the triangle, enlarged by the wall,
+        # bounds how deep its dilation can reach on each vertical ray.
+        offset = centers[indices, :2] - targets[row, columns, None] * radial[:2]
+        reach = bounds[indices] ** 2 - np.sum(offset * offset, axis=1)
+        deepest = origin_z - centers[indices, 2] + np.sqrt(np.maximum(reach, 0.0))
+        keep = (reach >= -margin) & (deepest + margin >= distances[columns])
+        indices, columns = indices[keep], columns[keep]
+
+        def axial(pick, row=row):
+            shifted = triangles[indices[pick]] - targets[row, columns[pick], None, None] * radial
+            return _offset_intersections(
+                shifted, np.full(len(shifted), origin_z), direction, wall
+            )
+
+        _accumulate_farthest(distances, columns, axial)
+        if np.any(~np.isfinite(distances)):
+            raise ValueError("rolled-back offset has no axial envelope intersection")
+        result[row, :, 2] = _follow_absorbed_lip(
+            inner[row] @ radial, inner[row, :, 2], targets[row], origin_z - distances)
+    return result
+
+
+# Outer cells must turn with the acoustic cells they enclose; this keeps
+# their meridian steps within 75 degrees.
+_LIP_ALIGNMENT = np.cos(np.radians(75.0))
+
+
+def _follow_absorbed_lip(inner_r, inner_z, outer_r, outer_z):
+    """Lower outer stations where a lip inside the wall turns down past them.
+
+    A short lip that the wall swallows whole has no exterior beside it: the
+    axial rays meet the flat back of the wall while the acoustic cells run
+    straight down, and the cells would meet at right angles. Every point
+    below an axial ray's farthest intersection is outside the dilated wall,
+    so lowering a station keeps it at least the envelope radius from the
+    acoustic surface; each station is lowered just enough for its step to
+    follow the lip's.
+    """
+    z = outer_z.copy()
+    for j in range(len(z) - 1):
+        dr_i, dz_i = inner_r[j + 1] - inner_r[j], inner_z[j + 1] - inner_z[j]
+        if dz_i >= 0.0:
+            continue
+        dt, dz = outer_r[j + 1] - outer_r[j], z[j + 1] - z[j]
+        inner_length = np.hypot(dr_i, dz_i)
+        if dt * dr_i + dz * dz_i >= _LIP_ALIGNMENT * np.hypot(dt, dz) * inner_length:
+            continue
+        # Smallest drop with (dt, dz')·d_i >= cos * |(dt, dz')| * |d_i|.
+        unit = np.array([dr_i, dz_i]) / inner_length
+        normal = np.array([-unit[1], unit[0]])
+        along = np.array([dt, dz]) @ normal
+        # Rotate the step toward the lip direction at the alignment angle,
+        # keeping its radial part dt fixed.
+        tangent = np.sqrt(1.0 - _LIP_ALIGNMENT ** 2)
+        for sign in (1.0, -1.0):
+            direction = _LIP_ALIGNMENT * unit + sign * tangent * normal
+            if direction[0] * dt > 0.0 and direction[1] < 0.0:
+                z[j + 1] = min(z[j + 1], z[j] + dt * direction[1] / direction[0])
+                break
+        else:
+            z[j + 1] = min(z[j + 1], z[j] + dz_i / inner_length * max(abs(dt), abs(along)))
+    return z
+
+
 def regularize_outer_offset(
-    inner: np.ndarray, outer: np.ndarray, wall: float, *, full_circle: bool
+    inner: np.ndarray, outer: np.ndarray, wall: float, *, full_circle: bool,
+    rollback: bool = False, revolution: bool = False, rows=None,
 ) -> np.ndarray:
     """Resample the exterior offset where the normal correspondence has folded.
 
@@ -200,9 +461,33 @@ def regularize_outer_offset(
     its exterior is the envelope, while the normal parameterization contains
     internal loops. Radial rays retain the input grid's angular order instead
     of trying to mesh those loops. The acoustic grid is never changed.
+
+    ``rollback`` lets a radius-monotone profile that turns back in z use
+    axial rays instead of refusing; ``revolution`` reuses one row's rays on a
+    uniformly sampled surface of revolution. OSSE uses neither. ``rows``
+    limits the work to those rows; the others are left unset.
     """
+    if revolution and rows is None:
+        window = _revolution_band(inner, outer, wall, full_circle=full_circle)
+        if window is not None:
+            # Only triangles within the wall's angular reach can touch row
+            # 0's rays: solve that open band, then turn its row to every row.
+            inner_band, outer_band, center, closed = window
+            meridian = regularize_outer_offset(
+                inner_band, outer_band, wall, full_circle=closed,
+                rollback=rollback, rows=(center,))[center]
+            radius = np.linalg.norm(meridian[:, :2], axis=1)
+            angles = np.arctan2(inner[:, 0, 1], inner[:, 0, 0])
+            result = np.empty_like(outer)
+            result[:, :, 0] = np.cos(angles)[:, None] * radius
+            result[:, :, 1] = np.sin(angles)[:, None] * radius
+            result[:, :, 2] = meridian[:, 2]
+            return result
     if np.any(np.diff(inner[:, :, 2], axis=1) <= 0.0):
-        raise ValueError("outer offset envelope requires monotone axial input stations")
+        if not rollback:
+            raise ValueError("outer offset envelope requires monotone axial input stations")
+        return _axial_outer_envelope(inner, outer, wall, full_circle=full_circle,
+                                     revolution=revolution, rows=rows)
     if np.any(outer[:, -1, 2] <= outer[:, 0, 2]):
         raise ValueError(
             "outer offset envelope requires ordered throat and mouth stations"
@@ -236,10 +521,13 @@ def regularize_outer_offset(
             target_z[rollback, -1:] - target_z[rollback, 0:1]
         )
     representatives = _equivalent_azimuth_rows(
-        inner, target_z, angles, full_circle=full_circle, margin=margin
+        inner, target_z, angles, full_circle=full_circle, margin=margin,
+        revolution=revolution,
     )
     radius_rows = np.empty(inner.shape[:2])
     for row, angle in enumerate(angles):
+        if rows is not None and row not in rows:
+            continue
         direction = np.array([np.cos(angle), np.sin(angle), 0.0])
         # A dilated triangle is the convex hull of its three vertex balls.
         # Their angular tangents conservatively bound its whole silhouette,
@@ -287,10 +575,7 @@ def regularize_outer_offset(
         starts, ends = _candidate_ray_intervals(
             triangles[selected], z_values, direction, wall, radii, margin
         )
-        counts = ends - starts
-        triangle_indices = np.repeat(selected, counts)
-        groups = np.repeat(np.cumsum(counts) - counts, counts)
-        columns = np.repeat(starts, counts) + np.arange(len(triangle_indices)) - groups
+        triangle_indices, columns = _ray_pairs(selected, starts, ends)
         center_along = np.einsum("ij,j->i", centers, direction)
         center_transverse_squared = np.maximum(
             center_radial_squared - center_along**2, 0.0
@@ -308,15 +593,12 @@ def regularize_outer_offset(
         triangle_indices, columns = triangle_indices[keep], columns[keep]
         # Bound temporary feature arrays even for unusually dense inspection
         # grids or a wall thick enough to cover most of a meridian.
-        for start in range(0, len(columns), 16384):
-            selection = slice(start, start + 16384)
-            intersections = _offset_intersections(
-                triangles[triangle_indices[selection]],
-                z_values[columns[selection]],
-                direction,
-                wall,
-            )
-            np.maximum.at(radii, columns[selection], intersections)
+        _accumulate_farthest(radii, columns, lambda selection: _offset_intersections(
+            triangles[triangle_indices[selection]],
+            z_values[columns[selection]],
+            direction,
+            wall,
+        ))
         if np.any(~np.isfinite(radii)) or np.any(radii <= 0.0):
             raise ValueError(
                 "outer offset envelope has no positive radial intersection"
@@ -325,3 +607,143 @@ def regularize_outer_offset(
         result[row, :, 2] = z_values
         radius_rows[row] = radii
     return result
+
+
+# Added to an envelope's ball radius beyond Wall thickness. Grid vertices sit
+# exactly on the enlarged envelope; this covers the CAD fit's and the grid
+# chords' departure from it, which the build then measures on the fitted
+# faces (wall_distance.certify_outer_envelope) before meshing or export.
+ENVELOPE_ALLOWANCE_MM = 0.1
+
+
+# Extra clearance a build adds after its fitted faces measured short
+# (wall_distance.with_envelope_retries); zero outside such a rebuild.
+_EXTRA_ALLOWANCE = contextvars.ContextVar("envelope_extra_allowance_mm", default=0.0)
+
+
+@contextlib.contextmanager
+def extra_envelope_allowance(mm: float):
+    """Build envelopes inside this block with ``mm`` more clearance."""
+    token = _EXTRA_ALLOWANCE.set(float(mm))
+    try:
+        yield
+    finally:
+        _EXTRA_ALLOWANCE.reset(token)
+
+
+def envelope_allowance_mm(wall: float) -> float:
+    """Clearance added to an envelope's ball radius beyond Wall thickness."""
+    return ENVELOPE_ALLOWANCE_MM + _EXTRA_ALLOWANCE.get() if wall > 0.0 else 0.0
+
+
+# Identity and freshness checks resolve the same design many times; the
+# envelope is a pure function of its inputs, so repeats reuse the result.
+_ENVELOPE_CACHE: "collections.OrderedDict[tuple, np.ndarray]" = collections.OrderedDict()
+_ENVELOPE_CACHE_SIZE = 32
+# Previews and resolves run concurrently in worker threads; the lock keeps the
+# lookup, insert and eviction atomic without holding it while computing.
+_ENVELOPE_CACHE_LOCK = threading.Lock()
+
+
+def _cached_envelope(inner, outer, radius, *, full_circle):
+    key = (hashlib.blake2b(np.ascontiguousarray(inner).tobytes(), digest_size=16).digest(),
+           hashlib.blake2b(np.ascontiguousarray(outer).tobytes(), digest_size=16).digest(),
+           inner.shape, float(radius), bool(full_circle))
+    with _ENVELOPE_CACHE_LOCK:
+        cached = _ENVELOPE_CACHE.get(key)
+        if cached is not None:
+            _ENVELOPE_CACHE.move_to_end(key)
+    if cached is None:
+        cached = regularize_outer_offset(inner, outer, radius, full_circle=full_circle,
+                                         rollback=True, revolution=True)
+        cached.setflags(write=False)
+        with _ENVELOPE_CACHE_LOCK:
+            _ENVELOPE_CACHE[key] = cached
+            while len(_ENVELOPE_CACHE) > _ENVELOPE_CACHE_SIZE:
+                _ENVELOPE_CACHE.popitem(last=False)
+    return cached.copy()
+
+
+def exterior_outer_offset(inner, outer, wall, *, full_circle, label="FREEFORM",
+                          force=False, allowance=0.0):
+    """Return ``(outer, enveloped)``: a healthy offset unchanged, else its exterior.
+
+    A healthy normal or mitred offset is returned as the same object, so its
+    bytes cannot change. A folded one is replaced by the constant-distance
+    exterior at ``wall + allowance`` when that envelope is a valid grid.
+    When it is not (a profile turning back in both radius and z, or an
+    envelope that itself folds), the input is returned unchanged with
+    ``enveloped=False`` and the caller keeps its existing fold handling: the
+    same warning or refusal a design received before envelopes existed.
+    ``force`` marks an offset known to fold between samples (FREEFORM's
+    curvature check); without an envelope it is refused, as it always was.
+    """
+    from .errors import control_refusal
+    from .freeform import validate_outer_offset_grid
+
+    if not force:
+        try:
+            validate_outer_offset_grid(inner, outer, full_circle=full_circle, label=label)
+            return outer, False
+        except ValueError:
+            pass
+    try:
+        candidate = _cached_envelope(inner, outer, wall + allowance, full_circle=full_circle)
+        validate_outer_offset_grid(inner, candidate, full_circle=full_circle, label=label)
+    except ValueError as exc:
+        if force:
+            raise control_refusal(
+                f"{label} outer wall envelope could not be built where Wall thickness "
+                f"reaches the bend radius: {exc}", "Wall thickness",
+                "Reduce Wall thickness, soften the profile bend, or choose Bare shell in Mounting.",
+                message="The outer wall folds over itself at a tight bend of the profile.") from exc
+        return outer, False
+    return candidate, True
+
+
+# Geometries whose outer grid is an envelope, recorded when they are resolved.
+# Not a dataclass field: a geometry's identity hash (its fields) stays the
+# same whatever clearance its built faces later need.
+_ENVELOPED: dict[int, weakref.ref] = {}
+
+
+def mark_outer_envelope(geometry) -> None:
+    """Record that ``geometry``'s outer grid is a constant-distance envelope."""
+    key = id(geometry)
+    _ENVELOPED[key] = weakref.ref(geometry, lambda _, key=key: _ENVELOPED.pop(key, None))
+
+
+def has_outer_envelope(geometry) -> bool:
+    ref = _ENVELOPED.get(id(geometry))
+    return ref is not None and ref() is geometry
+
+
+def envelope_variant(geometry):
+    """``geometry`` with its envelope rebuilt at the current extra clearance.
+
+    Inside a rebuild (``wall_distance.with_envelope_retries``) the envelope
+    radius grows by the extra clearance. A FREEFORM wall builder refits its
+    own envelope at that clearance, so it gets the geometry unchanged; a
+    point-grid wall is re-enveloped from its acoustic grid. The resolved
+    geometry itself, and so its identity, never changes.
+    """
+    extra = _EXTRA_ALLOWANCE.get()
+    if extra <= 0.0 or not has_outer_envelope(geometry):
+        return geometry
+    if getattr(geometry, "freeform_wall", None) is not None:
+        return geometry
+    from .freeform import validate_outer_offset_grid
+
+    inner = np.asarray(geometry.inner_points, dtype=float)
+    outer = np.asarray(geometry.outer_points, dtype=float)
+    wall = float(geometry.wall_thickness_mm)
+    try:
+        rebuilt = regularize_outer_offset(
+            inner, outer, wall + envelope_allowance_mm(wall), full_circle=bool(geometry.closed),
+            rollback=True, revolution=True)
+        validate_outer_offset_grid(inner, rebuilt, full_circle=bool(geometry.closed))
+    except ValueError:
+        return geometry
+    variant = dataclasses.replace(geometry, outer_points=rebuilt)
+    mark_outer_envelope(variant)
+    return variant

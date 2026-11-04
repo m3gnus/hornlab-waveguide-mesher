@@ -15,7 +15,6 @@ from hornlab_mesher.config_builder import (
     MAX_EFFECTIVE_CONTROL_POINTS,
     MAX_EFFECTIVE_PHI_PROFILES,
 )
-from hornlab_mesher.config_parser import ConfigError
 from hornlab_mesher.freeform import (
     _polyline_cannot_self_intersect,
     _polyline_self_intersects_2d,
@@ -235,7 +234,7 @@ def test_small_corner_large_mouth_acoustic_fit_stays_within_caps(tmp_path):
     assert metadata["geometrySampleControlPoints"] <= MAX_EFFECTIVE_CONTROL_POINTS
 
 
-def test_concave_meridian_thick_wall_fails_signed_surface_curvature_guard(tmp_path):
+def test_concave_meridian_thick_wall_builds_with_exterior_envelope(tmp_path):
     config = _owner_config()
     config["mode"] = "freestanding"
     config["mesh"]["wall_thickness_mm"] = 20.0
@@ -245,11 +244,12 @@ def test_concave_meridian_thick_wall_fails_signed_surface_curvature_guard(tmp_pa
         {"t": 1.0, "shape": "rounded_rectangle", "cornerRadiusMm": 2.2},
     ]
 
-    with pytest.raises(
-        ConfigError,
-        match=r"surface-curvature guard near t=.*phi=.*wallThickness\*kappa_i",
-    ):
-        build_from_config(config, tmp_path / "must-not-build.msh")
+    result = build_from_config(config, tmp_path / "thick-envelope.msh")
+    assert not result.metadata.get("outerOffsetFold")
+    _assert_closed_valid_mesh(result, require_positive_volume=True)
+    # wall*kappa peaks at 0.54, past the 0.4 FREEFORM used to refuse: the
+    # certified exterior envelope replaces the normal offset.
+    assert 20.0 <= result.metadata["outerEnvelopeClearance"]["lowerBoundMm"] <= 20.11
 
 
 def test_generated_outer_offset_grid_guard_rejects_a_normal_flip():

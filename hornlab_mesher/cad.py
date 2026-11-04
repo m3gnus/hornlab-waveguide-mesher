@@ -562,8 +562,35 @@ def write_step(
     output_path: str | Path | None = None,
     *,
     open_throat: bool = True,
+    outer_envelope: bool = False,
 ) -> tuple[Path, CadInfo]:
     """Write the waveguide's OCC model to a STEP file in millimetres.
+
+    See :func:`_write_step_once`. An outer envelope whose fitted faces measure
+    short is rebuilt with more clearance before anything is written.
+    """
+    from .offset_envelope import envelope_variant, has_outer_envelope
+    from .wall_distance import with_envelope_retries
+
+    envelope = outer_envelope or has_outer_envelope(geometry)
+    return with_envelope_retries(lambda: _write_step_once(
+        envelope_variant(geometry), output_path, open_throat=open_throat,
+        outer_envelope=envelope))
+
+
+def _write_step_once(
+    geometry: HornGeometry,
+    output_path: str | Path | None = None,
+    *,
+    open_throat: bool = True,
+    outer_envelope: bool = False,
+) -> tuple[Path, CadInfo]:
+    """Write the waveguide's OCC model to a STEP file in millimetres.
+
+    ``outer_envelope`` says the outer grid is a constant-distance envelope
+    (the config path's sampling metadata knows); its fitted faces are then
+    certified to keep Wall thickness before anything is written. A builder
+    that refits the wall itself decides in its own metadata.
 
     Freestanding (wall-shell) and enclosure builds export as a closed solid.
     Bare and infinite-baffle builds have no wall thickness, so they export as a
@@ -588,6 +615,7 @@ def write_step(
         raise MesherError("terminating arc open_throat must be a boolean")
 
     import gmsh
+    from .wall_distance import EnvelopeShortfall
 
     if isinstance(geometry, PointGridHornGeometry) and not geometry.closed:
         raise MesherError(
@@ -654,6 +682,11 @@ def write_step(
             else:
                 built = _dispatch_builder(geometry)
             gmsh.model.occ.synchronize()
+            if (built.metadata.get("outerEnvelope", outer_envelope)
+                    and isinstance(geometry, PointGridHornGeometry)
+                    and geometry.build_mode.value == "freestanding"):
+                from .wall_distance import certify_outer_envelope
+                certify_outer_envelope(built, float(geometry.wall_thickness_mm))
 
             excluded = _role_tags(built, *_NON_MATERIAL_ROLES)
             cap_tags = sorted(_role_tags(built, _SOURCE_ROLE))
@@ -837,7 +870,9 @@ def write_step(
                 **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
                 **({} if arc is None else {"terminating_arc":arc.metadata()["terminatingArc"],"datums":derive_datums(geometry,built)}),
             )
-        except (MesherError, UserRefusal):
+        except (MesherError, UserRefusal, EnvelopeShortfall):
+            # A fitted-envelope shortfall is classified as on the mesh path:
+            # the caller rebuilds it, it is not an export failure.
             raise
         except Exception as exc:
             raise MesherError(f"STEP export failed: {exc}") from exc
@@ -1376,6 +1411,35 @@ def write_wglink(
 ) -> WgLinkInfo:
     """Write a checksummed ``.wglink`` directory and return every product.
 
+    See :func:`_write_wglink_once`. An outer envelope whose fitted faces
+    measure short is rebuilt with more clearance, and the bundle's point grid
+    and STEP both carry the rebuilt wall.
+    """
+    from .offset_envelope import envelope_variant
+    from .wall_distance import with_envelope_retries
+
+    return with_envelope_retries(lambda: _write_wglink_once(
+        envelope_variant(geometry), output_path, built_geometry=built_geometry,
+        identity=identity, instance_slug=instance_slug, open_throat=open_throat,
+        check_points=check_points, informational_parameters=informational_parameters,
+        interface_sources=interface_sources))
+
+
+def _write_wglink_once(
+    geometry: PointGridHornGeometry,
+    output_path: str | Path,
+    *,
+    built_geometry: BuiltGeometry | None = None,
+    identity: WgLinkIdentity | Mapping[str, Mapping[str, Any]] | None = None,
+    instance_slug: str = "waveguide",
+    open_throat: bool = True,
+    check_points: object | None = None,
+    informational_parameters: Mapping[str, float] | None = None,
+    interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]]
+    | None = None,
+) -> WgLinkInfo:
+    """Write a checksummed ``.wglink`` directory and return every product.
+
     Bundle/design/export identity is caller-owned: no identifier, sequence,
     timestamp, or content identity is minted here.  Callers with a mesh build
     should pass its ``BuiltGeometry``; direct tests and adapters may use the
@@ -1440,8 +1504,10 @@ def write_wglink(
 
     staging = _publish_staging_directory(target.parent, f".{target.name}.")
     try:
-        step_path, cad_info = write_step(
-            geometry, staging / "waveguide.step", open_throat=open_throat
+        from .offset_envelope import has_outer_envelope
+        step_path, cad_info = _write_step_once(
+            geometry, staging / "waveguide.step", open_throat=open_throat,
+            outer_envelope=has_outer_envelope(geometry),
         )
         grid_path = staging / "point-grid.json"
         grid_path.write_text(

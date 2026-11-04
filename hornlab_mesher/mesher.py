@@ -391,6 +391,12 @@ def build_mesh_with_info(
             fitting = False
             if after_density is not None:
                 after_density(built)
+            if (built.metadata.get("outerEnvelope")
+                    and isinstance(geometry, PointGridHornGeometry)
+                    and geometry.build_mode.value == 'freestanding'):
+                from .wall_distance import certify_outer_envelope
+                built.metadata["outerEnvelopeClearance"] = certify_outer_envelope(
+                    built, float(geometry.wall_thickness_mm))
             fitting = True
             if controls is not None or getattr(acoustic_geometry, "arc_meridian", None) is not None:
                 gmsh.option.setNumber("Mesh.MinimumCirclePoints", 16)
@@ -505,6 +511,7 @@ def build_mesh_with_info(
                     if isinstance(geometry, PointGridHornGeometry)
                     and geometry.build_mode.value == 'freestanding' else None),
                 wall_thickness_mm=float(getattr(geometry, 'wall_thickness_mm', 0)),
+                certify_envelope=bool(built.metadata.get("outerEnvelope")),
                 shell_mesh_density=mesh_density,
                 # Native bodies share their OCC wall/source edges; the exact
                 # duplicate-node removal above is sufficient. Approximate
@@ -630,6 +637,7 @@ def _postprocess_mesh(
     shell_surface_groups: dict[str, list[int]] | None = None,
     wall_thickness_mm: float = 0.0,
     shell_mesh_density: MeshDensity | None = None,
+    certify_envelope: bool = False,
     weld_near_duplicates: bool = True,
     controls_meridian=None,
     controls_branch_tags=None,
@@ -740,6 +748,17 @@ def _postprocess_mesh(
         if assembly.get("passage") is not None:
             from .design_passages import certify_design_passages
             certify_design_passages(points, triangles, phys, surfaces, assembly)
+    mesh_clearance = None
+    if certify_envelope:
+        # The fitted faces were certified before meshing. A BEM mesh's facets
+        # chord those faces at the requested element size, so its clearance is
+        # recorded for inspection, not held to the material thickness.
+        from .wall_distance import minimum_wall_distance
+        minimum, guard = minimum_wall_distance(
+            points[triangles[np.isin(surfaces, shell_surface_groups['inner'])]],
+            points[triangles[np.isin(surfaces, shell_surface_groups['outer'])]])
+        mesh_clearance = {"minimumMm": minimum, "numericalAllowanceMm": guard,
+                          "method": "exact triangle distances of the written mesh"}
     points, triangles = _compact_unused_vertices(points, triangles)
     if vertical_offset_mm:
         # Mesh.VerticalOffset: rigid +y placement of the finished reduced/full
@@ -785,6 +804,7 @@ def _postprocess_mesh(
         # that holds the finished arrays and knows their units. Recording it
         # costs a pass over the triangles; acting on it is the caller's choice.
         metadata={
+            **({"outerEnvelopeMeshClearance": mesh_clearance} if mesh_clearance is not None else {}),
             **({'shellFacetValidation': shell_stats}
                if shell_stats is not None and shell_stats['pairs_before'] else {}),
             "quality": mesh_quality_report(

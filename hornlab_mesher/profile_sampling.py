@@ -14,6 +14,7 @@ from .freeform import (
     freeform_corner_z,
     build_freeform_geometry,
     active_rounded_rect_corner_radius_mm,
+    offset_needs_envelope,
     validate_outer_offset_grid,
 )
 from .profile_common import (
@@ -24,7 +25,8 @@ from .profile_common import (
     _symmetry_planes_for_quadrants,
     eval_param,
 )
-from .offset_envelope import regularize_outer_offset
+from .offset_envelope import (envelope_allowance_mm, exterior_outer_offset,
+                              regularize_outer_offset)
 from .text_import import (uses_text_import_geometry, uses_current_ath_axial_sampling,
                           uses_v2_text_import_geometry, uses_v3_text_import_geometry,
                           ath_throat_extension_segments)
@@ -771,6 +773,14 @@ def _grid_surface_normals(
     normals[..., 1] = d_phi[..., 2] * d_t[..., 0] - d_phi[..., 0] * d_t[..., 2]
     normals[..., 2] = d_phi[..., 0] * d_t[..., 1] - d_phi[..., 1] * d_t[..., 0]
     return normals
+
+
+def _offset_is_valid(inner, outer, *, full_circle, label):
+    try:
+        validate_outer_offset_grid(inner, outer, full_circle=full_circle, label=label)
+    except ValueError:
+        return False
+    return True
 
 
 def _outer_offset_shell(
@@ -2241,17 +2251,25 @@ def build_point_grid_arrays(
         ath_data.update(ath_normals=normals, ath_body_rows=body_rows)
 
     outer = None
+    outer_envelope = envelope_deferred = False
     outer_fold: str | None = None
     wall = float(eval_param(params.get("wallThickness"), 0.0, 0.0))
     enc_depth = float(eval_param(params.get("encDepth"), 0.0, 0.0))
+    envelope_allowance = envelope_allowance_mm(wall)
     if ath_surfaces and enc_depth <= 0.0 and wall > 0.0:
         outer = inner + wall * normals
     elif enc_depth <= 0.0 and wall > 0.0:
-        if formula == "FREEFORM" and freeform_corner_z(build_freeform_geometry(params)):
-            from .corner_wall import mitred_outer_grid
-            outer = mitred_outer_grid(inner, wall, full_circle=full_circle,
-                                      corner_z=tuple(float(eval_param(params.get("scale"), 0.0, 1.0)) * z
-                                                     for z in freeform_corner_z(build_freeform_geometry(params), interior=True)))
+        freeform_geometry = build_freeform_geometry(params) if formula == "FREEFORM" else None
+        force_envelope = freeform_geometry is not None and offset_needs_envelope(
+            freeform_geometry, wall, float(eval_param(params.get("scale"), 0.0, 1.0)))
+        mitred = freeform_geometry is not None and bool(freeform_corner_z(freeform_geometry))
+        if mitred:
+            from .corner_wall import mitred_outer_offset
+            outer, outer_envelope = mitred_outer_offset(
+                inner, wall, full_circle=full_circle,
+                corner_z=tuple(float(eval_param(params.get("scale"), 0.0, 1.0)) * z
+                               for z in freeform_corner_z(freeform_geometry, interior=True)),
+                force_envelope=force_envelope, allowance=envelope_allowance)
         else:
             outer = _outer_offset_shell(
                 inner,
@@ -2270,14 +2288,31 @@ def build_point_grid_arrays(
                     )
                 ),
             )
-        # FREEFORM rejects a folded shell outright: its profile is user-drawn,
-        # so a fold means the input is wrong and refusing is the right answer.
-        #
-        # OSSE's normal correspondence can fold inside concave guiding-curve
-        # grooves at any axial station. The constant-distance exterior still
-        # exists there: discard the internal loops by resampling its envelope.
-        # Other formulas retain the existing warning contract.
-        if formula == "FREEFORM":
+        # Preserve every healthy normal/mitred offset byte for byte. A folded
+        # correspondence can still have a valid constant-distance exterior;
+        # FREEFORM and R-OSSE use the same envelope owner as OSSE. Where that
+        # exterior cannot be built, the existing fold handling below applies.
+        # A fold from azimuth rows that jump between rings is a twisted inner
+        # grid, not a thick wall: it keeps the diagnosis below that names it.
+        twisted = (formula == "FREEFORM" and phi_grid is not None
+                   and bool(freeform_azimuth_twist_note(phi_grid, t_values)))
+        envelope_deferred = False
+        if formula in {"FREEFORM", "R-OSSE"} and not mitred and not twisted:
+            if defer_osse_offset_repair and (force_envelope or not _offset_is_valid(
+                    inner, outer, full_circle=full_circle, label=str(formula))):
+                # The adaptive preview builds this envelope on the grid it
+                # draws; on its dense master it would be discarded at a
+                # cost of seconds. The solve grid decides fold and refusal.
+                envelope_deferred = True
+            else:
+                outer, outer_envelope = exterior_outer_offset(
+                    inner, outer, wall, full_circle=full_circle,
+                    label=str(formula), force=force_envelope, allowance=envelope_allowance,
+                )
+
+        if envelope_deferred:
+            pass
+        elif formula == "FREEFORM":
             try:
                 validate_outer_offset_grid(inner, outer, full_circle=full_circle)
             except ValueError as exc:
@@ -2324,6 +2359,8 @@ def build_point_grid_arrays(
         "inner_grid": inner,
         "outer_grid": outer,
         "outer_offset_fold": outer_fold,
+        **({"outer_envelope": True} if outer_envelope else {}),
+        **({"outer_envelope_deferred": True} if outer is not None and envelope_deferred else {}),
         "grid_n_phi": int(inner.shape[0]),
         "grid_n_length": int(n_length),
         "full_circle": bool(full_circle),

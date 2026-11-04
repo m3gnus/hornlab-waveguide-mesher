@@ -22,6 +22,7 @@ symbolic differentiation implementation.
 from __future__ import annotations
 
 import copy
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from typing import Any, Mapping
 import numpy as np
 
 from ..throat_stretch import stretch_config_errors
+
+logger = logging.getLogger(__name__)
 from numpy.typing import NDArray
 
 from ..config_builder import build_geometry_params, resolve_geometry, resolve_enclosure_bounds, retain_ath_import_construction
@@ -289,7 +292,8 @@ def _sample_master_level(
         enclosure_bounds=enclosure_bounds,
     )
     sampling_ms = (time.perf_counter() - sampling_start) * 1000.0
-    if formula == "OSSE" and output["grid"].get("outer_offset_fold"):
+    if (formula == "OSSE" and output["grid"].get("outer_offset_fold")) or output["grid"].get(
+            "outer_envelope_deferred"):
         # The canonical master is used to select the acoustic render grid;
         # computing a dense envelope there would be discarded immediately.
         # Healthy normal offsets keep their existing master-grid path.
@@ -367,6 +371,42 @@ def _sample_master_level(
         sampling_ms=sampling_ms,
         deferred_wall=deferred_wall,
     )
+
+
+def _selected_envelope(inner, outer, wall, params, formula, closed_phi, *,
+                       phi_grid=None, t_values=None):
+    """The displayed grid's own envelope, from the owner the solve uses.
+
+    The solve's sampling grid (resolved for the dimensions) decides refusals
+    and fold warnings; a display grid whose envelope cannot be built shows
+    its normal offset rather than refusing a design the solve builds. A
+    FREEFORM grid twisted between rings keeps its offset and fold, as the
+    solve does, so the fold is shown and named.
+    """
+    from ..freeform import build_freeform_geometry, offset_needs_envelope
+    from ..offset_envelope import envelope_allowance_mm, exterior_outer_offset
+    from ..profile_sampling import freeform_azimuth_twist_note
+
+    if formula == "FREEFORM" and phi_grid is not None and freeform_azimuth_twist_note(phi_grid, t_values):
+        return outer
+
+    force = formula == "FREEFORM" and offset_needs_envelope(
+        build_freeform_geometry(params), wall, float(eval_param(params.get("scale"), 0.0, 1.0)))
+    try:
+        envelope, enveloped = exterior_outer_offset(
+            inner, outer, wall, full_circle=closed_phi, label=formula,
+            force=force, allowance=envelope_allowance_mm(wall))
+    except ValueError as exc:
+        envelope, enveloped = outer, False
+        reason = str(exc)
+    else:
+        reason = "the envelope did not validate on the drawn grid"
+    from ..profile_sampling import _offset_is_valid
+    if not enveloped and not _offset_is_valid(inner, outer, full_circle=closed_phi, label=formula):
+        logger.warning(
+            "[hornlab-mesher] preview draws the normal outer offset (%s); the solve "
+            "and CAD export build and certify their own envelope", reason)
+    return envelope
 
 
 @stretch_config_errors
@@ -816,6 +856,13 @@ def build_preview_geometry(
             t_coordinates=master_t[t_indices],
             phi_coordinates=master_phi[np.ix_(t_indices, phi_indices)],
         )
+        if str(_parsed_formula) in {"R-OSSE", "FREEFORM"}:
+            selected_outer = _selected_envelope(
+                offset_inner, selected_outer, deferred_wall, parsed_params,
+                str(_parsed_formula), closed_phi,
+                phi_grid=(master_phi[np.ix_(t_indices, phi_indices)].T
+                          if grid_data.get("phi_grid") is not None else None),
+                t_values=master_t[t_indices])
         selected_outer[:, :, 1] += vertical_offset
         outer_canonical = selected_outer
         if options.include_outer:

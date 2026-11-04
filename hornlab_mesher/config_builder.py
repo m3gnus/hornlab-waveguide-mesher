@@ -1979,6 +1979,7 @@ def _sampling_metadata(
     fold = grid.get("outer_offset_fold")
     return {
         **({"outerOffsetFold": str(fold)} if fold else {}),
+        **({"outerEnvelope": True} if grid.get("outer_envelope") else {}),
         "geometrySampleAngularSegments": int(working["angularSegments"]),
         "geometrySampleLengthSegments": int(working["lengthSegments"]),
         "geometrySamplePhiProfiles": n_phi,
@@ -2195,6 +2196,7 @@ def _build_acoustic_sampling_grid(
             # acoustic one does; dropping it here left the consumer's warning
             # unreachable for those builds.
             **({"outerOffsetFold": str(fold)} if fold else {}),
+            **({"outerEnvelope": True} if grid.get("outer_envelope") else {}),
             "geometrySampleAngularSegments": int(working["angularSegments"]),
             "geometrySampleLengthSegments": int(working["lengthSegments"]),
         }
@@ -2805,6 +2807,11 @@ def resolve_geometry(
     if requested_woofers:
         from .enclosure_woofers import validate_woofer_domain
         validate_woofer_domain(params, enclosure_obj)
+    if geometry_sampling_metadata.get("outerEnvelope"):
+        # Builds and exports certify this envelope's fitted faces; the mark is
+        # not a field, so the geometry's identity does not depend on it.
+        from .offset_envelope import mark_outer_envelope
+        mark_outer_envelope(geometry)
     return resolved_type(
         geometry=geometry,
         density=density,
@@ -2860,6 +2867,9 @@ def build_from_config(
 
     ``measure_profile_deviation`` is a per-build diagnostic option; it defaults
     to off and does not participate in geometry resolution or STEP export.
+    An outer envelope whose fitted faces measure thinner than Wall thickness
+    is rebuilt with more clearance (``wall_distance.with_envelope_retries``);
+    only the mesh build repeats, and the resolved geometry is unchanged.
     """
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
     geometry = resolved.geometry
@@ -2876,16 +2886,28 @@ def build_from_config(
         and getattr(geometry, "surface_fit", None) == "interpolate"
         and getattr(geometry, "adapter_meridian", None) is None
     )
-    try:
-        mesh_path, info = build_mesh_with_info(
-            geometry,
+    density_callback = after_density
+    if resolved.sampling_metadata.get("outerEnvelope"):
+        def density_callback(built):
+            # A builder that refits the wall decides for its own net.
+            built.metadata.setdefault("outerEnvelope", True)
+            if after_density is not None:
+                after_density(built)
+    from .offset_envelope import envelope_variant
+    from .wall_distance import with_envelope_retries
+
+    def mesh(candidate):
+        return with_envelope_retries(lambda: build_mesh_with_info(
+            envelope_variant(candidate),
             resolved.density,
             output_path,
             scale_to_metres=resolved.scale_to_metres,
             measure_profile_deviation=measure_profile_deviation,
             surface_deviation_triangle_budget=surface_deviation_triangle_budget,
-            after_density=after_density,
-        )
+            after_density=density_callback,
+        ))
+    try:
+        mesh_path, info = mesh(geometry)
     except TriangleBudgetExceeded:
         # A budget refusal is not a fit failure: the other fit meshes about the
         # same triangle count, so retrying only repeats a full mesh generation
@@ -2921,15 +2943,10 @@ def build_from_config(
                 "explicitly to choose either one and see the failure."
             )
         geometry = replace(geometry, surface_fit=_RetryInterpolatingFit() if flush else "approximate")
-        mesh_path, info = build_mesh_with_info(
-            geometry,
-            resolved.density,
-            output_path,
-            scale_to_metres=resolved.scale_to_metres,
-            measure_profile_deviation=measure_profile_deviation,
-            surface_deviation_triangle_budget=surface_deviation_triangle_budget,
-            after_density=after_density,
-        )
+        if resolved.sampling_metadata.get("outerEnvelope"):
+            from .offset_envelope import mark_outer_envelope
+            mark_outer_envelope(geometry)
+        mesh_path, info = mesh(geometry)
     mesh_report = _mesh_report(info.physical_groups, info.edge_stats_mm)
     freeform_report = resolved.freeform_report
     if getattr(geometry, "freeform_wall", None) is not None:

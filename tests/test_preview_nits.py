@@ -13,7 +13,7 @@ from hornlab_mesher.preview.contract import (
     _orientation_metadata,
 )
 from hornlab_mesher.preview.primitives import _grid_indices
-from tests.test_preview_followups import FREEFORM_MORPH, ROSSE_EXTENSION, ROSSE_SLOT, _OSSE
+from tests.test_preview_followups import FREEFORM_MORPH, ROSSE_EXTENSION, ROSSE_SLOT, _OSSE, force_folded_offset
 
 
 def test_crossing_outside_the_fold_neighbour_ring_is_detected():
@@ -66,7 +66,8 @@ def test_fold_ids_survive_rewinding_in_either_prevailing_orientation(reverse_all
 
 
 @pytest.mark.parametrize("config", [ROSSE_EXTENSION, ROSSE_SLOT])
-def test_surface_fold_ids_and_warning_describe_the_shipped_fold(config):
+def test_surface_fold_ids_and_warning_describe_the_shipped_fold(config, monkeypatch):
+    force_folded_offset(monkeypatch, config)
     geometry = build_preview_geometry(copy.deepcopy(config), PreviewOptionsV1(lod="fine"))
     outer = next(s for s in geometry.surfaces if s.role == "horn.outer")
     ids = outer.metadata["foldedTriangleIndices"]

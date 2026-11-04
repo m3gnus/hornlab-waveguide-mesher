@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import least_squares, brentq
 from scipy.interpolate import BSpline
 
-from .freeform import FreeformGeometry, freeform_corner_z, validate_outer_offset_grid
+from .freeform import FreeformGeometry, freeform_corner_z, offset_needs_envelope, validate_outer_offset_grid
 from .geometry import BuiltGeometry
 
 
@@ -93,11 +93,20 @@ def cut_indices(points: np.ndarray, cuts: tuple[float, ...]) -> list[int]:
 
 def mitred_outer_grid(inner: np.ndarray, wall: float, *, full_circle: bool,
                       corner_z: tuple[float, ...]) -> np.ndarray:
+    """The outer grid of :func:`mitred_outer_offset`."""
+    return mitred_outer_offset(inner, wall, full_circle=full_circle, corner_z=corner_z)[0]
+
+
+def mitred_outer_offset(inner: np.ndarray, wall: float, *, full_circle: bool,
+                        corner_z: tuple[float, ...], force_envelope: bool = False,
+                        allowance: float = 0.0) -> tuple[np.ndarray, bool]:
     """Offset each smooth span, intersecting its two offset tangent planes.
 
     At a circular meridian this is exactly the intersection of offset lines.
     The vector formula also handles unequal H/V: dot(delta, n_left/right)=wall.
     The shared ring is authored once, so both outer patches have identical poles.
+    Returns ``(outer, enveloped)``; a mitre that folds is replaced by the shared
+    exterior envelope where one can be built, and refused otherwise.
     """
     from .profile_sampling import _outer_offset_shell
 
@@ -141,12 +150,17 @@ def mitred_outer_grid(inner: np.ndarray, wall: float, *, full_circle: bool,
             stations = np.linspace(0., arc[-1], b - a + 1)
             outer[i, a:b + 1] = np.column_stack([
                 np.interp(stations, arc, retained[:, axis]) for axis in range(3)])
-    try:
-        validate_outer_offset_grid(inner, outer, full_circle=full_circle)
-    except ValueError as exc:
-        label = ', '.join(f'{z:g}' for z in corner_z) or 'endpoints'
-        raise control_refusal(f"FREEFORM corner z={label} mm: unsafe offset mitre: {exc}", "Wall thickness", "Reduce Wall thickness or soften the sharp profile corner.", message=f"The outer wall folds at the profile corner at {label} mm.") from exc
-    return outer
+    from .offset_envelope import exterior_outer_offset
+    candidate, enveloped = exterior_outer_offset(
+        inner, outer, wall, full_circle=full_circle, force=force_envelope,
+        allowance=allowance)
+    if not enveloped:
+        try:
+            validate_outer_offset_grid(inner, outer, full_circle=full_circle)
+        except ValueError as exc:
+            label = ', '.join(f'{z:g}' for z in corner_z) or 'endpoints'
+            raise control_refusal(f"FREEFORM corner z={label} mm: unsafe offset mitre: {exc}", "Wall thickness", "Reduce Wall thickness or soften the sharp profile corner.", message=f"The outer wall folds at the profile corner at {label} mm.") from exc
+    return candidate, enveloped
 
 
 def _refine(points: np.ndarray, recipe: CornerWall, intervals: set[int] | None = None) -> np.ndarray:
@@ -872,6 +886,7 @@ def build_corner_wall(geometry):
     roles = {'inner': wall, 'throat_disc': _cap(geometry, points, first)}
     enclosure_bounds = None
     strip_widths = clearance = None
+    outer_envelope = None
     if mode is PointGridBuildMode.INFINITE_BAFFLE:
         roles['mouth_aperture'] = make_planar_fill_from_boundary(last, use_min=False, closed=geometry.closed)
     elif mode is PointGridBuildMode.ENCLOSURE:
@@ -887,7 +902,13 @@ def build_corner_wall(geometry):
         from .builders.point_grid_freestanding import _wall_clearance_metadata
         from .rear_compatibility import geometry_rear_ring
         cuts = recipe.cuts(points)
-        outer = mitred_outer_grid(points, geometry.wall_thickness_mm, full_circle=geometry.closed, corner_z=cuts)
+        from .offset_envelope import envelope_allowance_mm
+        # The refined fitting net may fold where the accepted sampling net did
+        # not (or the reverse): its own envelope decision is what is published.
+        outer, outer_envelope = mitred_outer_offset(
+            points, geometry.wall_thickness_mm, full_circle=geometry.closed, corner_z=cuts,
+            force_envelope=offset_needs_envelope(recipe.profile, geometry.wall_thickness_mm, recipe.scale),
+            allowance=envelope_allowance_mm(geometry.wall_thickness_mm))
         outer = _snap_open_symmetry_grid(outer, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
         ends = cut_indices(points, cuts)
         outer_hermite = not _revolution_grid(outer)
@@ -975,6 +996,9 @@ def build_corner_wall(geometry):
                                'fitToleranceMm': WALL_FIT_TOLERANCE_MM,
                                'sampledFitErrorMm': fit_error, 'fitRefinements': fit_refinements,
                                'angularRefinements': angular_refinements}}
+    if outer_envelope is not None:
+        # Authoritative for the fitted net, which the build certifies.
+        metadata['outerEnvelope'] = bool(outer_envelope)
     if clearance is not None:
         metadata['outerWallClearance'] = clearance
         if smooth:
