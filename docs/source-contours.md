@@ -64,3 +64,36 @@ installed qualification belong to integration.
 The imported consumer preserves local curvature refinement and certifies its
 actual moving and rigid facets against the same 0.15 mm tolerance before
 publication. Requested and effective mesh sizes are recorded separately.
+
+## Design diaphragms
+
+The design enclosure path accepts `shape.kind = "sketched"` on a woofer.
+Its `diaphragm` is the canonical source document (`contour` and `drive`), using
+`SourceContour` and `ContourDrive`; it is not a second profile format. The rim
+must equal the woofer aperture radius, the complete contour must lie at or
+behind the baffle, and its depth must clear the enclosure back. The contour
+owner rejects folded or self-intersecting meridians. Moving and rigid segment
+roles are independent of signed weights, including a moving patch of weight
+zero. `piston` and `ath_cone` retain their established construction.
+
+A root `hf_diaphragm` config attaches the same `diaphragm` document to the
+horn's existing WG0 edge. It can also contain `phase_plugs` in the canonical
+`PhasePlug` representation. Use the full domain and a closed body (enclosure
+or a thickened freestanding horn), with a circular planar throat. Unsupported
+native terminals and subdomain interfaces are refused explicitly.
+
+An exact circular WG0 edge uses the shared contour revolution. A fitted WG0
+edge needs explicit `fit_wg0_rim: true`: only the outer contour segment is
+filled on the existing horn edge and shared radial seams, with constraints
+on the authored meridian. Interior segments remain exact revolutions. This
+keeps the horn wall unchanged. The outer segment metadata records its
+`surface_tolerance_mm` (0.025 mm at mesh vertices) and measured
+`max_geometry_residual_mm`; a departure beyond that bound refuses the build.
+The assembly build does not retry a different horn surface fit after failure.
+
+Each moving patch has an escaped `radiator_id/segment_id` source identity in
+the existing `wg-assembly-v1` tag map. Patch metadata includes its signed
+`weight` and `motion` (`normal` or `axial`). Passive plugs reuse the existing
+passage checks and meridian model; each is a separate outward closed body.
+The wall clearance uses the existing rotational-wall certificate and its
+angular-fit correction bound. Nonrotational plug arrangements remain refused.

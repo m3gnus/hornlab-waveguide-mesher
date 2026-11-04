@@ -278,6 +278,7 @@ class PointGridHornGeometry:
     closed: bool = True
     outer_points: NDArray[np.float64] | None = None
     wall_thickness_mm: float = 6.0
+    hf_diaphragm: dict | None = None
     source_shape: int = 1
     source_radius_mm: float = -1.0
     source_curv: int = 0

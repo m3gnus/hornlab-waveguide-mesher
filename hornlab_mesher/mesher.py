@@ -367,6 +367,13 @@ def build_mesh_with_info(
                     # Preserve the automatic fit retry and its final type.
                     woofer_refusal = exc
                     raise ValueError(str(exc)) from exc
+            if getattr(acoustic_geometry, "hf_diaphragm", None) is not None:
+                from .design_diaphragm import attach_hf_diaphragm
+                try:
+                    attach_hf_diaphragm(built, acoustic_geometry)
+                except UserRefusal as exc:
+                    woofer_refusal = exc
+                    raise ValueError(str(exc)) from exc
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
             fitting = False
@@ -701,6 +708,10 @@ def _postprocess_mesh(
         **({} if open_shell_bore_surface_tags is None else
            {"open_shell_bore_wall_mask":np.isin(surfaces,open_shell_bore_surface_tags)}),
     )
+    if assembly is not None and assembly.get("passive_body_surfaces"):
+        for faces in assembly["passive_body_surfaces"].values():
+            mask = np.isin(surfaces, faces)
+            triangles[mask], _ = repair_orientation(points, triangles[mask], phys[mask], source_axis=source_axis)
     if controls_meridian is not None:
         from .builders.adapter_controls import certify_arrays
         certify_arrays(controls_meridian,points,triangles,surfaces,controls_branch_tags,check_normals=True)

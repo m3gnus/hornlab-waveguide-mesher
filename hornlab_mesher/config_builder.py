@@ -2574,6 +2574,14 @@ def resolve_geometry(
         from .native_expressions import resolve
         return resolve(config, params, allow_large_mesh)
     requested_woofers = _section(config, "enclosure").get("woofers")
+    hf_diaphragm = config.get("hf_diaphragm")
+    if hf_diaphragm is not None and (any(key in params for key in
+            ("controlsAdapter", "terminatingArc", "sourceBody", "adapterAxialScale",
+             "mouthRoundoverRadiusMm", "absoluteAxialScale"))
+            or params.get("athRoundover") or params.get("athRearShape") == 3):
+        raise control_refusal("this native terminal cannot attach a sketched HF diaphragm", "HF diaphragm",
+                              "Revert the HF sketch to Classic for this horn terminal.",
+                              message="This horn cannot attach the HF sketch.")
     if requested_woofers and mode != "enclosure":
         raise control_refusal("enclosure.woofers requires enclosure mode", 'Mounting', 'Change Mounting to Waveguide in enclosure, or disable the woofers.', message='Woofers need an enclosure front baffle.')
     if "controlsAdapter" in params:
@@ -2789,6 +2797,10 @@ def resolve_geometry(
         if bounds.get("flush_mount"):
             resolved_type = _FlushResolvedGeometry
             resolved_extra["flush_slice_map"] = tuple(float(value) for value in grid["slice_map"])
+    if hf_diaphragm is not None:
+        from .enclosure_woofers import SketchedShape
+        SketchedShape.from_document(hf_diaphragm["diaphragm"])
+        geometry = replace(geometry, hf_diaphragm=dict(hf_diaphragm))
     if requested_woofers:
         from .enclosure_woofers import validate_woofer_domain
         validate_woofer_domain(params, enclosure_obj)
@@ -2851,6 +2863,8 @@ def build_from_config(
     resolved = resolve_geometry(config, allow_large_mesh=allow_large_mesh)
     geometry = resolved.geometry
     chose_automatically = (
+        config.get("hf_diaphragm") is None
+        and
         getattr(geometry, "controls_meridian", None) is None
         and
         getattr(geometry, "arc_meridian", None) is None

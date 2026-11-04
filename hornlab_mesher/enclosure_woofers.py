@@ -12,12 +12,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from dataclasses import dataclass, replace
 import math
+from urllib.parse import quote
 from typing import Literal
 
 import numpy as np
 
 from .source_body import _number
-from .source_contour import SourceContour, cone
+from .source_contour import SourceContour, ContourDrive, cone
 
 NAMESPACE = "wg-assembly-v1"
 CLEARANCE_MM = 0.1
@@ -51,12 +52,37 @@ class AthConeShape:
 
 
 @dataclass(frozen=True)
+class SketchedShape:
+    diaphragm: SourceContour
+    drive: ContourDrive
+    kind: Literal["sketched"] = "sketched"
+
+    def __post_init__(self):
+        if self.kind != "sketched" or not isinstance(self.diaphragm, SourceContour):
+            raise ValueError("sketched diaphragm requires a canonical SourceContour")
+        self.drive.validate(self.diaphragm)
+
+    @classmethod
+    def from_document(cls, document):
+        contour = SourceContour.from_dict(document["contour"])
+        drive = document["drive"]
+        return cls(contour, ContourDrive(drive["channel_id"], tuple(drive["weights"].items()), drive["motion"]))
+
+
+def validate_aperture_contour(contour, radius_mm):
+    if abs(contour.points[-1].r_mm - radius_mm) > 1e-7:
+        raise control_refusal("diaphragm rim does not meet aperture radius", "Source contour",
+                              "Set the sketch rim radius to the aperture radius, then finish the sketch.",
+                              message="The diaphragm rim does not meet its aperture.")
+
+
+@dataclass(frozen=True)
 class EnclosureWoofer:
     radiator_id: str
     x_mm: float
     y_mm: float
     radius_mm: float
-    shape: PistonShape | AthConeShape
+    shape: PistonShape | AthConeShape | SketchedShape
     resolution_mm: float | None = None
     active: bool = True
 
@@ -70,8 +96,14 @@ class EnclosureWoofer:
             _number(getattr(self, name), "woofer " + name)
         if self.radius_mm <= 0:
             raise control_refusal("woofer radius_mm must be positive", 'Radius', 'Enter a positive Radius in Sources and baffle.', message='Woofer radius must be positive.')
-        if not isinstance(self.shape, (PistonShape, AthConeShape)):
-            raise ValueError("woofer shape must be piston or ath_cone")
+        if not isinstance(self.shape, (PistonShape, AthConeShape, SketchedShape)):
+            raise ValueError("woofer shape must be piston, ath_cone or sketched")
+        if isinstance(self.shape, SketchedShape):
+            validate_aperture_contour(self.shape.diaphragm, self.radius_mm)
+            if self.shape.diaphragm.axial_bounds_mm[1] > 1e-8:
+                raise control_refusal("woofer contour extends in front of baffle", "Source contour",
+                                      "Move the diaphragm behind the baffle plane (zero depth), then finish the sketch.",
+                                      message="The woofer diaphragm extends in front of the baffle.")
         if type(self.active) is not bool:
             raise ValueError("woofer active must be boolean")
         if self.resolution_mm is not None:
@@ -165,8 +197,12 @@ def woofer_from_config(row):
             resolved = PistonShape(**shape)
         elif kind == "ath_cone":
             resolved = AthConeShape(**shape)
+        elif kind == "sketched":
+            resolved = SketchedShape.from_document(shape.pop("diaphragm"))
+            if shape:
+                raise ValueError("unknown sketched shape fields")
         else:
-            raise ValueError("woofer shape kind must be piston or ath_cone")
+            raise ValueError("woofer shape kind must be piston, ath_cone or sketched")
         return EnclosureWoofer(**values, shape=resolved)
     except (KeyError, TypeError) as exc:
         if isinstance(exc, UserRefusal):
@@ -289,6 +325,8 @@ def cut_woofers(built, geometry):
     discs = []
     for i, w in enumerate(woofers):
         depth = w.shape.recess_mm if isinstance(w.shape, PistonShape) else ATH_JOIN_DEPTH*w.radius_mm
+        if isinstance(w.shape, SketchedShape):
+            depth = -w.shape.diaphragm.axial_bounds_mm[0]
         if depth >= z - built.enclosure_bounds["z_back"]:
             raise control_refusal("woofer diaphragm reaches enclosure back", 'Enclosure depth', 'Increase Enclosure depth or reduce the woofer depth.', message='A woofer diaphragm reaches the back of the enclosure.')
         for other in woofers[:i]:
@@ -321,8 +359,8 @@ def cut_woofers(built, geometry):
     names = {1: NAMESPACE+"|rigid", 2: NAMESPACE+"|tag=2|source_id=horn-throat|instance_id=null|role=primary"}
     for w, top in zip(woofers, patches):
         collar = set()
-        if isinstance(w.shape, AthConeShape):
-            contour = ath_contour(w)
+        if isinstance(w.shape, (AthConeShape, SketchedShape)):
+            contour = ath_contour(w) if isinstance(w.shape, AthConeShape) else w.shape.diaphragm
             contours[w.radiator_id] = contour.to_dict()
             _, diaphragm = revolve_contour(occ, contour, (w.x_mm, w.y_mm, z), half_x=half)
             segments = {s: {t} for s, t in diaphragm.items()}
@@ -362,9 +400,11 @@ def cut_woofers(built, geometry):
         built.surface_groups.setdefault(3, []).extend(sorted(collar))
         built.mesh_surface_groups["enclosure"].extend(sorted(collar))
         for segment, faces in segments.items():
-            patch_id = f"{w.radiator_id}/{segment}"
-            physical = 101+len(sources)-1 if w.active else 1
-            if w.active:
+            patch_id = f"{w.radiator_id}/{quote(segment, safe='')}"
+            moving = w.active and (not isinstance(w.shape, SketchedShape) or
+                                  next(s for s in contour.segments if s.id == segment).role == "moving")
+            physical = 101+len(sources)-1 if moving else 1
+            if moving:
                 sources[patch_id] = physical
                 tag_map[str(physical)] = {"source_id": patch_id, "instance_id": None, "role": "secondary"}
                 names[physical] = f"{NAMESPACE}|tag={physical}|source_id={patch_id}|instance_id=null|role=secondary"
@@ -374,18 +414,20 @@ def cut_woofers(built, geometry):
             role = "woofer:"+patch_id
             built.mesh_surface_groups[role] = sorted(faces)
             size = w.resolution_mm or 10.0
-            if segment == "cap":
+            if segment == "cap" and isinstance(w.shape, AthConeShape):
                 size = min(size, math.sqrt(8*contour.arc(0)[0]*.025))
             if isinstance(w.shape, AthConeShape) and geometry.enclosure.ath_lf_envelope:
                 # Imported ATH cones also bound circumferential chord error.
                 # Keep generic assembly density and its budgets unchanged.
                 size = min(size, math.sqrt(8*ATH_JOIN_RADIUS*w.radius_mm*.025))
             records.append({"patch_id": patch_id, "radiator_id": w.radiator_id,
-                            "segment_id": segment, "role": "secondary" if w.active else "rigid",
+                            "segment_id": segment, "role": "secondary" if moving else "rigid",
                             "physical_tag": physical, "surface_tags": sorted(faces),
                             "center_mm": [w.x_mm, w.y_mm, z], "radius_mm": w.radius_mm,
                             "recess_mm": getattr(w.shape, "recess_mm", 0),
-                            "resolution_mm": size, "density_role": role})
+                            "resolution_mm": size, "density_role": role,
+                            **({"weight": dict(w.shape.drive.weights).get(segment, 0.0),
+                                "motion": w.shape.drive.motion} if isinstance(w.shape, SketchedShape) else {})})
     built.surface_groups[1] = sorted(set(built.surface_groups[1]+built.surface_groups.pop(3, [])))
     # Unify coincident rim/join edges while retaining face ancestry. Only this
     # opt-in path performs the assembly boolean; horn-only output is untouched.
@@ -449,7 +491,7 @@ def certify_arrays(points, triangles, physical, surfaces, assembly):
         r = patch["radius_mm"]
         segment = patch["segment_id"]
         expected = np.zeros((selected.sum(), 3))
-        if segment == "piston":
+        if segment == "piston" and patch["radiator_id"] not in assembly["contours"]:
             residual = abs(local[:, :, 2]+patch["recess_mm"])
             expected[:, 2] = 1
         else:
@@ -471,8 +513,13 @@ def certify_arrays(points, triangles, physical, surfaces, assembly):
                                         out=np.zeros_like(local[:, :, :2]), where=radial[:, :, None] > 0)
                 expected[:, :2] = (radial_unit*(radial-cr)[:, :, None]).mean(axis=1)
                 expected[:, 2] = (local[:, :, 2]-cz).mean(axis=1)
-        if np.max(residual) > 1e-5 or np.any(radial > r+1e-5):
-            raise ValueError(f"assembly patch {patch['patch_id']} deviates from declared geometry")
+                if contour.arc(index)[2] > 0:
+                    expected *= -1
+        tolerance = patch.get("surface_tolerance_mm", 1e-5)
+        if "surface_tolerance_mm" in patch:
+            patch["max_geometry_residual_mm"] = float(np.max(residual))
+        if np.max(residual) > tolerance or np.any(radial > r+tolerance):
+            raise ValueError(f"assembly patch {patch['patch_id']} deviates from declared geometry: residual={np.max(residual):.9g} mm; radial excess={np.max(radial)-r:.9g} mm")
         if np.any(np.einsum("ij,ij->i", normals[selected], expected) <= 0):
             raise ValueError(f"assembly patch {patch['patch_id']} has inward normals")
     # Every emitted facet has exactly one nonempty declared physical owner.

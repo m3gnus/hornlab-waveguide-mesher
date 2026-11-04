@@ -81,7 +81,6 @@ class GeneralHornWall:
     def from_config(cls, config):
         from .config_builder import resolve_geometry
         from .geometry import PointGridHornGeometry
-        from .builders._occ import grid_v_parameters
 
         resolved = resolve_geometry(config)
         g = resolved.geometry
@@ -91,6 +90,13 @@ class GeneralHornWall:
                 or g.infinite_baffle or g.interfaces or g.vertical_offset_mm
                 or g.topology_mode != "acoustic"):
             raise control_refusal('general horn attachment requires a full bare resolved horn; existing shells, interfaces, placement, symmetry and authored terminals must be composed explicitly', 'Profile', 'Use a full circular horn with Bare shell in Mounting, and remove symmetry cuts and added terminals before attaching it.', message='General horn attachment requires a full bare resolved horn; existing shells, interfaces, placement, symmetry and authored terminals must be composed explicitly.')
+        return cls.from_geometry(g, resolved.formula)
+
+    @classmethod
+    def from_geometry(cls, g, formula):
+        """Certify the existing resolved design wall without rebuilding its box."""
+        from .builders._occ import grid_v_parameters
+
         xyz = np.asarray(g.inner_points)
         r, z = np.linalg.norm(xyz[..., :2], axis=-1), xyz[..., 2]
         if np.max(np.ptp(r, axis=0)) > 1e-8 or np.max(np.ptp(z, axis=0)) > 1e-8:
@@ -115,7 +121,7 @@ class GeneralHornWall:
         normalized_knots = curve.t / curve.t[-1]
         correction = _angular_correction_bound(xyz, g.surface_fit, float(curve.c[:, 0].max()))
         return cls(degree, tuple(float(x) for x in normalized_knots),
-                   tuple(tuple(float(x) for x in p) for p in curve.c), resolved.formula, correction)
+                   tuple(tuple(float(x) for x in p) for p in curve.c), formula, correction)
 
     def to_dict(self):
         return {"version": 1, "degree": self.degree, "knots": self.knots,
