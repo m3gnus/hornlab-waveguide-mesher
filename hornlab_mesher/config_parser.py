@@ -676,6 +676,11 @@ def _reject_unsupported_ath_keys(
     if rollback_keys:
         raise ath_refusal(f"Rollback is not supported by this mesher (saw {', '.join(rollback_keys)})")
     rear_shape = _maybe_number(mesh_items.get("RearShape"))
+    if rear_shape == 5 or any(key in mesh_items for key in ("RearCubic", "RearCubic.N")):
+        raise ath_refusal(
+            "Mesh.RearShape = 5 / Mesh.RearCubic / Mesh.RearCubic.N are unsupported: "
+            "the cubic rear construction is unverified; retained ATH probes emitted no cubic rear. "
+            "Use Mesh.RearShape = 1 or 3 and remove Mesh.RearCubic controls.")
     if rear_shape is not None and rear_shape not in {1, 3}:
         raise ath_refusal(f"Mesh.RearShape = {rear_shape} is not supported; only the full rear (1) and Opus rear (3) are implemented")
     # The user guide spells the throat-extension slice count ``ThroatSegments``;

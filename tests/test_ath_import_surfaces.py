@@ -191,6 +191,23 @@ def test_named_parser_refusals(extra, named):
     assert named in str(error.value)
 
 
+@pytest.mark.parametrize("extra", [
+    "Mesh.RearShape = 5\n",
+    "Mesh.RearCubic = -60,2,50,-80,5\n",
+    "Mesh.RearCubic.N = 12\n",
+    "Mesh.RearShape = 5\nMesh.RearCubic = -60,2,50,-80,5\nMesh.RearCubic.N = 12\n",
+    "Mesh = {\n RearShape = 5\n}\n",
+    "Mesh = {\n RearCubic = -60,2,50,-80,5\n}\n",
+    "Mesh = {\n RearCubic.N = 12\n}\n",
+])
+def test_cubic_rear_refusal_explains_unproven_construction_and_remedy(extra):
+    with pytest.raises(ConfigError) as error:
+        parse_text_config(BASE + extra)
+    message = str(error.value)
+    assert "cubic rear construction is unverified" in message
+    assert "Use Mesh.RearShape = 1 or 3 and remove Mesh.RearCubic controls" in message
+
+
 @pytest.mark.parametrize("extra,named", [
     (LIP + "Mesh.LengthSegments = 2\n", "Mesh.LengthSegments"),
     (LIP + "Mesh.WallThickness = 20\n", "Mesh.WallThickness"),

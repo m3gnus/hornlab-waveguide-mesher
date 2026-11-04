@@ -84,6 +84,15 @@ their existing rules. Enclosure, infinite baffle and CircSym combinations are
 refused by name. RearShape 2/5, RearCubic, OpusRear, MouthArc and RoundedEdge
 remain unsupported.
 
+RearShape 5 and `Mesh.RearCubic` / `Mesh.RearCubic.N` remain refused pending a
+working ATH reference. The retained V2026-09a probes, including a repeat with
+the executable named `ath202608.exe`, emitted no cubic rear vertices or
+`SD2G0` surface group. Changing each of the five control values or `.N` left
+the exported geometry unchanged apart from its output filename. These runs
+do not establish cubic parameter meanings or justify importing an open back
+as the requested cubic rear. The refusal names the controls and suggests a
+supported rear choice.
+
 Measured against ATH V2026-09a output, Opus clamps wall thickness to
 0.1–1000 mm (including an authored zero), defaults `FrontOffset` to 40 mm
 and `Step` to 25 mm, and selects rings from the full inner grid, lip included:
