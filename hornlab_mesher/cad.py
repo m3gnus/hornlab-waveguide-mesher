@@ -69,8 +69,8 @@ _NON_MATERIAL_ROLES = ("interface", "mouth_aperture")
 _SOURCE_ROLE = "throat_disc"
 
 # Build modes that enclose material. The others are zero-thickness acoustic
-# surfaces, and sewing those would enclose the *air* in the bore rather than
-# any part, so they export as a surface body instead.
+# surfaces. They export as surface bodies: a sewn shell must never claim to
+# enclose the air in the bore as solid material.
 _SOLID_BUILD_MODES = frozenset(
     {PointGridBuildMode.FREESTANDING, PointGridBuildMode.ENCLOSURE}
 )
@@ -479,7 +479,9 @@ def _controls_surface_shell_transport(text, *, n_faces, open_throat):
     return text
 
 
-def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) -> str:
+def _surface_shell_transport(
+    text: str, *, n_faces: int, boundary_edges: int, feature: str
+) -> str:
     """Transport one OCC-sewn shell as a truthful STEP surface body.
 
     OCC exposes sewing to its writer through a temporary volume carrier.
@@ -493,24 +495,24 @@ def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) 
     def one(kind):
         matches=[m for m in records if m[2]==kind]
         if len(matches)!=1:
-            raise MesherError(f"terminating arc STEP needs exactly one {kind} wrapper")
+            raise MesherError(f"{feature} STEP needs exactly one {kind} wrapper")
         return matches[0]
     representation=one("ADVANCED_BREP_SHAPE_REPRESENTATION")
     solid=one("MANIFOLD_SOLID_BREP")
     shell=one("CLOSED_SHELL")
     if any(kind in text for kind in ("BREP_WITH_VOIDS(","FACETED_BREP(","OPEN_SHELL(","SHELL_BASED_SURFACE_MODEL(")):
-        raise MesherError("terminating arc STEP contains an unexpected shape carrier")
+        raise MesherError(f"{feature} STEP contains an unexpected shape carrier")
     carrier=re.fullmatch(r"\s*''\s*,\s*#(\d+)\s*",solid[3])
     shape=re.fullmatch(r"\s*''\s*,\s*\(\s*#(\d+)\s*,\s*#(\d+)\s*\)\s*,\s*#(\d+)\s*",representation[3])
     shell_shape=re.fullmatch(r"\s*''\s*,\s*\(\s*(#\d+(?:\s*,\s*#\d+)*)\s*\)\s*",shell[3])
     if (carrier is None or shape is None or shell_shape is None or int(carrier[1])!=int(shell[1])
             or int(shape[2])!=int(solid[1]) or entities.get(int(shape[1]),(None,))[0]!="AXIS2_PLACEMENT_3D"):
-        raise MesherError("terminating arc STEP carrier references do not match its single sewn shell")
+        raise MesherError(f"{feature} STEP carrier references do not match its single sewn shell")
     refs=lambda value:[int(x) for x in re.findall(r"#(\d+)",value)]
     faces=refs(shell_shape[1])
     all_faces={i for i,(kind,_) in entities.items() if kind=="ADVANCED_FACE"}
     if len(faces)!=n_faces or len(set(faces))!=n_faces or set(faces)!=all_faces:
-        raise MesherError("terminating arc STEP shell must contain every exact face once")
+        raise MesherError(f"{feature} STEP shell must contain every exact face once")
     edge_faces=defaultdict(set)
     for face in faces:
         for bound in refs(entities[face][1]):
@@ -518,17 +520,17 @@ def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) 
                 continue
             loops=refs(entities[bound][1])
             if len(loops)!=1 or entities[loops[0]][0]!="EDGE_LOOP":
-                raise MesherError("terminating arc STEP has an unexpected face boundary")
+                raise MesherError(f"{feature} STEP has an unexpected face boundary")
             for oriented in refs(entities[loops[0]][1]):
                 if entities[oriented][0]!="ORIENTED_EDGE":
-                    raise MesherError("terminating arc STEP has a non-edge loop member")
+                    raise MesherError(f"{feature} STEP has a non-edge loop member")
                 edges=refs(entities[oriented][1])
                 if len(edges)!=1 or entities[edges[0]][0]!="EDGE_CURVE":
-                    raise MesherError("terminating arc STEP has an invalid shared edge")
+                    raise MesherError(f"{feature} STEP has an invalid shared edge")
                 edge_faces[edges[0]].add(face)
     counts=Counter(len(owners) for owners in edge_faces.values())
-    if set(counts)-{1,2} or counts[1]!=(8 if open_throat else 4) or counts[2]==0:
-        raise MesherError("terminating arc STEP shell has disconnected or nonmanifold edge topology")
+    if set(counts)-{1,2} or counts[1]!=boundary_edges or counts[2]==0:
+        raise MesherError(f"{feature} STEP shell has disconnected or nonmanifold edge topology")
     reached={faces[0]}
     while True:
         expanded=reached|set().union(*(owners for owners in edge_faces.values() if owners&reached))
@@ -536,7 +538,7 @@ def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) 
             break
         reached=expanded
     if reached!=set(faces):
-        raise MesherError("terminating arc STEP contains disconnected shell components")
+        raise MesherError(f"{feature} STEP contains disconnected shell components")
     replacements={int(representation[1]):representation[0].replace("ADVANCED_BREP_SHAPE_REPRESENTATION","MANIFOLD_SURFACE_SHAPE_REPRESENTATION",1),
         int(solid[1]):f"#{solid[1]} = SHELL_BASED_SURFACE_MODEL('',(#{shell[1]}));",
         int(shell[1]):shell[0].replace("CLOSED_SHELL","OPEN_SHELL",1)}
@@ -544,6 +546,15 @@ def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) 
         if int(record[1]) in replacements:
             text=text[:record.start()]+replacements[int(record[1])]+text[record.end():]
     return text
+
+
+def _arc_surface_shell_transport(text: str, *, n_faces: int, open_throat: bool) -> str:
+    return _surface_shell_transport(
+        text,
+        n_faces=n_faces,
+        boundary_edges=8 if open_throat else 4,
+        feature="terminating arc",
+    )
 
 
 def write_step(
@@ -665,6 +676,7 @@ def write_step(
 
             volume: int | None = None
             arc_surface=getattr(geometry,"arc_meridian",None) is not None
+            ath_surface = ath_import and body == "surface"
             if body == "solid":
                 shell = gmsh.model.occ.addSurfaceLoop(faces, sewing=True)
                 volume = int(gmsh.model.occ.addVolume([shell]))
@@ -680,8 +692,9 @@ def write_step(
                 if throat_opened:
                     volume = _open_throat(gmsh, volume, built, cap_tags)
                 keep = _entity_closure(gmsh, [(3, volume)])
-            elif controls is not None or arc_surface:
-                # Both native shell contracts retain the sewn OCC carrier.
+            elif controls is not None or arc_surface or ath_surface:
+                # Retain a sewn OCC carrier for connected open shells. The
+                # STEP transport below removes its temporary solid wrappers.
                 shell=gmsh.model.occ.addSurfaceLoop(faces,sewing=True)
                 volume=int(gmsh.model.occ.addVolume([shell]))
                 gmsh.model.occ.synchronize()
@@ -704,7 +717,7 @@ def write_step(
                 gmsh.model.occ.synchronize()
 
             if volume is not None:
-                volume_mm3 = None if controls is not None or arc_surface else float(gmsh.model.occ.getMass(3, volume))
+                volume_mm3 = None if body == "surface" else float(gmsh.model.occ.getMass(3, volume))
                 box = gmsh.model.getBoundingBox(3, volume)
                 n_faces = len(
                     gmsh.model.getBoundary(
@@ -730,6 +743,22 @@ def write_step(
                 text=_header_recipe(text,controls.fingerprint,controls.identity,"native-construction")
             if arc_surface:
                 text=_arc_surface_shell_transport(text,n_faces=n_faces,open_throat=open_throat)
+            if ath_surface:
+                try:
+                    text = _surface_shell_transport(
+                        text,
+                        n_faces=len(faces),
+                        boundary_edges=len(built.metadata["athMouthCurveTags"])
+                        * (2 if open_throat else 1),
+                        feature="imported ATH",
+                    )
+                except MesherError as exc:
+                    raise UserRefusal(
+                        "STEP export",
+                        "The imported ATH surfaces could not be sewn into one connected sheet.",
+                        "Export STL to retain this shape, or adjust the lip settings and import again.",
+                        diagnostic=str(exc),
+                    ) from exc
             adapter = getattr(geometry, "adapter_meridian", None)
             roundover = getattr(geometry, "roundover", None)
             composite = None
