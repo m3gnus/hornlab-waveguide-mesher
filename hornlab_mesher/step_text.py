@@ -83,7 +83,7 @@ def blank_step_strings(step_text: str) -> str:
 
 
 def step_records(step_text: str) -> dict[int, str]:
-    """Return entity id -> record body, collapsing whitespace outside strings.
+    """Return entity id -> record body, whitespace collapsed to single spaces.
 
     Comments are removed first, so a record spelled out inside ``/* */`` is
     never read as an entity. Every parser below builds on this, which is what
@@ -92,17 +92,13 @@ def step_records(step_text: str) -> dict[int, str]:
     """
     records: dict[int, str] = {}
     for match in _STEP_RECORD_RE.finditer(strip_step_comments(step_text)):
-        # Splitting on whole literals leaves their whitespace and escaped
-        # quotes intact. Only the alternating structural spans are normalized.
-        parts = re.split(f"({_STEP_STRING_RE.pattern})", match.group(2))
-        parts[::2] = [re.sub(r"\s+", " ", part) for part in parts[::2]]
-        records[int(match.group(1))] = "".join(parts).strip()
+        records[int(match.group(1))] = " ".join(match.group(2).split())
     return records
 
 
 def step_refs(record: str) -> list[int]:
     """Return every ``#id`` referenced by a record body, in order."""
-    return [int(value) for value in re.findall(r"#(\d+)", blank_step_strings(record))]
+    return [int(value) for value in re.findall(r"#(\d+)", record)]
 
 
 def record_entity_types(record: str) -> tuple[str, ...]:

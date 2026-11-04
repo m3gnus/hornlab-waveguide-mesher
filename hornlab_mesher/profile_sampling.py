@@ -29,7 +29,7 @@ from .text_import import (uses_text_import_geometry, uses_current_ath_axial_samp
                           uses_v2_text_import_geometry, uses_v3_text_import_geometry,
                           ath_throat_extension_segments)
 from .profile_formulas import (
-    _cached_icw_curve,
+    build_icw_curve,
     calculate_osse_curve,
     calculate_rosse_curve,
     icw_meridian_points,
@@ -941,7 +941,7 @@ def _raw_radial_grid(
     # expressions), so the curvature curve is solved/fit ONCE here, before the
     # per-phi loop, and its meridian is reused for every azimuth. The
     # superellipse scale is layered on top exactly as for OSSE/R-OSSE.
-    icw_curve = _cached_icw_curve(params) if formula == "ICW" else None
+    icw_curve = build_icw_curve(params) if formula == "ICW" else None
     icw_meridian = (
         icw_meridian_points(icw_curve, t_values) if icw_curve is not None else None
     )
@@ -1017,38 +1017,6 @@ def _raw_radial_grid(
         )
         z_values[i] = curve_z
     return raw_radials, z_values, _ThroatPrefix(prefix_fraction, slot_end_fraction)
-
-
-def _use_rectangle_mouth_prepass(
-    params: Mapping[str, Any], formula: str, exponent: float, aspect_ratio: float
-) -> bool:
-    """Limit the mouth-only pass to native, circular-base OSSE meridians.
-
-    Non-circular sections need the prefix reference used by
-    ``_cross_section_scaled``. Expressions, guiding curves, stretch and ATH
-    authored grids retain the full preliminary pass and its validation order.
-    """
-    return (
-        formula == "OSSE"
-        and not uses_text_import_geometry(params)
-        and _cross_section_is_circular(exponent, aspect_ratio)
-        and not _guiding_curve_active(params, 0.0)
-        and _morph_active(params, 0.0)
-        and _morph_target_shape(params, 0.0) == 1
-        and (eval_param(params.get("morphWidth"), 0.0, 0.0) <= 0.0
-             or eval_param(params.get("morphHeight"), 0.0, 0.0) <= 0.0)
-        and "s1" not in params and "s2" not in params
-        and all(_is_static_number(params.get(key)) for key in (
-            "L", "r0", "a", "a0", "k", "s", "n", "q", "h", "rot",
-            "throatExtLength", "throatExtAngle", "slotLength", "throatProfile",
-            "throat_profile", "circArcRadius", "circ_arc_radius", "circArcTermAngle",
-        ))
-        and eval_param(params.get("throatProfile", params.get("throat_profile")), 0.0, 1.0) != 3
-        # Keep any interior-domain refusal on the original full-grid path.
-        and 0.0 <= eval_param(params.get("a0"), 0.0, 15.5) < 90.0
-        and eval_param(params.get("k"), 0.0, 1.0) >= 0.0
-        and eval_param(params.get("r0"), 0.0, 12.7) > 0.0
-    )
 
 
 class _ThroatPrefix(NamedTuple):
@@ -1898,7 +1866,6 @@ def build_point_grid_arrays(
     ):
         raise ValueError(GCURVE_CROSS_SECTION_CONFLICT)
     phi_grid: np.ndarray | None = None
-    mouth_prepass = False
     if adapter is not None:
         angles, full_circle = _angle_list(params)
         t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
@@ -1986,12 +1953,8 @@ def build_point_grid_arrays(
         )
         n_length = len(t_unit_values) - 1
         t_values = t_unit_values * t_max
-        mouth_prepass = _use_rectangle_mouth_prepass(params, formula, exponent, aspect_ratio)
         raw_radials, z_values, throat_prefix = _raw_radial_grid(
-            params, angles,
-            t_values[-1:] if mouth_prepass else t_values,
-            t_unit_values[-1:] if mouth_prepass else t_unit_values,
-            formula, exponent, aspect_ratio, 0 if mouth_prepass else n_length
+            params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
         )
 
     if formula == "FREEFORM":
@@ -2045,7 +2008,7 @@ def build_point_grid_arrays(
                                       else not np.allclose(new_angles, angles))
                 if angles_changed:
                     angles = new_angles
-                    if source_angles is None and not mouth_prepass:
+                    if source_angles is None:
                         raw_radials, z_values, throat_prefix = _raw_radial_grid(
                             params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
                         )
@@ -2065,13 +2028,6 @@ def build_point_grid_arrays(
                     final_angles = np.r_[angles[-1]-math.tau, angles, angles[0]+math.tau]
                     source_angles = np.r_[source_angles[-1]-math.tau, source_angles, source_angles[0]+math.tau]
                 morph_angle_map = np.column_stack((final_angles, source_angles)).tolist()
-
-    if mouth_prepass:
-        # The mouth pass chose the layout only. Evaluate every final station
-        # even when the chosen angles happen to equal the preliminary ones.
-        raw_radials, z_values, throat_prefix = _raw_radial_grid(
-            params, angles, t_values, t_unit_values, formula, exponent, aspect_ratio, n_length
-        )
 
     morph_corner_arc_span = _morph_corner_arc_span(
         params, resolved_half_width, resolved_half_height

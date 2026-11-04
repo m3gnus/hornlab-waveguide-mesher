@@ -577,61 +577,6 @@ def _small_shell_config(surface_fit="auto"):
     }
 
 
-@pytest.mark.parametrize('boundary', [
-    'publication', 'staging', 'raw_write', 'postprocess', 'callback', 'profile_deviation',
-])
-@pytest.mark.parametrize('failure_type', [PermissionError, RuntimeError])
-def test_auto_fit_does_not_retry_output_or_callback_failures(
-    tmp_path, monkeypatch, boundary, failure_type,
-):
-    from pathlib import Path
-
-    import hornlab_mesher.config_builder as builder
-    from hornlab_mesher import mesher
-
-    target = tmp_path / 'existing.msh'
-    target.write_bytes(b'existing artifact')
-    failure = failure_type('injected output or callback failure')
-    attempts = []
-    original_build = builder.build_mesh_with_info
-
-    def build(geometry, *args, **kwargs):
-        attempts.append(geometry.surface_fit)
-        return original_build(geometry, *args, **kwargs)
-
-    def fail(*args, **kwargs):
-        raise failure
-
-    monkeypatch.setattr(builder, 'build_mesh_with_info', build)
-    options = {}
-    if boundary == 'publication':
-        monkeypatch.setattr(Path, 'replace', fail)
-    elif boundary == 'postprocess':
-        monkeypatch.setattr(mesher, '_postprocess_mesh', fail)
-    elif boundary == 'raw_write':
-        import gmsh
-
-        monkeypatch.setattr(gmsh, 'write', fail)
-    elif boundary == 'profile_deviation':
-        monkeypatch.setattr(mesher, '_freeform_profile_deviation_mm', fail)
-        options['measure_profile_deviation'] = True
-    elif boundary == 'staging':
-        original_temp = mesher.tempfile.NamedTemporaryFile
-
-        def stage(*args, **kwargs):
-            return fail() if kwargs.get('dir') == tmp_path else original_temp(*args, **kwargs)
-
-        monkeypatch.setattr(mesher.tempfile, 'NamedTemporaryFile', stage)
-    else:
-        options['after_density'] = fail
-    with pytest.raises(mesher.MesherError) as caught:
-        builder.build_from_config(_small_shell_config(), target, **options)
-    assert caught.value.__cause__ is failure
-    assert attempts == ['interpolate']
-    assert target.read_bytes() == b'existing artifact'
-    assert list(tmp_path.iterdir()) == [target]
-
-
 def test_interpolating_mesh_preserves_callers_curve_sampling_option(tmp_path):
     gmsh = pytest.importorskip("gmsh")
     from hornlab_mesher.config_builder import build_from_config
@@ -648,41 +593,24 @@ def test_interpolating_mesh_preserves_callers_curve_sampling_option(tmp_path):
 
 
 @pytest.mark.parametrize("measure_profile_deviation", [False, True])
-@pytest.mark.parametrize('boundary', ['construction', 'generation', 'validation'])
 def test_auto_fit_recovers_from_failure_but_explicit_fit_propagates(
-    tmp_path, monkeypatch, caplog, measure_profile_deviation, boundary,
+    tmp_path, monkeypatch, caplog, measure_profile_deviation
 ):
-    gmsh = pytest.importorskip("gmsh")
+    pytest.importorskip("gmsh")
     import hornlab_mesher.config_builder as builder
-    from hornlab_mesher import mesher
     from hornlab_mesher.mesher import MesherError
 
-    original = mesher._dispatch_builder
+    original = builder.build_mesh_with_info
     attempts = []
 
-    def fail_interpolation(geometry):
+    def fail_interpolation(geometry, *args, **kwargs):
+        assert kwargs["measure_profile_deviation"] is measure_profile_deviation
         attempts.append(geometry.surface_fit)
-        if boundary == 'construction' and geometry.surface_fit == "interpolate":
-            raise RuntimeError("injected interpolation failure")
-        return original(geometry)
+        if geometry.surface_fit == "interpolate":
+            raise MesherError("injected interpolation failure")
+        return original(geometry, *args, **kwargs)
 
-    original_generate = gmsh.model.mesh.generate
-
-    def generate(dim):
-        if boundary == 'generation' and attempts[-1] == 'interpolate':
-            raise RuntimeError('injected interpolation failure')
-        return original_generate(dim)
-
-    original_validate = mesher._validate_closed_shell_contract
-
-    def validate(*args, **kwargs):
-        if boundary == 'validation' and attempts[-1] == 'interpolate':
-            raise MesherError('injected interpolation failure')
-        return original_validate(*args, **kwargs)
-
-    monkeypatch.setattr(mesher, '_validate_closed_shell_contract', validate)
-    monkeypatch.setattr(gmsh.model.mesh, 'generate', generate)
-    monkeypatch.setattr(mesher, "_dispatch_builder", fail_interpolation)
+    monkeypatch.setattr(builder, "build_mesh_with_info", fail_interpolation)
     result = builder.build_from_config(
         _small_shell_config(), tmp_path / "recovered.msh",
         measure_profile_deviation=measure_profile_deviation,

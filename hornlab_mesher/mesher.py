@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import tempfile
 import threading
-from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 from collections.abc import Callable
@@ -18,7 +17,6 @@ from .builders import (
 from .builders._occ import add_physical_groups
 from .config_parser import ConfigError
 from .errors import UserRefusal
-from .gmsh_session import operation_model
 from .density import (
     CLEARANCE_CAP_BUDGET_ADVICE,
     TriangleBudgetExceeded as _PremeshTriangleBudgetExceeded,
@@ -62,10 +60,6 @@ _GMSH_LOCK = threading.RLock()
 
 class MesherError(Exception):
     pass
-
-
-class SurfaceFitError(MesherError):
-    """A fitted geometry or mesh failure eligible for automatic fit retry."""
 
 
 class _DensityEstimateReady(Exception):
@@ -311,16 +305,16 @@ def build_mesh_with_info(
         out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with _GMSH_LOCK, ExitStack() as model_scope:
+    with _GMSH_LOCK:
         initialized_here = False
         saved_options: dict[str, float] = {}
         build_succeeded = False
         raw_path: Path | None = None
         staged_path: Path | None = None
+        previous_model = None
+        owned_model = None
         initial_views: set[int] | None = None
         woofer_refusal: UserRefusal | None = None
-        fitting = False
-        postprocessing = False
         try:
             if not gmsh.isInitialized():
                 # interruptible=False skips gmsh's SIGINT handler, which only
@@ -347,11 +341,14 @@ def build_mesh_with_info(
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
-            model_scope.enter_context(operation_model(
-                gmsh, initialized_here=initialized_here, name="HornLabMesher"
-            ))
+            if controls is not None and not initialized_here:
+                previous_model=gmsh.model.getCurrent()
+                owned_model="HornLabControlsMesh-"+__import__("uuid").uuid4().hex
+                gmsh.model.add(owned_model)
+            else:
+                gmsh.clear()
+                gmsh.model.add("HornLabMesher")
 
-            fitting = True
             acoustic_geometry, acoustic_metadata = _acoustic_geometry(
                 geometry, mesh_density
             )
@@ -371,7 +368,6 @@ def build_mesh_with_info(
                     raise ValueError(str(exc)) from exc
             built.metadata.update(acoustic_metadata)
             gmsh.model.occ.synchronize()
-            fitting = False
             if isinstance(acoustic_geometry, PointGridHornGeometry):
                 if measure_profile_deviation:
                     deviation = _freeform_profile_deviation_mm(acoustic_geometry, built)
@@ -381,12 +377,9 @@ def build_mesh_with_info(
                     built.metadata["freeformReport"] = acoustic_geometry.freeform_report
 
             initial_views = set(map(int, gmsh.view.getTags()))
-            fitting = True
             configure_density(built, mesh_density)
-            fitting = False
             if after_density is not None:
                 after_density(built)
-            fitting = True
             if controls is not None or getattr(acoustic_geometry, "arc_meridian", None) is not None:
                 gmsh.option.setNumber("Mesh.MinimumCirclePoints", 16)
             add_physical_groups(built.surface_groups)
@@ -436,10 +429,6 @@ def build_mesh_with_info(
 
                 repair_fitted_wall_mesh(built.mesh_surface_groups)
 
-            # Reporting, staging and publication cannot repair a surface fit.
-            # Postprocessing may still report a typed mesh-topology failure,
-            # but an output write must never retry with different geometry.
-            fitting = False
             from .tessellation import observe_surface_deviation
             if controls is not None:
                 # The native owner already certifies every curved branch facet;
@@ -474,7 +463,6 @@ def build_mesh_with_info(
                 staged_path = Path(tmp.name)
 
             is_infinite_baffle = bool(getattr(geometry, "infinite_baffle", False))
-            postprocessing = True
             info = _postprocess_mesh(
                 raw_path,
                 staged_path,
@@ -511,7 +499,6 @@ def build_mesh_with_info(
                 physical_name_overrides=built.metadata.get("assemblyPhysicalNames"),
                 assembly=built.metadata.get("assembly"),
             )
-            postprocessing = False
             if isinstance(geometry,StandaloneSourceGeometry):
                 from .source_body import certify_mesh
                 built.metadata["sourceBody"].update(certify_mesh(geometry,staged_path,info.units))
@@ -563,11 +550,7 @@ def build_mesh_with_info(
         except Exception as exc:
             if isinstance(exc, (TriangleBudgetExceeded, _PremeshTriangleBudgetExceeded)):
                 raise TriangleBudgetExceeded(f"mesh build failed: {exc}") from exc
-            fit_failure = fitting or (
-                postprocessing and isinstance(exc, (MesherError, MeshOrientationError))
-            )
-            error_type = SurfaceFitError if fit_failure and not isinstance(exc, OSError) else MesherError
-            wrapped = error_type(f"mesh build failed: {exc}")
+            wrapped = MesherError(f"mesh build failed: {exc}")
             if woofer_refusal is not None:
                 wrapped.user_refusal = woofer_refusal
             raise wrapped from exc
@@ -587,6 +570,9 @@ def build_mesh_with_info(
             elif saved_options and gmsh.isInitialized():
                 for name, value in saved_options.items():
                     gmsh.option.setNumber(name, value)
+            if owned_model is not None and gmsh.isInitialized():
+                gmsh.model.setCurrent(owned_model);gmsh.model.remove()
+                if previous_model in gmsh.model.list():gmsh.model.setCurrent(previous_model)
 
 
 def load_mesh(path: str | Path) -> MeshInfo:

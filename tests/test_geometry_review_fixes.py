@@ -93,15 +93,15 @@ def test_vector_osse_refuses_an_undefined_profile_like_the_scalar_path():
 
 
 def test_resolve_geometry_refuses_non_finite_control_points(monkeypatch):
-    real = config_builder.build_point_grid_arrays
+    real = config_builder.build_point_grid
 
     def poisoned(params, **kwargs):
         grid = real(params, **kwargs)
-        points = grid["inner_grid"].copy()
-        points[0, 1, 1] = float("nan")
-        return {**grid, "inner_grid": points}
+        points = list(grid["inner_points"])
+        points[4] = float("nan")
+        return {**grid, "inner_points": points}
 
-    monkeypatch.setattr(config_builder, "build_point_grid_arrays", poisoned)
+    monkeypatch.setattr(config_builder, "build_point_grid", poisoned)
     config = {
         "formula": "OSSE",
         "profile": {"L": 80.0, "a": 45.0, "a0": 10.0},

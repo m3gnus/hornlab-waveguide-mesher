@@ -33,7 +33,6 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Sequence
-from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -54,7 +53,6 @@ from .geometry import (
     StandaloneSourceGeometry,
 )
 from .mesher import _GMSH_LOCK, MesherError, _dispatch_builder
-from .gmsh_session import operation_model
 from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .native_env import preserve_native_windows_path
 
@@ -600,11 +598,13 @@ def write_step(
             )
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with _GMSH_LOCK, ExitStack() as model_scope:
+    with _GMSH_LOCK:
         initialized_here = False
         wrote = False
         staged_path: Path | None = None
         saved_options: dict[str, float] = {}
+        previous_model=None
+        owned_model=None
         try:
             if not gmsh.isInitialized():
                 # On Windows the open can truncate the native PATH, so it runs
@@ -631,9 +631,13 @@ def write_step(
             gmsh.option.setNumber("General.Verbosity", 0)
             gmsh.option.setNumber("Geometry.Tolerance", 1e-8)
             gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-8)
-            model_scope.enter_context(operation_model(
-                gmsh, initialized_here=initialized_here, name="HornLabCad"
-            ))
+            if controls is not None and not initialized_here:
+                previous_model=gmsh.model.getCurrent()
+                owned_model="HornLabControlsCad-"+__import__("uuid").uuid4().hex
+                gmsh.model.add(owned_model)
+            else:
+                gmsh.clear()
+                gmsh.model.add("HornLabCad")
 
             # Deliberately not _acoustic_geometry(): CAD keeps the geometry as
             # designed, including fillets too small for the mesh to resolve.
@@ -814,6 +818,9 @@ def write_step(
             if initialized_here and gmsh.isInitialized():
                 with preserve_native_windows_path():
                     gmsh.finalize()
+            if owned_model is not None and gmsh.isInitialized():
+                gmsh.model.setCurrent(owned_model);gmsh.model.remove()
+                if previous_model in gmsh.model.list():gmsh.model.setCurrent(previous_model)
 
 
 @stretch_config_errors

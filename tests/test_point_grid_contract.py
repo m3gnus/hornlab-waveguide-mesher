@@ -29,6 +29,7 @@ from hornlab_mesher.builders.point_grid_sources import (
 )
 from hornlab_mesher.builders.point_grid_surfaces import (
     _SharedSurfaceBuilder,
+    _rear_rim_points,
 )
 from hornlab_mesher import HornEnclosure, MeshDensity, MesherError, build_mesh
 from hornlab_mesher.config_builder import (
@@ -337,13 +338,7 @@ def _tag_components(triangles: np.ndarray, tags: np.ndarray, tag: int) -> list[i
     return sorted(sizes, reverse=True)
 
 
-def test_rear_ring_has_one_live_owner():
-    from hornlab_mesher.builders import point_grid_surfaces
-
-    assert not hasattr(point_grid_surfaces, '_rear_rim_points')
-
-
-def test_freestanding_rear_ring_projects_outer_throat_straight_back():
+def test_rear_rim_points_project_outer_throat_ring_straight_back():
     # Straight axial projection (constant x/y): cut-plane rays stay on their
     # plane and the rear cover stays at the outer throat radius like ATH's.
     # The earlier along-ray extrapolation flared past ATH's rear cover and
@@ -361,22 +356,13 @@ def test_freestanding_rear_ring_projects_outer_throat_straight_back():
         )
         outer[i, 1] = (next_radius * math.cos(phi), next_radius * math.sin(phi), 10.0)
 
-    from hornlab_mesher.rear_compatibility import freestanding_rear_ring
-
-    inner = outer.copy()
-    radii = np.linalg.norm(inner[:, :, :2], axis=2)
-    inner[:, :, :2] *= ((radii - 5.0) / radii)[:, :, None]
-    inner_before, outer_before = inner.copy(), outer.copy()
-    rear = freestanding_rear_ring(inner, outer, 5.0)
+    rear = _rear_rim_points(outer, rear_z=-5.0)
 
     expected = outer[:, 0, :].copy()
     expected[:, 2] = -5.0
     assert np.allclose(rear, expected, rtol=0.0, atol=1.0e-9)
     # A seam ray on the y=0 plane must stay exactly on it.
     assert rear[0, 1] == 0.0
-    assert np.array_equal(inner, inner_before)
-    assert np.array_equal(outer, outer_before)
-    assert not np.shares_memory(rear, outer)
 
 
 def test_freestanding_quarter_rear_stays_inside_quadrant(tmp_path):

@@ -252,16 +252,6 @@ def _eval_ast(node: ast.AST, p: float) -> Any:
     raise ValueError(f"unsupported expression node {type(node).__name__}")
 
 
-@lru_cache(maxsize=128)
-def _validated_param_expression(expr: str) -> ast.Expression:
-    """Share immutable validated syntax across the existing scalar evaluations."""
-    if "__" in expr:
-        raise ValueError("dunder names are not allowed")
-    tree = ast.parse(expr, mode="eval")
-    _PARAM_EXPRESSION_VALIDATOR.visit(tree)
-    return tree
-
-
 @lru_cache(maxsize=16384)
 def _eval_text_param(text: str, p: float) -> float:
     try:
@@ -270,7 +260,10 @@ def _eval_text_param(text: str, p: float) -> float:
         pass
     expr = text.replace("^", "**")
     try:
-        tree = _validated_param_expression(expr)
+        if "__" in expr:
+            raise ValueError("dunder names are not allowed")
+        tree = ast.parse(expr, mode="eval")
+        _PARAM_EXPRESSION_VALIDATOR.visit(tree)
         return float(_eval_ast(tree, p))
     except Exception as exc:
         # Name the reason when it is ours to give (an overflowing power, an

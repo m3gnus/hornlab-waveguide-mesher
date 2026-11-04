@@ -613,30 +613,18 @@ class TestAdversarial:
 # Regression: review fixes (2026-06-15)
 # =====================================================================================
 class TestReviewFixes:
-    def test_targets_mode_curve_is_memoised(self, monkeypatch):
+    def test_targets_mode_curve_is_memoised(self):
         """The TARGETS-mode memo used to store under a shadowed loop variable
         (the literal string "theta_max_deg") and never hit."""
-        from types import SimpleNamespace
-
-        from hornlab_mesher import icw
         from hornlab_mesher import profile_formulas as pf
 
         params = {"type": "ICW", "r0": 12.7, "a0": 14.5, "L": 160.0, "R": 130.0}
-        calls = []
-
-        def solve(*args, **kwargs):
-            calls.append(1)
-            return ICWCurve(np.zeros(6), 160, 12.7, 0.2), SimpleNamespace(feasible=True)
-
-        monkeypatch.setattr(icw, "solve_icw", solve)
-        monkeypatch.setattr(pf, "_ICW_CURVE_CACHE", pf.OrderedDict())
+        pf._ICW_CURVE_CACHE.clear()
         first = pf.build_icw_curve(params)
         assert pf._icw_cache_key(params) in pf._ICW_CURVE_CACHE
         assert "theta_max_deg" not in pf._ICW_CURVE_CACHE
         second = pf.build_icw_curve(params)
-        assert second is not first
-        np.testing.assert_array_equal(second.coeffs, first.coeffs)
-        assert calls == [1]
+        assert second is first
 
     def test_rollback_r_aperture_reaches_the_solver(self):
         """config_builder used to materialise R=150.0 for every termination,
