@@ -18,6 +18,37 @@ ATH_AXIAL_CURRENT = "ath-v2025-12+"
 ATH_DEFAULT_CORNER_SEGMENTS = 6
 
 
+def ath_osse_block_noops(
+    flat: Mapping[str, str], blocks: Mapping[str, Mapping[str, str]], *, ath_version: str | None,
+) -> list[tuple[str, str, str]]:
+    """Measured V2026-09a selectors that a populated OSSE block overrides.
+
+    Call only for fresh ATH input. Saved interpretations must retain their
+    fields and refusals. This list is also WG's import report authority.
+    """
+    if (ath_version not in (None, "v2026-09a") or not any(
+            not key.startswith("_") and key not in {"Throat.Profile", "CircArc.Radius", "CircArc.TermAngle"}
+            for key in blocks.get("OSSE", {}))
+            or any(name in blocks for name in ("R-OSSE", "ROSSE"))
+            or "Throat.Ext.Ctrl" in flat):
+        return []
+    notes = []
+    for prefix, items in (("", flat), ("OSSE.", blocks["OSSE"])):
+        for key, value in items.items():
+            if key == "Throat.Profile":
+                try:
+                    if Decimal(value) != 3:
+                        continue
+                except InvalidOperation:
+                    continue
+            elif key not in {"CircArc.Radius", "CircArc.TermAngle"}:
+                continue
+            notes.append((prefix + key, value,
+                          ("ATH V2026-09a uses the OSSE block and ignores this circular-arc setting. "
+                           "The imported profile is ordinary OSSE; use ATH for an active circular arc.")))
+    return notes
+
+
 def ath_throat_extension_segments(values: Mapping[str, Any]) -> int:
     """Authored extension intervals, independent of acoustic subdivision."""
     raw = values.get("athThroatExtSegments", 10)

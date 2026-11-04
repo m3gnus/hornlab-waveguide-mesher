@@ -773,7 +773,7 @@ and states that its whole subtree is ignored. This list lives in
 | --- | --- |
 | `ABEC.*` other than `ABEC.SimType`, including `ABEC.Polars:<tag>` and the field blocks | Solver project: frequencies, observation maps and fields, driving values, `ABEC.SimProfile` |
 | `Simulation.*` | Solver-run settings, including `Simulation.F1`, `Simulation.F2` and `Simulation.NumFrequencies`; reported as ignored |
-| `CircArc.TermAngle` | Mouth terminal angle only for `Throat.Profile = 3` (ATH User Guide 4.1.1); dormant for the supported OS-SE profile (`1`), and reported as ignored. Profile `3` remains refused |
+| `CircArc.TermAngle` | Dormant for OS-SE profile `1`, and reported as ignored. Fresh V2026-09a/unstamped imports with a populated `OSSE` block also ignore `Throat.Profile = 3`, `CircArc.Radius` and `CircArc.TermAngle`, matching ATH's ordinary OSSE output. Active flat circular arcs remain refused; see [circular-arc import](ath-circular-arc-import.md) |
 | `Output.*` | Output locations and file switches; the CLI owns output paths |
 | `Report = {}` | Report layout |
 | `GridExport:<tag> = {}`, `FRDExport = {}`, `RespExport = {}` | Coordinate and response export |
@@ -856,7 +856,8 @@ blocks and keys, with reasons or spelling/case suggestions, then explains
 the missing profile. For example, `osse` suggests `OSSE`, `Horn.Part:1`
 names the unsupported two-profile geometry, and `Lenght` suggests `Length`.
 
-Refused with their own messages: `Throat.Profile` other than 1 (OS-SE),
+Refused with their own messages: active flat circular arcs and unqualified
+`Throat.Profile` values (the measured OSSE-block no-op above is accepted),
 `Rollback.*` (current ATH builds refuse it too), `Mesh.RearShape` other than 1 or 3,
 `Mesh.ThroatSegments`, any other unrecognised
 `Mesh.*` key, `Source.Contours`, `LFSource*`, invalid `Source.Velocity` values, and a

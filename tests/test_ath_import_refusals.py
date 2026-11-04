@@ -249,6 +249,9 @@ def test_osse_rotation_precedence(in_block: int | None, top_first: bool) -> None
 @pytest.mark.parametrize("block", [_osse, _rosse])
 def test_in_block_os_se_throat_profile_is_supported(block) -> None:
     assert parse_text_config(block("  Throat.Profile = 1\n")) == parse_text_config(block())
+    if block is _osse:
+        assert parse_text_config(block("  Throat.Profile = 3\n")) == parse_text_config(block())
+        return
     with pytest.raises(ConfigError, match="Throat.Profile = 3.*only the OS-SE profile"):
         parse_text_config(block("  Throat.Profile = 3\n"))
 
@@ -440,11 +443,11 @@ def test_circular_arc_angle_is_dormant_for_supported_profiles(block, caplog: pyt
     with caplog.at_level(logging.WARNING, logger="hornlab_mesher.config_parser"):
         assert parse_text_config(block() + "CircArc.TermAngle = 1\n") == parse_text_config(block())
     assert "ignoring CircArc.TermAngle" in caplog.text
-    assert "only to Throat.Profile = 3" in caplog.text
+    assert ("OSSE block" if block is _osse else "only to Throat.Profile = 3") in caplog.text
 
 
 def test_circular_arc_profile_is_still_refused() -> None:
-    with pytest.raises(ConfigError, match="Throat.Profile = 3.*only the OS-SE profile"):
+    with pytest.raises(ConfigError, match="Throat.Profile = 3.*active flat circular-arc"):
         parse_text_config(FLAT_OSSE + "Throat.Profile = 3\nCircArc.TermAngle = 1\n")
     with pytest.raises(ConfigError, match=r"CircArc\.MadeUp"):
         parse_text_config(FLAT_OSSE + "CircArc.MadeUp = 1\n")

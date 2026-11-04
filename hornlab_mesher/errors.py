@@ -58,7 +58,9 @@ def ath_refusal(diagnostic: str) -> UserRefusal:
     # frontend's raw-key filter from hiding the actual import remedy.
     import re
     text = re.sub(r"\b(?:[A-Z][A-Za-z0-9-]*\.)+[A-Za-z0-9_.-]+", lambda m: "“" + m[0] + "”", diagnostic)
-    if "Throat.Profile =" in diagnostic:
+    if "active flat circular-arc" in diagnostic:
+        message, step = text, "Use an OSSE block for an ordinary OSSE profile, or mesh this circular arc in ATH."
+    elif "Throat.Profile =" in diagnostic:
         message, step = text, 'Set “Throat.Profile” to 1 (OS-SE), or mesh this file in ATH.'
     elif "Source.Velocity =" in diagnostic:
         message, step = text, 'Set “Source.Velocity” to 1 for normal motion or 2 for axial motion, then import the file again.'

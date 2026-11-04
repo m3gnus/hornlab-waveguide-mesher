@@ -662,6 +662,10 @@ def _reject_unsupported_ath_keys(
         raise ath_refusal("multi-source ATH configs are not supported by this mesher "
             f"(saw {', '.join(multi_source_keys)}); only the single cap/disc throat source is implemented")
     throat_profile = _maybe_number(profile_items.get("Throat.Profile", flat.get("Throat.Profile")))
+    if throat_profile == 3 and not any(name in blocks for name in _PROFILE_BLOCKS):
+        raise ath_refusal("Throat.Profile = 3: active flat circular-arc import is not supported "
+            "through preview, solve meshes and export. Default and high-angle profiles "
+            "do not yet match ATH")
     if throat_profile is not None and throat_profile != 1:
         raise ath_refusal(f"Throat.Profile = {throat_profile} is not supported; only the OS-SE profile (1) is implemented")
     rollback_keys = sorted(
@@ -757,6 +761,15 @@ def parse_text_config(content: str) -> dict[str, Any]:
     blocks, flat, nested = _parse_ath_blocks(
         content, merge_profiles=imported_geometry and saved_geometry_version is None,
     )
+    if imported_geometry and saved_geometry_version is None:
+        from .text_import import ath_osse_block_noops
+
+        for key, value, reason in ath_osse_block_noops(flat, blocks, ath_version=ath_version):
+            if key.startswith("OSSE."):
+                blocks["OSSE"].pop(key.removeprefix("OSSE."))
+            else:
+                flat.pop(key)
+            _report_ignored_ath_item(key, reason, value=value)
     # Only previously refused, fresh ATH inputs may acquire this construction.
     # Saved/native readers retain their existing interpretation and refusals.
     throat_controls = (flat.pop("Throat.Ext.Ctrl", None)
