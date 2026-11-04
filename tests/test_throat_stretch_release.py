@@ -486,11 +486,19 @@ def test_absent_stretch_resolved_asdict_fields_state_and_repr_equal_base(family)
         assert resolved.density.surface_deviation_mm is None
         assert 'surface_deviation_mm' not in expected['density']
         expected['density']['surface_deviation_mm'] = None
+        # The optional sketched HF diaphragm was added after the capture too; absent is None.
+        assert resolved.geometry.hf_diaphragm is None
+        expected['geometry']['hf_diaphragm'] = None
         _assert_base_equal(_resolved_value(asdict(resolved)), expected)
-    assert [f.name for f in fields(resolved.geometry)] == captured['geometry_fields']
-    assert sorted(vars(resolved.geometry)) == captured['geometry_state_keys']
+    geometry_fields = list(captured['geometry_fields'])
+    geometry_fields.insert(geometry_fields.index('wall_thickness_mm') + 1, 'hf_diaphragm')
+    assert [f.name for f in fields(resolved.geometry)] == geometry_fields
+    assert sorted(vars(resolved.geometry)) == sorted([*captured['geometry_state_keys'], 'hf_diaphragm'])
     expected_repr = captured['repr'].replace(
         ', max_triangles=', ', surface_deviation_mm=None, max_triangles=', 1)
+    at = expected_repr.index('wall_thickness_mm=')
+    at = expected_repr.index(', ', at)
+    expected_repr = expected_repr[:at] + ', hf_diaphragm=None' + expected_repr[at:]
     assert expected_repr != captured['repr']
     _assert_base_repr_equal(repr(resolved), expected_repr)
 
