@@ -57,6 +57,7 @@ from .mesher import _GMSH_LOCK, MesherError, _dispatch_builder
 from .gmsh_session import operation_model
 from .native_boundary import NATIVE_MODEL_ATTRIBUTES
 from .native_env import preserve_native_windows_path
+from .errors import UserRefusal
 
 CadBody = Literal["solid", "surface"]
 
@@ -562,8 +563,7 @@ def write_step(
     """
 
     from .ath_import_surfaces import AthImportedSurfaceGeometry
-    if isinstance(geometry, AthImportedSurfaceGeometry):
-        raise MesherError("STEP export of Mesh.Roundover / Mesh.RearShape = 3 imports is unsupported: GEO spline/Coons patches cannot be exported by the OCC STEP writer; faithful OCC ring patches, rear fan and shared-seam solid sewing are not implemented")
+    ath_import = isinstance(geometry, AthImportedSurfaceGeometry)
 
     if sum(getattr(geometry, name, None) is not None
            for name in NATIVE_MODEL_ATTRIBUTES) > 1:
@@ -637,7 +637,11 @@ def write_step(
 
             # Deliberately not _acoustic_geometry(): CAD keeps the geometry as
             # designed, including fillets too small for the mesh to resolve.
-            built = _dispatch_builder(geometry)
+            if ath_import:
+                from .builders.ath_cad import build_ath_occ
+                built = build_ath_occ(geometry, open_throat=open_throat)
+            else:
+                built = _dispatch_builder(geometry)
             gmsh.model.occ.synchronize()
 
             excluded = _role_tags(built, *_NON_MATERIAL_ROLES)
@@ -665,6 +669,8 @@ def write_step(
                 shell = gmsh.model.occ.addSurfaceLoop(faces, sewing=True)
                 volume = int(gmsh.model.occ.addVolume([shell]))
                 gmsh.model.occ.synchronize()
+                if ath_import and len(gmsh.model.getBoundary([(3, volume)], oriented=False)) != len(faces):
+                    raise UserRefusal("STEP export", "The imported ATH surfaces could not be sewn into one closed part.", "Export STL to retain this shape, or adjust the lip or rear settings and import again.")
                 mass = float(gmsh.model.occ.getMass(3, volume))
                 if mass <= _MIN_SOLID_VOLUME_MM3:
                     raise MesherError(
@@ -799,7 +805,7 @@ def write_step(
                 **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
                 **({} if arc is None else {"terminating_arc":arc.metadata()["terminatingArc"],"datums":derive_datums(geometry,built)}),
             )
-        except MesherError:
+        except (MesherError, UserRefusal):
             raise
         except Exception as exc:
             raise MesherError(f"STEP export failed: {exc}") from exc

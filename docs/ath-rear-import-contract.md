@@ -143,11 +143,19 @@ without a clamp warning.
 Active lips and Opus rears also refuse `Scale != 1`, active `Throat.Ext.*`,
 nonzero `Rot` or `Mesh.VerticalOffset`, and `Source.Shape = 2` pending ATH probes.
 
-STEP retains a named refusal: the mesh uses GEO spline/Coons patches, whereas
-the STEP writer exports OCC geometry. Faithful support requires matching OCC
-ring patches, a warped fan, shared seam curves and qualified solid sewing;
-substituting the existing planar fill or an unconstrained OCC loft would
-change the authored surfaces. Existing planar imports retain STEP support.
+STEP transports the existing mesh builder's GEO patches to OCC, without
+reconstructing or resampling the authored lip/rear grids. Ring bands retain
+their cubic breaks and linear span between rings. Coplanar boundaries use
+the existing planar fill; non-planar fans retain their warp and refine against
+the original patch with independent probes in every knot span to 0.010 mm
+(inside the 0.020 mm CAD tolerance). This is finite sampling, not an analytic
+error certificate. The CAD owner sews all faces and opens the throat; its
+temporary closure is flat because the acoustic membrane is removed. A retained
+spherical membrane must also fit its shared boundary within 0.020 mm.
+Unachievable fits refuse with an STL remedy before replacing an existing file.
+OCC round-trip tests check surface distances, closed shared edges, one solid
+without loose faces, volume and the open bore. Existing planar imports retain
+their previous STEP path.
 Excessive FrontOffset with no eligible rear row, **FrontOffset < 0**, nonpositive/
 nonfinite Step, and nonfinite FrontOffset are named refusals. Negative offsets
 have no qualified ATH ring fit.

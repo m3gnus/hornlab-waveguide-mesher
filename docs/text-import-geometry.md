@@ -142,8 +142,12 @@ See [ATH import lip](mouth-roundover-contract.md#ath-import-lip) and
 for rules, fixture evidence and named refusals. Preview tessellates the same
 authored mesh patches at every LOD; it never recomputes the lip on a refined
 body grid. Viewport exports retain the authored inner rows, independent rear
-row count and apex, and optionally carry that tessellation. STEP retains a
-named refusal because GEO patches have no faithful OCC transport yet. Existing imports without
+row count and apex, and optionally carry that tessellation. STEP copies those
+same authored patches to OCC, retaining their ring seams and warped rear fan.
+Ring bands retain their cubic parameter breaks; non-planar fillings refine
+against the GEO surface to 0.010 mm, within the 0.020 mm CAD tolerance.
+OCC round-trip tests check surface distance, a single closed material body,
+and the open throat. Existing imports without
 an active lip or Opus rear retain their previous consumers. Planar rears keep
 the existing plane bit for bit. V2 warped rears use the measured RearShape 1
 throat (-5 mm shift, then the wall offset along the authored meridional

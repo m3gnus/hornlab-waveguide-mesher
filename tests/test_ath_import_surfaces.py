@@ -203,11 +203,11 @@ def test_scalar_zero_is_noop():
 
 
 @pytest.mark.parametrize("name", ["p1", "onr", "rs1", "coreabec"])
-def test_step_refuses_by_name(tmp_path, name):
+def test_step_sector_refuses_with_full_model_remedy(tmp_path, name):
     from hornlab_mesher.cad import write_step
     from hornlab_mesher.mesher import MesherError
     cfg = config(name)
-    with pytest.raises(MesherError, match="STEP.*Mesh.Roundover / Mesh.RearShape"):
+    with pytest.raises(MesherError, match="STEP export needs the full model.*quadrants=1234"):
         write_step(resolve_geometry(cfg).geometry, tmp_path / "refused.step")
     assert not (tmp_path / "refused.step").exists()
 

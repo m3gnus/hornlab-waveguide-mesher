@@ -348,9 +348,11 @@ repeats the mouth row, which leaves zero-area faces). Existing unqualified morph
 combinations keep their existing refusals. Preview uses the authored mesh
 patches, including every lip row, with shared seams and measured triangle
 fidelity at every LOD. Viewport grid exports retain the lip and independently
-sized rear rings. STEP retains a named refusal: a faithful OCC patch and
-shared-seam construction is required to transport the GEO surfaces. Mesh
-and point-grid exports include the lip.
+sized rear rings. STEP transports those same ring patches through the existing
+OCC CAD owner, including the returning lip and independent rear fan, within
+the 0.020 mm CAD tolerance. Bare lips export as surface bodies; free-standing
+walls export as solids with an open throat. Mesh and point-grid exports
+include the lip.
 
 Evidence: `tests/fixtures/ath_import/ath-v2026-09a` contains the plain `p1`,
 Segments-default `segdef`, and full `coreabec` profile exports (the latter includes

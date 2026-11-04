@@ -672,7 +672,7 @@ def _build_wg_freestanding_point_grid(
     )
 
 
-def _build_ath_import_surfaces(geometry):
+def _build_ath_import_surfaces(geometry, *, surface_builder=None):
     """Fan and ring lofts on ATH's authored grid, including the returning lip.
 
     Both topology modes retain the measured stations: acoustic fitting must
@@ -688,7 +688,7 @@ def _build_ath_import_surfaces(geometry):
         rear = _snap_open_symmetry_grid(
             rear, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
     faceted = geometry.topology_mode == "legacy" and (geometry.preserve_grid or not geometry.wg_topology)
-    builder = _SharedSurfaceBuilder() if faceted else _GeoSurfaceBuilder()
+    builder = _SharedSurfaceBuilder() if faceted else (surface_builder or _GeoSurfaceBuilder())
     builder.add_grid("inner", inner)
     n_phi, n_len, _ = inner.shape
     wall_function = _add_grid_wall_surfaces if faceted else _add_spline_span_wall_surfaces
