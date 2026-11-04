@@ -24,7 +24,7 @@ import numpy as np
 
 from . import cost
 from .config_parser import ConfigError
-from .freeform import build_freeform_geometry, _validate_freeform_config, freeform_corner_z
+from .freeform import build_freeform_geometry, _validate_freeform_config
 from .geometry import (
     HornGeometry,
     HornEnclosure,
@@ -2749,8 +2749,9 @@ def resolve_geometry(
             if isinstance(exc, UserRefusal):
                 raise
             raise ConfigError(str(exc)) from exc
-    if formula == "FREEFORM" and freeform_corner_z(freeform_geometry):
+    if formula == "FREEFORM":
         from .corner_wall import CornerWall, corner_geometry_class
+        # Smooth and corner profiles share the authored-wall fitter.
         geometry_cls = corner_geometry_class(geometry_cls, CornerWall(
             freeform_geometry, scale=float(eval_param(params.get("scale"), 0.0, 1.0))))
     geometry = geometry_cls(

@@ -496,18 +496,24 @@ def interpolating_surface_poles(
     # of ``.c``, so this yields (n_u, n_v, 3) and the second pass restores
     # (n_v, n_u, 3).
     along_u = make_interp_spline(u_params, grid, k=degree_u, axis=1)
-    along_v = make_interp_spline(v_params, np.asarray(along_u.c), k=degree_v, axis=1)
+    poles, knots_v = axial_interpolating_surface_poles(np.asarray(along_u.c), v_params, degree_v)
+    return poles, _knots_and_multiplicities(along_u.t), knots_v
 
-    poles = np.asarray(along_v.c, dtype=np.float64)
-    return poles, _knots_and_multiplicities(along_u.t), _knots_and_multiplicities(along_v.t)
+
+def axial_interpolating_surface_poles(grid, parameters, degree):
+    """Shared axial interpolation pass, with the axial data on axis 1."""
+    from scipy.interpolate import make_interp_spline
+    curve = make_interp_spline(parameters, grid, k=degree, axis=1)
+    return np.asarray(curve.c, dtype=np.float64), _knots_and_multiplicities(curve.t)
 
 
 @dataclass(frozen=True)
 class _AngularPoleGrid:
-    """A corner control net with the angular knots its boundary consumers need."""
+    """A FREEFORM control net with the knots its boundary consumers need."""
     points: NDArray[np.float64]
     angular_knots: dict[tuple[int, ...], tuple[list[float], list[int]]]
     hermite: bool = False
+    axial_knots: tuple[list[float], list[int]] | None = None
 
     def __array__(self, dtype=None, copy=None):
         result = np.asarray(self.points, dtype=dtype)
@@ -628,6 +634,10 @@ def add_bspline_patch(
         knots_u, mults_u = points.angular_knots[tuple(column_indices)]
         degree_u = mults_u[0] - 1
         knots = {"knotsU": knots_u, "multiplicitiesU": mults_u}
+        if points.axial_knots is not None:
+            knots_v, mults_v = points.axial_knots
+            degree_v = mults_v[0] - 1
+            knots.update(knotsV=knots_v, multiplicitiesV=mults_v)
     elif surface_fit == SURFACE_FIT_INTERPOLATE:
         grid, (knots_u, mults_u), (knots_v, mults_v) = interpolating_surface_poles(
             grid, degree_u=degree_u, degree_v=degree_v, v_params=v_params

@@ -140,12 +140,19 @@ def test_disabled_morph_and_round_mouth_preserve_main_output_bytes(
         # -I ignores inherited PYTHONPATH/user-site settings; both children use
         # the same executable and installed gmsh/numpy. Keep the baseline call
         # separate from the candidate run used by the byte-mutation harness.
-        subprocess.check_call([sys.executable, '-I', worker, str(main_identity_source),
-                               json.dumps(config), str(baseline)],
-                              cwd=main_identity_source, timeout=60)
+        if formula != 'FREEFORM':
+            subprocess.check_call([sys.executable, '-I', worker, str(main_identity_source),
+                                   json.dumps(config), str(baseline)],
+                                  cwd=main_identity_source, timeout=60)
         subprocess.run([sys.executable, '-I', worker, str(root), json.dumps(config), str(dest)],
                        cwd=root, check=True, timeout=60)
-        expected = json.loads((baseline / 'hashes.json').read_text())
+        if formula == 'FREEFORM':
+            # The owner approved rebuilding smooth FREEFORM closer to its authoring.
+            # All other families retain the literal pinned-main comparison.
+            frozen = json.loads((root / 'tests/fixtures/freeform-smooth-wall-identity.json').read_text())
+            expected = frozen['morph'][case['id']]
+        else:
+            expected = json.loads((baseline / 'hashes.json').read_text())
         actual = json.loads((dest / 'hashes.json').read_text())
         label = case['id'] + ('-explicit-zero' if i else '')
         assert actual['mesh_sha256'] == expected['mesh_sha256'], f'{label}: solve bytes changed from main {BASE}'

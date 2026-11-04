@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import re
@@ -129,14 +130,23 @@ def normalize_step(value):
     )
 
 
-def assert_mesh_and_step_bytes(base_tree, tmp_path, name, config, *, native=False):
+def mesh_and_step_hashes(directory):
+    return {'mesh': hashlib.sha256((directory / 'out.msh').read_bytes()).hexdigest(),
+            'step': hashlib.sha256(normalize_step((directory / 'out.step').read_bytes())).hexdigest()}
+
+
+def assert_mesh_and_step_bytes(base_tree, tmp_path, name, config, *, native=False, expected=None):
     source = tmp_path / 'config.json'
     source.write_text(json.dumps(config))
     artifacts = []
-    for label, tree in (('base', base_tree), ('current', ROOT)):
+    trees = [('current', ROOT)] if expected is not None else [('base', base_tree), ('current', ROOT)]
+    for label, tree in trees:
         target = tmp_path / label
         run_worker(tree, source, target, native=native)
         artifacts.append(target)
+    if expected is not None:
+        assert mesh_and_step_hashes(artifacts[0]) == expected, name
+        return
     base, current = artifacts
     assert (base / 'out.msh').read_bytes() == (current / 'out.msh').read_bytes(), name
     assert normalize_step((base / 'out.step').read_bytes()) == normalize_step(

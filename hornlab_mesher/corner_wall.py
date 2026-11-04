@@ -1,8 +1,4 @@
-"""FREEFORM-only corner patches, mitres and built-boundary measurements.
-
-The caller gates this entire module on explicit corner metadata. No legacy fit,
-angular partition or OCC operation is changed for a profile without a corner.
-"""
+"""FREEFORM wall patches, angular fitting, mitres and boundary measurements."""
 from __future__ import annotations
 
 from .errors import control_refusal
@@ -42,11 +38,12 @@ def corner_geometry_class(base: type, recipe: CornerWall | None = None) -> type:
     profile contains deliberately immutable mapping proxies).
     """
     def __post_init__(self):
-        if recipe is not None:
+        if recipe is not None and freeform_corner_z(recipe.profile):
             _refuse_ignored_controls(self, recipe)
         base.__post_init__(self)
 
-    return type(f"Corner{base.__name__}", (base,), {"freeform_wall": property(lambda self: recipe),
+    name = f"Corner{base.__name__}" if recipe is None or freeform_corner_z(recipe.profile) else base.__name__
+    return type(name, (base,), {"freeform_wall": property(lambda self: recipe),
                                                     "__post_init__": __post_init__})
 
 
@@ -278,8 +275,15 @@ def _wall_fit_error(points, recipe, patches):
         rows = []
         for _, _, face in (patch for patch in patches if patch[0] == span):
             lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(*face))
-            u, v = np.meshgrid(np.linspace(lo[0], hi[0], 129), np.linspace(lo[1], hi[1], 17))
-            rows.append(np.asarray(gmsh.model.getValue(*face, np.c_[u.ravel(), v.ravel()].ravel())).reshape(17, 129, 3))
+            stations = np.linspace(0., 1., 17)
+            if not freeform_corner_z(recipe.profile):
+                z = points[0, :, 2]
+                ring_v = (z - z[0]) / (z[-1] - z[0])
+                stations = np.unique(np.r_[np.linspace(0., 1., 65), ring_v,
+                                             (ring_v[1:] + ring_v[:-1]) / 2])
+            count = len(stations)
+            u, v = np.meshgrid(np.linspace(lo[0], hi[0], 129), lo[1] + stations * (hi[1] - lo[1]))
+            rows.append(np.asarray(gmsh.model.getValue(*face, np.c_[u.ravel(), v.ravel()].ravel())).reshape(count, 129, 3))
         xyz = np.concatenate(rows, axis=1)
         for j, row in enumerate(xyz):
             expected = recipe.radius(np.arctan2(row[:, 1], row[:, 0]), float(row[0, 2]), points)
@@ -376,8 +380,8 @@ def _angular_poles(points: np.ndarray, groups: list[list[int]], recipe: CornerWa
 
 def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]],
              recipe: CornerWall | None = None, identities: list[int] | None = None,
-             hermite: bool | None = None):
-    from .builders._occ import add_bspline_patch, _AngularPoleGrid
+             hermite: bool | None = None, interpolate_axial: bool = False):
+    from .builders._occ import add_bspline_patch, _AngularPoleGrid, axial_interpolating_surface_poles
 
     ends = cut_indices(points, cuts) if identities is None else identities
     fitted_groups = [columns.copy() for columns in groups]
@@ -385,6 +389,16 @@ def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]
     patches = []
     for span, (a, b) in enumerate(zip(ends[:-1], ends[1:])):
         poles = np.asarray(fitting_points)[:, a:b + 1].copy()
+        axial_knots = None
+        if interpolate_axial or (recipe is not None and not freeform_corner_z(recipe.profile)):
+            # Smooth profiles have no semantic axial creases. Interpolate
+            # their accepted rings using the existing axial interpolation
+            # pass, rather than shrinking an approximating pole hull.
+            # All sectors share this axial basis, just as their seams do.
+            z = points[0, a:b + 1, 2]
+            v = (z - z[0]) / (z[-1] - z[0])
+            axial, axial_knots = axial_interpolating_surface_poles(poles, v, min(3, b - a))
+            poles = axial.transpose(1, 0, 2)
         for sector, columns in enumerate(fitted_groups):
             local = poles.copy()
             if recipe is not None and b - a >= 3:
@@ -392,7 +406,7 @@ def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]
                     local[columns, 1] = local[columns, 0] + (poles[0, 1, 2] - poles[0, 0, 2]) * _end_derivative(fitting_points, a, 1, recipe, columns, points)
                 if b < points.shape[1] - 1:
                     local[columns, -2] = local[columns, -1] - (poles[0, -1, 2] - poles[0, -2, 2]) * _end_derivative(fitting_points, b, -1, recipe, columns, points)
-            net = _AngularPoleGrid(local, fitting_points.angular_knots, fitting_points.hermite)
+            net = _AngularPoleGrid(local, fitting_points.angular_knots, fitting_points.hermite, axial_knots)
             tag = add_bspline_patch(net, columns, degree_v=min(3, b - a))
             patches.append((span, sector, (2, tag)))
     return patches
@@ -681,12 +695,14 @@ def build_corner_wall(geometry):
     from .builders.point_grid_dispatch import _shift_coupled_baffle_grid
     from .builders.enclosure import build_enclosure_box
     from .builders.point_grid_interfaces import _normalise_interface_specs, _add_offset_interface_surfaces
-    from .geometry import PointGridBuildMode, MESH_ALGORITHM_MESHADAPT
+    from .geometry import (PointGridBuildMode, MESH_ALGORITHM_MESHADAPT,
+                           MESH_ALGORITHM_FRONTAL_DELAUNAY, MESH_ALGORITHM_DELAUNAY)
     from .normals import open_shell_wall_orientation_references
     from .tags import PhysicalGroup
 
     gmsh = require_gmsh()
     recipe = geometry.freeform_wall
+    smooth = not freeform_corner_z(recipe.profile)
     points = np.asarray(geometry.inner_points).copy()
     mode = geometry.build_mode
     interface_stations = [(float(points[0, int(interface.slice_index), 2]), float(interface.offset_mm))
@@ -757,9 +773,13 @@ def build_corner_wall(geometry):
         outer = _snap_open_symmetry_grid(outer, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
         ends = cut_indices(points, cuts)
         outer_hermite = not _revolution_grid(outer)
-        outer_patches = _patches(outer, (), groups, identities=ends, hermite=outer_hermite)
-        # The smooth builders' outer-shell clearance sizing, from the mitred shell.
-        clearance = _wall_clearance_metadata(geometry, outer)
+        outer_patches = _patches(outer, (), groups, identities=ends, hermite=outer_hermite,
+                                 interpolate_axial=not freeform_corner_z(recipe.profile))
+        # Clearance is a discretisation-scale sizing probe, independent of
+        # geometric fit refinement. Keep the smooth builder's accepted net;
+        # corner shells instead need the new mitred net at their creases.
+        sizing_outer = geometry.outer_points if smooth and geometry.outer_points is not None else outer
+        clearance = _wall_clearance_metadata(geometry, sizing_outer)
         # The rear return is its own linear patch and cannot round a profile crease.
         rear = geometry_rear_ring(geometry, points, outer)
         rear = _snap_open_symmetry_grid(rear[:, None, :], closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)[:, 0]
@@ -839,6 +859,9 @@ def build_corner_wall(geometry):
                                'angularRefinements': angular_refinements}}
     if clearance is not None:
         metadata['outerWallClearance'] = clearance
+        if smooth:
+            from .builders.point_grid_freestanding import _mouth_clearance_metadata
+            metadata['mouthRimClearance'] = _mouth_clearance_metadata(geometry, geometry.inner_points)
     if mode is PointGridBuildMode.INFINITE_BAFFLE:
         metadata.update(apertureTag=int(PhysicalGroup.MOUTH_APERTURE), apertureZMm=0.,
                         cavityDepthMm=float(points[0, -1, 2] - points[0, 0, 2]))
@@ -846,7 +869,11 @@ def build_corner_wall(geometry):
                          source_axis='z', mesh_surface_groups=tags, enclosure_bounds=enclosure_bounds,
                          symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
                          open_shell_wall_points_mm=reference_points, open_shell_wall_normals=reference_normals,
-                         mesh_algorithm=MESH_ALGORITHM_MESHADAPT, metadata=metadata, freeform_wall_points_mm=points, freeform_wall_recipe=recipe,
+                         mesh_algorithm=({PointGridBuildMode.FREESTANDING: MESH_ALGORITHM_FRONTAL_DELAUNAY,
+                                          PointGridBuildMode.ENCLOSURE: MESH_ALGORITHM_DELAUNAY}.get(
+                                              mode, MESH_ALGORITHM_MESHADAPT)
+                                         if smooth else MESH_ALGORITHM_MESHADAPT), metadata=metadata,
+                         freeform_wall_points_mm=points, freeform_wall_recipe=recipe,
                          freeform_strip_widths_mm=strip_widths,
                          freeform_wall_segments=mapped_inner, freeform_wall_groups=groups)
 
@@ -856,6 +883,8 @@ MAX_MERIDIAN_NODES = 4097
 
 def corner_size_fields(built, density):
     """User density everywhere; bounded local grading only at curved creases."""
+    if not freeform_corner_z(built.freeform_wall_recipe.profile):
+        return [], []
     from .builders._occ import require_gmsh
     gmsh = require_gmsh()
     points, recipe = built.freeform_wall_points_mm, built.freeform_wall_recipe
@@ -995,6 +1024,11 @@ def measure_corner_mesh(geometry, built) -> None:
     recipe = geometry.freeform_wall
     points = built.freeform_wall_points_mm
     records = built.metadata['cornerWall']['corners']
+    report = dict(geometry.freeform_report or {})
+    report['cornerWall'] = built.metadata['cornerWall']
+    built.metadata['freeformReport'] = report
+    if not records:
+        return
     xyz, triangles = wall_triangles(built.mesh_surface_groups['inner'])
     probe = _occ_probe(points, recipe, [(2, tag) for tag in built.mesh_surface_groups['inner']],
                        built.freeform_wall_segments, built.freeform_wall_groups)
@@ -1017,6 +1051,3 @@ def measure_corner_mesh(geometry, built) -> None:
                 'jumpErrorDeg': abs((slopes[1] - slopes[0]) - (intended[1] - intended[0])),
                 'maxRadialDeviationMm': mesh_deviation}
             record.setdefault('occMaxRadialDeviationMm', {})[plane] = occ_deviation
-    report = dict(geometry.freeform_report or {})
-    report['cornerWall'] = built.metadata['cornerWall']
-    built.metadata['freeformReport'] = report

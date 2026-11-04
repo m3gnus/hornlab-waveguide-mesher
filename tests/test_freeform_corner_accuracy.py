@@ -51,9 +51,9 @@ ACCURACY_CASES = ['sharp-morph', 'five-anchor', 'endpoint', 'circle', 'superelli
                   'rounded-rectangle', 'quadratic', 'morph', 'enclosure', 'baffle', 'throat', 'outer-wall']
 
 
-def sample_wall_accuracy(geometry, built):
-    points = built.freeform_wall_points_mm
-    recipe = geometry.freeform_wall
+def sample_wall_accuracy(geometry, built, *, points=None, recipe=None, outer_reference=None):
+    points = built.freeform_wall_points_mm if points is None else points
+    recipe = geometry.freeform_wall if recipe is None else recipe
     tags = built.mesh_surface_groups['inner']
     uv_max = 0.
     for tag in tags:
@@ -71,7 +71,9 @@ def sample_wall_accuracy(geometry, built):
     else:
         probe = lambda phi, z, expected: occ_radius(tags, phi, z, expected)
     sections = {}
-    for label, phi in [('H', 0.), ('V', math.pi / 2), ('D', math.pi / 4)]:
+    for label, phi in [('H', 0.), ('V', math.pi / 2), ('D', math.pi / 4),
+                       ('D135', 3 * math.pi / 4), ('D225', 5 * math.pi / 4),
+                       ('D315', 7 * math.pi / 4)]:
         errors = []
         for z in np.unique(np.r_[np.linspace(points[0, 0, 2], points[0, -1, 2], 121), recipe.cuts(points)]):
             expected = float(recipe.radius(phi, float(z), points))
@@ -81,8 +83,9 @@ def sample_wall_accuracy(geometry, built):
     if 'outer' in built.mesh_surface_groups:
         # This fixture has circular, piecewise straight meridians: its mitred
         # offset is exactly linear between the shared offset corner rings.
-        outer = mitred_outer_grid(points, geometry.wall_thickness_mm, full_circle=geometry.closed,
+        outer = (mitred_outer_grid(points, geometry.wall_thickness_mm, full_circle=geometry.closed,
                                   corner_z=recipe.cuts(points))
+                 if outer_reference is None else outer_reference)
         outer_error = 0.
         for tag in built.mesh_surface_groups['outer']:
             lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(2, tag))

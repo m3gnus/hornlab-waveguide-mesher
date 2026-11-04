@@ -19,6 +19,7 @@ from identity_harness import archive_tree, assert_mesh_and_step_bytes
 BASE = 'cf21494a94937f368e5b3c9f706f98e0a27c2667'
 ROUNDED_BASE = 'd740c28ea4ee3dfb8662544d62613e16e98e76ed'
 ROOT = Path(__file__).resolve().parents[1]
+SMOOTH = json.loads((ROOT / 'tests/fixtures/freeform-smooth-wall-identity.json').read_text())
 
 
 def identity_cases():
@@ -72,7 +73,8 @@ def archive_base(tmp_path_factory, base):
 
 @pytest.mark.parametrize('name,config', identity_cases(), ids=[item[0] for item in identity_cases()])
 def test_base_mesh_and_step_bytes(base_tree, tmp_path, name, config):
-    assert_mesh_and_step_bytes(base_tree, tmp_path, name, config)
+    expected = SMOOTH['wall'][name] if name.startswith('FREEFORM-') else None
+    assert_mesh_and_step_bytes(base_tree, tmp_path, name, config, expected=expected)
 
 
 @pytest.mark.parametrize('family', ['FREEFORM', 'OSSE'])
@@ -85,4 +87,5 @@ def test_rounded_enclosure_mesh_and_step_bytes(rounded_base_tree, tmp_path, fami
         osse = next(case['config'] for case in data['cases'] if case['config']['formula'] == family)
         config['formula'] = family
         config['profile'] = osse['profile']
-    assert_mesh_and_step_bytes(rounded_base_tree, tmp_path, family, config)
+    expected = SMOOTH['wall']['FREEFORM-rounded-enclosure'] if family == 'FREEFORM' else None
+    assert_mesh_and_step_bytes(rounded_base_tree, tmp_path, family, config, expected=expected)

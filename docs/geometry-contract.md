@@ -535,11 +535,14 @@ before any OCC patches are created.
 The separate 129-by-65 wall probes and H/V/diagonal sections in the corner
 accuracy tests must remain within 0.01 mm. These are sampled bounds, not
 continuous error certificates or final triangle chord tolerances.
-This correction applies only when `freeform_corner_z` selects the corner
-builder, including endpoint corners. Previously saved corner designs can
-rebuild closer to their authored surface. The single-patch smooth FREEFORM
-fit is unchanged: its known roughly 0.4 mm V/diagonal bias is deferred to a
-separate compatibility decision. Other profile families are unchanged.
+All FREEFORM profiles use this angular fit and radial-error budget. Smooth
+profiles reuse the same wall builder without axial cuts, interpolating their
+axial rings with the existing shared spline interpolation pass. Their error
+check uses at least 65 axial stations plus every sampled ring and interval
+midpoint, including nonuniform endpoint intervals. Previously saved smooth
+and corner FREEFORM designs can rebuild closer to their authored surface;
+the owner approved the smooth geometry change on 2026-11-04. Other profile
+families retain their existing builders and output bytes.
 Mesh sizes start from the user's local throat/mouth density. Built OCC
 one-sided H/V secants select any necessary tightening, bounded by a refinement
 and node cap, within a short band at the cut. Straight meridians do not cause
@@ -582,8 +585,9 @@ fit error, geometry refinement count, and each interior corner's
 OCC slopes/jump/error at 0,45,...,315 degrees, shared-edge incidence, H/V mesh
 slopes/jump/error and maximum sampled fixed-z radial deviation. These are
 sampled diagnostics, not continuous error certificates. Smooth profiles,
-including profiles with handles and no corners, retain the existing grid and
-patch builders with their existing arguments.
+including profiles with handles and no corners, publish the same fit budget
+and sampled error with an empty corner list. The mathematical profile and
+initial grid sampler remain unchanged.
 
 ### FREEFORM sampling
 

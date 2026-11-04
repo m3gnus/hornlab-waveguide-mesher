@@ -1591,7 +1591,7 @@ MIN_INTERIOR_CORNER_SPACING_MM = 1.0
 
 
 def freeform_corner_z(geometry: FreeformGeometry, *, interior: bool = False) -> tuple[float, ...]:
-    """Semantic axial cut identities; endpoints select the new path but need no cut."""
+    """Authored crease identities; endpoint corners need no interior axial cut."""
     return tuple(sorted({float(z) for plane in (geometry._profile_h, geometry._profile_v)
                          if isinstance(plane, _BezierPlane)
                          for (z, _r), join in zip(plane.anchors, plane.joins)

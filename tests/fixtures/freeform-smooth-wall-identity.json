@@ -1,0 +1,119 @@
+{
+  "reason": "Smooth FREEFORM follows authored walls within 0.01 mm; owner approved geometry changes 2026-11-04. Non-FREEFORM baselines unchanged.",
+  "wall": {
+    "FREEFORM-1234-unmorphed": {
+      "mesh": "127bf710c67bae7bcb18fa8cfb8dd3da51bb40bbf12b04033b99f306c048cb22",
+      "step": "d77a48729248a567c514f518d5ba16093614b33df35afb6cb1ab62b1cf8139fa"
+    },
+    "FREEFORM-1234-round": {
+      "mesh": "82ee5019b01f8ae529bfd099f2857116ca31ec83172395cd73f88b1bede7f0e5",
+      "step": "4cb5893fc73305fb3303c609cfc8342efda93a105b09ff335c386020df46f1df"
+    },
+    "FREEFORM-12-unmorphed": {
+      "mesh": "27377117b8349555295c199a1cf02c49722ba16f88f2854825f5486a76f312b8",
+      "step": "d77a48729248a567c514f518d5ba16093614b33df35afb6cb1ab62b1cf8139fa"
+    },
+    "FREEFORM-12-round": {
+      "mesh": "a373160a088b2464c1ffb4adfedbab6e15ab8f91129866d7e0b806af21a2bd82",
+      "step": "4cb5893fc73305fb3303c609cfc8342efda93a105b09ff335c386020df46f1df"
+    },
+    "FREEFORM-14-unmorphed": {
+      "mesh": "b18c6b2e7acf3523d23ca73a4920ee0217f6c87cc908bf13bc68310c55869295",
+      "step": "d77a48729248a567c514f518d5ba16093614b33df35afb6cb1ab62b1cf8139fa"
+    },
+    "FREEFORM-14-round": {
+      "mesh": "335d660010f435b486e63eaf65399b82db1f1a7fd9f26c35c508a361bbdb7836",
+      "step": "4cb5893fc73305fb3303c609cfc8342efda93a105b09ff335c386020df46f1df"
+    },
+    "FREEFORM-1-unmorphed": {
+      "mesh": "4e2c6b9762bfe5a71aa9038cc7e5da6529120c3c16a0049cde76f4a5804c39d0",
+      "step": "d77a48729248a567c514f518d5ba16093614b33df35afb6cb1ab62b1cf8139fa"
+    },
+    "FREEFORM-1-round": {
+      "mesh": "da5b78f0301b9efd81609aa4aa70b413d1c69033ccf19ea4d5054417d41672a6",
+      "step": "4cb5893fc73305fb3303c609cfc8342efda93a105b09ff335c386020df46f1df"
+    },
+    "FREEFORM-stretch-compatibility": {
+      "mesh": "f1b666e9274da175f63875c6f62b246f376ed4f404dbc6dbfa53360faba1109a",
+      "step": "9006cfed8bdbac00eb6f97a609e017dac74f18027aa7d09c35e2b014369dd5c3"
+    },
+    "FREEFORM-example": {
+      "mesh": "5e86c592d4408ba5a17d4c09b05cdcc56f9ff92a9243bdd78f33ecd611d02706",
+      "step": "1cb56c3ebb6893c9807053c531e00d9c3a04a642c9047f6af4f4312f35cf5023"
+    },
+    "FREEFORM-handles-C1": {
+      "mesh": "8fd88d5c8d94dd73e86f5739041ca7041b31c6f4edda5d8bdbba9d6eafec7299",
+      "step": "0b5ed7b4f866188a3c127d7049bae324adb6b101281ea794533e4318c71a5667"
+    },
+    "FREEFORM-freestanding-1234": {
+      "mesh": "67a5bba83ee5a5437a50b877796e960009d24cd81a356c9bc596fd4bc0c03cbd",
+      "step": "d8292e56c40c0b23f79a25056d0ad4877b650afab7d01e32844d32563cbcab88"
+    },
+    "FREEFORM-freestanding-12": {
+      "mesh": "b1eae69c937307289579bdeff4d8edfa54a87069a37ac4838a545add068eeb5c",
+      "step": "d8292e56c40c0b23f79a25056d0ad4877b650afab7d01e32844d32563cbcab88"
+    },
+    "FREEFORM-enclosure-1234": {
+      "mesh": "13953c53812e2e18b303be4b69577db38444ba2a7c7961c9692ce299d242a992",
+      "step": "23bdb33470754d656b21f7860a91816d8907c60101ff25703265809bb88a1d27"
+    },
+    "FREEFORM-enclosure-12": {
+      "mesh": "c6bb94cae5b73216a75f6a4bf2df81586d8eb06514b446fc9e15dcfaf734a65c",
+      "step": "23bdb33470754d656b21f7860a91816d8907c60101ff25703265809bb88a1d27"
+    },
+    "FREEFORM-infinite-baffle-1234": {
+      "mesh": "c3996ab0a16916324629ff70608da1f339d23d3bb703909fdf6dd6a00a811197",
+      "step": "eb0c2aae449c601122714d490012486c71e7c2c03e8532b8ba5e7fbb07769358"
+    },
+    "FREEFORM-infinite-baffle-12": {
+      "mesh": "89cde6d4cbaa01ed4809c4155f924e2561883ae77f08cf285caa7c8c0a71461e",
+      "step": "eb0c2aae449c601122714d490012486c71e7c2c03e8532b8ba5e7fbb07769358"
+    },
+    "FREEFORM-rounded-enclosure": {
+      "mesh": "b6afee8a9437b3015bbe91c4c2a25014b7ee707816bb0f04351d953d1ce8a47f",
+      "step": "e3fa4d2c2bd4641df1149602b70b3914b8a35edf15de9aaaca611f273eec8ae0"
+    }
+  },
+  "morph": {
+    "FREEFORM-1234-unmorphed": {
+      "mesh_sha256": "7267066e751d2fb8f78e8c6452f494adb9c4d792ba271c8b7b19814cd21ed23b",
+      "step_sha256": "67215c878b2eba937014461906b197e79634e55a77ca3c9e6cc680fb607d4a47",
+      "sector_step_refusal": null
+    },
+    "FREEFORM-1234-round": {
+      "mesh_sha256": "a328be10aa7778bcfd4b822215359bd8ea1d1fd407b55832a4b0de1e2c3bee86",
+      "step_sha256": "652d5ee6b8ea925113f63227a1ca954eb9a1af3ca1c4ddaf122aa93d640c08ab",
+      "sector_step_refusal": null
+    },
+    "FREEFORM-12-unmorphed": {
+      "mesh_sha256": "c37cae26fa3a9f088b4714e5f0b587c546316a115eae0bbc15dffbd1892ad30a",
+      "step_sha256": "67215c878b2eba937014461906b197e79634e55a77ca3c9e6cc680fb607d4a47",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    "FREEFORM-12-round": {
+      "mesh_sha256": "a02e7a3601d7abd40fc9384d92768f3f2fb11987995203014c7aca38c2ea74d4",
+      "step_sha256": "652d5ee6b8ea925113f63227a1ca954eb9a1af3ca1c4ddaf122aa93d640c08ab",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    "FREEFORM-14-unmorphed": {
+      "mesh_sha256": "edb28891a0e28eb95fb62bafc432e97bb6991917dc2c35b8b2f8a34a34f6943c",
+      "step_sha256": "67215c878b2eba937014461906b197e79634e55a77ca3c9e6cc680fb607d4a47",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    "FREEFORM-14-round": {
+      "mesh_sha256": "87d3090d1dd68e1209df0985e1636925f60ba634cad5a466e1be2bdb148666cd",
+      "step_sha256": "652d5ee6b8ea925113f63227a1ca954eb9a1af3ca1c4ddaf122aa93d640c08ab",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    "FREEFORM-1-unmorphed": {
+      "mesh_sha256": "1074281bdf520e1774622f98e8a682d511f965fac31fefffcc7b0d04bd3c05fe",
+      "step_sha256": "67215c878b2eba937014461906b197e79634e55a77ca3c9e6cc680fb607d4a47",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    },
+    "FREEFORM-1-round": {
+      "mesh_sha256": "2704e2c119a0c5385308150ce0876faac1307c9562c5fe34ed2bc9cf226e5fe3",
+      "step_sha256": "652d5ee6b8ea925113f63227a1ca954eb9a1af3ca1c4ddaf122aa93d640c08ab",
+      "sector_step_refusal": "STEP export needs the full model; this geometry is a symmetry-reduced sector bounded by x, y=0. Rebuild it with quadrants=1234 (closed=True) and export that."
+    }
+  }
+}
