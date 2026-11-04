@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
@@ -501,10 +502,55 @@ def interpolating_surface_poles(
     return poles, _knots_and_multiplicities(along_u.t), _knots_and_multiplicities(along_v.t)
 
 
+@dataclass(frozen=True)
+class _AngularPoleGrid:
+    """A corner control net with the angular knots its boundary consumers need."""
+    points: NDArray[np.float64]
+    angular_knots: dict[tuple[int, ...], tuple[list[float], list[int]]]
+    hermite: bool = False
+
+    def __array__(self, dtype=None, copy=None):
+        result = np.asarray(self.points, dtype=dtype)
+        return result.copy() if copy else result
+
+    def __getitem__(self, item):
+        return self.points[item]
+
+    def __len__(self):
+        return len(self.points)
+
+    @property
+    def shape(self):
+        return self.points.shape
+
+    @property
+    def ndim(self):
+        return self.points.ndim
+
+
+def _angular_hermite_poles(grid, derivative, parameters):
+    """Convert angular cubic Hermite data to poles on the same existing patch."""
+    step = np.diff(parameters)[None, :, None] / 3
+    poles = np.empty((grid.shape[0], 3 * (grid.shape[1] - 1) + 1, grid.shape[2]))
+    poles[:, ::3] = grid
+    poles[:, 1::3] = grid[:, :-1] + step * derivative[:, :-1]
+    poles[:, 2::3] = grid[:, 1:] - step * derivative[:, 1:]
+    # Shared endpoint derivatives make these Bezier pieces C1. Remove the
+    # redundant endpoint pole at each join and use double interior knots, so
+    # OCC sees that continuity instead of treating every data row as a crease.
+    index = np.arange(poles.shape[1])
+    keep = (index % 3 != 0) | (index == 0) | (index == len(index) - 1)
+    poles = poles[:, keep]
+    knots = np.r_[np.zeros(4), np.repeat(parameters[1:-1], 2), np.ones(4)]
+    return poles, _knots_and_multiplicities(knots)
+
+
 def angular_interpolating_surface_poles(
     grid: NDArray[np.float64],
     *,
     degree_u: int,
+    shape_preserving: bool = False,
+    circular: bool = False,
 ) -> tuple[NDArray[np.float64], tuple[list[float], list[int]]]:
     """Interpolate only a patch's angular (u) direction.
 
@@ -515,12 +561,38 @@ def angular_interpolating_surface_poles(
     inward between azimuth samples.  Solving only the u-direction fit keeps
     the stable axial construction while making every sampled ring describe
     the same cross-section of the surface of revolution.
+
+    ``shape_preserving`` keeps corner tangencies and long straight sides
+    from producing backward turns on a moving angular grid. It interpolates
+    each coordinate with cubic Hermite pieces on the existing patch.
+    ``circular`` supplies periodic-circle end tangents on a fixed uniform
+    angular net. The default retains the established chord-parameterized fit.
     """
 
-    from scipy.interpolate import make_interp_spline
+    from scipy.interpolate import make_interp_spline, PchipInterpolator
 
-    u_params = _averaged_chord_parameters(grid, axis=1)
-    along_u = make_interp_spline(u_params, grid, k=degree_u, axis=1)
+    if shape_preserving:
+        parameters = np.linspace(0., 1., grid.shape[1])
+        curve = PchipInterpolator(parameters, grid, axis=1)
+        derivative = curve.derivative()(parameters)
+        return _angular_hermite_poles(grid, derivative, parameters)
+    if circular:
+        # Periodic-circle end tangents give the quadrant the same C2 cubic
+        # as a full circular interpolant. Unlike not-a-knot end conditions,
+        # it stays inside the source disk without clipping its control hull.
+        parameters = np.linspace(0., 1., grid.shape[1])
+        phi = np.unwrap(np.arctan2(grid[..., 1], grid[..., 0]), axis=1)
+        step = phi[:, 1] - phi[:, 0]
+        speed = 3 * (grid.shape[1] - 1) * np.sin(step) / (2 + np.cos(step))
+        tangents = []
+        for index in (0, -1):
+            ring = grid[:, index]
+            tangents.append(np.c_[-ring[:, 1] * speed, ring[:, 0] * speed, np.zeros(len(ring))])
+        along_u = make_interp_spline(parameters, grid, k=3, axis=1,
+                                    bc_type=([(1, tangents[0])], [(1, tangents[1])]))
+    else:
+        u_params = _averaged_chord_parameters(grid, axis=1)
+        along_u = make_interp_spline(u_params, grid, k=degree_u, axis=1)
     poles = np.asarray(along_u.c, dtype=np.float64).transpose(1, 0, 2)
     return poles, _knots_and_multiplicities(along_u.t)
 
@@ -546,7 +618,11 @@ def add_bspline_patch(
     grid = np.ascontiguousarray(np.asarray(points)[column_indices, :, :].transpose(1, 0, 2))
 
     knots: dict[str, list[float] | list[int]] = {}
-    if surface_fit == SURFACE_FIT_INTERPOLATE:
+    if isinstance(points, _AngularPoleGrid):
+        knots_u, mults_u = points.angular_knots[tuple(column_indices)]
+        degree_u = mults_u[0] - 1
+        knots = {"knotsU": knots_u, "multiplicitiesU": mults_u}
+    elif surface_fit == SURFACE_FIT_INTERPOLATE:
         grid, (knots_u, mults_u), (knots_v, mults_v) = interpolating_surface_poles(
             grid, degree_u=degree_u, degree_v=degree_v, v_params=v_params
         )
@@ -569,7 +645,7 @@ def add_bspline_patch(
         int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
         for x, y, z in grid.reshape(-1, 3)
     ]
-    return int(
+    surface = int(
         gmsh.model.occ.addBSplineSurface(
             point_tags,
             n_u,
@@ -578,6 +654,13 @@ def add_bspline_patch(
             **knots,
         )
     )
+    if isinstance(points, _AngularPoleGrid):
+        # OCC copied these coordinates into its surface. They are independent
+        # construction points, not boundary vertices. Remove them before
+        # synchronization, whose boolean-tolerance vertex snapping otherwise
+        # visits this much larger control net as though it were topology.
+        gmsh.model.occ.remove([(0, tag) for tag in point_tags], recursive=False)
+    return surface
 
 
 def throat_boundary_curve(
@@ -623,7 +706,7 @@ def throat_boundary_curve(
 def _patch_boundary_grid(
     points: NDArray[np.float64], column_indices: list[int], station_index: int,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    grid = np.asarray(points, dtype=np.float64)
+    grid = points if isinstance(points, _AngularPoleGrid) else np.asarray(points, dtype=np.float64)
     if grid.ndim != 3 or grid.shape[2] != 3 or grid.shape[1] < 2:
         raise ValueError("point grid must have shape (n_phi, n_length, 3)")
     if len(column_indices) < 2:
@@ -643,6 +726,10 @@ def _patch_boundary_spline(
     """Construct the same axial boundary B-spline as ``add_bspline_patch``."""
     from scipy.interpolate import BSpline
 
+    if isinstance(grid, _AngularPoleGrid):
+        knots, multiplicities = grid.angular_knots[tuple(column_indices)]
+        return BSpline(np.repeat(knots, multiplicities), ring, multiplicities[0] - 1,
+                       extrapolate=False)
     if surface_fit == SURFACE_FIT_INTERPOLATE:
         poles, (knots, multiplicities), degree = throat_boundary_curve(
             grid, column_indices, station_index=station_index,

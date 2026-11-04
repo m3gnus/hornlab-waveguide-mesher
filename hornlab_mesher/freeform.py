@@ -751,12 +751,13 @@ def _derivative_roots(coefficients: np.ndarray, interval: float) -> list[float]:
     ]
 
 
-def _poly_value(coefficients: np.ndarray, local_u: float) -> float:
-    return float(
+def _poly_value(coefficients: np.ndarray, local_u: Any) -> Any:
+    value = (
         ((coefficients[0] * local_u + coefficients[1]) * local_u + coefficients[2])
         * local_u
         + coefficients[3]
     )
+    return float(value) if np.ndim(value) == 0 else value
 
 
 def _poly_derivative(coefficients: np.ndarray, local_u: float) -> float:
@@ -828,7 +829,9 @@ def _plane_spline_violations(
             continue
 
         dense_local = np.linspace(0.0, interval, 257)
-        dense_r = np.asarray([_poly_value(r_coeff, value) for value in dense_local])
+        # Keep Horner's operation order, but evaluate the 257 validation
+        # stations together instead of making one Python call per station.
+        dense_r = _poly_value(r_coeff, dense_local)
         radius_candidates = [0.0, interval, *_derivative_roots(r_coeff, interval)]
         candidate_r = np.asarray(
             [_poly_value(r_coeff, value) for value in radius_candidates], dtype=float
@@ -971,6 +974,8 @@ def _build_plane_spline(
     # retained lower bound is globally feasible, and 24 bisections resolve f
     # substantially tighter than the public continuity requirement.
     for index in range(speed_factors.size):
+        if speed_factors[index] == 1.0:
+            continue
         trial = speed_factors.copy()
         trial[index] = 1.0
         if not violations_for(trial):
@@ -1268,6 +1273,8 @@ def _resolve_plane(
 
     # Recover in anchor order, keeping smooth sides coupled and corners separate.
     for group in groups:
+        if all(factors[span, side] == 1.0 for span, side in group):
+            continue
         trial = factors.copy()
         for span, side in group:
             trial[span, side] = 1.0

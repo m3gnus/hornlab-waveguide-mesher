@@ -515,10 +515,31 @@ intersections. The unchanged surface parametrizations identify source-to-sewn
 face ancestry; ambiguous or missing ancestry is refused. Caps, enclosure and
 mouth closures reuse the actual first/last patch boundaries. Endpoint corners select this path but introduce no cut.
 
-The angular approximation constrains H/V and diagonal radii. One-sided axial
-derivative poles are fitted on the built angular boundary. The builder measures
-OCC jumps at eight azimuths and refines axially only when the error exceeds
-0.5 degrees, up to four refinements or 1025 rings. Failure names the cut z.
+Fixed circular rings use a periodic cubic angular interpolant. Cubic
+Hermite interpolation follows moving and non-circular samples without
+folding long straight sides or corner tangencies. Its explicit knot vectors travel
+with the control net into every boundary consumer. One-sided radial
+derivative poles are fitted on those same built angular curves and knots. Periodic end tangents keep circular sources inside their authored disk.
+On moving or non-circular grids, an inscribed source pole hull retains the
+strict source-radius guard. Both use the same fitting error budget. Shared quadrant and
+crease boundaries remain exact. The builder measures OCC jumps at eight
+azimuths and refines axially when the error exceeds 0.5 degrees, up to four
+slope refinements or 1025 rings. Failure names the cut z.
+Independently of final mesh density, it samples fixed-z radial error against
+the authored surface at 129 angular by 17 axial parameter stations per patch.
+A 0.005 mm angular budget and 0.0075 mm wall budget trigger geometry refinement,
+with at most sixteen angular and sixteen axial accuracy refinements, 2048
+angular profiles and 1025 rings. Angular checks also probe every original
+data interval at quarter steps; failing intervals are bisected symmetrically
+before any OCC patches are created.
+The separate 129-by-65 wall probes and H/V/diagonal sections in the corner
+accuracy tests must remain within 0.01 mm. These are sampled bounds, not
+continuous error certificates or final triangle chord tolerances.
+This correction applies only when `freeform_corner_z` selects the corner
+builder, including endpoint corners. Previously saved corner designs can
+rebuild closer to their authored surface. The single-patch smooth FREEFORM
+fit is unchanged: its known roughly 0.4 mm V/diagonal bias is deferred to a
+separate compatibility decision. Other profile families are unchanged.
 Mesh sizes start from the user's local throat/mouth density. Built OCC
 one-sided H/V secants select any necessary tightening, bounded by a refinement
 and node cap, within a short band at the cut. Straight meridians do not cause
@@ -531,7 +552,7 @@ a concave mitre are trimmed and the retained polyline is resampled with the
 same cut identities before the outer-grid validation. Unsafe mitres and folded
 outer grids are refused with corner z in the error.
 
-The corner path always uses approximating split patches. A profile with any
+The corner path uses axially approximating, angularly interpolating split patches. A profile with any
 corner (endpoint or interior) therefore refuses, with every corner z named,
 controls that path cannot honor: `surface_fit = "interpolate"`,
 `topology = "legacy"`, `preserve_grid = true`, and the
@@ -556,7 +577,8 @@ relative to the same profile built smooth: no triangle below
 `SLIVER_ANGLE_DEG` (10 degrees) and a minimum radius ratio of at least half the
 smooth build's. Steep apexes meet it, so no apex angle is refused.
 
-Mesh metadata includes `freeformReport.cornerWall`: each interior corner's
+Mesh metadata includes `freeformReport.cornerWall`: the fit budget, sampled
+fit error, geometry refinement count, and each interior corner's
 OCC slopes/jump/error at 0,45,...,315 degrees, shared-edge incidence, H/V mesh
 slopes/jump/error and maximum sampled fixed-z radial deviation. These are
 sampled diagnostics, not continuous error certificates. Smooth profiles,

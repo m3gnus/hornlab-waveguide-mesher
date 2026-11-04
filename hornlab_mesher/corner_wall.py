@@ -78,6 +78,8 @@ class _BuiltCornerGeometry(BuiltGeometry):
     freeform_wall_points_mm: np.ndarray | None = None
     freeform_wall_recipe: CornerWall | None = None
     freeform_strip_widths_mm: dict[str, float] | None = None
+    freeform_wall_segments: dict[str, list[tuple[int, int]]] | None = None
+    freeform_wall_groups: list[list[int]] | None = None
 
 
 def cut_indices(points: np.ndarray, cuts: tuple[float, ...]) -> list[int]:
@@ -166,96 +168,232 @@ def _refine(points: np.ndarray, recipe: CornerWall) -> np.ndarray:
     return out
 
 
-def _end_derivative(points: np.ndarray, j: int, sign: int, recipe: CornerWall,
-                    columns: list[int]) -> np.ndarray:
-    """Fit radial derivative poles on the *built* angular boundary.
+def _refine_angular(points: np.ndarray, recipe: CornerWall, closed: bool,
+                    intervals: set[int]) -> np.ndarray:
+    """Bisect selected angular intervals, preserving the original moving rows."""
+    angles = np.unwrap(np.arctan2(points[..., 1], points[..., 0]), axis=0)
+    if closed:
+        angles = np.r_[angles, angles[:1] + math.tau]
+    locations = np.sort(np.r_[np.arange(len(angles)), np.asarray(sorted(intervals)) + .5])
+    phi = np.array([np.interp(locations, np.arange(len(angles)), row) for row in angles.T]).T
+    refined = np.empty((*phi.shape, 3))
+    for j, z in enumerate(points[0, :, 2]):
+        r = recipe.radius(phi[:, j], float(z), points)
+        refined[:, j] = np.c_[r * np.cos(phi[:, j]), r * np.sin(phi[:, j]), np.full(len(phi), z)]
+    if closed:
+        refined = refined[:-1]
+    refined[np.searchsorted(locations, np.arange(len(points)))] = points
+    return refined
 
-    Sampling derivatives at the input phi rows is insufficient when a rounded
-    rectangle's phi rows move: the approximating curve has a different azimuth.
-    Evaluate that curve first, then constrain the derivative there. Cardinal
-    and diagonal probes are equality constraints in this small angular fit.
+
+def _angular_fit_error(points, recipe, groups):
+    """Test each angular interpolant before creating any disposable OCC faces.
+
+    Probe every data interval, including sharp morph vertices and moving
+    rounded-rectangle tangencies. Mirror failing interval identities across
+    sectors so cardinal boundaries stay at the same semantic grid indices.
     """
-    ring = points[columns, j]
-    count = len(columns)
-    degree = min(3, count - 1)
-    knots = np.r_[np.zeros(degree), np.linspace(0, 1, count - degree + 1), np.ones(degree)]
-    curve = BSpline(knots, ring, degree)
-    u = np.linspace(0, 1, max(33, count * 4))
-    angles = np.unwrap(np.arctan2(ring[:, 1], ring[:, 0]))
-    constraints = [0., 1.]
-    for phi in np.arange(-2 * math.pi, 4 * math.pi, math.pi / 4):
-        if angles[0] + 1e-9 < phi < angles[-1] - 1e-9:
-            def residual(value):
-                xyz = curve(value)
-                return xyz[0] * math.sin(phi) - xyz[1] * math.cos(phi)
-            constraints.append(brentq(residual, 0, 1))
-    u = np.r_[u, constraints]
+    from .builders._occ import _patch_boundary_spline
+    fitting_groups = [columns.copy() for columns in groups]
+    poles = _angular_poles(points, fitting_groups, recipe, refine=False)
+    sections, tangents, parameters = [], [], []
+    worst = 0.
+    for columns, fitted in zip(groups, fitting_groups):
+        u = np.unique(np.r_[np.linspace(0, 1, 129), np.linspace(0, 1, 4 * (len(columns) - 1) + 1)])
+        curve = _patch_boundary_spline(poles, poles[fitted], fitted, -1, 'approximate')
+        sections.append(curve(u * curve.t[-1]).transpose(1, 0, 2))
+        tangents.append(curve.derivative()(u * curve.t[-1]).transpose(1, 0, 2))
+        parameters.append(u)
+    bad_local = set()
+    for j, z in enumerate(points[0, :, 2]):
+        xyz = np.concatenate([rows[j] for rows in sections])
+        expected = recipe.radius(np.arctan2(xyz[:, 1], xyz[:, 0]), float(z), points)
+        delta = abs(np.linalg.norm(xyz[:, :2], axis=1) - expected)
+        tangent = np.concatenate([rows[j] for rows in tangents])
+        polar_speed = xyz[:, 0] * tangent[:, 1] - xyz[:, 1] * tangent[:, 0]
+        backwards = polar_speed < -1e-12 * np.maximum(1., np.sum(xyz[:, :2] ** 2, axis=1))
+        worst = max(worst, float(np.max(delta)))
+        offset = 0
+        for columns, u in zip(groups, parameters):
+            selected = slice(offset, offset + len(u))
+            bad = u[(delta[selected] > WALL_ANGULAR_TOLERANCE_MM) | backwards[selected]]
+            indices = np.minimum((bad * (len(columns) - 1)).astype(int), len(columns) - 2)
+            bad_local.update(map(int, indices))
+            bad_local.update(len(columns) - 2 - int(index) for index in indices)
+            offset += len(u)
+    # A cubic interpolant couples neighboring intervals. Refine its support
+    # around a failing interval too; repeatedly splitting only the peak can
+    # leave the same bulge driven by an unchanged, much longer neighbor.
+    interval_count = len(groups[0]) - 1
+    bad_local = {neighbor for index in bad_local
+                 for neighbor in range(max(0, index - 2), min(interval_count, index + 3))}
+    intervals = {columns[index] for columns in groups for index in bad_local}
+    return worst, intervals
+
+
+def _revolution_grid(points):
+    """A fixed, uniform azimuth net on circular rings can use the cubic fit."""
+    from .builders.point_grid_freestanding import _grid_is_axisymmetric
+    if not _grid_is_axisymmetric(points):
+        return False
+    phi = np.unwrap(np.arctan2(points[..., 1], points[..., 0]), axis=0)
+    spacing = np.diff(phi[:, 0])
+    return bool(np.max(abs(phi - phi[:, :1])) < 1e-10
+                and np.ptp(spacing) < 1e-10)
+
+
+def _fit_angular_grid(points, recipe, groups, *, budget=None):
+    """One angular refinement owner for walls, bounds and flush previews."""
+    from .builders.point_grid_surfaces import _bspline_patch_phi_groups
+    if budget is None:
+        budget = MAX_WALL_FIT_REFINEMENTS
+    closed = groups[-1][-1] == groups[0][0]
+    sectors = len(groups)
+    for count in range(budget + 1):
+        error, intervals = _angular_fit_error(points, recipe, groups)
+        if not intervals:
+            return points, groups, count
+        if _revolution_grid(points):
+            # Keep its uniform angular basis while refining the source hull.
+            intervals = {index for columns in groups for index in columns[:-1]}
+        if count == budget or len(points) + len(intervals) > MAX_WALL_PROFILES:
+            cause = (f"sampled angular error {error:g} mm exceeds {WALL_ANGULAR_TOLERANCE_MM:g} mm"
+                     if error > WALL_ANGULAR_TOLERANCE_MM else "angular fit folds back")
+            raise ValueError(f"FREEFORM corner wall {cause} at geometry refinement cap")
+        points = _refine_angular(points, recipe, closed, intervals)
+        groups = _bspline_patch_phi_groups(len(points), closed=closed, n_sectors=sectors)
+
+
+def _wall_fit_error(points, recipe, patches):
+    """Sample radial error on the actual patches, with a mesh-independent budget.
+
+    Group sectors at each axial station so the analytic H/V evaluation is
+    shared. End rings distinguish angular error from axial approximation.
+    """
+    from .builders._occ import require_gmsh
+    gmsh = require_gmsh()
+    worst = boundary = 0.
+    spans = sorted({span for span, _, _ in patches})
+    for span in spans:
+        rows = []
+        for _, _, face in (patch for patch in patches if patch[0] == span):
+            lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(*face))
+            u, v = np.meshgrid(np.linspace(lo[0], hi[0], 129), np.linspace(lo[1], hi[1], 17))
+            rows.append(np.asarray(gmsh.model.getValue(*face, np.c_[u.ravel(), v.ravel()].ravel())).reshape(17, 129, 3))
+        xyz = np.concatenate(rows, axis=1)
+        for j, row in enumerate(xyz):
+            expected = recipe.radius(np.arctan2(row[:, 1], row[:, 0]), float(row[0, 2]), points)
+            error = float(np.max(abs(np.linalg.norm(row[:, :2], axis=1) - expected)))
+            worst = max(worst, error)
+            if j in (0, len(xyz) - 1):
+                boundary = max(boundary, error)
+    return worst, boundary
+
+
+def _end_derivative(points, j: int, sign: int, recipe: CornerWall,
+                    columns: list[int], reference: np.ndarray) -> np.ndarray:
+    """Radial derivative poles on the same angular Hermite basis as the wall.
+
+    Compose the authored radial slope with the built boundary's azimuth and
+    angular speed. This avoids a dense least-squares solve at every crease.
+    """
+    from .builders._occ import _angular_hermite_poles
+    values, multiplicities = points.angular_knots[tuple(columns)]
+    degree = multiplicities[0] - 1
+    curve = BSpline(np.repeat(values, multiplicities), points[columns, j], degree)
+    knots = np.repeat(values, multiplicities)
+    u = (np.asarray(values) if points.hermite else
+         np.array([np.mean(knots[i + 1:i + degree + 1]) for i in range(len(columns))]))
     boundary = curve(u)
+    tangent = curve.derivative()(u)
+    radius = np.linalg.norm(boundary[:, :2], axis=1)
     phi = np.arctan2(boundary[:, 1], boundary[:, 0])
-    z = float(points[0, j, 2])
-    h = min(1e-4, abs(float(points[0, j + sign, 2]) - z) / 1000)
-    derivative_r = (recipe.radius(phi, z + sign * 2 * h, points)
-                    - recipe.radius(phi, z + sign * h, points)) / (sign * h)
-    desired = boundary[:, :2] / np.linalg.norm(boundary[:, :2], axis=1)[:, None] * derivative_r[:, None]
-    matrix = BSpline.design_matrix(u, knots, degree).toarray()
-    weights = np.ones(len(u))
-    weights[-len(constraints):] = 1e5
-    xy = np.linalg.lstsq(matrix * weights[:, None], desired * weights[:, None], rcond=None)[0]
-    return np.c_[xy, np.ones(count)]
+    angular_speed = (boundary[:, 0] * tangent[:, 1] - boundary[:, 1] * tangent[:, 0]) / radius ** 2
+    z = float(reference[0, j, 2])
+    h = min(1e-4, abs(float(reference[0, j + sign, 2]) - z) / 1000)
+
+    def derivative(angles):
+        slope = (recipe.radius(angles, z + sign * 2 * h, reference)
+                 - recipe.radius(angles, z + sign * h, reference)) / (sign * h)
+        return np.c_[np.cos(angles) * slope, np.sin(angles) * slope, np.ones(len(angles))]
+
+    data = derivative(phi)
+    if not points.hermite:
+        # Greville collocation uses the cubic's existing knots. Its banded
+        # system avoids a dense solve even on a refined circular boundary.
+        from scipy.linalg import solve_banded
+        matrix = BSpline.design_matrix(u, knots, degree).toarray()
+        row, column = np.nonzero(matrix)
+        band = np.zeros((2 * degree + 1, len(columns)))
+        band[degree + row - column, column] = matrix[row, column]
+        return solve_banded((degree, degree), band, data)
+    delta = 1e-5
+    angular = (derivative(phi + delta) - derivative(phi - delta)) / (2 * delta)
+    poles, _ = _angular_hermite_poles(data[None], (angular * angular_speed[:, None])[None], u)
+    return poles[0]
 
 
-def _angular_poles(points: np.ndarray, groups: list[list[int]], recipe: CornerWall | None) -> np.ndarray:
-    """Constrained approximating angular fit, keeping H/V and diagonal radii.
+def _angular_poles(points: np.ndarray, groups: list[list[int]], recipe: CornerWall | None,
+                   *, refine: bool = True, hermite: bool | None = None) -> Any:
+    """Interpolate angular samples and retain their fitted knot vectors.
 
-    The old pole fit can bias rounded-rectangle diagonal radii by 0.3 mm.
-    Fit the diagonal as an additional point constraint without interpolating
-    the entire surface or changing any sector endpoint/shared ring.
+    Rewrite the caller's sector indices to address the returned control net;
+    boundary consumers retain its explicit knots alongside its poles. Separate
+    copies of shared endpoints remain identical, ready for the existing sewing.
+    Axial rows remain approximating; interpolation is only angular.
     """
-    result = points.copy()
-    for columns in groups:
-        count = len(columns)
-        degree = min(3, count - 1)
-        if count < 4:
-            continue
-        knots = np.r_[np.zeros(degree), np.linspace(0, 1, count - degree + 1), np.ones(degree)]
-        for j in range(points.shape[1]):
-            ring = result[columns, j]
-            curve = BSpline(knots, ring, degree)
-            angles = np.unwrap(np.arctan2(ring[:, 1], ring[:, 0]))
-            phi = (angles[0] + angles[-1]) / 2
-            def residual(u):
-                xy = curve(u)[:2]
-                return xy[0] * math.sin(phi) - xy[1] * math.cos(phi)
-            u = brentq(residual, 0, 1)
-            basis = BSpline.design_matrix([u], knots, degree).toarray()[0]
-            basis[[0, -1]] = 0
-            radius = (float(recipe.radius(phi, float(ring[0, 2]), points)) if recipe is not None else
-                      float(np.interp(phi, angles, np.linalg.norm(ring[:, :2], axis=1))))
-            wanted = radius * np.array([math.cos(phi), math.sin(phi)])
-            correction = wanted - curve(u)[:2]
-            result[columns, j, :2] += basis[:, None] * correction / np.dot(basis, basis)
-    return result
+    from .builders._occ import angular_interpolating_surface_poles, _AngularPoleGrid
+
+    if recipe is not None and refine:
+        # Bounds and flush previews consume the same accepted fit as the wall.
+        points, accepted_groups, _ = _fit_angular_grid(points, recipe, groups)
+        groups[:] = accepted_groups
+    result = []
+    hermite = not _revolution_grid(points) if hermite is None else hermite
+    angular_knots = {}
+    offset = 0
+    for sector, columns in enumerate(groups):
+        grid = points[columns].transpose(1, 0, 2)
+        poles, knots = angular_interpolating_surface_poles(
+            grid, degree_u=min(3, len(columns) - 1), shape_preserving=hermite, circular=not hermite)
+        poles = poles.transpose(1, 0, 2)
+        if recipe is not None and hermite:
+            radius = np.linalg.norm(points[columns, 0, :2], axis=1)
+            if np.ptp(radius) < 1e-9:
+                # The circular source must stay inside its authored disk.
+                # Interpolation can overshoot it by microns on a moving or
+                # locally refined angle net. An inscribed pole hull preserves
+                # the source guard; the same radial budget measures its bias.
+                pole_radius = np.linalg.norm(poles[:, 0, :2], axis=1)
+                poles[:, 0, :2] *= np.minimum(1., radius[0] / pole_radius)[:, None]
+        poles[0], poles[-1] = points[columns[0]], points[columns[-1]]
+        result.append(poles)
+        groups[sector] = list(range(offset, offset + len(poles)))
+        angular_knots[tuple(groups[sector])] = knots
+        offset += len(poles)
+    return _AngularPoleGrid(np.concatenate(result), angular_knots, hermite)
 
 
 def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]],
-             recipe: CornerWall | None = None, identities: list[int] | None = None):
-    from .builders._occ import add_bspline_patch
+             recipe: CornerWall | None = None, identities: list[int] | None = None,
+             hermite: bool | None = None):
+    from .builders._occ import add_bspline_patch, _AngularPoleGrid
 
     ends = cut_indices(points, cuts) if identities is None else identities
-    fitting_points = _angular_poles(points, groups, recipe)
+    fitted_groups = [columns.copy() for columns in groups]
+    fitting_points = _angular_poles(points, fitted_groups, recipe, refine=False, hermite=hermite)
     patches = []
     for span, (a, b) in enumerate(zip(ends[:-1], ends[1:])):
-        poles = fitting_points[:, a:b + 1].copy()
-        for sector, columns in enumerate(groups):
+        poles = np.asarray(fitting_points)[:, a:b + 1].copy()
+        for sector, columns in enumerate(fitted_groups):
             local = poles.copy()
-            # A clamped B-spline's tangent is its first pole chord. Short
-            # spans retain degree min(3, rings-1) and are measured/refined.
             if recipe is not None and b - a >= 3:
                 if a > 0:
-                    local[columns, 1] = local[columns, 0] + (poles[0, 1, 2] - poles[0, 0, 2]) * _end_derivative(fitting_points, a, 1, recipe, columns)
+                    local[columns, 1] = local[columns, 0] + (poles[0, 1, 2] - poles[0, 0, 2]) * _end_derivative(fitting_points, a, 1, recipe, columns, points)
                 if b < points.shape[1] - 1:
-                    local[columns, -2] = local[columns, -1] - (poles[0, -1, 2] - poles[0, -2, 2]) * _end_derivative(fitting_points, b, -1, recipe, columns)
-            tag = add_bspline_patch(local, columns, degree_v=min(3, b - a))
+                    local[columns, -2] = local[columns, -1] - (poles[0, -1, 2] - poles[0, -2, 2]) * _end_derivative(fitting_points, b, -1, recipe, columns, points)
+            net = _AngularPoleGrid(local, fitting_points.angular_knots, fitting_points.hermite)
+            tag = add_bspline_patch(net, columns, degree_v=min(3, b - a))
             patches.append((span, sector, (2, tag)))
     return patches
 
@@ -346,14 +484,22 @@ def _crease_edges(left, right, wall_tags):
             for tag in sorted(boundaries[0] & boundaries[1])]
 
 
-def occ_radius(tags: list[int], phi: float, z: float, expected: float) -> float:
+def occ_radius(tags: list[int], phi: float, z: float, expected: float,
+               *, boxes: dict[int, tuple] | None = None) -> float:
     """Fixed-z radial half-plane intersection, not nearest-point deviation."""
     from .builders._occ import require_gmsh
 
     gmsh = require_gmsh()
     target = [expected * math.cos(phi), expected * math.sin(phi), z]
-    for tag in tags:
-        box = gmsh.model.getBoundingBox(2, tag)
+    if boxes is None:
+        boxes = {tag: gmsh.model.getBoundingBox(2, tag) for tag in tags}
+    # Try the box containing the expected point first. Keep every candidate
+    # and stable tie order; this avoids projecting onto opposite sectors.
+    def distance(tag):
+        box = boxes[tag]
+        return sum(max(box[i] - target[i], target[i] - box[i + 3], 0.) ** 2 for i in range(3))
+    for tag in sorted(tags, key=distance):
+        box = boxes[tag]
         if not box[2] - 1e-6 <= z <= box[5] + 1e-6:
             continue
         lo, hi = gmsh.model.getParametrizationBounds(2, tag)
@@ -371,14 +517,30 @@ def occ_radius(tags: list[int], phi: float, z: float, expected: float) -> float:
                 xyz = np.asarray(gmsh.model.getValue(2, tag, [u, v]))
                 if abs(xyz[2] - z) < 1e-8 and np.dot(xyz[:2], [math.cos(phi), math.sin(phi)]) > 0:
                     return float(np.linalg.norm(xyz[:2]))
+        fixed_v = None
         for u in (lo[0], hi[0]):
             def boundary_z(v):
                 return gmsh.model.getValue(2, tag, [u, v])[2] - z
             if boundary_z(lo[1]) * boundary_z(hi[1]) <= 0:
                 v = brentq(boundary_z, lo[1], hi[1], xtol=1e-13)
+                if fixed_v is None:
+                    fixed_v = v
                 xyz = np.asarray(gmsh.model.getValue(2, tag, [u, v]))
                 radial = xyz[0] * math.cos(phi) + xyz[1] * math.sin(phi)
                 if abs(xyz[0] * math.sin(phi) - xyz[1] * math.cos(phi)) < 1e-8 and radial > 0:
+                    return float(np.linalg.norm(xyz[:2]))
+        if fixed_v is not None:
+            # Corner patches have z independent of u. Solve the meridian on
+            # that isocurve, verifying both residuals with the same tolerance
+            # as the general solve below before accepting the intersection.
+            def meridian(u):
+                xyz = gmsh.model.getValue(2, tag, [u, fixed_v])
+                return xyz[0] * math.sin(phi) - xyz[1] * math.cos(phi)
+            if meridian(lo[0]) * meridian(hi[0]) <= 0:
+                u = brentq(meridian, lo[0], hi[0], xtol=1e-13)
+                xyz = np.asarray(gmsh.model.getValue(2, tag, [u, fixed_v]))
+                residual = [xyz[0] * math.sin(phi) - xyz[1] * math.cos(phi), xyz[2] - z]
+                if np.linalg.norm(residual) < 2e-6 and np.dot(xyz[:2], [math.cos(phi), math.sin(phi)]) > 0:
                     return float(np.linalg.norm(xyz[:2]))
         _, uv = gmsh.model.getClosestPoint(2, tag, target)
         def residual(parameters):
@@ -397,11 +559,40 @@ def slope_pair(fn, z: float, h: float) -> list[float]:
             math.degrees(math.atan((fn(z + 2 * h) - fn(z + h)) / h))]
 
 
-def measure_occ(points: np.ndarray, recipe: CornerWall, wall: list[tuple[int, int]]) -> list[dict[str, Any]]:
-    from .builders._occ import require_gmsh
+def _occ_probe(points, recipe, wall, segments=None, groups=None):
+    """Immutable-pass index: semantic span/sector ancestry and cached boxes.
 
+    Never carry this cache across sewing, removal or another OCC mutation.
+    Boundary probes retain both incident spans/sectors in original order.
+    """
+    from .builders._occ import require_gmsh
     gmsh = require_gmsh()
     tags = [tag for _, tag in wall]
+    boxes = {tag: gmsh.model.getBoundingBox(2, tag) for tag in tags}
+    cuts = recipe.cuts(points)
+    angular_bounds = []
+    for columns in groups or []:
+        angles = np.unwrap(np.arctan2(points[columns, 0, 1], points[columns, 0, 0]))
+        angular_bounds.append((angles[0], angles[-1]))
+
+    def probe(phi, z, expected):
+        adjacent = tags
+        if segments is not None and groups is not None:
+            spans = range(int(np.searchsorted(cuts, z - 1e-9)),
+                          int(np.searchsorted(cuts, z + 1e-9)) + 1)
+            sectors = [i for i, (lo, hi) in enumerate(angular_bounds)
+                       if (phi - lo) % math.tau <= hi - lo + 1e-9
+                       or abs(math.remainder(phi - lo, math.tau)) < 1e-9]
+            adjacent = [tag for span in spans for sector in sectors
+                        for _, tag in segments[f'{span}:{sector}']]
+        return occ_radius(adjacent, phi, z, expected, boxes=boxes)
+    return probe
+
+
+def measure_occ(points: np.ndarray, recipe: CornerWall, wall: list[tuple[int, int]],
+                *, segments: dict[str, list[tuple[int, int]]] | None = None,
+                groups: list[list[int]] | None = None) -> list[dict[str, Any]]:
+    probe = _occ_probe(points, recipe, wall, segments, groups)
     cuts = recipe.cuts(points)
     records = []
     bounds = [float(points[0, 0, 2]), *cuts, float(points[0, -1, 2])]
@@ -418,7 +609,7 @@ def measure_occ(points: np.ndarray, recipe: CornerWall, wall: list[tuple[int, in
                 y = abs(y)
             phi = math.atan2(y, x)
             expected = lambda z: float(recipe.radius(phi, z, points))
-            fn = lambda z: occ_radius(tags, phi, z, expected(z))
+            fn = lambda z: probe(phi, z, expected(z))
             intended = slope_pair(expected, cut, h)
             built = slope_pair(fn, cut, h)
             azimuths.append({'phiDeg': deg, 'intendedSlopesDeg': intended, 'occSlopesDeg': built,
@@ -476,6 +667,12 @@ def _cap(geometry, points, first):
 
 MAX_CORNER_REFINEMENTS = 4
 MAX_CORNER_RINGS = 1025
+WALL_ANGULAR_TOLERANCE_MM = 0.005
+# Leave axial headroom above the angular floor, and margin below the separate
+# 0.01 mm dense-probe acceptance bound, without over-refining source rims.
+WALL_FIT_TOLERANCE_MM = 0.0075
+MAX_WALL_FIT_REFINEMENTS = 16
+MAX_WALL_PROFILES = 2048
 
 
 def build_corner_wall(geometry):
@@ -498,21 +695,36 @@ def build_corner_wall(geometry):
         points = _shift_coupled_baffle_grid(points)
     points = _snap_open_symmetry_grid(points, closed=geometry.closed,
                                       symmetry_planes=geometry.symmetry_planes)
-    groups = _bspline_patch_phi_groups(len(points), closed=geometry.closed,
-                                      n_sectors=_open_sector_count(closed=geometry.closed,
-                                                                   symmetry_planes=geometry.symmetry_planes))
-    for attempt in range(MAX_CORNER_REFINEMENTS + 1):
+    slope_refinements = fit_refinements = angular_refinements = 0
+    for attempt in range(MAX_CORNER_REFINEMENTS + MAX_WALL_FIT_REFINEMENTS + 1):
+        groups = _bspline_patch_phi_groups(len(points), closed=geometry.closed,
+                                          n_sectors=_open_sector_count(closed=geometry.closed,
+                                                                       symmetry_planes=geometry.symmetry_planes))
+        points, groups, refined = _fit_angular_grid(
+            points, recipe, groups, budget=MAX_WALL_FIT_REFINEMENTS - angular_refinements)
+        angular_refinements += refined
         before = set(gmsh.model.occ.getEntities())
         patches = _patches(points, recipe.cuts(points), groups, recipe)
         wall = [face for _, _, face in patches]
         gmsh.model.occ.synchronize()
-        measurements = measure_occ(points, recipe, wall)
+        measurements = measure_occ(points, recipe, wall,
+                                   segments={f'{span}:{sector}': [face] for span, sector, face in patches},
+                                   groups=groups)
         worst = max(((row['occJumpErrorDeg'], record['zMm']) for record in measurements
                      for row in record['azimuths']), default=(0, 0))
-        if worst[0] <= 0.5:
-            break
-        if attempt == MAX_CORNER_REFINEMENTS or 2 * points.shape[1] - 1 > MAX_CORNER_RINGS:
-            raise ValueError(f"FREEFORM corner z={worst[1]:g} mm: OCC slope jump error {worst[0]:.6g} deg exceeds 0.5 deg at refinement cap")
+        if worst[0] > 0.5:
+            if slope_refinements == MAX_CORNER_REFINEMENTS or 2 * points.shape[1] - 1 > MAX_CORNER_RINGS:
+                raise ValueError(f"FREEFORM corner z={worst[1]:g} mm: OCC slope jump error {worst[0]:.6g} deg exceeds 0.5 deg at refinement cap")
+            slope_refinements += 1
+        else:
+            fit_error, _ = _wall_fit_error(points, recipe, patches)
+            if fit_error <= WALL_FIT_TOLERANCE_MM:
+                break
+            if (fit_refinements == MAX_WALL_FIT_REFINEMENTS
+                    or 2 * points.shape[1] - 1 > MAX_CORNER_RINGS):
+                raise ValueError(f"FREEFORM corner wall sampled radial error {fit_error:g} mm exceeds "
+                                 f"{WALL_FIT_TOLERANCE_MM:g} mm at geometry refinement cap")
+            fit_refinements += 1
         owned = set(gmsh.model.occ.getEntities()) - before
         gmsh.model.occ.remove(sorted(owned, reverse=True), recursive=True)
         points = _refine(points, recipe)
@@ -544,14 +756,15 @@ def build_corner_wall(geometry):
         outer = mitred_outer_grid(points, geometry.wall_thickness_mm, full_circle=geometry.closed, corner_z=cuts)
         outer = _snap_open_symmetry_grid(outer, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
         ends = cut_indices(points, cuts)
-        outer_patches = _patches(outer, (), groups, identities=ends)
+        outer_hermite = not _revolution_grid(outer)
+        outer_patches = _patches(outer, (), groups, identities=ends, hermite=outer_hermite)
         # The smooth builders' outer-shell clearance sizing, from the mitred shell.
         clearance = _wall_clearance_metadata(geometry, outer)
         # The rear return is its own linear patch and cannot round a profile crease.
         rear = geometry_rear_ring(geometry, points, outer)
         rear = _snap_open_symmetry_grid(rear[:, None, :], closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)[:, 0]
         extension = np.stack((rear, outer[:, 0]), axis=1)
-        rear_patches = _patches(extension, (), groups)
+        rear_patches = _patches(extension, (), groups, hermite=outer_hermite)
         # Both ruled strips span only about one wall thickness.
         strip_widths = {'mouth': float(np.min(np.linalg.norm(outer[:, -1] - points[:, -1], axis=-1))),
                         'rear': float(np.min(np.linalg.norm(extension[:, 1] - extension[:, 0], axis=-1)))}
@@ -583,7 +796,7 @@ def build_corner_wall(geometry):
                                   slice_index=int(np.argmin(abs(points[0, :, 2] - z))), closed=geometry.closed,
                                   offset_mm=offset)]
     gmsh.model.occ.synchronize()
-    records = measure_occ(points, recipe, roles['inner'])
+    records = measure_occ(points, recipe, roles['inner'], segments=mapped_inner, groups=groups)
     for span, record in enumerate(records):
         edges = [edge for sector in range(len(groups))
                  for edge in _crease_edges(mapped_inner[f'{span}:{sector}'],
@@ -620,7 +833,10 @@ def build_corner_wall(geometry):
     reference_points, reference_normals = (None, None)
     if mode is PointGridBuildMode.BARE:
         reference_points, reference_normals = open_shell_wall_orientation_references(points, closed=geometry.closed)
-    metadata = {'cornerWall': {'corners': records, 'refinements': attempt, 'axialRings': points.shape[1]}}
+    metadata = {'cornerWall': {'corners': records, 'refinements': attempt, 'axialRings': points.shape[1],
+                               'fitToleranceMm': WALL_FIT_TOLERANCE_MM,
+                               'sampledFitErrorMm': fit_error, 'fitRefinements': fit_refinements,
+                               'angularRefinements': angular_refinements}}
     if clearance is not None:
         metadata['outerWallClearance'] = clearance
     if mode is PointGridBuildMode.INFINITE_BAFFLE:
@@ -631,7 +847,8 @@ def build_corner_wall(geometry):
                          symmetry_snap_axes=() if geometry.closed else tuple(geometry.symmetry_planes),
                          open_shell_wall_points_mm=reference_points, open_shell_wall_normals=reference_normals,
                          mesh_algorithm=MESH_ALGORITHM_MESHADAPT, metadata=metadata, freeform_wall_points_mm=points, freeform_wall_recipe=recipe,
-                         freeform_strip_widths_mm=strip_widths)
+                         freeform_strip_widths_mm=strip_widths,
+                         freeform_wall_segments=mapped_inner, freeform_wall_groups=groups)
 
 
 MAX_MERIDIAN_NODES = 4097
@@ -644,6 +861,8 @@ def corner_size_fields(built, density):
     points, recipe = built.freeform_wall_points_mm, built.freeform_wall_recipe
     records = built.metadata['cornerWall']['corners']
     tags = built.mesh_surface_groups['inner']
+    probe = _occ_probe(points, recipe, [(2, tag) for tag in tags],
+                       built.freeform_wall_segments, built.freeform_wall_groups)
     fields, sizes = [], []
     bounds = (points[0, 0, 2], *recipe.cuts(points), points[0, -1, 2])
     for record in records:
@@ -654,7 +873,7 @@ def corner_size_fields(built, density):
         chord_limit = local_size
         for phi in (0., math.pi / 2):
             expected = lambda z: float(recipe.radius(phi, z, points))
-            fn = lambda z: occ_radius(tags, phi, z, expected(z))
+            fn = lambda z: probe(phi, z, expected(z))
             intended = slope_pair(expected, cut, min(.001, distance / 1000))
             step = min(local_size, distance / 4)
             for _ in range(12):
@@ -777,13 +996,14 @@ def measure_corner_mesh(geometry, built) -> None:
     points = built.freeform_wall_points_mm
     records = built.metadata['cornerWall']['corners']
     xyz, triangles = wall_triangles(built.mesh_surface_groups['inner'])
-    tags = built.mesh_surface_groups['inner']
+    probe = _occ_probe(points, recipe, [(2, tag) for tag in built.mesh_surface_groups['inner']],
+                       built.freeform_wall_segments, built.freeform_wall_groups)
     z_values = np.unique(np.r_[np.linspace(points[0, 0, 2], points[0, -1, 2], 241), recipe.cuts(points)])
     for plane, phi in (('H', 0.), ('V', math.pi / 2)):
         sections = mesh_sections(xyz, triangles, phi)
         expected = lambda z: float(recipe.radius(phi, z, points))
         mesh_fn = lambda z: mesh_radius(sections, z)
-        occ_fn = lambda z: occ_radius(tags, phi, z, expected(z))
+        occ_fn = lambda z: probe(phi, z, expected(z))
         mesh_deviation = max(abs(mesh_fn(float(z)) - expected(float(z))) for z in z_values)
         occ_deviation = max(abs(occ_fn(float(z)) - expected(float(z))) for z in z_values)
         for record in records:
