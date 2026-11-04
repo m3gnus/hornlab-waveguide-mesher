@@ -835,8 +835,13 @@ reported as ignored: ATH V2026-09a ignores them there and exports a
 byte-identical grid. Under v3, finite top-level R-OSSE rotation, including azimuth
 expressions, rotates the body around the nominal throat join and leaves the
 extension straight. Other unverified top-level profile keys (`Throat.Diameter`,
-`Coverage.Angle`, `Length` beside `R-OSSE`) remain refused. A file with multiple profile blocks is refused, including
-repeated blocks of the same name. In-block `Throat.Profile = 1` is accepted
+`Coverage.Angle`, `Length` beside `R-OSSE`) remain refused. Fresh ATH imports merge
+repeated declarations of the same profile block member by member: the last
+assignment to a member wins, omitted members survive, and an empty declaration
+does not reset them. This follows the retained ATH repeated/merged OSSE witness.
+Different profile block names remain refused, including mixed `R-OSSE`/`ROSSE`.
+Saved/native text retains its earlier repeated-profile refusal; WG's saved
+text reader retains its earlier last-block reading. In-block `Throat.Profile = 1` is accepted
 in both profile families.
 
 Enclosure members written inside `Mesh`, such as `Enclosure.Depth` or

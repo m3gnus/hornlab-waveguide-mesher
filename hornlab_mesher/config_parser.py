@@ -6,6 +6,7 @@ import ast
 import json
 import logging
 import re
+from collections.abc import Iterable
 from decimal import Decimal, InvalidOperation
 from difflib import get_close_matches
 from pathlib import Path
@@ -150,8 +151,20 @@ def _eval_constant_param(value: Any) -> float:
 
 
 
+def ath_profile_members(declarations: Iterable[Mapping[str, str]]) -> dict[str, str]:
+    """ATH retains omitted members; the last assignment to each member wins.
+
+    Shared with WG's text reader. The retained ATH repeated/merged OSSE
+    witnesses replace L and a while retaining a0, k, s, n and q.
+    """
+    members: dict[str, str] = {}
+    for declaration in declarations:
+        members.update(declaration)
+    return members
+
+
 def _parse_ath_blocks(
-    content: str,
+    content: str, *, merge_profiles: bool = False,
 ) -> tuple[dict[str, dict[str, str]], dict[str, str], list[tuple[str, ...]]]:
     """Split an ATH text config into top-level blocks, top-level keys and nested blocks.
 
@@ -164,6 +177,7 @@ def _parse_ath_blocks(
     flat: dict[str, str] = {}
     nested: list[tuple[str, ...]] = []
     stack: list[str] = []
+    profiles: dict[str, list[dict[str, str]]] = {}
 
     for lineno, raw_line in enumerate(content.splitlines(), 1):
         line = raw_line.split(";", 1)[0].strip()
@@ -177,9 +191,13 @@ def _parse_ath_blocks(
                 if stack == ["Mesh.Enclosure"] and name in ATH_LF_BLOCKS:
                     blocks[stack[0]][name] = ""
             else:
-                if name in _PROFILE_BLOCKS and name in blocks:
-                    raise ath_refusal(f"{name} = {{...}} is a second profile beside {name}; only one profile block is supported")
-                blocks.setdefault(name, {})
+                if name in _PROFILE_BLOCKS:
+                    if name in blocks and not merge_profiles:
+                        raise ath_refusal(f"{name} = {{...}} is a second profile beside {name}; only one profile block is supported")
+                    blocks[name] = {}
+                    profiles.setdefault(name, []).append(blocks[name])
+                else:
+                    blocks.setdefault(name, {})
             stack.append(name)
             continue
         if line == "}":
@@ -207,6 +225,9 @@ def _parse_ath_blocks(
             blocks[stack[0]][f"{stack[1]}.{key}"] = value
     if stack:
         raise ath_refusal(f"block {stack[-1]!r} is never closed")
+    for name, declarations in profiles.items():
+        if len(declarations) > 1:
+            blocks[name] = ath_profile_members(declarations)
     return blocks, flat, nested
 
 
@@ -733,7 +754,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
         if isinstance(exc, UserRefusal):
             raise
         raise ConfigError(str(exc)) from exc
-    blocks, flat, nested = _parse_ath_blocks(content)
+    blocks, flat, nested = _parse_ath_blocks(
+        content, merge_profiles=imported_geometry and saved_geometry_version is None,
+    )
     # These C functions have an output argument as well as a return value;
     # there is no scalar expression equivalent. Refuse at import, by name.
     expression_flat = {key: value for key, value in flat.items()

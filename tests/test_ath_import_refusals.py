@@ -220,11 +220,18 @@ def test_two_profile_blocks_are_refused() -> None:
 
 
 @pytest.mark.parametrize("family", ["OSSE", "R-OSSE", "ROSSE"])
-def test_repeated_profile_blocks_are_refused(family: str) -> None:
+@pytest.mark.parametrize("header", [
+    "; Parameter config\n",
+    "; Waveguide Generator geometry-interpretation: native-v1\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-08c-v1\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n",
+    "; Waveguide Generator geometry-interpretation: ath-2026-09a-v3\n",
+])
+def test_saved_repeated_profile_blocks_keep_their_refusal(family: str, header: str) -> None:
     dimension = "L" if family == "OSSE" else "R"
     text = f"{family} = {{\n{dimension} = 60\n}}\n{family} = {{\n{dimension} = 120\n}}\n"
     with pytest.raises(ConfigError, match=f"second profile beside {family}"):
-        parse_text_config(text)
+        parse_text_config(header + text)
 
 
 @pytest.mark.parametrize("in_block", [None, 0, 5])
