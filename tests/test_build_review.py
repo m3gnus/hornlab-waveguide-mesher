@@ -118,6 +118,7 @@ def test_auto_fit_never_retries_a_budget_refusal(tmp_path, monkeypatch):
 
 def test_metadata_records_the_fit_that_shipped(tmp_path, monkeypatch):
     import hornlab_mesher.config_builder as builder
+    from hornlab_mesher import mesher
 
     result = builder.build_from_config(
         _config(mode="bare", wall=0.0), tmp_path / "auto.msh"
@@ -128,14 +129,14 @@ def test_metadata_records_the_fit_that_shipped(tmp_path, monkeypatch):
     result = builder.build_from_config(explicit, tmp_path / "approx.msh")
     assert result.metadata["surfaceFit"] == "approximate"
 
-    original = builder.build_mesh_with_info
+    original = mesher._dispatch_builder
 
-    def fail_interpolation(geometry, *args, **kwargs):
+    def fail_interpolation(geometry):
         if geometry.surface_fit == "interpolate":
-            raise MesherError("injected fit failure")
-        return original(geometry, *args, **kwargs)
+            raise RuntimeError("injected fit failure")
+        return original(geometry)
 
-    monkeypatch.setattr(builder, "build_mesh_with_info", fail_interpolation)
+    monkeypatch.setattr(mesher, "_dispatch_builder", fail_interpolation)
     result = builder.build_from_config(
         _config(mode="bare", wall=0.0), tmp_path / "fallback.msh"
     )

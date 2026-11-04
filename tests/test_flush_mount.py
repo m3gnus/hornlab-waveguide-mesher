@@ -257,22 +257,27 @@ def test_auto_fit_keeps_the_original_horn_fit_for_flush():
 @pytest.mark.parametrize("quadrants", ["1", "12", "14", "1234"])
 def test_auto_fit_retry_preserves_flush_wall(tmp_path, monkeypatch, quadrants):
     import hornlab_mesher.config_builder as builder
+    from hornlab_mesher import mesher
     from hornlab_mesher.builders._occ import sample_patch_boundary
     from hornlab_mesher.builders.point_grid_surfaces import _bspline_patch_phi_groups
-    from hornlab_mesher.mesher import MesherError
 
     config = rectangular_enclosure(margin=0.0, quadrants=quadrants)
     config["mesh"]["surfaceFit"] = "auto"
     original_build = builder.build_mesh_with_info
+    original_dispatch = mesher._dispatch_builder
     attempted = []
 
-    def fail_first(geometry, *args, **kwargs):
+    def record_attempt(geometry, *args, **kwargs):
         attempted.append(geometry)
-        if len(attempted) == 1:
-            raise MesherError("simulated first-fit mesh failure")
         return original_build(geometry, *args, **kwargs)
 
-    monkeypatch.setattr(builder, "build_mesh_with_info", fail_first)
+    def fail_first(geometry):
+        if len(attempted) == 1:
+            raise RuntimeError("simulated first-fit mesh failure")
+        return original_dispatch(geometry)
+
+    monkeypatch.setattr(builder, "build_mesh_with_info", record_attempt)
+    monkeypatch.setattr(mesher, "_dispatch_builder", fail_first)
     result = builder.build_from_config(config, tmp_path / "retry.msh")
     assert result.metadata["surfaceFit"] == "interpolate"
     assert [geometry.surface_fit for geometry in attempted] == ["interpolate", "interpolate"]

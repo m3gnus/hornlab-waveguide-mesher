@@ -39,7 +39,7 @@ def test_physical_domain(values):
 
 def test_frozen_explicit_shape_and_density_separation(monkeypatch):
     import hornlab_mesher.config_builder as cb
-    monkeypatch.setattr(cb,"build_point_grid",lambda *a,**k:pytest.fail("profile evaluation must not run"))
+    monkeypatch.setattr(cb,"build_point_grid_arrays",lambda *a,**k:pytest.fail("profile evaluation must not run"))
     model=resolve_geometry(config()).geometry
     assert type(model) is StandaloneSourceGeometry
     with pytest.raises(FrozenInstanceError):
@@ -49,6 +49,9 @@ def test_frozen_explicit_shape_and_density_separation(monkeypatch):
     assert resolve_geometry(config(size_mm=2)).geometry.fingerprint==model.fingerprint
     assert model.bounds==((-22.,-22.,-8.),(22.,22.,0.))
     assert build_geometry_params(config())[1:]==("SOURCE-DISK","standalone-source")
+    # Prove the guard observes the sampler a horn actually uses.
+    with pytest.raises(pytest.fail.Exception, match="profile evaluation must not run"):
+        resolve_geometry({"formula": "OSSE", "profile": {"L": 40, "a": 30}})
 
 
 @pytest.mark.parametrize("where,key,value",[("root","wall_thickness_mm",0),("root","profile",{}),
