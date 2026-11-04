@@ -101,6 +101,10 @@ def ath_import_config(config, raw_controls, *, ath_version=None):
             fail("ATH controls require Throat.Profile = 1.")
         # Native sampling owns tessellation of this exact circular surface.
         # An imported default corner count has no construction role here.
+        # ATH import is qualified for scalar bodies only. Native construction also
+        # accepts per-meridian expressions, so its validation cannot refuse them here.
+        for key in ("L", "r0", "a", "a0", "k", "s"):
+            number(params[key], key)
         params.update(type=FORMULA, controlsAdapter=payload, cornerSegments=0, samplingMode="uniform")
         _validate_model_params(params)
         native = {
