@@ -331,11 +331,12 @@ def test_both_implicit_target_stays_accepted(monkeypatch):
     _built_outline_error(config, monkeypatch)
 
 
-def _emitted_wall_facets(config, tmp_path, monkeypatch):
+def _emitted_wall_facets(config, tmp_path, monkeypatch, inspect_built_mesh):
     import gmsh
     import meshio
     from scipy.spatial import cKDTree
-    import hornlab_mesher.mesher as mesher
+
+    from hornlab_mesher import mesher
 
     captured = {}
     dispatch = mesher._dispatch_builder
@@ -345,10 +346,8 @@ def _emitted_wall_facets(config, tmp_path, monkeypatch):
         return built
     monkeypatch.setattr(mesher, '_dispatch_builder', capture)
     resolved = resolve_geometry(config)
-    gmsh.initialize(interruptible=False)
-    try:
-        path, info = build_mesh_with_info(resolved.geometry, resolved.density,
-            tmp_path / 'facets.msh', scale_to_metres=False)
+
+    def capture_facets():
         tags, xyz, _ = gmsh.model.mesh.getNodes()
         xyz = np.asarray(xyz).reshape(-1, 3)
         lookup = {int(tag): i for i, tag in enumerate(tags)}
@@ -361,14 +360,21 @@ def _emitted_wall_facets(config, tmp_path, monkeypatch):
                     chunk = xyz[np.array([lookup[int(k)] for k in ns]).reshape(-1, 3)]
                     raw.extend(chunk)
                     roles.extend([role]*len(chunk))
-        raw, roles = np.asarray(raw), np.asarray(roles)
-        mesh = meshio.read(path)
-        emitted = mesh.points[mesh.cells_dict['triangle']]
-        movement, idx = cKDTree(raw.mean(axis=1)).query(emitted.mean(axis=1))
-        assert movement.max() < .01
-        facets = {role: emitted[roles[idx] == role] for role in ['inner', 'outer']}
+        captured['raw'], captured['roles'] = np.asarray(raw), np.asarray(roles)
+
+    gmsh.initialize(interruptible=False)
+    try:
+        with inspect_built_mesh(capture_facets):
+            path, info = build_mesh_with_info(resolved.geometry, resolved.density,
+                tmp_path / 'facets.msh', scale_to_metres=False)
     finally:
         gmsh.finalize()
+    raw, roles = captured['raw'], captured['roles']
+    mesh = meshio.read(path)
+    emitted = mesh.points[mesh.cells_dict['triangle']]
+    movement, idx = cKDTree(raw.mean(axis=1)).query(emitted.mean(axis=1))
+    assert movement.max() < .01
+    facets = {role: emitted[roles[idx] == role] for role in ['inner', 'outer']}
     return info, facets
 
 
@@ -406,13 +412,13 @@ def _strict_crossing_count(inner, outer):
 
 
 @pytest.mark.parametrize('quadrants,base_count,base_pairs', [('1', 219, 0), ('1234', 860, 4)])
-def test_icw_emitted_facets_preserve_clearance(tmp_path, monkeypatch, quadrants, base_count, base_pairs):
+def test_icw_emitted_facets_preserve_clearance(tmp_path, monkeypatch, inspect_built_mesh, quadrants, base_count, base_pairs):
     config = _config('ICW', 0.)
     config.update(mode='freestanding', scale=.48)
     config['mesh'].update(quadrants=quadrants, wall_thickness_mm=3.,
                           throatResolution=4., mouthResolution=26., rearResolution=15.)
     config['morph'].update(morphWidth=360., morphHeight=210., morphFixed=.35)
-    info, facets = _emitted_wall_facets(config, tmp_path, monkeypatch)
+    info, facets = _emitted_wall_facets(config, tmp_path, monkeypatch, inspect_built_mesh)
     assert abs(info.n_triangles/base_count - 1) < .03
     assert _strict_crossing_count(facets['inner'], facets['outer']) <= base_pairs
 
@@ -435,7 +441,7 @@ def test_stretched_half_outline_checks_each_patch(monkeypatch):
 
 
 @pytest.mark.parametrize('formula', ['OSSE', 'R-OSSE', 'LOOKUP'])
-def test_composed_emitted_walls_do_not_cross(tmp_path, monkeypatch, formula):
+def test_composed_emitted_walls_do_not_cross(tmp_path, monkeypatch, inspect_built_mesh, formula):
     config = _config('OSSE', 23.)
     config.update(formula=formula, mode='freestanding', scale=1.6)
     if formula == 'R-OSSE':
@@ -447,5 +453,5 @@ def test_composed_emitted_walls_do_not_cross(tmp_path, monkeypatch, formula):
         config['profile'].update(s1=.7, s2=.3)
     config['mesh'].update(quadrants='1', wall_thickness_mm=3.)
     config['morph'].update(morphWidth=360., morphHeight=210., morphFixed=.35)
-    _, facets = _emitted_wall_facets(config, tmp_path, monkeypatch)
+    _, facets = _emitted_wall_facets(config, tmp_path, monkeypatch, inspect_built_mesh)
     assert _strict_crossing_count(facets['inner'], facets['outer']) == 0
