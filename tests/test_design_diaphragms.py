@@ -1,6 +1,8 @@
 """Sketched design diaphragms use the existing canonical contour and box."""
 import copy
+import math
 
+import numpy as np
 import pytest
 
 from hornlab_mesher import build_from_config
@@ -41,6 +43,7 @@ def test_sketched_woofer_cone_surround_is_closed_and_weighted(tmp_path):
 def test_sketched_hf_dome_with_plug_is_closed_and_tagged(tmp_path):
     config = assembly_config()
     config['enclosure'].pop('woofers')
+    config['mesh']['max_triangles'] = 25000  # Includes certified passage refinement.
     config['hf_diaphragm'] = {
         'fit_wg0_rim': True, 'diaphragm': document(dome(12.7, 3, physical_source_id='horn-throat'), motion='normal'),
         'phase_plugs': [dict(id='plug', z0_mm=6, z1_mm=15, inner0_mm=0, outer0_mm=2,
@@ -56,6 +59,8 @@ def test_sketched_hf_dome_with_plug_is_closed_and_tagged(tmp_path):
     assert patch['max_geometry_residual_mm'] <= .025
     print('HF fitted WG0 maximum nodal contour residual (mm):', patch['max_geometry_residual_mm'])
     assert result.metadata['assembly']['phase_plugs'][0]['id'] == 'plug'
+    quality = result.metadata['assembly']['passage']['quality']
+    assert quality['certified_clearance_mm'] >= .8 * quality['minimum_clearance_mm']
 
 
 @pytest.mark.parametrize('change,match', [('rim','rim'), ('front','front of baffle'), ('fold','increasing radius')])
@@ -109,3 +114,82 @@ def test_sketched_woofer_depth_refused(tmp_path):
     with pytest.raises(MesherError, match='reaches enclosure back') as exc:
         build_from_config(config, tmp_path/'too-deep.msh')
     assert exc.value.user_refusal.next_step
+
+
+def narrow_passage_config():
+    config = assembly_config()
+    config['enclosure'].pop('woofers')
+    config['profile'].update(L_mm=24, a_deg=.01, a0_deg=0)
+    config['mesh']['max_triangles'] = 200000
+    config['hf_diaphragm'] = {
+        'fit_wg0_rim': True, 'diaphragm': document(dome(12.7, 3)),
+        'phase_plugs': [dict(id='vane', z0_mm=6, z1_mm=6.3,
+                             inner0_mm=12.2, outer0_mm=12.54, inner1_mm=12.2, outer1_mm=12.54)],
+    }
+    return config
+
+
+def test_narrow_passage_survives_tessellation_and_ordinary_sizing_is_refused(tmp_path, monkeypatch):
+    from hornlab_mesher import design_passages
+    from hornlab_mesher.passage_mesh import annulus_bounds
+
+    config = narrow_passage_config()
+    result = build_from_config(config, tmp_path/'narrow.msh')
+    passage = result.metadata['assembly']['passage']
+    quality = passage['quality']
+    assert .1 < quality['minimum_clearance_mm'] < .5
+    assert quality['certified_clearance_mm'] >= .8 * quality['minimum_clearance_mm']
+    assert {c['id']: c['euler'] for c in quality['components']} == {'enclosure': 2, 'vane': 0}
+    _, points, triangles, _, surfaces = arrays(result)
+    print('Narrow passage CAD/certified clearance (mm), triangles:', quality['minimum_clearance_mm'],
+          quality['certified_clearance_mm'], len(triangles))
+    xyz = points[triangles]
+    wall = np.isin(surfaces, passage['surfaces']['horn-wall'])
+    wall &= (xyz[..., 2].min(axis=1) <= 6.3) & (xyz[..., 2].max(axis=1) >= 6)
+    # Independent whole-triangle radial oracle: the bore stays outside the vane.
+    # Only radial intrusion matters in this nearly cylindrical fixture.
+    # Set each triangle on the reference z plane for the independent oracle.
+    flat = xyz[wall].copy()
+    flat[..., 2] = 0
+    assert len(flat) > 0
+    assert annulus_bounds(flat, (0, 0), 0, 12.54, math.inf).max() == 0
+
+    # Recreate the reviewed path's ordinary "inner" sizing for the same CAD.
+    # Both bodies remain individually closed; the shared facet certificate
+    # must reject the coarse wall before publication.
+    def ordinary_density(built, add_field):
+        faces = [face for role, faces in built.metadata['assembly']['passage']['surfaces'].items()
+                 if role != 'horn-wall' for face in faces]
+        add_field('8', faces, [])
+        return []
+    certificate = design_passages.certify_design_passages
+    intersections = []
+    def capture_coarse(points, triangles, physical, surfaces, assembly):
+        from hornlab_mesher.facet_fit import _FacetIndex
+        groups = assembly['passage']['surfaces']
+        wall = np.isin(surfaces, groups['horn-wall'])
+        passive = np.isin(surfaces, [face for faces in assembly['passive_body_surfaces'].values() for face in faces])
+        for component in (passive, ~passive):
+            assert validate_orientation(points, triangles[component], physical[component], require_watertight=True,
+                                        require_edge_consistency=True, require_positive_volume=True).watertight
+        intersections.extend(_FacetIndex(points[triangles[passive]]).hits(points[triangles[wall]]))
+        certificate(points, triangles, physical, surfaces, assembly)
+    monkeypatch.setattr(design_passages, 'configure_passage_density', ordinary_density)
+    monkeypatch.setattr(design_passages, 'certify_design_passages', capture_coarse)
+    with pytest.raises(UserRefusal, match='passage (mesh|whole-facet)') as exc:
+        build_from_config(config, tmp_path/'coarse.msh')
+    assert 'Widen the passage' in exc.value.next_step
+    assert not (tmp_path/'coarse.msh').exists()
+    assert intersections, 'ordinary sizing must reproduce an actual collapsed CAD passage'
+
+
+def test_phase_plugs_on_freeform_corner_wall_refuse_with_remedy(tmp_path):
+    config = assembly_config('freeform-corners')
+    config['enclosure'].pop('woofers')
+    config['hf_diaphragm'] = narrow_passage_config()['hf_diaphragm']
+    config['hf_diaphragm']['diaphragm'] = document(dome(12.7, 3))
+    with pytest.raises((UserRefusal, MesherError), match='authored corners') as exc:
+        build_from_config(config, tmp_path/'corners.msh')
+    refusal = exc.value if isinstance(exc.value, UserRefusal) else exc.value.user_refusal
+    assert 'Remove the phase plugs' in refusal.next_step
+    assert not (tmp_path/'corners.msh').exists()

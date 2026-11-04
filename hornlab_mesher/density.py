@@ -1556,6 +1556,10 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         woofer_sizes.append(size)
 
     corner_sizes = []
+    passage_sizes = []
+    if geometry.metadata.get("assembly", {}).get("passage") is not None:
+        from .design_passages import configure_passage_density
+        passage_sizes = configure_passage_density(geometry, add_field)
     if getattr(geometry, "freeform_wall_recipe", None) is not None:
         from .corner_wall import corner_size_fields
         corner_fields, corner_sizes = corner_size_fields(geometry, density)
@@ -1568,7 +1572,7 @@ def configure_density(geometry: BuiltGeometry, density: MeshDensity) -> None:
         gmsh.model.mesh.field.setNumbers(minimum, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(minimum)
 
-    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res, *corner_sizes, *woofer_sizes]
+    sizes = [throat_res, mouth_res, rear_res, interface_res, aperture_res, *corner_sizes, *woofer_sizes, *passage_sizes]
     if arc_size is not None:
         sizes.append(float(arc_size))
     if lip_size is not None:

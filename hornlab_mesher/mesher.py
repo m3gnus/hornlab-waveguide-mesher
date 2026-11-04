@@ -737,6 +737,9 @@ def _postprocess_mesh(
     if assembly is not None:
         from .enclosure_woofers import certify_arrays
         certify_arrays(points, triangles, phys, surfaces, assembly)
+        if assembly.get("passage") is not None:
+            from .design_passages import certify_design_passages
+            certify_design_passages(points, triangles, phys, surfaces, assembly)
     points, triangles = _compact_unused_vertices(points, triangles)
     if vertical_offset_mm:
         # Mesh.VerticalOffset: rigid +y placement of the finished reduced/full

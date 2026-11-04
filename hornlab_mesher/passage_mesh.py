@@ -9,6 +9,10 @@ import numpy as np
 from .phase_plug import line_distance, validate_passages
 
 
+class PassageToleranceError(ValueError):
+    """The chosen tessellation cannot preserve the analytical passage gap."""
+
+
 def annulus_bounds(facets, center, z, inner, outer):
     """Conservative exact flat-annulus error for whole triangles.
 
@@ -64,8 +68,13 @@ def enclosure_planar_facets(assembly, facets):
     return mask
 
 
-def facet_bound(facets, distance, tolerance):
-    """Whole-facet bound using exact finite surfaces and a Lipschitz cover."""
+def facet_bound(facets, distance, tolerance, *, sample_distance=None):
+    """Whole-facet bound using finite-surface distance upper bounds and a cover.
+
+    A parametric surface can supply ``sample_distance(batch, uv, samples)``
+    instead of repeatedly projecting every sample. Distances to any actual
+    finite-surface points are valid upper bounds for the same Lipschitz proof.
+    """
     if not len(facets):
         raise ValueError("passage surface is empty")
     worst = 0.0
@@ -80,9 +89,12 @@ def facet_bound(facets, distance, tolerance):
                 + uv[None, :, :1] * (batch[:, 1, None] - batch[:, 0, None])
                 + uv[None, :, 1:] * (batch[:, 2, None] - batch[:, 0, None])
             )
-            sampled = distance(samples).max(axis=1)
+            sampled = (distance(samples) if sample_distance is None
+                       else sample_distance(batch, uv, samples)).max(axis=1)
+            if not np.isfinite(sampled).all():
+                raise ValueError("passage surface distances must be finite")
             if np.any(sampled > tolerance):
-                raise ValueError("passage mesh exceeds its fixed geometric tolerance")
+                raise PassageToleranceError("passage mesh exceeds its fixed geometric tolerance")
             diameter = np.linalg.norm(batch - np.roll(batch, 1, axis=1), axis=2).max(
                 axis=1
             )
@@ -94,15 +106,18 @@ def facet_bound(facets, distance, tolerance):
         if not pending:
             return worst
         facets = np.asarray(pending)
-    raise ValueError("passage whole-facet tolerance cannot be certified")
+    raise PassageToleranceError("passage whole-facet tolerance cannot be certified")
 
 
-def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
+def certify_passage_mesh(assembly, points_mm, triangles, source_tags, *, enclosure_bound=None):
     """Check closed components, genus, orientation and finite-surface error.
 
     source_tags is one boolean per facet identifying moving facets. Passive
     components cannot contain them. Bounds are tied to each body independently,
     so the union of nearby surfaces cannot conceal a lost or inverted vane.
+    Design builders can certify their own enclosure's facing surfaces through
+    ``enclosure_bound(component_mask, tolerance)``; passive body admission stays
+    identical for both builders.
     """
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -171,59 +186,12 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
             )
         if label == active_labels[0]:
             identifier, expected_euler = "enclosure", 2
-            rigid_fns = [
-                lambda p, role=role: assembly.rigid_distance(role, p)
-                for role in assembly.rigid_areas()
-                if not role.startswith("plug/")
-            ]
-            rigid_fns += [
-                lambda p, key=key: assembly.patch_distance(key, p)
-                for key, c, i, _, _ in assembly.patches
-                if c.segments[i].role == "rigid"
-            ]
-            rigid_facets = xyz[selected & ~np.asarray(source_tags, dtype=bool)]
-            # Convex rectangles admit a direct whole-facet proof. Reserve the
-            # adaptive finite-surface certificate for holes and curved walls.
-            rigid_facets = rigid_facets[
-                ~enclosure_planar_facets(assembly, rigid_facets)
-            ]
-            bound = facet_bound(
-                rigid_facets,
-                lambda p, fns=rigid_fns: np.minimum.reduce([fn(p) for fn in fns]),
-                tolerance,
-            )
-            for key, c, i, _, _ in assembly.patches:
-                if c.segments[i].role != "moving":
-                    continue
-                # Identify the patch by its exact finite surface, then certify;
-                # native/consumer admission separately binds moving tag selectors.
-                candidates = facets[
-                    np.max(assembly.patch_distance(key, facets), axis=1) <= 1e-6
-                ]
-                a, b = c.points[i : i + 2]
-                origin_patch = next(p[3] for p in assembly.patches if p[0] == key)
-                if c.segments[i].kind == "line" and a.z_mm == b.z_mm:
-                    patch_bound = float(
-                        annulus_bounds(
-                            candidates,
-                            origin_patch[:2],
-                            origin_patch[2] + a.z_mm,
-                            a.r_mm,
-                            b.r_mm,
-                        ).max()
-                    )
-                    if patch_bound > tolerance:
-                        raise ValueError("moving annulus exceeds passage tolerance")
-                else:
-                    try:
-                        patch_bound = facet_bound(
-                            candidates,
-                            lambda p, key=key: assembly.patch_distance(key, p),
-                            tolerance,
-                        )
-                    except ValueError as exc:
-                        raise ValueError(f"passage moving patch {key}: {exc}") from exc
-                bound = max(bound, patch_bound)
+            if enclosure_bound is not None:
+                bound = enclosure_bound(selected, tolerance)
+                if not math.isfinite(bound) or not 0 <= bound <= tolerance:
+                    raise ValueError("enclosure passage facets exceed their geometric tolerance")
+            else:
+                bound = _enclosure_bound(assembly, xyz, selected, source_tags, facets, tolerance)
         else:
             matches = []
             for body in remaining:
@@ -277,7 +245,7 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
         if identifier != "enclosure":
             components[-1]["canonical_volume_mm3"] = expected_volume
     if remaining or gap - 2 * maximum <= 0:
-        raise ValueError(
+        raise PassageToleranceError(
             "passage clearance cannot survive both facing approximation errors"
         )
     return {
@@ -288,3 +256,61 @@ def certify_passage_mesh(assembly, points_mm, triangles, source_tags):
         "certified_clearance_mm": gap - 2 * maximum,
         "maximum_facet_bound_mm": maximum,
     }
+
+
+def _enclosure_bound(assembly, xyz, selected, source_tags, facets, tolerance):
+    """The original native enclosure's finite-surface certificate."""
+    rigid_fns = [
+        lambda p, role=role: assembly.rigid_distance(role, p)
+        for role in assembly.rigid_areas()
+        if not role.startswith("plug/")
+    ]
+    rigid_fns += [
+        lambda p, key=key: assembly.patch_distance(key, p)
+        for key, c, i, _, _ in assembly.patches
+        if c.segments[i].role == "rigid"
+    ]
+    rigid_facets = xyz[selected & ~np.asarray(source_tags, dtype=bool)]
+    # Convex rectangles admit a direct whole-facet proof. Reserve the
+    # adaptive finite-surface certificate for holes and curved walls.
+    rigid_facets = rigid_facets[
+        ~enclosure_planar_facets(assembly, rigid_facets)
+    ]
+    bound = facet_bound(
+        rigid_facets,
+        lambda p, fns=rigid_fns: np.minimum.reduce([fn(p) for fn in fns]),
+        tolerance,
+    )
+    for key, c, i, _, _ in assembly.patches:
+        if c.segments[i].role != "moving":
+            continue
+        # Identify the patch by its exact finite surface, then certify;
+        # native/consumer admission separately binds moving tag selectors.
+        candidates = facets[
+            np.max(assembly.patch_distance(key, facets), axis=1) <= 1e-6
+        ]
+        a, b = c.points[i : i + 2]
+        origin_patch = next(p[3] for p in assembly.patches if p[0] == key)
+        if c.segments[i].kind == "line" and a.z_mm == b.z_mm:
+            patch_bound = float(
+                annulus_bounds(
+                    candidates,
+                    origin_patch[:2],
+                    origin_patch[2] + a.z_mm,
+                    a.r_mm,
+                    b.r_mm,
+                ).max()
+            )
+            if patch_bound > tolerance:
+                raise ValueError("moving annulus exceeds passage tolerance")
+        else:
+            try:
+                patch_bound = facet_bound(
+                    candidates,
+                    lambda p, key=key: assembly.patch_distance(key, p),
+                    tolerance,
+                )
+            except ValueError as exc:
+                raise ValueError(f"passage moving patch {key}: {exc}") from exc
+        bound = max(bound, patch_bound)
+    return bound

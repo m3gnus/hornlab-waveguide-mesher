@@ -20,7 +20,7 @@ FEATURE = "design-sketched-diaphragms-v1"
 
 
 def _refuse(detail, fix):
-    raise control_refusal(detail, "HF diaphragm", fix, message=detail + ".")
+    raise control_refusal(detail, "Source attachment", fix, message=detail + ".")
 
 
 def attach_hf_diaphragm(built, geometry):
@@ -121,6 +121,9 @@ def attach_hf_diaphragm(built, geometry):
     if len(plugs) > 8 or len({p.id for p in plugs}) != len(plugs):
         _refuse("Phase plugs need distinct identities and at most eight bodies", "Remove extra bodies or give each a distinct identity.")
     if plugs:
+        if getattr(built, "freeform_wall_recipe", None) is not None:
+            _refuse("Phase plugs are not qualified for FREEFORM profiles with authored corners",
+                    "Remove the phase plugs, or use a smooth circular profile without corner anchors.")
         # Rational Bezier/B-spline meridians stay in their pole convex hulls.
         # The adapter builder revolves these same meridians: this radial bound
         # certifies separation without slow OCC surface-distance queries.
@@ -130,6 +133,8 @@ def attach_hf_diaphragm(built, geometry):
             wall = GeneralHornWall.from_geometry(geometry, "OSSE")
 
             class Clearance:
+                poles_mm = wall.poles_mm
+
                 def minimum_body_clearance(self, plug):
                     return wall.minimum_body_clearance(plug) - wall.circle_correction_bound_mm
         else:
@@ -137,30 +142,43 @@ def attach_hf_diaphragm(built, geometry):
                              np.asarray(adapter.body_poles)[:, 1].min()) * geometry.adapter_scale
 
             class Clearance:
+                poles_mm = [(min_radius, 0)]
+
                 def minimum_body_clearance(self, plug):
                     return min_radius - max(plug.outer0_mm, plug.outer1_mm)
 
         from .phase_plug import validate_passages
-        validate_passages(SimpleNamespace(phase_plugs=plugs,
+        context = SimpleNamespace(phase_plugs=plugs,
                           horn=SimpleNamespace(points=contour.points, axial_bounds_mm=(contour.axial_bounds_mm[0],
                                                contour.axial_bounds_mm[1] + (.025 if fitted_rim else 0))),
                           horn_wall=Clearance(),
                           horn_length_mm=float(geometry.inner_points[:, -1, 2].min() - center[2]),
-                          mouth_radius_mm=float(np.linalg.norm(geometry.inner_points[:, -1, :2], axis=1).min())))
+                          mouth_radius_mm=float(np.linalg.norm(geometry.inner_points[:, -1, :2], axis=1).min()))
+        clearances = validate_passages(context)
+        passage_surfaces = {"horn-wall": list(built.mesh_surface_groups["inner"])}
+        assembly["passage"] = {
+            "recipe": {"plugs": [p.to_dict() for p in plugs], "origin_mm": list(center),
+                       "throat_radius_mm": radius, "source_z_max_mm": context.horn.axial_bounds_mm[1],
+                       "length_mm": context.horn_length_mm, "mouth_radius_mm": context.mouth_radius_mm,
+                       "wall_poles_mm": list(Clearance.poles_mm),
+                       "wall_clearance_mm": clearances["horn-wall"]},
+            "surfaces": passage_surfaces,
+        }
     passive_faces = {}
     for plug in plugs:
         # Reuse the canonical passive body's meridian edges, independently of
         # the retired source-assembly builder and its enclosure.
         surfaces = []
-        for a, b in plug.edges.values():
+        for role, (a, b) in plug.edges.items():
             pa = occ.addPoint(a[0], 0, center[2] + a[1])
             pb = occ.addPoint(b[0], 0, center[2] + b[1])
             edge = occ.addLine(pa, pb)
-            surfaces.extend(t for d, t in occ.revolve([(1, edge)], 0, 0, center[2], 0, 0, 1, 2 * math.pi) if d == 2)
+            faces = [t for d, t in occ.revolve([(1, edge)], 0, 0, center[2], 0, 0, 1, 2 * math.pi) if d == 2]
+            surfaces.extend(faces)
+            passage_surfaces[role] = faces
         occ.synchronize()
         passive_faces[plug.id] = surfaces
         built.surface_groups[1].extend(surfaces)
-        built.mesh_surface_groups.setdefault("inner", []).extend(surfaces)
     if plugs:
         occ.synchronize()
         before = gmsh.model.getEntities(2)
@@ -169,6 +187,7 @@ def attach_hf_diaphragm(built, geometry):
         _remap_groups(built.surface_groups, remap)
         _remap_groups(built.mesh_surface_groups, remap)
         _remap_groups(passive_faces, remap)
+        _remap_groups(passage_surfaces, remap)
         for patch in assembly["patches"]:
             patch["surface_tags"] = sorted({t for old in patch["surface_tags"] for t in remap[old]})
     assembly["phase_plugs"] = [p.to_dict() for p in plugs]
