@@ -8,7 +8,6 @@ import pytest
 
 from hornlab_mesher.config_parser import ConfigError, parse_text_config
 
-
 BASE = "Length = 60\nCoverage.Angle = 45\n"
 
 
@@ -89,11 +88,16 @@ def test_flat_disabled_source_member_matches_block_and_reports(member: str, capl
     assert all(f"Source._{member}" in record.getMessage() for record in caplog.records)
 
 
-@pytest.mark.parametrize("member,value", [("Shape", "3"), ("Velocity", "2"), ("Unknown", "2"), ("Array", "2"), ("Velocity.1", "2")])
+@pytest.mark.parametrize("member,value", [("Shape", "3"), ("Velocity", "3"), ("Unknown", "2"), ("Array", "2"), ("Velocity.1", "2")])
 def test_disabled_source_sibling_cannot_hide_enabled_member(member: str, value: str) -> None:
     text = BASE + f"Source._{member} = 2\nSource.{member} = {value}\n"
     with pytest.raises(ConfigError):
         parse_text_config(text)
+
+
+def test_disabled_source_sibling_preserves_enabled_axial_velocity() -> None:
+    result = parse_text_config(BASE + "Source._Velocity = 2\nSource.Velocity = 2\n")
+    assert result["source"]["sourceVelocity"] == 2
 
 
 @pytest.mark.parametrize("family", ["OSSE", "R-OSSE", "ROSSE"])
