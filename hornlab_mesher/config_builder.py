@@ -2579,8 +2579,8 @@ def resolve_geometry(
             ("controlsAdapter", "terminatingArc", "sourceBody", "adapterAxialScale",
              "mouthRoundoverRadiusMm", "absoluteAxialScale"))
             or params.get("athRoundover") or params.get("athRearShape") == 3):
-        raise control_refusal("this native terminal cannot attach a sketched HF diaphragm", "HF diaphragm",
-                              "Revert the HF sketch to Classic for this horn terminal.",
+        raise control_refusal("this native terminal cannot attach a sketched HF diaphragm", "Diaphragm",
+                              "Change the HF Diaphragm back to Classic for this horn terminal.",
                               message="This horn cannot attach the HF sketch.")
     if requested_woofers and mode != "enclosure":
         raise control_refusal("enclosure.woofers requires enclosure mode", 'Mounting', 'Change Mounting to Waveguide in enclosure, or disable the woofers.', message='Woofers need an enclosure front baffle.')
