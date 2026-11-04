@@ -147,7 +147,9 @@ def test_noop_items_keep_the_older_text_refusal(header, extra):
     ],
 )
 def test_unknown_top_level_key_is_refused_by_name(config: str, named: str) -> None:
-    with pytest.raises(ConfigError, match="unsupported item") as excinfo:
+    # Controls now have a bounded importer; this terminated body is outside it.
+    reason = "Throat.Ext.Ctrl could not be imported" if named == "Throat.Ext.Ctrl" else "unsupported item"
+    with pytest.raises(ConfigError, match=reason) as excinfo:
         parse_text_config(config)
     assert named in str(excinfo.value)
 

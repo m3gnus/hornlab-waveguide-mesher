@@ -1,5 +1,31 @@
 # Exact native adapter controls
 
+Fresh ATH text imports can map `Throat.Ext.Ctrl` onto this construction.
+The supported subset is scalar circular OSSE profile 1 with `s = 0`, no
+extension, slot, stretch, morph, guide or axial override, `Source.Shape = 2`,
+`ABEC.SimType = 2`, zero wall thickness and full-circle quadrants. Native
+certification and numeric bounds below apply. Explicit custom sampling and
+other feature combinations and pre-December-2025 sampling refuse with import
+guidance. Saved text keeps its previous interpretation; importing a new
+original is required to opt in.
+
+Six comma-separated finite literal numbers become the three join-local pairs
+without smoothing or fitting. Preview, mesh, STEP and source construction use
+the same native authority described below. The retained
+`throat_adapter/ath-v2025-12/a9-osse-N512-omitted` fixture supplies the cubic
+and body parity witness; its provenance records the V2026-08c block-form
+cross-check. Cubic poles match exactly, cubic samples agree within 0.000001 mm,
+and the body within 0.000002 mm after inversion of six-decimal exported axial
+coordinates. The fixture's inactive OSSE `trunc` and undocumented source enum
+are not newly enabled by this boundary.
+
+WG imports this subset as `OSSE-ADAPTER-CONTROLS` and saves its existing native
+design payload, so subsequent edits, previews, acoustic meshes and exports
+share the literal controls. ATH text export remains unavailable for native
+features. R-OSSE controls, trimming and the remaining compositions stay refused.
+`Throat.Profile = 3` is a different whole-profile circular arc; this adapter
+mapping does not qualify its ATH interpretation.
+
 `OSSE-ADAPTER-CONTROLS` constructs a literal cubic adapter followed by the
 complete circular OSSE body. Each supplied point remains independent; a
 tangent mismatch at the join is a deliberate corner.

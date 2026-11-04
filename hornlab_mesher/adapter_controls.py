@@ -47,6 +47,81 @@ def normalize_payload(value):
     return {"mode":"controls","contract_revision":1,"join_t":0.0,"control_points_mm":controls}
 
 
+def ath_import_config(config, raw_controls, *, ath_version=None):
+    """Map the measured, untrimmed O1 subset onto the native authority.
+
+    The ordinary ATH parser owns aliases, defaults and source enums. No curve
+    equations or control adjustment belong at this boundary.
+    """
+    from .config_builder import build_geometry_params
+    from .errors import ath_refusal
+    from .text_import import (
+        ATH_AXIAL_CURRENT,
+        ATH_AXIAL_RULE_KEY,
+        TEXT_IMPORT_VERSION_KEY,
+    )
+
+    try:
+        values = [float(part) for part in raw_controls.split(",")]
+        payload = normalize_payload({
+            "mode": "controls", "contract_revision": 1, "join_t": 0,
+            "control_points_mm": [values[i:i+2] for i in range(0, len(values), 2)],
+        })
+        if config["formula"] != "OSSE" or config["simType"] != 2:
+            fail("ATH controls currently require OSSE and ABEC.SimType = 2.")
+        # The ordinary sampler assumes the current rule for July–November
+        # 2025. That assumption does not qualify those builds for this import.
+        if (config.get(ATH_AXIAL_RULE_KEY) != ATH_AXIAL_CURRENT
+                or (ath_version is not None and ath_version[1:8] < "2025-12")):
+            fail("ATH controls have no qualified import for pre-December-2025 sampling.")
+        allowed = {"formula", "profile", "mesh", "source", "scale", "simType",
+                   TEXT_IMPORT_VERSION_KEY, ATH_AXIAL_RULE_KEY}
+        if set(config) - allowed:
+            fail("ATH controls cannot compose with " + ", ".join(sorted(set(config) - allowed)) + ".")
+        mesh = config["mesh"]
+        mesh_fields = {
+            "angularSegments": "angular_segments", "lengthSegments": "length_segments",
+            "throatResolution": "throat_res_mm", "mouthResolution": "mouth_res_mm",
+            "rearResolution": "rear_res_mm", "wallThickness": "wall_thickness_mm",
+            "quadrants": "quadrants", "verticalOffset": "vertical_offset_mm",
+        }
+        if set(mesh) - {*mesh_fields, "samplingMode"}:
+            fail("ATH controls do not support these mesh settings: " + ", ".join(sorted(set(mesh) - {*mesh_fields, "samplingMode"})) + ".")
+        if mesh.get("samplingMode") != "ath-default-zmap":
+            fail("ATH controls require the default sampling map; remove Mesh.SamplingMode.")
+        if set(config.get("source", {})) - {"sourceShape", "sourceVelocity"}:
+            fail("ATH controls require a flat source without radius or curvature overrides.")
+        params, _, _ = build_geometry_params(config)
+        for key in (TEXT_IMPORT_VERSION_KEY, ATH_AXIAL_RULE_KEY, "_athLengthMode"):
+            params.pop(key, None)
+        for key in ("s1", "s2"):
+            if key in params and number(params.pop(key), key) != 0:
+                fail("ATH controls do not support throat stretch.")
+        if "throatProfile" in params and number(params.pop("throatProfile"), "Throat.Profile") != 1:
+            fail("ATH controls require Throat.Profile = 1.")
+        # Native sampling owns tessellation of this exact circular surface.
+        # An imported default corner count has no construction role here.
+        params.update(type=FORMULA, controlsAdapter=payload, cornerSegments=0, samplingMode="uniform")
+        _validate_model_params(params)
+        native = {
+            "formula": FORMULA, "mode": "bare", "scale": params["scale"],
+            "profile": {target: params[key] for key, target in (
+                ("L", "L_mm"), ("r0", "r0_mm"), ("a", "a_deg"),
+                ("a0", "a0_deg"), ("k", "k"), ("s", "s"))},
+            "throat_adapter": payload, "source": {"source_shape": 0},
+            "mesh": {target: mesh[key] for key, target in mesh_fields.items() if key in mesh},
+        }
+        build_geometry_params(native)  # Certify before any consumer accepts it.
+        return native
+    except (ConfigError, ValueError, OverflowError) as exc:
+        raise ath_refusal(
+            "Throat.Ext.Ctrl could not be imported: " + str(exc)
+            + " Use six finite coordinates with a scalar OSSE body with s = 0, "
+            "Source.Shape = 2, ABEC.SimType = 2, zero wall thickness and full-circle "
+            "geometry; remove extensions, slots, stretch and other features, then re-import."
+        ) from exc
+
+
 def configuration(config, resolver):
     """Inspect all original supplied intent before delegating the ordinary body."""
     pending, seen, intent = [config], set(), False

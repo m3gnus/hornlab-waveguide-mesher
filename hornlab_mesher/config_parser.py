@@ -313,7 +313,7 @@ _UNSUPPORTED_ATH_REASONS: dict[str, str] = {
     "HornGeometry": "the two-profile (Horn.Part) geometry is not implemented",
     "Horn.Adapter": "the two-profile (Horn.Part) geometry is not implemented",
     "Horn.Part": "the two-profile (Horn.Part) geometry is not implemented",
-    "Throat.Ext.Ctrl": "the curved throat adapter is not implemented",
+    "Throat.Ext.Ctrl": "controls require a fresh ATH import with top-level coordinates and a scalar, unterminated OSSE body",
     "Scale.Z": "a separate axial scale is not implemented",
     "Rot": "Rot in this position has not been checked against ATH output",
     "Length": "Length in this position has not been checked against ATH output",
@@ -757,6 +757,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
     blocks, flat, nested = _parse_ath_blocks(
         content, merge_profiles=imported_geometry and saved_geometry_version is None,
     )
+    # Only previously refused, fresh ATH inputs may acquire this construction.
+    # Saved/native readers retain their existing interpretation and refusals.
+    throat_controls = (flat.pop("Throat.Ext.Ctrl", None)
+                       if imported_geometry and saved_geometry_version is None else None)
     # These C functions have an output argument as well as a return value;
     # there is no scalar expression equivalent. Refuse at import, by name.
     expression_flat = {key: value for key, value in flat.items()
@@ -1349,6 +1353,9 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if active:
         from .config_builder import build_geometry_params
         build_geometry_params(config)
+    if throat_controls is not None:
+        from .adapter_controls import ath_import_config
+        return ath_import_config(config, throat_controls, ath_version=ath_version)
     return config
 
 
