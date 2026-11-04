@@ -577,6 +577,42 @@ def _small_shell_config(surface_fit="auto"):
     }
 
 
+@pytest.mark.parametrize("surface_fit", ["auto", "interpolate", "approximate"])
+@pytest.mark.parametrize("boundary", ["construction", "generation", "validation"])
+def test_failed_fits_keep_the_public_mesher_error_type(
+    tmp_path, monkeypatch, surface_fit, boundary,
+):
+    import gmsh
+
+    import hornlab_mesher.config_builder as builder
+    from hornlab_mesher import mesher
+
+    attempts = []
+    original = mesher._dispatch_builder
+    failure = (mesher.MesherError if boundary == "validation" else RuntimeError)(
+        "injected fit failure"
+    )
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    def dispatch(geometry):
+        attempts.append(geometry.surface_fit)
+        return fail() if boundary == "construction" else original(geometry)
+
+    monkeypatch.setattr(mesher, "_dispatch_builder", dispatch)
+    if boundary == "generation":
+        monkeypatch.setattr(gmsh.model.mesh, "generate", fail)
+    elif boundary == "validation":
+        monkeypatch.setattr(mesher, "_validate_closed_shell_contract", fail)
+    with pytest.raises(mesher.MesherError, match="mesh build failed: injected fit failure") as caught:
+        builder.build_from_config(_small_shell_config(surface_fit), tmp_path / "failed.msh")
+    assert type(caught.value) is mesher.MesherError
+    assert caught.value.__cause__ is failure
+    assert attempts == (["interpolate", "approximate"] if surface_fit == "auto" else [surface_fit])
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize('boundary', [
     'publication', 'staging', 'raw_write', 'postprocess', 'callback', 'profile_deviation',
 ])

@@ -35,8 +35,7 @@ from .geometry import (
     _RetryInterpolatingFit,
     validate_mesh_density,
 )
-from .mesher import MesherError  # noqa: F401 - retained compatibility export
-from .mesher import SurfaceFitError, TriangleBudgetExceeded, build_mesh_with_info
+from .mesher import MesherError, TriangleBudgetExceeded, build_mesh_with_info
 from .profile_common import (
     _normalise_formula as _normalise_formula_common,
     _normalise_quadrants as _normalise_quadrants_common,
@@ -2867,14 +2866,14 @@ def build_from_config(
         # and can ship the inward-biased surface just because it landed under
         # the limit.
         raise
-    except SurfaceFitError:
+    except MesherError as exc:
         # Only a construction/meshing failure can request another fit. Output
         # and callback failures must propagate without changing the geometry.
         #
         # Only the automatic choice falls back. An explicit
         # ``surface_fit = "interpolate"`` still fails loudly, because someone
         # who named it wants to know.
-        if not chose_automatically:
+        if not exc._surface_fit_failure or not chose_automatically:
             raise
         flush = False
         if geometry.enclosure is not None and not geometry.preserve_grid:

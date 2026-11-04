@@ -61,11 +61,9 @@ _GMSH_LOCK = threading.RLock()
 
 
 class MesherError(Exception):
-    pass
-
-
-class SurfaceFitError(MesherError):
-    """A fitted geometry or mesh failure eligible for automatic fit retry."""
+    # Retry eligibility is internal metadata, not a different public refusal
+    # type. Callers historically receive MesherError after a failed build.
+    _surface_fit_failure = False
 
 
 class _DensityEstimateReady(Exception):
@@ -566,8 +564,8 @@ def build_mesh_with_info(
             fit_failure = fitting or (
                 postprocessing and isinstance(exc, (MesherError, MeshOrientationError))
             )
-            error_type = SurfaceFitError if fit_failure and not isinstance(exc, OSError) else MesherError
-            wrapped = error_type(f"mesh build failed: {exc}")
+            wrapped = MesherError(f"mesh build failed: {exc}")
+            wrapped._surface_fit_failure = fit_failure and not isinstance(exc, OSError)
             if woofer_refusal is not None:
                 wrapped.user_refusal = woofer_refusal
             raise wrapped from exc
