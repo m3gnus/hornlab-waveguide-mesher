@@ -677,17 +677,16 @@ def test_source_velocity_in_block_form_is_single_source(tmp_path):
     assert load_config(cfg_path)["source"]["sourceVelocity"] == 1
 
 
-def test_axial_source_velocity_is_refused_loudly(tmp_path):
-    # The mesh is identical for either direction, so the ``.msh`` cannot carry
-    # the distinction; meshing 2 would hand a solver an axial model it drives
-    # normally. Both the flat and block spellings must refuse.
-    for snippet in ("Source.Velocity = 2\n", "Source = {\nVelocity = 2\n}\n"):
-        cfg_path = tmp_path / "axial-source.cfg"
-        cfg_path.write_text(
-            ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n" + snippet, encoding="utf-8"
-        )
-        with pytest.raises(ConfigError, match="axial source motion"):
-            load_config(cfg_path)
+@pytest.mark.parametrize("snippet", ["Source.Velocity = 2\n", "Source = {\nVelocity = 2\n}\n"])
+def test_axial_source_velocity_is_retained_for_consumers(tmp_path, snippet):
+    cfg_path = tmp_path / "axial-source.cfg"
+    cfg_path.write_text(
+        ATH_FLAT_OSSE_CFG + "ABEC.SimType = 2\n" + snippet, encoding="utf-8"
+    )
+    config = load_config(cfg_path)
+    assert config["source"]["sourceVelocity"] == 2
+    normal = {**config, "source": {**config["source"], "sourceVelocity": 1}}
+    assert build_geometry_params(config) == build_geometry_params(normal)
 
 
 def test_unknown_source_velocity_value_is_refused(tmp_path):

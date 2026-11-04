@@ -1161,18 +1161,13 @@ def parse_text_config(content: str) -> dict[str, Any]:
     if "sourceVelocity" in source:
         # ATH enum: 1 = normal to the element surface, 2 = axial (pistonic
         # motion along z). It selects a boundary condition rather than
-        # geometry -- the cap or disc is meshed identically either way -- so
-        # the exported ``.msh`` cannot carry it and a solver reading only the
-        # mesh would drive an axial model normally. Refuse 2 loudly instead of
-        # meshing it into that; the value is kept on the parsed config so a
-        # consumer that does model velocity direction sees what was asked for.
+        # geometry -- the cap or disc is meshed identically either way. Keep
+        # the direction on the parsed config for consumers such as WG; a mesh
+        # alone cannot carry this solver boundary condition.
         ath_velocity = source["sourceVelocity"]
-        if ath_velocity == 2:
-            raise ath_refusal("Source.Velocity = 2 (axial source motion) is not supported by this mesher; "
-                "only 1 (normal to the element surface) is implemented")
-        if ath_velocity != 1:
+        if ath_velocity not in (1, 2):
             raise ath_refusal(f"Source.Velocity = {ath_velocity!r} is not supported; "
-                "use 1 (normal to the element surface)")
+                "use 1 (normal to the element surface) or 2 (axial source motion)")
 
     nested_names = {path[-1]: {} for path in nested if not _ath_nested_ignored(path)
                     and not (len(path) == 2 and path[0] == "Mesh.Enclosure" and path[1] in ATH_LF_BLOCKS)}

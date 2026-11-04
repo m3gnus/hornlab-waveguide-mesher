@@ -12,7 +12,7 @@ BASE = "OSSE = {\n L = 100\n r0 = 25\n a0 = 10\n a = 45\n}\nABEC.SimType = 2\n"
     ('Mesh.SubdomainSlices = 3\n', 'Remove'),
     ('Throat.Profile = 3\n', 'Set “Throat.Profile” to 1'),
     ('Source.Contours = {\nx = 1\n}\n', 'Remove “Source.Contours”'),
-    ('Source.Velocity = 2\n', 'Set “Source.Velocity” to 1'),
+    ('Source.Velocity = 3\n', 'Set “Source.Velocity” to 1 for normal motion or 2 for axial motion'),
     ('Mesh.RearShape = 2\n', 'Set “Mesh.RearShape” to 1'),
     ('Mesh.Roundover = {\nRadius = 20\nSegments = 6\n}\nABEC.SimType = 1\n', 'Remove “Mesh.Roundover”'),
 ])

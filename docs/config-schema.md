@@ -654,11 +654,10 @@ by the mesh builder.
 `sourceVelocity` (ATH `Source.Velocity`) selects the velocity direction of the
 driving elements rather than any geometry: `1` is normal to the element surface
 and `2` is axial (pistonic motion along z). The cap or disc is meshed
-identically either way, so the exported `.msh` cannot carry the distinction and
-a solver reading only the mesh would drive an axial model normally. Only `1`,
-ATH's own default, is accepted; `2` is refused with an explicit error. The
-accepted value is recorded on the parsed config for consumers that do model
-velocity direction.
+identically either way. Both values are accepted and recorded on the parsed
+config for consumers that model velocity direction; `1` is ATH's default.
+The exported `.msh` cannot carry the distinction: a solver must also read the
+parsed source direction to apply axial motion.
 
 ## ATH Text Import Boundary
 
@@ -736,8 +735,8 @@ silently falls back to a default changes the mesh with nothing to show for it.
   left/top/right/bottom order.
 - Source: `Source.Shape` (translated from the ATH enum, where 1 = cap and
   2 = flat disc, to the internal 1 = cap / 0 = flat disc convention),
-  `Source.Radius`, `Source.Curv`, `Source.Velocity` (direction enum; only 1,
-  normal to the element surface, is supported), and `Source.VelocityProfile`.
+  `Source.Radius`, `Source.Curv`, `Source.Velocity` (direction enum: 1 is normal
+  to the element surface, 2 is axial motion), and `Source.VelocityProfile`.
   Multi-source models are refused: `Source.Contours`, `LFSource*`, and the
   indexed `Source.Velocity.<n>` form.
 
@@ -855,7 +854,7 @@ names the unsupported two-profile geometry, and `Lenght` suggests `Length`.
 Refused with their own messages: `Throat.Profile` other than 1 (OS-SE),
 `Rollback.*` (current ATH builds refuse it too), `Mesh.RearShape` other than 1 or 3,
 `Mesh.ThroatSegments`, any other unrecognised
-`Mesh.*` key, `Source.Contours`, `LFSource*`, `Source.Velocity = 2`, and a
+`Mesh.*` key, `Source.Contours`, `LFSource*`, invalid `Source.Velocity` values, and a
 `Mesh.Enclosure` `Spacing` with fewer than four values.
 
 The structure of the file is checked as well: a `}` that closes no block, a

@@ -60,8 +60,8 @@ def ath_refusal(diagnostic: str) -> UserRefusal:
     text = re.sub(r"\b(?:[A-Z][A-Za-z0-9-]*\.)+[A-Za-z0-9_.-]+", lambda m: "“" + m[0] + "”", diagnostic)
     if "Throat.Profile =" in diagnostic:
         message, step = text, 'Set “Throat.Profile” to 1 (OS-SE), or mesh this file in ATH.'
-    elif "Source.Velocity = 2" in diagnostic:
-        message, step = text, 'Set “Source.Velocity” to 1 for normal motion, or use a workflow that supports axial source motion.'
+    elif "Source.Velocity =" in diagnostic:
+        message, step = text, 'Set “Source.Velocity” to 1 for normal motion or 2 for axial motion, then import the file again.'
     elif "multi-source ATH configs" in diagnostic:
         message, step = text, 'Remove “Source.Contours” and the additional source blocks to use one throat cap or disc, or mesh this multi-source model in ATH.'
     elif "Mesh.RearShape =" in diagnostic and "only the full rear" in diagnostic:
