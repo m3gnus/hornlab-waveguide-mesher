@@ -6,9 +6,35 @@ so new fixtures automatically join the gate without a second fixture catalog.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
+
+
+@pytest.fixture
+def inspect_built_mesh(monkeypatch):
+    """Inspect the raw build while its operation-owned Gmsh model is current."""
+    from hornlab_mesher import mesher
+
+    @contextmanager
+    def inspect(check):
+        original = mesher._postprocess_mesh
+        calls = 0
+
+        def postprocess(*args, **kwargs):
+            nonlocal calls
+            info = original(*args, **kwargs)
+            check()
+            calls += 1
+            return info
+
+        with monkeypatch.context() as patch:
+            patch.setattr(mesher, "_postprocess_mesh", postprocess)
+            yield
+        assert calls == 1, "the built mesh inspection must run exactly once"
+
+    return inspect
 
 
 @pytest.fixture(autouse=True)

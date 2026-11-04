@@ -76,7 +76,9 @@ def rounded_enclosure_config(case='c', edge_mm=18, quadrants='1234'):
 @pytest.mark.parametrize('case', ['a', 'c'], ids=['circle', 'rounded-rectangle'])
 @pytest.mark.parametrize('edge_mm', [18, 5])
 @pytest.mark.parametrize('quadrants', ['1234', '12'])
-def test_rounded_corner_enclosure(session, tmp_path, monkeypatch, case, edge_mm, quadrants):
+def test_rounded_corner_enclosure(
+    session, tmp_path, monkeypatch, inspect_built_mesh, case, edge_mm, quadrants,
+):
     from hornlab_mesher import corner_wall
     from hornlab_mesher import write_step_from_config
     from test_cad_step import _reimported_solids
@@ -103,40 +105,43 @@ def test_rounded_corner_enclosure(session, tmp_path, monkeypatch, case, edge_mm,
 
     monkeypatch.setattr(corner_wall, 'build_corner_wall', checked_build)
     config = rounded_enclosure_config(case, edge_mm, quadrants)
-    result = build_from_config(config, tmp_path / 'rounded.msh')
+    def check_mesh():
+        groups = {tag: set(map(int, gmsh.model.getEntitiesForPhysicalGroup(2, tag)))
+                  for _, tag in gmsh.model.getPhysicalGroups(2)}
+        assert set(groups) == {1, 2, 3}
+        assert len(groups[1]) == (8 if quadrants == '1234' else 4)
+        assert len(groups[2]) == 1
+        assert len(groups[3]) == (44 if quadrants == '1234' else 22)
+        assert not (groups[1] & groups[2] or groups[1] & groups[3] or groups[2] & groups[3])
+        assert set.union(*groups.values()) == {tag for _, tag in gmsh.model.getEntities(2)}
+        # Check raw Gmsh triangles before the public postprocessor can weld nodes.
+        xyz, tri = wall_triangles(sorted(set.union(*groups.values())))
+        from hornlab_mesher.edges import build_edge_table
+        edges = build_edge_table(tri)
+        assert not np.any(edges.count > 2)
+        free = np.c_[edges.lo[edges.count == 1], edges.hi[edges.count == 1]]
+        if quadrants == '1234':
+            assert not len(free)
+        else:
+            assert len(free) > 0
+            assert np.all(abs(xyz[free, 1]) < 1e-8)
+        source_xyz, source_tri = wall_triangles(sorted(groups[2]))
+        source_xyz = source_xyz[np.unique(source_tri)]
+        from hornlab_mesher.config_builder import resolve_geometry
+        from hornlab_mesher.builders.point_grid_sources import _source_cap_height
+        geometry = resolve_geometry(config).geometry
+        cap_height = _source_cap_height(12.7, geometry) if geometry.source_shape == 1 else 0
+        assert source_xyz[:, 2].min() == pytest.approx(0, abs=1e-8)
+        assert source_xyz[:, 2].max() <= cap_height + 1e-8
+        assert np.max(np.linalg.norm(source_xyz[:, :2], axis=1)) <= 12.7 + 1e-8
+        inner_xyz, inner_tri = wall_triangles(sorted(groups[1]))
+        inner_xyz = inner_xyz[np.unique(inner_tri)]
+        assert inner_xyz[:, 2].min() == pytest.approx(0, abs=1e-8)
+        assert inner_xyz[:, 2].max() == pytest.approx(120, abs=1e-8)
+
+    with inspect_built_mesh(check_mesh):
+        result = build_from_config(config, tmp_path / 'rounded.msh')
     assert result.metadata['acousticEnclosureEdgeSuppressed'] is False
-    groups = {tag: set(map(int, gmsh.model.getEntitiesForPhysicalGroup(2, tag)))
-              for _, tag in gmsh.model.getPhysicalGroups(2)}
-    assert set(groups) == {1, 2, 3}
-    assert len(groups[1]) == (8 if quadrants == '1234' else 4)
-    assert len(groups[2]) == 1
-    assert len(groups[3]) == (44 if quadrants == '1234' else 22)
-    assert not (groups[1] & groups[2] or groups[1] & groups[3] or groups[2] & groups[3])
-    assert set.union(*groups.values()) == {tag for _, tag in gmsh.model.getEntities(2)}
-    # Check raw Gmsh triangles before the public postprocessor can weld nodes.
-    xyz, tri = wall_triangles(sorted(set.union(*groups.values())))
-    from hornlab_mesher.edges import build_edge_table
-    edges = build_edge_table(tri)
-    assert not np.any(edges.count > 2)
-    free = np.c_[edges.lo[edges.count == 1], edges.hi[edges.count == 1]]
-    if quadrants == '1234':
-        assert not len(free)
-    else:
-        assert len(free) > 0
-        assert np.all(abs(xyz[free, 1]) < 1e-8)
-    source_xyz, source_tri = wall_triangles(sorted(groups[2]))
-    source_xyz = source_xyz[np.unique(source_tri)]
-    from hornlab_mesher.config_builder import resolve_geometry
-    from hornlab_mesher.builders.point_grid_sources import _source_cap_height
-    geometry = resolve_geometry(config).geometry
-    cap_height = _source_cap_height(12.7, geometry) if geometry.source_shape == 1 else 0
-    assert source_xyz[:, 2].min() == pytest.approx(0, abs=1e-8)
-    assert source_xyz[:, 2].max() <= cap_height + 1e-8
-    assert np.max(np.linalg.norm(source_xyz[:, :2], axis=1)) <= 12.7 + 1e-8
-    inner_xyz, inner_tri = wall_triangles(sorted(groups[1]))
-    inner_xyz = inner_xyz[np.unique(inner_tri)]
-    assert inner_xyz[:, 2].min() == pytest.approx(0, abs=1e-8)
-    assert inner_xyz[:, 2].max() == pytest.approx(120, abs=1e-8)
     report = result.metadata['freeformReport']['cornerWall']
     assert len(report['corners']) == 1
     for corner in report['corners']:

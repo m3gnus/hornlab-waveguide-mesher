@@ -167,7 +167,7 @@ def test_steep_apex_quality(tmp_path, angles, mode):
 
 @pytest.mark.parametrize('quadrants', ['1', '12', '14'])
 @pytest.mark.parametrize('mode', ['bare', 'enclosure', 'freestanding'])
-def test_reduced_domain_roles(session, tmp_path, quadrants, mode):  # noqa: F811
+def test_reduced_domain_roles(session, tmp_path, inspect_built_mesh, quadrants, mode):  # noqa: F811
     config = production(angled_config(30, 15, mode))
     config['mesh']['quadrants'] = quadrants
     expected = {PhysicalGroup.RIGID_WALL, PhysicalGroup.PRIMARY_SOURCE}
@@ -175,16 +175,19 @@ def test_reduced_domain_roles(session, tmp_path, quadrants, mode):  # noqa: F811
         config['enclosure']['edge'] = 0
         config['mesh'].update(subdomain_slices='6', interface_offset_mm=2)
         expected |= {PhysicalGroup.ENCLOSURE_WALL, PhysicalGroup.INTERFACE}
-    result = build(config, tmp_path / f'{quadrants}.msh')
+    def check_roles():
+        groups = {tag: set(map(int, gmsh.model.getEntitiesForPhysicalGroup(2, tag)))
+                  for _, tag in gmsh.model.getPhysicalGroups(2)}
+        assert set(groups) == set(map(int, expected))
+        assert all(groups.values())
+        for a, faces in groups.items():
+            for b, others in groups.items():
+                assert a == b or not faces & others, (a, b)
+        assert set.union(*groups.values()) == {tag for _, tag in gmsh.model.getEntities(2)}
+
+    with inspect_built_mesh(check_roles):
+        result = build(config, tmp_path / f'{quadrants}.msh')
     assert_creases(result)
-    groups = {tag: set(map(int, gmsh.model.getEntitiesForPhysicalGroup(2, tag)))
-              for _, tag in gmsh.model.getPhysicalGroups(2)}
-    assert set(groups) == set(map(int, expected))
-    assert all(groups.values())
-    for a, faces in groups.items():
-        for b, others in groups.items():
-            assert a == b or not faces & others, (a, b)
-    assert set.union(*groups.values()) == {tag for _, tag in gmsh.model.getEntities(2)}
 
 
 # -- Rectangle morph after 0.2.6 -----------------------------------------------
