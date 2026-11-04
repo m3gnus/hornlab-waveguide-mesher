@@ -376,24 +376,13 @@ def _ath_import_zmap(n_length: int, formula: str) -> np.ndarray:
     return y[indices]
 
 
-@functools.lru_cache(maxsize=4)
-def _bezier_zmap_table(
-    controls: tuple[tuple[float, float], tuple[float, float]],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Keep the dense inversion table across axial refinement attempts."""
+def _bezier_zmap(n_length: int, controls: tuple[tuple[float, float], tuple[float, float]]) -> np.ndarray:
+    steps = max(1, int(n_length))
     (x1, y1), (x2, y2) = controls
     s = np.linspace(0.0, 1.0, 100001)
     one_minus = 1.0 - s
     bx = 3.0 * x1 * s * one_minus**2 + 3.0 * x2 * s * s * one_minus + s**3
     by = 3.0 * y1 * s * one_minus**2 + 3.0 * y2 * s * s * one_minus + s**3
-    bx.setflags(write=False)
-    by.setflags(write=False)
-    return bx, by
-
-
-def _bezier_zmap(n_length: int, controls: tuple[tuple[float, float], tuple[float, float]]) -> np.ndarray:
-    steps = max(1, int(n_length))
-    bx, by = _bezier_zmap_table(controls)
     out = np.interp(np.linspace(0.0, 1.0, steps + 1), bx, by)
     out[0] = 0.0
     out[steps] = 1.0
@@ -1576,9 +1565,8 @@ def _freeform_raw_radial_grid(
             # These effective values only choose where the analytic outline is
             # sampled; they do not define the surface. cross_section_radius is
             # authoritative and already includes the exact FREEFORM morph.
-            effective_axes = geometry._cross_section_radius(
-                np.asarray([0.0, math.pi / 2.0]), t_value,
-                radii=(station_a, station_b),
+            effective_axes = geometry.cross_section_radius(
+                np.asarray([0.0, math.pi / 2.0]), t_value
             )
             factor = _morph_factor(
                 t_value, 0.0, params, morph_start=morph_start
@@ -1755,9 +1743,8 @@ def _freeform_raw_radial_grid(
 
     raw_radials = np.empty_like(phi_grid)
     for j, t_value in enumerate(t_values):
-        raw_radials[:, j] = geometry._cross_section_radius(
-            phi_grid[:, j], float(t_value),
-            radii=(float(radii_h[j]), float(radii_v[j])),
+        raw_radials[:, j] = geometry.cross_section_radius(
+            phi_grid[:, j], float(t_value)
         )
     z_values = np.repeat(shared_z[np.newaxis, :], phi_grid.shape[0], axis=0)
 

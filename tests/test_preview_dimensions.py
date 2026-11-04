@@ -93,9 +93,9 @@ def test_family_dimensions_match_independent_solve_cad_geometry(config, scale):
 def test_coarse_is_pending_until_this_exact_design_is_measured(config, monkeypatch):
     real = measurement.canonical_dimensions
     calls = []
-    def measure(config, *args):
+    def measure(config):
         calls.append(copy.deepcopy(config))
-        return real(config, *args)
+        return real(config)
     monkeypatch.setattr(measurement, 'canonical_dimensions', measure)
     coarse = build_preview_geometry(config, PreviewOptionsV1(lod='coarse', include_source_cap=False))
     assert coarse.metadata['dimensions_mm'] is None

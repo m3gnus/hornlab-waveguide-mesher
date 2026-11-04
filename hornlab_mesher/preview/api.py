@@ -84,7 +84,7 @@ from .primitives import (
     _surface_grid,
 )
 from .source_cap import _source_cap
-from .dimensions import DIMENSIONS_SAMPLING, _ResolvedDimensionInput, dimension_metadata
+from .dimensions import DIMENSIONS_SAMPLING, dimension_metadata
 
 
 _MAX_ANGULAR_SAMPLES = 4096
@@ -482,14 +482,10 @@ def build_preview_geometry(
     # This also runs for coarse/hidden previews, independently of dimensions.
     enclosure_validated = _parsed_mode == "enclosure"
     enclosure_bounds = None
-    physical_geometry = None
     if enclosure_validated:
-        physical_geometry = resolve_geometry(config)
-        enclosure_bounds = resolve_enclosure_bounds(
-            config, warn_prefix=None, resolved=physical_geometry,
-        )
+        enclosure_bounds = resolve_enclosure_bounds(config, warn_prefix=None)
     flush_geometry = (
-        physical_geometry
+        resolve_geometry(config)
         if enclosure_bounds is not None and enclosure_bounds.get("flush_mount")
         else None
     )
@@ -1223,11 +1219,7 @@ def build_preview_geometry(
             )
 
     assembly_ms = (time.perf_counter() - assembly_start) * 1000.0
-    resolved_dimensions = (
-        _ResolvedDimensionInput(config, physical_geometry, enclosure_bounds)
-        if physical_geometry is not None and enclosure_bounds is not None else None
-    )
-    dimensions = dimension_metadata(dimensions_config, lod, resolved_dimensions) if dimensions_config is not None else {
+    dimensions = dimension_metadata(dimensions_config, lod) if dimensions_config is not None else {
         "dimensions_mm": None, "dimensions_status": "unavailable",
         "dimensions_error": dimensions_snapshot_error,
     }
