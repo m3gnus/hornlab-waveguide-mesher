@@ -7,6 +7,7 @@ import numpy as np
 
 from ..native_expressions import ExpressionSurface
 from .contract import PreviewGeometryV1
+from .fidelity import analytic_grid_normals
 from .primitives import _combine_surfaces, _flat_cap, _smooth_grid_surface
 
 
@@ -24,8 +25,9 @@ def _surfaces(surface, reference, options, targets):
         points[:, :, 1] += surface.offset
         master = master.transpose(1, 0, 2).copy()
         master[:, :, 1] += surface.offset
-        hint = np.zeros_like(points)
-        hint[:, :, :2] = points[:, :, :2]-[0, surface.offset]
+        # The shared grid owner follows dP/dphi x dP/dt: the meridian's
+        # right normal, including where a lip turns back towards the throat.
+        hint = analytic_grid_normals(points, closed_phi=True)
         if role == "horn.inner":
             hint = -hint
         if role == "mouth_rim":

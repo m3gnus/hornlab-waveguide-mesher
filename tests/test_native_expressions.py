@@ -84,6 +84,36 @@ def test_native_expression_preview_has_complete_roles_and_keeps_input(family):
         assert np.isfinite(surface.positions).all()
 
 
+@pytest.mark.parametrize("outer", [False, True])
+def test_roundover_expression_preview_lip_orientation_winding_and_curvature(outer):
+    from hornlab_mesher.mouth_roundover import Roundover
+    from hornlab_mesher.native_expressions import scalar_config
+
+    config = recipe("OSSE-ROUNDOVER")
+    config["profile"]["a_deg"] = "40 + .1*cos(2*p)"
+    preview = build_preview_geometry(config, PreviewOptionsV1(lod="coarse"))
+    role = "horn.outer" if outer else "horn.inner"
+    surface = next(part for part in preview.surfaces if part.role == role)
+    model = Roundover.from_params(build_geometry_params(scalar_config(config, 0))[0])
+    radius = model.radius - (model.wall if outer else 0)
+    # At this cardinal meridian the expression's angular derivative is zero,
+    # so the scalar owner's meridian tangent gives the exact surface normal.
+    for fraction in (.25, .5, .75):
+        z, r = model.arc(fraction*model.sweep, outer)
+        index = np.argmin(np.linalg.norm(surface.positions - [r, 0, z], axis=1))
+        x, _, z = surface.positions[index]
+        theta = math.atan2(z-model.center[0], model.center[1]-x)
+        expected = np.array([math.cos(theta), 0, -math.sin(theta)]) * (1 if outer else -1)
+        assert surface.normals[index] @ expected > .99999
+        sign = 1 if outer else -1
+        assert sign*surface.curvature_mean[index] > 0
+        assert sign*surface.curvature_principal[index] > .9/radius
+        triangles = surface.indices.reshape(-1, 3)
+        adjacent = triangles[np.any(triangles == index, axis=1)]
+        a, b, c = surface.positions[adjacent].transpose(1, 0, 2)
+        assert np.all(np.cross(b-a, c-a) @ expected > 0)
+
+
 def test_native_expression_domain_error_names_the_meridian_and_remedy():
     config = recipe("OSSE-AXIAL")
     config["profile"]["a_deg"] = "40 + 50*sin(p)"
