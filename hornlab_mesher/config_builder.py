@@ -1476,6 +1476,11 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
 
     _validate_coverage_angles(common, formula)
 
+    if 'athRosseTruncMm' in config:
+        from .rosse_truncation import KEY, validate
+        common[KEY] = config[KEY]
+        validate(common, mode=mode)
+
     if formula == "FREEFORM":
         try:
             _validate_freeform_config(common)

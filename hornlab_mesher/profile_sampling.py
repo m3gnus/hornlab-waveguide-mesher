@@ -1964,6 +1964,11 @@ def build_point_grid_arrays(
             sampling_mode = "uniform"
         else:
             t_unit_values, sampling_mode = _axial_sample_map(n_length, params)
+        if 'athRosseTruncMm' in params:
+            # ATH reconstructs its default retained-body map after a cut,
+            # overriding both a linear and a nonlinear authored ZMapPoints.
+            t_unit_values = _ath_import_zmap(n_length, 'R-OSSE')
+            sampling_mode = 'ath-default-zmap'
         if ((formula == "R-OSSE" and uses_v2_text_import_geometry(params))
                 or (formula == "OSSE" and uses_current_ath_axial_sampling(params)
                     and (uses_v3_text_import_geometry(params)

@@ -284,3 +284,39 @@ in sizing/planner calls, and retain the geometry-relevant authored controls or
 frozen construction in the preview cache key. Changing only CornerSegments
 from 6 to 12 on the example above changes its height from 388.3281573 to
 360 mm without that handoff. No WG pins or consumer code move in this change.
+
+### R-OSSE throat truncation
+
+Current imports accept a positive numeric `trunc` inside the selected R-OSSE
+block. It removes axial millimetres from the throat, after `s1/s2` stretch:
+solve `X(t_join)=trunc` on the first forward branch, evaluate the retained
+body at `t_join+(1-t_join)*u`, and subtract the requested cut from Z. The
+first ring is at Z=0 with the enlarged cut radius. This is distinct from
+mouth-side `tmax`. ATH rebuilds its default axial station map after the cut,
+even when `Mesh.ZMapPoints` supplies a linear or nonlinear map.
+
+The measured domain is scalar circular R-OSSE, `tmax=1`, `R>r0>0`, `k>0`,
+`r>0`, `0.5<=m<=1`, `b>=0`, `q>=1`, and a cut below `X(m)`. `X` is concave
+on this interval before the monotone throat-stretch map; the positive
+endpoint bracket selects the first crossing even with a second root after
+`m`. Sources must be flat (`Source.Shape=2`). Wall, enclosure, ATH lip,
+adapter, prefix, morph, guiding curve, rotation, placement and nonunit scale
+combinations remain refused with a remedy. The `tmax=0.8` witness fails
+ATH's split search differently on different azimuths and remains refused.
+
+The explicit dictionary transport is `athRosseTruncMm`, accepted only with
+the current import stamp and axial sampling rule. WG persists
+`ath_rosse_trunc_mm`; canonical CFG saves also write `_athRosseTrunc=1` to
+distinguish the new interpretation from older WG v3 files whose active
+stretch path ignored a block `trunc`. Those saved designs retain their
+uncut geometry. Previously ignored native dictionary `trunc` keys keep
+their prior meaning. No absent field is added to existing designs.
+The ordinary R-OSSE formula and station-map owners evaluate the new cut for
+preview, acoustic mesh and surface STEP; there is no copied body formula.
+Five ATH exported grids in `tests/fixtures/ath_import/ath-v2026-09a/rosse-trunc`
+match to 0.001 mm, including stretch and the two-root case.
+
+`arcterm` remains refused. Its measured terminal tangent is `90+arcterm`
+degrees in the native circle convention, but its join/circle selection does
+not match the analytic maximum-curvature construction to 0.001 mm. The
+native `terminating_arc` and ATH mouth lip remain separate constructions.

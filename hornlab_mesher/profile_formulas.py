@@ -1005,6 +1005,10 @@ def calculate_rosse(
 ) -> tuple[float, float]:
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if 'athRosseTruncMm' in params:
+        from .rosse_truncation import curve
+        z, radius = curve(t, p, params)
+        return float(z), float(radius)
     validate_stretch_composition(params, "R-OSSE")
     s1, s2 = stretch_coefficients(params)  # validate even prefix stations
     r0_base = eval_param(params.get("r0"), p, 12.7)
@@ -1076,6 +1080,9 @@ def calculate_rosse_curve(
     """
     if "sourceBody" in params:
         raise ValueError("standalone source bodies require their dedicated geometry API, not horn profiles")
+    if 'athRosseTruncMm' in params:
+        from .rosse_truncation import curve
+        return curve(t_values, p, params)
 
     validate_stretch_composition(params, "R-OSSE")
     s1, s2 = stretch_coefficients(params)

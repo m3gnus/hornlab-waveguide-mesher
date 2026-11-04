@@ -878,7 +878,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
                     # ATH reads these only inside the R-OSSE block.
                     known_flat.add(key)
                     _report_ignored_ath_item(
-                        key, "ATH ignores this item at top level; its R-OSSE block form is not supported",
+                        key, "ATH ignores this item at top level; use the supported R-OSSE block form where available",
                         value=flat[key],
                     )
     if profile_block is not None:
@@ -1298,6 +1298,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
             logger.warning("[hornlab-mesher] Mesh.RearShape = 3 clamps Mesh.WallThickness to %g mm", mesh["wallThickness"])
 
     # Last, so that an item with a refusal of its own above keeps that message.
+    trunc = None
+    if v3_geometry and formula == 'R-OSSE' and profile_block is not None and 'trunc' in blocks[profile_block]:
+        trunc = _maybe_number(blocks[profile_block]['trunc'])
+        known_profile.add('trunc')
     _reject_unrecognised_ath_items(
         flat,
         blocks,
@@ -1326,6 +1330,10 @@ def parse_text_config(content: str) -> dict[str, Any]:
         config["scale"] = scale
     if axial_scale is not None:
         config["athAxialScale"] = axial_scale
+    if trunc is not None:
+        config['athRosseTruncMm'] = trunc
+        if sim_type == 2 and mesh.get('wallThickness') == 0:
+            config['mode'] = 'bare'
     if morph:
         config["morph"] = morph
     if gcurve:
@@ -1363,7 +1371,7 @@ def parse_text_config(content: str) -> dict[str, Any]:
             enclosure["woofers"] = resolve_woofer_placements(lf_rows, mouth_bottom_mm=bottom, mouth_top_mm=top)
     if source:
         config["source"] = source
-    if active:
+    if active or trunc is not None:
         from .config_builder import build_geometry_params
         build_geometry_params(config)
     if throat_controls is not None:

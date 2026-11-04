@@ -815,7 +815,7 @@ Refused by that rule, among others: `Scale.Z`, `Throat.Ext.Ctrl`,
 `Throat.Ext.Included`, `HornGeometry`, `Horn.Adapter`, `Horn.Part:<tag>`,
 `Profile`, `BEE = {}`, `Source.Array`,
 `FusionRotaryProfile = {}`, named enclosure plans, `Plan` inside
-`Mesh.Enclosure`, and inside a profile block `arcterm`, `trunc` and any key
+`Mesh.Enclosure`, and inside a profile block `arcterm` and any key
 of the other formula. `Dim` inside `Mesh.Enclosure` is imported as the
 enclosure dimensions. V3 `Scale.Z` accepts positive finite constants and
 constant expressions, and overrides global `Scale` on the axial coordinate.
