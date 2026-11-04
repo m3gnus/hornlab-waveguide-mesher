@@ -88,6 +88,9 @@ def canonical_dimensions(
     native = validate_native_boundary(full)
     # Check each native feature's original physical domain before zeroing placement.
     native_params = build_geometry_params(full) if native is not None else None
+    if native_params is not None and "nativeExpressionConfig" in native_params[0]:
+        from ..native_expressions import ExpressionSurface
+        return ExpressionSurface.from_config(full, sampling=(64, 32)).dimensions()
     if native == "OSSE-ADAPTER-CONTROLS":
         from ..adapter_controls import ControlsMeridian
         model=ControlsMeridian.from_params(native_params[0])

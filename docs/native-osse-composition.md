@@ -102,6 +102,36 @@ conic is the mapped body from the adapter join translated into composite
 coordinates, and the roundover builder adds the cubic and its certified
 wall offset ahead of the conic. The lip certificate is unchanged.
 
+## Expression-shaped native bodies
+
+The shared body dimensions `profile.L_mm`, `r0_mm`, `a_deg`, `a0_deg` and
+`k` also accept ordinary OSSE expressions in azimuth `p` (radians). Each
+meridian evaluates those expressions through the shared OSSE evaluator,
+then uses the same adapter, conic, arc, axial-map and roundover owners as
+the literal construction. Feature controls, scales, placement and mesh
+settings remain scalar. Existing feature combinations and physical bounds
+still apply at every sampled meridian.
+
+Non-constant bodies use interpolating OCC point-grid patches, with a
+separate patch span at each construction join. The default solve/export
+grid has 64 azimuths and 32 intervals per span; explicit surface sampling
+is bounded to 1024 in either direction and 150000 samples per span.
+Preview uses the ordinary LOD targets, independently of mesh sample counts,
+and reports sampled error against a denser meridian grid. It does not claim
+the literal revolution builders' continuous circle/torus certificates.
+Dimensions use a fixed 64-by-32 reference across LODs.
+
+MSH, STL and STEP use the complete surface, including the source, lip, rim
+and rear closure where present. STEP carries the native expression recipe.
+CAD Link continues to refuse native recipes it cannot transport; retain
+the native design file for editing, or export STEP. ATH feature import is
+unchanged: these are native construction options, not new ATH syntax.
+
+Literal bodies retain their previous builders and bytes. Constant body
+expressions resolve through the shared constant evaluator and take that
+same literal path. Only previously refused non-constant native bodies use
+the new surface transport.
+
 ## Identity gate
 
 Composite recipes share one authored-input identity owner in

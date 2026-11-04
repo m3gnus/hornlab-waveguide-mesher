@@ -64,7 +64,7 @@ def test_ordinary_formula_refuses_every_supplied_axis(value):
 @pytest.mark.parametrize("section,key,value",[
     ("profile","formula","R-OSSE"),("profile","type","FREEFORM"),("root","type","ICW"),
     ("root","quadrants",1),("mesh","quadrants","1234garbage"),("root","vertical_offset_mm",8),
-    ("profile","scale",2),("profile","a_deg","40"),("profile","s",.1),("profile","throatExtLength",5),
+    ("profile","scale",2),("profile","a_deg","80"),("profile","s",.1),("profile","throatExtLength",5),
     ("root","cross_section",{}),("root","enclosure",{}),("mesh","wall_thickness_mm",1),
     ("source","source_shape",1),("source","source_radius_mm",50),("source","source_curv",1),
     ("mesh","topology_mode","legacy"),("mesh","surface_fit","approximate"),

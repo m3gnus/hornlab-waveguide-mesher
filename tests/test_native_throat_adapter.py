@@ -141,7 +141,7 @@ def test_invalid_payload_refuses(change):
 @pytest.mark.parametrize("section,key,value", [
     ("profile", "s", 1), ("profile", "h", 1), ("profile", "rot", 1),
     ("profile", "s1", .4), ("profile", "slotLength", 10), ("profile", "throatExtAngle", 5),
-    ("profile", "a", "40+sin(p)"), ("profile", "throat_profile", 3),
+    ("profile", "a", "80+sin(p)"), ("profile", "throat_profile", 3),
     ("morph", "morph_target", 1), ("gcurve", "gcurve_type", 1),
     ("cross_section", "aspect_ratio", .9), ("cross_section", "exponent", 3),
     ("mesh", "wall_thickness_mm", 1), ("mesh", "quadrants", "1"),

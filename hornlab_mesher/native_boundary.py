@@ -45,7 +45,7 @@ IMPLEMENTED_COMPOSITES = frozenset({
 NATIVE_MARKERS = frozenset(LEGACY_MARKERS.values()) | {"OSSE-NATIVE"}
 
 # Even a composite has one model object per geometry, owning its finished meridian.
-NATIVE_MODEL_ATTRIBUTES = ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian")
+NATIVE_MODEL_ATTRIBUTES = ("adapter_meridian", "roundover", "axial_model", "controls_meridian", "arc_meridian", "expression_surface")
 
 
 def _fail(message):

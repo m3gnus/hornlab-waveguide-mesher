@@ -760,6 +760,9 @@ def write_step(
                         diagnostic=str(exc),
                     ) from exc
             adapter = getattr(geometry, "adapter_meridian", None)
+            expression = getattr(geometry, "expression_surface", None)
+            if expression is not None:
+                text = _header_recipe(text, expression.fingerprint, expression.identity, "native-construction")
             roundover = getattr(geometry, "roundover", None)
             composite = None
             if adapter is not None:
@@ -1387,6 +1390,8 @@ def write_wglink(
         raise MesherError("wglink export refuses standalone source bodies until a source-only bundle transport is supported")
     if not isinstance(geometry, PointGridHornGeometry):
         raise MesherError("wglink export requires PointGridHornGeometry")
+    if getattr(geometry, "expression_surface", None) is not None:
+        raise MesherError("wglink export cannot retain native OSSE expressions. Export STEP instead, or keep the native design file for editing.")
     if getattr(geometry,"controls_meridian",None) is not None:
         raise MesherError("wglink export refuses exact controls until a complete analytic bundle transport is qualified")
     if getattr(geometry,"arc_meridian",None) is not None:

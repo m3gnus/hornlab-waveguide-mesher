@@ -77,11 +77,7 @@ def build_roundover(geometry):
     inside, outside, inner_lips, outer_lips, rim_tags, rear_tags, source_tags = mapped
     lips = inner_lips+outer_lips
     rigid = sorted(set(inside+outside+lips+rim_tags+rear_tags))
-    reach = model.center[1]+model.radius
-    # Triangle chord error spends half its budget in each principal direction.
-    # The smaller lip radius is the larger meridian curvature.
-    cap = min(math.sqrt(8*(model.radius-model.wall)*0.004), math.sqrt(8*reach*0.004),
-              (model.radius-model.wall)*model.sweep/6)
+    cap = roundover_mesh_size(model)
     return BuiltGeometry(surface_groups={int(PhysicalGroup.RIGID_WALL):rigid,
                          int(PhysicalGroup.PRIMARY_SOURCE):source_tags},
         axial_bounds_mm=(-model.wall, float(model.center[0]+model.radius)), source_axis="z",
@@ -90,6 +86,15 @@ def build_roundover(geometry):
                              "rear":rear_tags, "throat_disc":source_tags},
         mesh_algorithm=MESH_ALGORITHM_FRONTAL_DELAUNAY,
         metadata={**model.metadata(), "mouthRoundoverMeshSizeMm":float(cap)})
+
+
+def roundover_mesh_size(model):
+    """Shared finished-mm size ceiling for native lip facets."""
+    reach = model.center[1]+model.radius
+    # Triangle chord error spends half its budget in each principal direction.
+    # The smaller lip radius is the larger meridian curvature.
+    return min(math.sqrt(8*(model.radius-model.wall)*0.004), math.sqrt(8*reach*0.004),
+               (model.radius-model.wall)*model.sweep/6)
 
 
 def certify_lip_mesh(model, built):

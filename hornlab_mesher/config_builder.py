@@ -930,13 +930,18 @@ def _uses_import_geometry_defaults(config: Mapping[str, Any]) -> bool:
 
 
 @stretch_config_errors
-def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], str, str]:
+def build_geometry_params(config: Mapping[str, Any], *, _native_expressions: bool = True) -> tuple[dict[str, Any], str, str]:
     imported_geometry = uses_text_import_geometry(config)
     imported_defaults = _uses_import_geometry_defaults(config)
     v2_defaults = imported_defaults and uses_v2_text_import_geometry(config)
     v3_defaults = imported_defaults and uses_v3_text_import_geometry(config)
     from .native_boundary import validate_native_boundary
-    validate_native_boundary(config)
+    native_marker = validate_native_boundary(config)
+    if native_marker is not None and _native_expressions:
+        from .native_expressions import configuration as expression_configuration
+        expressions = expression_configuration(config, lambda scalar: build_geometry_params(scalar, _native_expressions=False))
+        if expressions is not None:
+            return expressions
     from .adapter_controls import configuration as controls_configuration
     controls = controls_configuration(config, build_geometry_params)
     if controls is not None:
@@ -2565,6 +2570,9 @@ def resolve_geometry(
     from .native_boundary import validate_native_boundary
     validate_native_boundary(config, allow_large_mesh=allow_large_mesh)
     params, formula, mode = build_geometry_params(config)
+    if "nativeExpressionConfig" in params:
+        from .native_expressions import resolve
+        return resolve(config, params, allow_large_mesh)
     requested_woofers = _section(config, "enclosure").get("woofers")
     if requested_woofers and mode != "enclosure":
         raise control_refusal("enclosure.woofers requires enclosure mode", 'Mounting', 'Change Mounting to Waveguide in enclosure, or disable the woofers.', message='Woofers need an enclosure front baffle.')

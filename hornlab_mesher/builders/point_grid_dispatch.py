@@ -278,6 +278,9 @@ def build_point_grid(geometry: PointGridHornGeometry) -> BuiltGeometry:
     if sum(getattr(geometry, name, None) is not None
            for name in NATIVE_MODEL_ATTRIBUTES) > 1:
         raise ValueError("combined active native geometry features are not supported")
+    if getattr(geometry, "expression_surface", None) is not None:
+        from .native_expressions import build
+        return build(geometry)
     if getattr(geometry, "controls_meridian", None) is not None:
         from .adapter_controls import build_controls
         return build_controls(geometry)

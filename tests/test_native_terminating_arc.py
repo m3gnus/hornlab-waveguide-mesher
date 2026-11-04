@@ -124,7 +124,7 @@ def test_preview_normals_signed_curvature_and_continuous_fidelity(lod,end):
     ("root","type","OSSE"),("profile","formula","ICW"),("parameters","type","R-OSSE"),
     ("root","axial_scale",1),("root","throat_adapter",{"mode":"off"}),("root","source_body",None),
     ("root","cross_section",{}),("root","enclosure",{}),("root","parameters",{}),
-    ("profile","s",.2),("profile","n",4),("profile","q",.9),("profile","a_deg","40"),
+    ("profile","s",.2),("profile","n",4),("profile","q",.9),("profile","a_deg","80"),
     ("profile","throatExtLength",0),("mesh","mouth_roundover_radius_mm",0),
     ("mesh","wall_thickness_mm",1),("source","source_shape",1),("source","source_radius_mm",12),
     ("source","source_curv",1),("mesh","surface_fit","approximate"),("mesh","topology_mode","legacy"),

@@ -32,7 +32,7 @@ def test_radius_refused(radius):
 @pytest.mark.parametrize("section,key,value",[
     ("profile","s",0.3),("profile","a_deg",80),("profile","a0_deg",45),
     ("profile","r0_mm",0),("profile","k",20),("profile","L_mm",3000),
-    ("profile","r0_mm","12.7"),("profile","s1",1),
+    ("profile","r0_mm","-12.7"),("profile","s1",1),
     ("profile","slot_length_mm",1),("profile","throat_ext_length_mm",1),
     ("mesh","wall_thickness_mm",25),("mesh","wall_thickness_mm",0),
     ("mesh","quadrants","1"),("mesh","surface_fit","approximate"),
