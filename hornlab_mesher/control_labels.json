@@ -1011,6 +1011,10 @@
     "legacyKey": "Curve",
     "label": "Curve"
   },
+  "editor.Curve change": {
+    "legacyKey": "Curve change",
+    "label": "Curve change"
+  },
   "editor.Curve deviation": {
     "legacyKey": "Curve deviation",
     "label": "Curve deviation"
@@ -1154,6 +1158,10 @@
   "editor.Load assembly draft": {
     "legacyKey": "Load assembly draft",
     "label": "Load assembly draft"
+  },
+  "editor.Measurement details": {
+    "legacyKey": "Measurement details",
+    "label": "Measurement details"
   },
   "editor.Mesh size": {
     "legacyKey": "Mesh size",
