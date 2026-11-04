@@ -140,8 +140,16 @@ A bare inner-export request retains lip rows when the caller explicitly removes
 Opus rear controls. Bare mode with RearShape 3 is refused before wall clamping,
 without a clamp warning.
 
-Active lips and Opus rears also refuse `Scale != 1`, active `Throat.Ext.*`,
-nonzero `Rot` or `Mesh.VerticalOffset`, and `Source.Shape = 2` pending ATH probes.
+Active lips and Opus rears support global `Scale`, positive constant `Scale.Z`
+(v3 only), throat extension length/angle, top-level `Rot`, `Mesh.VerticalOffset`
+and the flat `Source.Shape = 2`. The V2026-09a composition witnesses establish
+that the lip is appended after scaling, extension and meridian rotation, with
+its radius unscaled. Rear offsets, hard-coded throat shifts, FrontOffset and
+Step also remain unscaled. Body rear normals precede `Scale.Z`; the lip angle
+and explicit lip normals follow it. VerticalOffset translates the completed
+construction, including source and rear apex. The existing source-cap builder
+owns both source shapes; changing the source does not change bore/lip/rear points.
+See the `compositions` fixtures for complete grids and rear vertex sets.
 
 STEP transports the existing mesh builder's GEO patches to OCC, without
 reconstructing or resampling the authored lip/rear grids. Ring bands retain
@@ -156,13 +164,18 @@ Unachievable fits refuse with an STL remedy before replacing an existing file.
 OCC round-trip tests check surface distances, closed shared edges, one solid
 without loose faces, volume and the open bore. Existing planar imports retain
 their previous STEP path.
-Excessive FrontOffset with no eligible rear row, **FrontOffset < 0**, nonpositive/
-nonfinite Step, and nonfinite FrontOffset are named refusals. Negative offsets
-have no qualified ATH ring fit.
+Excessive FrontOffset with no eligible rear row, nonpositive/nonfinite Step,
+and nonfinite FrontOffset are named refusals. Without a lip, negative
+FrontOffset uses the same ring-selection rule and moves the unoffset front ring
+ahead of the mouth. The emitted shell must still pass the existing intersection
+checks. Negative FrontOffset with a lip stays refused: the measured ATH witness
+crosses the lip, so reproducing its points cannot produce a valid acoustic shell.
 
 Evidence is the extracted wall/rear point sets and profile grids in
 `tests/fixtures/ath_import/ath-v2026-09a`: `of20` pins non-default Step/FrontOffset,
 `onr` omits the lip, `odef` omits both defaults, `ow0` pins the wall clamp,
+`ofneg` pins FrontOffset=-5 with Step=30 and selected rows [8,12,19,22,23,24,25]
+in the ring helper; its self-intersecting lip composition stays refused,
 `ofull` covers a full ring, `rs1` pins the concentric outer lip, and `coreabec`
 pins morph/stretch and the warped throat. CORE selects `[4,7,9,11,12]`, with
 apex z approximately -10.1977 mm. Tests compare all selected wall rings, apex

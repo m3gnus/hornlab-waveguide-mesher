@@ -1325,8 +1325,6 @@ def build_geometry_params(config: Mapping[str, Any]) -> tuple[dict[str, Any], st
         axis = _numeric_param(config["athAxialScale"], name="Scale.Z")
         if not math.isfinite(axis) or axis <= 0:
             raise ath_refusal("Scale.Z must be a positive finite constant")
-        if common.get("athRoundover") or common.get("athRearShape") == 3:
-            raise ath_refusal("Scale.Z with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
         common["athAxialScale"] = axis
     ext_segments = _pick(mesh, config, names=("athThroatExtSegments",), default=None)
     if ext_segments is not None:

@@ -339,15 +339,16 @@ front ring and a band to the lip. See [ATH rear import](ath-rear-import-contract
 Refused by name: nonzero scalar form, missing/nonpositive/nonfinite Radius,
 unknown block members, nonintegral or fewer than one Segments, fewer than three
 body segments, R-OSSE (a folded-back lip), enclosure, infinite baffle, CircSym,
-`Scale != 1`, active `Throat.Ext.*`, nonzero `Rot` or `Mesh.VerticalOffset`,
-and `Source.Shape = 2`,
 free-standing subdomain interfaces, approximate surface fitting, RearShape 1 with `Radius <= WallThickness`
 (a collapsed/inverted outer lip), and a lip row that lands within 1e-6 mm of the
 ring before it or of the mouth (e.g. a 45-degree cone with Segments 1 or 2: ATH
 repeats the mouth row, which leaves zero-area faces). Existing unqualified morph/stretch
 combinations keep their existing refusals. Preview uses the authored mesh
 patches, including every lip row, with shared seams and measured triangle
-fidelity at every LOD. Viewport grid exports retain the lip and independently
+fidelity at every LOD. Global Scale, positive constant Scale.Z (v3), extension,
+top-level Rot, VerticalOffset and Source.Shape=2 compositions use the measured
+order documented in [ATH rear import](ath-rear-import-contract.md).
+Viewport grid exports retain the lip and independently
 sized rear rings. STEP transports those same ring patches through the existing
 OCC CAD owner, including the returning lip and independent rear fan, within
 the 0.020 mm CAD tolerance. Bare lips export as surface bodies; free-standing

@@ -2186,12 +2186,18 @@ def build_point_grid_arrays(
         raise ValueError(f"Scale must be > 0, got {geom_scale!r}")
     if geom_scale != 1.0:
         inner *= geom_scale
+    ath_surfaces = params.get("athRoundover") or params.get("athRearShape") == 3
+    body_normals = None
     if "athAxialScale" in params:
         axis = float(params["athAxialScale"])
         if not uses_v3_text_import_geometry(params) or not math.isfinite(axis) or axis <= 0:
             raise ath_refusal("Scale.Z requires ath-2026-09a-v3 and a positive finite constant; explicitly reimport a copy with the v3 stamp")
-        # An explicit ATH Scale.Z replaces global Scale on z; xy still uses
-        # Scale. Apply it after morphing, before wall normals/offsets.
+        # ATH's sampled rear retains the body chord normals from before
+        # Scale.Z. The lip angle and its explicit normals use the scaled grid.
+        if ath_surfaces:
+            from .ath_import_surfaces import meridional_normals
+            body_normals = meridional_normals(inner)
+        # An explicit ATH Scale.Z replaces global Scale on z; xy still uses Scale.
         inner[:, :, 2] *= axis / geom_scale
     # Mesh.VerticalOffset is a rigid +y placement translation. It is deliberately
     # NOT baked into the grid here: the reduced-domain snap and enclosure builders
@@ -2206,7 +2212,6 @@ def build_point_grid_arrays(
     vertical_offset = float(eval_param(params.get("verticalOffset"), 0.0, 0.0))
 
     ath_data = {}
-    ath_surfaces = params.get("athRoundover") or params.get("athRearShape") == 3
     if ath_surfaces:
         from .ath_import_surfaces import append_lip, meridional_normals, validate_combinations
         validate_combinations(params)
@@ -2220,13 +2225,14 @@ def build_point_grid_arrays(
         if lip:
             if formula != "OSSE":
                 raise ValueError("Mesh.Roundover with R-OSSE is unsupported: ATH folds the lip back")
-            inner, normals, angle = append_lip(inner, lip["radius"], lip["segments"], profile_zero=profile_zero)
+            inner, normals, angle = append_lip(inner, lip["radius"], lip["segments"],
+                                               profile_zero=profile_zero, body_normals=body_normals)
             ath_data["ath_mouth_angle"] = angle
             # Path coordinates stay ordered although z reverses at the lip.
             t_values = np.concatenate((t_values, 1 + np.arange(1, lip["segments"] + 1) / lip["segments"]))
             n_length = inner.shape[1] - 1
         else:
-            normals = meridional_normals(inner)
+            normals = meridional_normals(inner) if body_normals is None else body_normals
         if profile_zero is not None:
             if lip:
                 p0_lip, _, _ = append_lip(profile_zero[None], lip["radius"], lip["segments"])

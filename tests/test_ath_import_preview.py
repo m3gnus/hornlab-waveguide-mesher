@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from hornlab_mesher.config_builder import resolve_geometry
-from hornlab_mesher.config_parser import parse_text_config, ConfigError
+from hornlab_mesher.config_parser import parse_text_config
 from hornlab_mesher.preview import build_preview_geometry, PreviewOptionsV1
 from hornlab_mesher.viewport import build_viewport_geometry_from_config
 from hornlab_mesher.builders.point_grid_freestanding import _build_ath_import_surfaces
@@ -36,11 +36,13 @@ def assert_closed(surfaces, geometry):
     assert_watertight_after_symmetry(mesh, geometry)
 
 
-@pytest.mark.parametrize('name', ['onr', 'rs1', 'coreabec'])
+@pytest.mark.parametrize('name,negative_offset', [('onr', False), ('rs1', False), ('coreabec', False), ('onr', True)])
 @pytest.mark.parametrize('lod', ['coarse', 'fine', 'inspection'])
-def test_preview_and_viewport_use_mesh_patches_at_each_lod(name, lod, monkeypatch):
+def test_preview_and_viewport_use_mesh_patches_at_each_lod(name, negative_offset, lod, monkeypatch):
     import hornlab_mesher.preview.ath_import as renderer
     cfg = config(name)
+    if negative_offset:
+        cfg['mesh'].update(athRearFrontOffset=-50, wallThickness=100)
     geometry = resolve_geometry(cfg).geometry
     captured = []
     boundary_parameters = {}
@@ -162,7 +164,7 @@ def test_wg_inner_export_can_request_bare_core_with_opus_rear_removed():
 
 
 @pytest.mark.parametrize('name', ['onr', 'rs1'])
-def test_visibility_preserves_authored_surfaces_and_unprobed_placement_is_refused(name):
+def test_visibility_and_measured_placement_preserve_authored_surfaces(name):
     cfg = config(name)
     before = build_preview_geometry(cfg, PreviewOptionsV1(lod='coarse', include_curvature=False))
     after = build_preview_geometry(cfg, PreviewOptionsV1(lod='coarse', include_curvature=False,
@@ -170,23 +172,28 @@ def test_visibility_preserves_authored_surfaces_and_unprobed_placement_is_refuse
     assert [s.role for s in after.surfaces] == ['horn.inner']
     np.testing.assert_array_equal(after.surfaces[0].positions, before.surfaces[0].positions)
     cfg['mesh']['verticalOffset'] = 23
-    for consumer in (resolve_geometry, build_preview_geometry, build_viewport_geometry_from_config):
-        with pytest.raises(ConfigError, match='Mesh.VerticalOffset'):
-            consumer(cfg)
+    shifted = build_preview_geometry(cfg, PreviewOptionsV1(lod='coarse', include_curvature=False))
+    for a, b in zip(before.surfaces, shifted.surfaces):
+        assert a.role == b.role
+        np.testing.assert_allclose(b.positions, a.positions + [0, 23, 0], rtol=0, atol=2e-5)
+        np.testing.assert_array_equal(a.indices, b.indices)
+    plain = build_viewport_geometry_from_config(config(name), point_lists=False)['grid']
+    placed = build_viewport_geometry_from_config(cfg, point_lists=False)['grid']
+    for key in ('inner_grid', 'outer_grid', 'rear_apex'):
+        np.testing.assert_allclose(placed[key], np.asarray(plain[key]) + [0, 23, 0], rtol=0, atol=1e-12)
 
 
 @pytest.mark.parametrize('value', [-5, -20, -.001])
 @pytest.mark.parametrize('transport', ['text', 'dictionary'])
-def test_negative_front_offset_has_named_refusal(value, transport):
+def test_negative_front_offset_places_front_ahead_of_mouth(value, transport):
     if transport == 'text':
-        with pytest.raises(ConfigError, match=r'Mesh.RearShape.FrontOffset < 0'):
-            parse_text_config(f'OSSE = {{\n L = 100\n}}\nABEC.SimType = 2\nMesh.RearShape = 3\nMesh.RearShape.FrontOffset = {value}\n')
+        cfg = parse_text_config(f'OSSE = {{\n L = 100\n}}\nABEC.SimType = 2\nMesh.RearShape = 3\nMesh.RearShape.FrontOffset = {value}\n')
     else:
         cfg = config('onr')
         cfg['mesh']['athRearFrontOffset'] = value
-        for consumer in (resolve_geometry, build_preview_geometry, build_viewport_geometry_from_config):
-            with pytest.raises(ConfigError, match=r'Mesh.RearShape.FrontOffset < 0'):
-                consumer(cfg)
+    g = resolve_geometry(cfg).geometry
+    np.testing.assert_array_equal(g.ath_rear_points[:, -1, :2], g.inner_points[:, -1, :2])
+    np.testing.assert_allclose(g.ath_rear_points[:, -1, 2], g.inner_points[:, -1, 2] - value, rtol=0, atol=1e-12)
 
 
 @pytest.mark.parametrize('lod', ['coarse', 'fine', 'inspection'])

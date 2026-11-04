@@ -13,21 +13,19 @@ from .geometry import PointGridHornGeometry
 
 
 def validate_combinations(params):
-    """Refuse compositions awaiting measured ATH lip/rear witnesses."""
+    """Validate the measured lip/rear constructions on versioned imports."""
     from .text_import import uses_v2_text_import_geometry
     if not uses_v2_text_import_geometry(params):
         raise ath_refusal("Mesh.Roundover / Mesh.RearShape = 3 require ath-2026-09a-v2")
-    for key, name, inactive in (("scale", "Scale", 1),
-                               ("athAxialScale", "Scale.Z", 1),
-                               ("throatExtLength", "Throat.Ext.Length", 0),
-                               ("throatExtAngle", "Throat.Ext.Angle", 0),
-                               ("rot", "Rot", 0),
-                               ("verticalOffset", "Mesh.VerticalOffset", 0)):
-        value = params.get(key, inactive)
-        if not isinstance(value, (int, float)) or value != inactive:
-            raise ath_refusal(f"{name} with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
-    if params.get("sourceShape", 1) == 2:
-        raise ath_refusal("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
+    validate_lip_front_offset(params.get("athRoundover"), params.get("athRearFrontOffset", 40))
+
+
+def validate_lip_front_offset(lip, front_offset):
+    """Keep the measured self-intersecting lip/negative-offset rear refused."""
+    if lip and front_offset < 0:
+        raise ath_refusal("Negative Mesh.RearShape.FrontOffset with Mesh.Roundover is unsupported: "
+                          "the measured ATH rear crosses the lip. Remove Mesh.Roundover "
+                          "or use a nonnegative Mesh.RearShape.FrontOffset")
 
 
 def meridional_normals(points):
@@ -50,7 +48,7 @@ def meridional_normals(points):
                            (-dr / length)[..., None]), axis=-1)
 
 
-def append_lip(body, radius, segments, *, profile_zero=None):
+def append_lip(body, radius, segments, *, profile_zero=None, body_normals=None):
     """Append uniformly scaled copies of the original, post-stretch mouth."""
     grid = np.asarray(body, dtype=float)
     if grid.shape[1] < 4:
@@ -83,15 +81,13 @@ def append_lip(body, radius, segments, *, profile_zero=None):
                         -np.sin(theta)[None, :] * np.sin(phi),
                         np.broadcast_to(-np.cos(theta), phi.shape)), axis=-1)
     return np.concatenate((grid, lip), axis=1), np.concatenate(
-        (meridional_normals(grid), normals), axis=1), angle
+        (meridional_normals(grid) if body_normals is None else body_normals, normals), axis=1), angle
 
 
 def rear_rings(grid, normals, shape, wall, front_offset=40, step=25, *, profile_zero_z=None, closed=False):
     """Throat, selected offset rings and (for Opus) unoffset front ring."""
     z = grid[0, :, 2] if profile_zero_z is None else profile_zero_z
     if shape == 3:
-        if front_offset < 0:
-            raise ath_refusal("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
         candidates = np.flatnonzero(z[:-1] <= z[-1] - front_offset)
         if not len(candidates):
             raise ath_refusal("Mesh.RearShape.FrontOffset places the Opus front behind every body row; no rear loft can be built")
@@ -226,7 +222,5 @@ def normalized_controls(mesh, wall):
                 raise ValueError(f"Mesh.RearShape.{name} must be finite") from exc
             if not math.isfinite(value) or (name == "Step" and value <= 0):
                 raise ValueError(f"Mesh.RearShape.{name} must be finite" + (" and > 0" if name == "Step" else ""))
-            if name == "FrontOffset" and value < 0:
-                raise ath_refusal("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
             controls[key] = value
     return controls, wall

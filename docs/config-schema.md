@@ -917,7 +917,7 @@ for its strict canonical inputs, physical domain, preview certificates and expor
 | `Mesh.Roundover = 0` | No-op; other scalar values are refused. |
 | `Mesh.RearShape = 1` | Existing full rear without a lip; with a lip, selected meridional-normal offsets, -5 mm throat shift, 5 mm z step. |
 | `Mesh.RearShape = 3` | Opus rear: -10 mm throat shift, offset selected rings, unoffset front ring, non-planar fan. Wall thickness clamped to 0.1–1000 mm. Stored as `mesh.athRearShape`. |
-| `Mesh.RearShape.FrontOffset` | Finite nonnegative millimetres, default 40; requires RearShape 3. Stored as `mesh.athRearFrontOffset`. |
+| `Mesh.RearShape.FrontOffset` | Finite millimetres, default 40; negative values place the front ahead of the mouth and require no lip. Requires RearShape 3. Stored as `mesh.athRearFrontOffset`. |
 | `Mesh.RearShape.Step` | Finite positive millimetres, default 25; requires RearShape 3. Stored as `mesh.athRearStep`. |
 
 Active lip/Opus data require a retained v2 or v3 import marker. They do not
@@ -925,8 +925,11 @@ map onto native `mesh.mouth_roundover_radius_mm`. Unknown Roundover members,
 R-OSSE lip, enclosure/infinite-baffle/CircSym compositions, and free-standing
 subdomain interfaces and `Mesh.SurfaceFit = approximate` are named refusals. RearShape 2/5, RearCubic, OpusRear,
 MouthArc and RoundedEdge remain refused. Preview and viewport support active
-ATH lip and Opus rear controls from the mesh's authored surfaces. Negative
-FrontOffset and STEP transport remain named refusals. With an active lip or
-Opus rear, `Scale != 1`, active `Throat.Ext.*`, nonzero `Rot`, nonzero
-`Mesh.VerticalOffset`, and `Source.Shape = 2` are refused pending ATH probes. See [lip construction](mouth-roundover-contract.md#ath-import-lip)
+ATH lip and Opus rear controls from the mesh's authored surfaces.
+Negative FrontOffset with a lip stays refused: the measured ATH rear crosses
+the lip. Remove the lip or use a nonnegative FrontOffset.
+STEP transport remains a named refusal. Active lips and Opus rears support
+global `Scale`, constant positive `Scale.Z` (v3 only), throat extension,
+top-level `Rot`, `Mesh.VerticalOffset` and `Source.Shape = 2` using the measured
+ATH construction order. See [lip construction](mouth-roundover-contract.md#ath-import-lip)
 and [rear construction](ath-rear-import-contract.md#opus-rear-and-rearshape-1-with-an-ath-lip).

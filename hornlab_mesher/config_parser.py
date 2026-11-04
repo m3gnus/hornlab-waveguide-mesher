@@ -1255,8 +1255,6 @@ def parse_text_config(content: str) -> dict[str, Any]:
         mesh["athRoundover"] = {"radius": radius, "segments": int(segments)}
     active = roundover is not None or mesh.get("athRearShape") == 3
     if active:
-        if _maybe_number(source_items.get("Shape")) == 2:
-            raise ath_refusal("Source.Shape = 2 with Mesh.Roundover / Mesh.RearShape = 3 is unsupported: awaiting ATH probes")
         feature = "Mesh.Roundover" if roundover is not None else "Mesh.RearShape = 3"
         if not imported_geometry:
             raise ath_refusal(feature + " requires ATH import geometry interpretation")
@@ -1281,8 +1279,6 @@ def parse_text_config(content: str) -> dict[str, Any]:
                 raise ath_refusal("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite") from exc
             if not np.isfinite(value) or (key.endswith("Step") and value <= 0):
                 raise ath_refusal("Mesh.RearShape." + ("Step" if key.endswith("Step") else "FrontOffset") + " must be finite" + (" and > 0" if key.endswith("Step") else ""))
-            if key == "athRearFrontOffset" and value < 0:
-                raise ath_refusal("Mesh.RearShape.FrontOffset < 0 is unsupported: negative offsets have no qualified ATH ring fit")
             mesh[key] = value
     if mesh.get("athRearShape") != 3 and any(key in mesh for key in ("athRearFrontOffset", "athRearStep")):
         raise ath_refusal("Mesh.RearShape.FrontOffset/Step require Mesh.RearShape = 3")

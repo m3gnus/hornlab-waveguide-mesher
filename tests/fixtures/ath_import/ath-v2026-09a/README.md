@@ -28,6 +28,7 @@ blank-line-separated block per profile) and the configs that produced them.
 | `p1` | Plain OSSE lip, six rows from the original mouth. |
 | `segdef` | Omitted Segments gives five lip rows. |
 | `of20` | Opus with lip, Step=50 and FrontOffset=20; front is shifted without a normal offset. |
+| `ofneg` | Opus with lip, Step=30 and FrontOffset=-5; the unoffset front moves 5 mm ahead of the lip. Selected rows are [8,12,19,22,23,24,25]. This witness intersects the lip and stays refused at import; it qualifies the shared ring rule directly. |
 | `onr` | Opus without a lip, Step=25 and FrontOffset=40. |
 | `odef` | Omitted Opus Step/FrontOffset give 25/40. |
 | `ow0` | Opus authored zero wall is clamped to 0.1 mm. |

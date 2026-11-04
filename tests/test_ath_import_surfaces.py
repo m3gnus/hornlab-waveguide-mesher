@@ -63,7 +63,30 @@ def test_rear_vertex_set_matches_ath(name):
     assert distance.min(axis=0).max() <= 2e-3  # No unexplained ATH rear vertices.
 
 
-@pytest.mark.parametrize("name", CASES)
+def test_negative_offset_uses_the_measured_opus_rule_but_lip_stays_refused():
+    from hornlab_mesher.ath_import_surfaces import rear_rings
+
+    text = (FIXTURES / 'ofneg.cfg').read_text(encoding='utf-8')
+    # The retained ATH witness intersects its lip. Qualify the ring rule
+    # directly, without allowing this invalid composition through import.
+    cfg = parse_text_config(text.replace('FrontOffset = -5', 'FrontOffset = 0'))
+    g = resolve_geometry(cfg).geometry
+    np.testing.assert_allclose(g.inner_points, reference('ofneg')[:11], rtol=0, atol=2e-4)
+    rings, apex, selected = rear_rings(g.inner_points, g.ath_normals, 3, 15, -5, 30)
+    assert selected == [8, 12, 19, 22, 23, 24, 25]
+    actual = np.vstack((rings.reshape(-1, 3), apex))
+    expected = np.loadtxt(FIXTURES / 'ofneg-rear.csv', delimiter=';', skiprows=1)
+    distance = np.linalg.norm(actual[:, None] - expected[None, :], axis=-1)
+    assert distance.min(axis=1).max() <= 2e-3
+    assert distance.min(axis=0).max() <= 2e-3
+    with pytest.raises(ConfigError, match='Remove Mesh.Roundover or use a nonnegative'):
+        parse_text_config(text)
+    cfg['mesh']['athRearFrontOffset'] = -5
+    with pytest.raises(ConfigError, match='Remove Mesh.Roundover or use a nonnegative'):
+        resolve_geometry(cfg)
+
+
+@pytest.mark.parametrize("name", CASES + ["ofneg"])
 def test_fixture_normalisation(name):
     for extension in ("cfg", "csv"):
         data = (FIXTURES / f"{name}.{extension}").read_bytes()
@@ -116,12 +139,14 @@ def test_core_watertight_quadrant_mesh(tmp_path):
     assert np.all(np.isfinite(mesh.points))
 
 
-@pytest.mark.parametrize("name", ["of20", "rs1"])
+@pytest.mark.parametrize("name,negative_offset", [("of20", False), ("rs1", False), ("onr", True)])
 @pytest.mark.parametrize("quadrants", ["1", "1234"])
 @pytest.mark.parametrize("pathway", ["acoustic", "legacy-wg", "legacy-grid"])
-def test_all_shell_topologies_are_watertight(tmp_path, name, quadrants, pathway):
+def test_all_shell_topologies_are_watertight(tmp_path, name, negative_offset, quadrants, pathway):
     from hornlab_mesher.mesher import build_mesh
     cfg = config(name)
+    if negative_offset:
+        cfg["mesh"].update(athRearFrontOffset=-50, wallThickness=100)
     cfg["mesh"]["quadrants"] = quadrants
     cfg["mesh"]["topology"] = "acoustic" if pathway == "acoustic" else "legacy"
     resolved = resolve_geometry(cfg)
@@ -348,21 +373,21 @@ def test_dictionary_zero_wall_clamp_is_reported(caplog):
     ('Mesh.VerticalOffset = 5\n', 'verticalOffset', 'mesh', 5, 'Mesh.VerticalOffset'),
     ('Source.Shape = 2\n', 'source_shape', 'source', 2, 'Source.Shape = 2'),
 ])
-def test_unprobed_lip_and_opus_combinations_refused_in_both_transports(name, extra, key, section, value, named):
+def test_measured_lip_and_opus_combinations_share_both_transports(name, extra, key, section, value, named):
     text = (FIXTURES / f'{name}.cfg').read_text(encoding="utf-8")
     # ATH V2026-09a m7_rot_in/m7_rot_both establish that OSSE.Rot is
-    # ignored. Exercise active top-level Rot for the lip/Opus refusal.
+    # ignored. Exercise active top-level Rot.
     text += extra
-    with pytest.raises(ConfigError) as error:
-        parse_text_config(text)
-    assert named in str(error.value)
+    parsed = parse_text_config(text)
     cfg = config(name)
     target = cfg if section is None else cfg.setdefault(section, {})
     target[key] = value
-    for consumer in (build_geometry_params, resolve_geometry):
-        with pytest.raises(ConfigError) as error:
-            consumer(cfg)
-        assert named in str(error.value)
+    if key == 'source_shape':
+        # Dictionary transport uses the mesher's flat-disc code, not ATH's 2.
+        target[key] = 0
+    a, b = resolve_geometry(parsed).geometry, resolve_geometry(cfg).geometry
+    np.testing.assert_array_equal(a.inner_points, b.inner_points)
+    np.testing.assert_array_equal(a.ath_rear_points, b.ath_rear_points)
 
 
 def test_bare_opus_refusal_does_not_log_wall_clamp(caplog):

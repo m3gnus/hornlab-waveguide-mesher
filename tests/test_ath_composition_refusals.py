@@ -14,7 +14,7 @@ BASE = 'ABEC.SimType = 2\nOSSE = {\nL = 100\nr0 = 25\na0 = 10\na = 45\n}\n'
     (BASE + 'Mesh.ThroatExtSegments = 0\n', 'Mesh.ThroatExtSegments'),
     ('; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n' + BASE + 'Mesh.ThroatExtSegments = 4\n', 'Mesh.ThroatExtSegments'),
     ('; Ath version V2025-06\n' + BASE + 'Mesh.ThroatExtSegments = 4\n', 'Mesh.ThroatExtSegments'),
-    (BASE + 'Scale.Z = 2\nMesh.Roundover = {\nRadius = 20\nSegments = 6\n}\n', 'Scale.Z'),
+    ('; Waveguide Generator geometry-interpretation: ath-2026-09a-v2\n' + BASE + 'Scale.Z = 2\nMesh.Roundover = {\nRadius = 20\nSegments = 6\n}\n', 'Scale.Z'),
 ])
 def test_new_ath_parser_refusals_are_typed_and_picklable(text, key):
     with pytest.raises(UserRefusal) as caught:
@@ -42,11 +42,11 @@ def test_new_dictionary_refusals_keep_the_same_gate(extra, key):
     assert f'“{key}”' in caught.value.user_message
     assert caught.value.next_step
 
-def test_direct_lip_composition_uses_the_same_refusal_owner():
+def test_direct_lip_composition_retains_the_import_version_gate():
     from hornlab_mesher.ath_import_surfaces import validate_combinations
     with pytest.raises(UserRefusal) as caught:
-        validate_combinations({TEXT_IMPORT_VERSION_KEY: 'ath-2026-09a-v3', 'athAxialScale': 2})
-    assert '“Scale.Z”' in caught.value.user_message
+        validate_combinations({'athAxialScale': 2})
+    assert 'Mesh.Roundover' in str(caught.value)
     assert caught.value.next_step
 
 def test_direct_rotation_refusal_is_user_affectable():
