@@ -237,6 +237,9 @@ def test_corner_patch_discards_construction_points(session):
     tag = add_bspline_patch(poles, groups[0], degree_v=3)
     gmsh.model.occ.synchronize()
     assert len(gmsh.model.getEntities(0)) == 4
-    xyz = np.asarray(gmsh.model.getValue(2, tag, [.5, 0., .5, 1.])).reshape(-1, 3)
+    # Knots are in millimetres of control-polygon length; sample the middle azimuth.
+    lo, hi = gmsh.model.getParametrizationBounds(2, tag)
+    u = (lo[0] + hi[0]) / 2
+    xyz = np.asarray(gmsh.model.getValue(2, tag, [u, lo[1], u, hi[1]])).reshape(-1, 3)
     np.testing.assert_allclose(np.linalg.norm(xyz[:, :2], axis=1), [10., 16.], rtol=0, atol=1e-10)
     np.testing.assert_allclose(xyz[:, 2], [0., 6.], rtol=0, atol=1e-12)

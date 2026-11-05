@@ -517,7 +517,11 @@ mouth closures reuse the actual first/last patch boundaries. Endpoint corners se
 
 Fixed circular rings use a periodic cubic angular interpolant. Cubic
 Hermite interpolation follows moving and non-circular samples without
-folding long straight sides or corner tangencies. Its explicit knot vectors travel
+folding long straight sides or corner tangencies. On the wall it carries the
+authored cross-section's own tangents, parameterized by mean azimuth; a sharp
+cross-section vertex gets zero speed and stays sharp. Offset shells, which have
+no authored outline, keep shape-preserving estimated tangents on the wall's
+parameters. Its explicit knot vectors travel
 with the control net into every boundary consumer. One-sided radial
 derivative poles are fitted on those same built angular curves and knots. Periodic end tangents keep circular sources inside their authored disk.
 On moving or non-circular grids, an inscribed source pole hull retains the
@@ -527,19 +531,33 @@ azimuths and refines axially when the error exceeds 0.5 degrees, up to four
 slope refinements or 1025 rings. Failure names the cut z.
 Independently of final mesh density, it samples fixed-z radial error against
 the authored surface at 129 angular by 17 axial parameter stations per patch.
+Where the authored wall is steeper than 75 degrees from the axis (a flared
+mouth approaching 90 degrees) the fixed-z radial probe runs almost along the
+wall, so the wall budget reads that radial error scaled to the 75-degree axial
+probe (radial error times tan 75 degrees over the meridian slope). The reading
+stays at or above the distance to the authored surface everywhere.
 A 0.005 mm angular budget and 0.0075 mm wall budget trigger geometry refinement,
-with at most sixteen angular and sixteen axial accuracy refinements, 2048
+with at most sixteen angular refinements per accepted ring set, sixteen axial accuracy refinements, 2048
 angular profiles and 1025 rings. Angular checks also probe every original
 data interval at quarter steps; failing intervals are bisected symmetrically
-before any OCC patches are created.
+before any OCC patches are created. Hermite wall intervals refine alone (their
+neighbours enter only through the speed estimate, and every round re-checks
+all intervals); the coupled circular cubic also refines two neighbors on each
+side. Each accepted ring set gets the full angular budget. Offset shells and
+rear returns use the wall rows' angular parameters, so ruled mouth and rear
+strips join corresponding rows. Explicit wall knots are scaled to millimetres
+of control-polygon length, keeping Gmsh's parameter plane near isotropic.
 The separate 129-by-65 wall probes and H/V/diagonal sections in the corner
 accuracy tests must remain within 0.01 mm. These are sampled bounds, not
 continuous error certificates or final triangle chord tolerances.
-All FREEFORM profiles use this angular fit and radial-error budget. Smooth
+All FREEFORM profiles use this angular fit and wall-error budget. Smooth
 profiles reuse the same wall builder without axial cuts, interpolating their
-axial rings with the existing shared spline interpolation pass. Their error
+axial rings with the existing shared spline interpolation pass on averaged
+chord-length ring parameters. Their error
 check uses at least 65 axial stations plus every sampled ring and interval
-midpoint, including nonuniform endpoint intervals. Previously saved smooth
+midpoint, including nonuniform endpoint intervals, and bisects only the ring
+intervals holding a failing station and their neighbors. Corner spans keep
+uniform axial bisection. Previously saved smooth
 and corner FREEFORM designs can rebuild closer to their authored surface;
 the owner approved the smooth geometry change on 2026-11-04. Other profile
 families retain their existing builders and output bytes.

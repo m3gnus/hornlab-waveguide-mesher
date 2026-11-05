@@ -195,6 +195,8 @@ def test_owner_freeform_quadrant_reduced_freestanding_build_succeeds(tmp_path, m
     assert result.n_triangles > 0
     assert result.native_symmetry_plane == "yz+xz"
     assert result.metadata["freeformProfileDeviationMm"] < 0.25
+    # The bore and its 1 mm offset shell must not cross: no facet repair.
+    assert "shellFacetValidation" not in result.metadata
 
 
 def test_owner_mouth_grid_ring_uses_absolute_corner_radius_at_end_of_hold():

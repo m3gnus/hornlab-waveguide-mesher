@@ -563,6 +563,7 @@ def angular_interpolating_surface_poles(
     degree_u: int,
     shape_preserving: bool = False,
     circular: bool = False,
+    parameters: NDArray[np.float64] | None = None,
 ) -> tuple[NDArray[np.float64], tuple[list[float], list[int]]]:
     """Interpolate only a patch's angular (u) direction.
 
@@ -579,12 +580,15 @@ def angular_interpolating_surface_poles(
     each coordinate with cubic Hermite pieces on the existing patch.
     ``circular`` supplies periodic-circle end tangents on a fixed uniform
     angular net. The default retains the established chord-parameterized fit.
+    ``parameters`` gives the shape-preserving fit its sample parameters
+    (uniform by default), so shells can share their wall's angular basis.
     """
 
     from scipy.interpolate import make_interp_spline, PchipInterpolator
 
     if shape_preserving:
-        parameters = np.linspace(0., 1., grid.shape[1])
+        if parameters is None:
+            parameters = np.linspace(0., 1., grid.shape[1])
         curve = PchipInterpolator(parameters, grid, axis=1)
         derivative = curve.derivative()(parameters)
         return _angular_hermite_poles(grid, derivative, parameters)
@@ -631,13 +635,21 @@ def add_bspline_patch(
 
     knots: dict[str, list[float] | list[int]] = {}
     if isinstance(points, _AngularPoleGrid):
+        # Express the explicit knots in millimetres of mean control-polygon
+        # length. The shape is unchanged, but Gmsh meshes in this parameter
+        # plane: unit knot spans over a 20-300 mm arc against millimetre-scale
+        # axial spans made it 6-100x anisotropic and left slivers.
+        # Sectors share one axial basis, so the axial length is the whole net's.
+        def millimetres(values, net, axis):
+            length = float(np.mean(np.sum(np.linalg.norm(np.diff(net, axis=axis), axis=-1), axis=axis)))
+            return [float(value) * length for value in values]
         knots_u, mults_u = points.angular_knots[tuple(column_indices)]
         degree_u = mults_u[0] - 1
-        knots = {"knotsU": knots_u, "multiplicitiesU": mults_u}
+        knots = {"knotsU": millimetres(knots_u, grid, 1), "multiplicitiesU": mults_u}
         if points.axial_knots is not None:
             knots_v, mults_v = points.axial_knots
             degree_v = mults_v[0] - 1
-            knots.update(knotsV=knots_v, multiplicitiesV=mults_v)
+            knots.update(knotsV=millimetres(knots_v, np.asarray(points), 1), multiplicitiesV=mults_v)
     elif surface_fit == SURFACE_FIT_INTERPOLATE:
         grid, (knots_u, mults_u), (knots_v, mults_v) = interpolating_surface_poles(
             grid, degree_u=degree_u, degree_v=degree_v, v_params=v_params
@@ -657,6 +669,9 @@ def add_bspline_patch(
             "multiplicitiesU": mults_u,
         }
 
+    if isinstance(points, _AngularPoleGrid) and gmsh.model.list().count(gmsh.model.getCurrent()) == 1:
+        # The scratch model can hand control back only to a uniquely named model.
+        return _detached_bspline_surface(gmsh, grid, n_u, degree_u, degree_v, knots)
     point_tags = [
         int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
         for x, y, z in grid.reshape(-1, 3)
@@ -671,12 +686,49 @@ def add_bspline_patch(
         )
     )
     if isinstance(points, _AngularPoleGrid):
-        # OCC copied these coordinates into its surface. They are independent
-        # construction points, not boundary vertices. Remove them before
-        # synchronization, whose boolean-tolerance vertex snapping otherwise
-        # visits this much larger control net as though it were topology.
+        # Construction points, not topology: never leave them in the model.
         gmsh.model.occ.remove([(0, tag) for tag in point_tags], recursive=False)
     return surface
+
+
+def _detached_bspline_surface(gmsh, grid, n_u, degree_u, degree_v, knots) -> int:
+    """Add a large-control-net B-spline face without leaving pole vertices.
+
+    Gmsh can only take poles as OCC point entities, and removing a point
+    rescans every bound vertex, so deleting a 30k-80k pole net from the model
+    is quadratic and took seconds per FREEFORM wall patch. Build the face in a
+    scratch model, which is discarded whole, and import only that face (with
+    its own boundary) through an exact BREP round trip.
+    """
+    import tempfile
+    from pathlib import Path
+
+    current = gmsh.model.getCurrent()
+    scratch = f"{current}-bspline-patch"
+    with tempfile.TemporaryDirectory(prefix="hornlab-patch-") as directory:
+        path = str(Path(directory) / "patch.brep")
+        visible_only = gmsh.option.getNumber("Geometry.OCCExportOnlyVisible")
+        gmsh.model.add(scratch)
+        try:
+            point_tags = [
+                int(gmsh.model.occ.addPoint(float(x), float(y), float(z)))
+                for x, y, z in grid.reshape(-1, 3)
+            ]
+            surface = int(gmsh.model.occ.addBSplineSurface(
+                point_tags, n_u, degreeU=degree_u, degreeV=degree_v, **knots))
+            gmsh.model.occ.synchronize()
+            gmsh.model.setVisibility(gmsh.model.getEntities(), 0)
+            gmsh.model.setVisibility([(2, surface)], 1, recursive=True)
+            gmsh.option.setNumber("Geometry.OCCExportOnlyVisible", 1)
+            gmsh.write(path)
+        finally:
+            gmsh.option.setNumber("Geometry.OCCExportOnlyVisible", visible_only)
+            gmsh.model.remove()
+            gmsh.model.setCurrent(current)
+        faces = [tag for dim, tag in gmsh.model.occ.importShapes(path, highestDimOnly=True) if dim == 2]
+    if len(faces) != 1:
+        raise RuntimeError(f"B-spline patch round trip produced {len(faces)} faces")
+    return int(faces[0])
 
 
 def throat_boundary_curve(

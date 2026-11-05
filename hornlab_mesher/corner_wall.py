@@ -149,9 +149,11 @@ def mitred_outer_grid(inner: np.ndarray, wall: float, *, full_circle: bool,
     return outer
 
 
-def _refine(points: np.ndarray, recipe: CornerWall) -> np.ndarray:
+def _refine(points: np.ndarray, recipe: CornerWall, intervals: set[int] | None = None) -> np.ndarray:
+    """Bisect axial ring intervals: all of them, or only the given ones."""
     z = points[0, :, 2]
-    refined_z = np.sort(np.r_[z, (z[1:] + z[:-1]) / 2])
+    selected = np.arange(len(z) - 1) if intervals is None else np.asarray(sorted(intervals), dtype=int)
+    refined_z = np.sort(np.r_[z, (z[selected + 1] + z[selected]) / 2])
     phi = np.unwrap(np.arctan2(points[..., 1], points[..., 0]), axis=0)
     angles = np.array([np.interp(refined_z, z, row) for row in phi])
     out = np.empty((len(points), len(refined_z), 3))
@@ -161,7 +163,7 @@ def _refine(points: np.ndarray, recipe: CornerWall) -> np.ndarray:
         out[:, j, 1] = r * np.sin(angles[:, j])
         out[:, j, 2] = zj
     # Preserve existing rings bit-for-bit, including their angular coordinates.
-    out[:, ::2] = points
+    out[:, np.searchsorted(refined_z, z)] = points
     return out
 
 
@@ -195,12 +197,17 @@ def _angular_fit_error(points, recipe, groups):
     poles = _angular_poles(points, fitting_groups, recipe, refine=False)
     sections, tangents, parameters = [], [], []
     worst = 0.
+    data_parameters = []
     for columns, fitted in zip(groups, fitting_groups):
-        u = np.unique(np.r_[np.linspace(0, 1, 129), np.linspace(0, 1, 4 * (len(columns) - 1) + 1)])
+        # Both angular fits place one unique knot at each data sample.
+        values = np.asarray(poles.angular_knots[tuple(fitted)][0], dtype=float)
+        quarters = np.interp(np.arange(4 * (len(values) - 1) + 1) / 4, np.arange(len(values)), values)
+        u = np.unique(np.r_[np.linspace(0, 1, 129), quarters])
         curve = _patch_boundary_spline(poles, poles[fitted], fitted, -1, 'approximate')
         sections.append(curve(u * curve.t[-1]).transpose(1, 0, 2))
         tangents.append(curve.derivative()(u * curve.t[-1]).transpose(1, 0, 2))
         parameters.append(u)
+        data_parameters.append(values)
     bad_local = set()
     for j, z in enumerate(points[0, :, 2]):
         xyz = np.concatenate([rows[j] for rows in sections])
@@ -211,19 +218,23 @@ def _angular_fit_error(points, recipe, groups):
         backwards = polar_speed < -1e-12 * np.maximum(1., np.sum(xyz[:, :2] ** 2, axis=1))
         worst = max(worst, float(np.max(delta)))
         offset = 0
-        for columns, u in zip(groups, parameters):
+        for columns, u, values in zip(groups, parameters, data_parameters):
             selected = slice(offset, offset + len(u))
             bad = u[(delta[selected] > WALL_ANGULAR_TOLERANCE_MM) | backwards[selected]]
-            indices = np.minimum((bad * (len(columns) - 1)).astype(int), len(columns) - 2)
+            indices = np.clip(np.searchsorted(values, bad, side='right') - 1, 0, len(columns) - 2)
             bad_local.update(map(int, indices))
             bad_local.update(len(columns) - 2 - int(index) for index in indices)
             offset += len(u)
-    # A cubic interpolant couples neighboring intervals. Refine its support
+    # A C2 cubic interpolant couples neighboring intervals. Refine its support
     # around a failing interval too; repeatedly splitting only the peak can
     # leave the same bulge driven by an unchanged, much longer neighbor.
+    # An authored Hermite piece depends on its two samples, and on their
+    # neighbours only through the angular speed estimate; every round
+    # re-checks all intervals, so it refines just the failing ones.
     interval_count = len(groups[0]) - 1
+    reach = 0 if poles.hermite else 2
     bad_local = {neighbor for index in bad_local
-                 for neighbor in range(max(0, index - 2), min(interval_count, index + 3))}
+                 for neighbor in range(max(0, index - reach), min(interval_count, index + reach + 1))}
     intervals = {columns[index] for columns in groups for index in bad_local}
     return worst, intervals
 
@@ -261,37 +272,77 @@ def _fit_angular_grid(points, recipe, groups, *, budget=None):
         groups = _bspline_patch_phi_groups(len(points), closed=closed, n_sectors=sectors)
 
 
-def _wall_fit_error(points, recipe, patches):
-    """Sample radial error on the actual patches, with a mesh-independent budget.
+def _axial_ring_parameters(points, groups):
+    """Averaged chord-length ring parameters, shared by every sector.
+
+    Parameters proportional to z cannot follow a meridian whose tangent turns
+    radial (a mouth angle near 90 degrees): r(z) there is not polynomial and
+    the interpolant converges only with the square root of the ring spacing.
+    Arc-length parameters keep both z and r smooth along the meridian.
+    """
+    from .builders._occ import grid_v_parameters
+    return grid_v_parameters(points, closed=groups[-1][-1] == groups[0][0])
+
+
+def wall_probe_error(recipe, phi, z, radius, points):
+    """Wall error, read radially except where the wall turns nearly radial.
+
+    The budget's fixed-z radial probe reads sqrt(1 + slope^2) times the
+    distance to the authored meridian. Up to RADIAL_PROBE_MAX_WALL_ANGLE_DEG
+    that is the established measure. A wall approaching 90 degrees (a flared
+    mouth) makes the probe run along the wall: a micron of normal error reads
+    as a large radial one, and no ring spacing can meet the budget. Beyond that
+    angle the radial error is scaled to the axial probe at the same limit
+    angle (radial error times tan(limit) over the slope, to first order). The
+    reading is therefore never below the true distance and at most
+    1 / cos(limit) times it.
+    """
+    low, high = float(points[0, 0, 2]), float(points[0, -1, 2])
+    step = 1e-3
+    below, above = max(low, z - step), min(high, z + step)
+    slope = (recipe.radius(phi, above, points) - recipe.radius(phi, below, points)) / (above - below)
+    limit = math.tan(math.radians(RADIAL_PROBE_MAX_WALL_ANGLE_DEG))
+    return abs(radius - recipe.radius(phi, z, points)) / np.maximum(1., abs(slope) / limit)
+
+
+def _wall_fit_error(points, recipe, patches, groups):
+    """Sample wall probe error on the actual patches, mesh-independently.
 
     Group sectors at each axial station so the analytic H/V evaluation is
-    shared. End rings distinguish angular error from axial approximation.
+    shared. Smooth walls also return the ring intervals holding failing stations, so
+    refinement adds rings only where the interpolant needs them.
     """
     from .builders._occ import require_gmsh
     gmsh = require_gmsh()
-    worst = boundary = 0.
+    worst = 0.
+    smooth = not freeform_corner_z(recipe.profile)
+    ring_v = _axial_ring_parameters(points, groups) if smooth else None
+    failing = set()
     spans = sorted({span for span, _, _ in patches})
     for span in spans:
         rows = []
+        stations = np.linspace(0., 1., 17)
+        if smooth:
+            stations = np.unique(np.r_[np.linspace(0., 1., 65), ring_v,
+                                       (ring_v[1:] + ring_v[:-1]) / 2])
         for _, _, face in (patch for patch in patches if patch[0] == span):
             lo, hi = map(np.asarray, gmsh.model.getParametrizationBounds(*face))
-            stations = np.linspace(0., 1., 17)
-            if not freeform_corner_z(recipe.profile):
-                z = points[0, :, 2]
-                ring_v = (z - z[0]) / (z[-1] - z[0])
-                stations = np.unique(np.r_[np.linspace(0., 1., 65), ring_v,
-                                             (ring_v[1:] + ring_v[:-1]) / 2])
             count = len(stations)
             u, v = np.meshgrid(np.linspace(lo[0], hi[0], 129), lo[1] + stations * (hi[1] - lo[1]))
             rows.append(np.asarray(gmsh.model.getValue(*face, np.c_[u.ravel(), v.ravel()].ravel())).reshape(count, 129, 3))
         xyz = np.concatenate(rows, axis=1)
         for j, row in enumerate(xyz):
-            expected = recipe.radius(np.arctan2(row[:, 1], row[:, 0]), float(row[0, 2]), points)
-            error = float(np.max(abs(np.linalg.norm(row[:, :2], axis=1) - expected)))
+            error = float(np.max(wall_probe_error(
+                recipe, np.arctan2(row[:, 1], row[:, 0]), float(row[0, 2]),
+                np.linalg.norm(row[:, :2], axis=1), points)))
             worst = max(worst, error)
-            if j in (0, len(xyz) - 1):
-                boundary = max(boundary, error)
-    return worst, boundary
+            if smooth and error > WALL_FIT_TOLERANCE_MM:
+                failing.add(int(np.clip(np.searchsorted(ring_v, stations[j], side='right') - 1,
+                                        0, len(ring_v) - 2)))
+    # The axial interpolant is a cubic, coupling each interval to its neighbors.
+    intervals = {neighbor for index in failing
+                 for neighbor in range(max(0, index - 1), min(points.shape[1] - 1, index + 2))}
+    return worst, intervals
 
 
 def _end_derivative(points, j: int, sign: int, recipe: CornerWall,
@@ -337,8 +388,58 @@ def _end_derivative(points, j: int, sign: int, recipe: CornerWall,
     return poles[0]
 
 
+def _azimuth_parameters(grid):
+    """Angular sample parameters proportional to the mean azimuth of each row.
+
+    Every Hermite net of one wall (inner, offset shell, rear return) uses the
+    parameters of the wall's own rows. Shared parameters keep the ruled mouth
+    and rear strips joining corresponding rows; a uniform index parameter on a
+    locally refined net would make the shell's speed vary a thousandfold and
+    skew those rulings into slivers.
+    """
+    mean = np.unwrap(np.arctan2(grid[..., 1], grid[..., 0]), axis=1).mean(axis=0)
+    return (mean - mean[0]) / (mean[-1] - mean[0])
+
+
+def _authored_hermite_poles(grid, recipe: CornerWall, reference: np.ndarray):
+    """Angular Hermite poles carrying the authored cross-section's own tangents.
+
+    Estimated (PCHIP) tangents are only low-order accurate, so the angular net
+    had to be refined several times to meet its budget, and every OCC
+    operation downstream paid for the larger control net. The authored radius
+    supplies exact tangents. Parameters follow the mean azimuth, so each
+    piece's tangent scale matches its own span on a locally refined net. Where
+    the one-sided tangents disagree (a sharp cross-section vertex) the sample
+    gets zero speed, which keeps the vertex sharp, as the shape-preserving
+    fit does.
+    """
+    from .builders._occ import _angular_hermite_poles
+    phi = np.unwrap(np.arctan2(grid[..., 1], grid[..., 0]), axis=1)
+    parameters = _azimuth_parameters(grid)
+    speed = np.gradient(phi, parameters, axis=1, edge_order=2 if len(parameters) > 2 else 1)
+    chord = np.diff(phi, axis=1) / np.diff(parameters)
+    # The second-order end formula can turn back on a strongly graded net.
+    speed[:, 0] = np.where(speed[:, 0] > 0, speed[:, 0], chord[:, 0])
+    speed[:, -1] = np.where(speed[:, -1] > 0, speed[:, -1], chord[:, -1])
+    step = 1e-6
+    derivative = np.zeros_like(grid)
+    for j, angles in enumerate(phi):
+        # One outline evaluation per ring for all three stencil azimuths.
+        values = np.r_[angles - step, angles, angles + step]
+        r = recipe.radius(values, float(grid[j, 0, 2]), reference)
+        lower, centre, upper = np.split(np.c_[r * np.cos(values), r * np.sin(values)], 3)
+        before = (centre - lower) / step
+        after = (upper - centre) / step
+        tangent = (before + after) / 2
+        vertex = np.linalg.norm(after - before, axis=1) > 1e-3 * np.linalg.norm(tangent, axis=1)
+        tangent[vertex] = 0.
+        derivative[j, :, :2] = tangent * speed[j, :, None]
+    return _angular_hermite_poles(grid, derivative, parameters)
+
+
 def _angular_poles(points: np.ndarray, groups: list[list[int]], recipe: CornerWall | None,
-                   *, refine: bool = True, hermite: bool | None = None) -> Any:
+                   *, refine: bool = True, hermite: bool | None = None,
+                   wall: np.ndarray | None = None) -> Any:
     """Interpolate angular samples and retain their fitted knot vectors.
 
     Rewrite the caller's sector indices to address the returned control net;
@@ -358,8 +459,16 @@ def _angular_poles(points: np.ndarray, groups: list[list[int]], recipe: CornerWa
     offset = 0
     for sector, columns in enumerate(groups):
         grid = points[columns].transpose(1, 0, 2)
-        poles, knots = angular_interpolating_surface_poles(
-            grid, degree_u=min(3, len(columns) - 1), shape_preserving=hermite, circular=not hermite)
+        if recipe is not None and hermite:
+            poles, knots = _authored_hermite_poles(grid, recipe, points)
+        else:
+            # A shell without an authored outline keeps estimated tangents,
+            # on the angular parameters of the wall rows it was offset from.
+            parameters = (_azimuth_parameters((points if wall is None else wall)[columns].transpose(1, 0, 2))
+                          if hermite else None)
+            poles, knots = angular_interpolating_surface_poles(
+                grid, degree_u=min(3, len(columns) - 1), shape_preserving=hermite, circular=not hermite,
+                parameters=parameters)
         poles = poles.transpose(1, 0, 2)
         if recipe is not None and hermite:
             radius = np.linalg.norm(points[columns, 0, :2], axis=1)
@@ -380,12 +489,13 @@ def _angular_poles(points: np.ndarray, groups: list[list[int]], recipe: CornerWa
 
 def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]],
              recipe: CornerWall | None = None, identities: list[int] | None = None,
-             hermite: bool | None = None, interpolate_axial: bool = False):
+             hermite: bool | None = None, interpolate_axial: bool = False,
+             wall: np.ndarray | None = None):
     from .builders._occ import add_bspline_patch, _AngularPoleGrid, axial_interpolating_surface_poles
 
     ends = cut_indices(points, cuts) if identities is None else identities
     fitted_groups = [columns.copy() for columns in groups]
-    fitting_points = _angular_poles(points, fitted_groups, recipe, refine=False, hermite=hermite)
+    fitting_points = _angular_poles(points, fitted_groups, recipe, refine=False, hermite=hermite, wall=wall)
     patches = []
     for span, (a, b) in enumerate(zip(ends[:-1], ends[1:])):
         poles = np.asarray(fitting_points)[:, a:b + 1].copy()
@@ -395,8 +505,7 @@ def _patches(points: np.ndarray, cuts: tuple[float, ...], groups: list[list[int]
             # their accepted rings using the existing axial interpolation
             # pass, rather than shrinking an approximating pole hull.
             # All sectors share this axial basis, just as their seams do.
-            z = points[0, a:b + 1, 2]
-            v = (z - z[0]) / (z[-1] - z[0])
+            v = _axial_ring_parameters(points[:, a:b + 1], groups)
             axial, axial_knots = axial_interpolating_surface_poles(poles, v, min(3, b - a))
             poles = axial.transpose(1, 0, 2)
         for sector, columns in enumerate(fitted_groups):
@@ -685,6 +794,8 @@ WALL_ANGULAR_TOLERANCE_MM = 0.005
 # Leave axial headroom above the angular floor, and margin below the separate
 # 0.01 mm dense-probe acceptance bound, without over-refining source rims.
 WALL_FIT_TOLERANCE_MM = 0.0075
+# Steeper walls read the radial error at this angle's axial probe instead.
+RADIAL_PROBE_MAX_WALL_ANGLE_DEG = 75.
 MAX_WALL_FIT_REFINEMENTS = 16
 MAX_WALL_PROFILES = 2048
 
@@ -716,8 +827,10 @@ def build_corner_wall(geometry):
         groups = _bspline_patch_phi_groups(len(points), closed=geometry.closed,
                                           n_sectors=_open_sector_count(closed=geometry.closed,
                                                                        symmetry_planes=geometry.symmetry_planes))
-        points, groups, refined = _fit_angular_grid(
-            points, recipe, groups, budget=MAX_WALL_FIT_REFINEMENTS - angular_refinements)
+        # Each accepted ring set gets the full angular budget: rings added by
+        # axial refinement can cross a moving cross-section corner between
+        # existing rows. MAX_WALL_PROFILES still bounds the net.
+        points, groups, refined = _fit_angular_grid(points, recipe, groups)
         angular_refinements += refined
         before = set(gmsh.model.occ.getEntities())
         patches = _patches(points, recipe.cuts(points), groups, recipe)
@@ -728,22 +841,27 @@ def build_corner_wall(geometry):
                                    groups=groups)
         worst = max(((row['occJumpErrorDeg'], record['zMm']) for record in measurements
                      for row in record['azimuths']), default=(0, 0))
+        intervals = None
         if worst[0] > 0.5:
             if slope_refinements == MAX_CORNER_REFINEMENTS or 2 * points.shape[1] - 1 > MAX_CORNER_RINGS:
                 raise ValueError(f"FREEFORM corner z={worst[1]:g} mm: OCC slope jump error {worst[0]:.6g} deg exceeds 0.5 deg at refinement cap")
             slope_refinements += 1
         else:
-            fit_error, _ = _wall_fit_error(points, recipe, patches)
+            fit_error, failing = _wall_fit_error(points, recipe, patches, groups)
             if fit_error <= WALL_FIT_TOLERANCE_MM:
                 break
+            # Smooth walls bisect only their failing intervals; corner spans
+            # keep the uniform bisection their approximating patches assume.
+            intervals = failing if smooth else None
+            added = len(intervals) if smooth else points.shape[1] - 1
             if (fit_refinements == MAX_WALL_FIT_REFINEMENTS
-                    or 2 * points.shape[1] - 1 > MAX_CORNER_RINGS):
-                raise ValueError(f"FREEFORM corner wall sampled radial error {fit_error:g} mm exceeds "
-                                 f"{WALL_FIT_TOLERANCE_MM:g} mm at geometry refinement cap")
+                    or points.shape[1] + added > MAX_CORNER_RINGS):
+                raise ValueError(f"FREEFORM corner wall sampled wall error {fit_error:g} mm "
+                                 f"exceeds {WALL_FIT_TOLERANCE_MM:g} mm at geometry refinement cap")
             fit_refinements += 1
         owned = set(gmsh.model.occ.getEntities()) - before
         gmsh.model.occ.remove(sorted(owned, reverse=True), recursive=True)
-        points = _refine(points, recipe)
+        points = _refine(points, recipe, intervals)
     # Sewing happens before caps/enclosure see the first/last boundaries.
     segment_roles = {f'{span}:{sector}': [face] for span, sector, face in patches}
     segment_roles = _sew_roles(segment_roles)
@@ -773,7 +891,7 @@ def build_corner_wall(geometry):
         outer = _snap_open_symmetry_grid(outer, closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)
         ends = cut_indices(points, cuts)
         outer_hermite = not _revolution_grid(outer)
-        outer_patches = _patches(outer, (), groups, identities=ends, hermite=outer_hermite,
+        outer_patches = _patches(outer, (), groups, identities=ends, hermite=outer_hermite, wall=points,
                                  interpolate_axial=not freeform_corner_z(recipe.profile))
         # Clearance is a discretisation-scale sizing probe, independent of
         # geometric fit refinement. Keep the smooth builder's accepted net;
@@ -784,7 +902,7 @@ def build_corner_wall(geometry):
         rear = geometry_rear_ring(geometry, points, outer)
         rear = _snap_open_symmetry_grid(rear[:, None, :], closed=geometry.closed, symmetry_planes=geometry.symmetry_planes)[:, 0]
         extension = np.stack((rear, outer[:, 0]), axis=1)
-        rear_patches = _patches(extension, (), groups, hermite=outer_hermite)
+        rear_patches = _patches(extension, (), groups, hermite=outer_hermite, wall=points)
         # Both ruled strips span only about one wall thickness.
         strip_widths = {'mouth': float(np.min(np.linalg.norm(outer[:, -1] - points[:, -1], axis=-1))),
                         'rear': float(np.min(np.linalg.norm(extension[:, 1] - extension[:, 0], axis=-1)))}
