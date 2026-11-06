@@ -85,13 +85,15 @@ def _whole_boundary_extreme_loop_curves(
     *,
     source_axis: str = "z",
     use_min: bool = True,
+    plane: float | None = None,
 ) -> list[int]:
     """The selection this module used before it restricted itself to flat curves.
 
     Identical to ``extreme_boundary_loop_curves`` except that the target comes
     from the extreme of *every* boundary curve rather than of the axis-planar
-    ones. Kept here so the default-path tests below can assert the two agree
-    rather than merely assert the new one returns something plausible.
+    ones, and that it ignores a cap's ``plane`` hint. Kept here so the
+    default-path tests below can assert the two agree rather than merely
+    assert the new one returns something plausible.
     """
 
     boundary = gmsh.model.getBoundary(dimtags, oriented=False, combined=False)
@@ -327,8 +329,8 @@ def test_default_path_selects_the_same_curves_as_the_whole_boundary_extreme(
     calls: list[tuple[list[int], list[int]]] = []
     real = occ_module.extreme_boundary_loop_curves
 
-    def recording(dimtags, *, source_axis="z", use_min=True):
-        new = real(dimtags, source_axis=source_axis, use_min=use_min)
+    def recording(dimtags, *, source_axis="z", use_min=True, plane=None):
+        new = real(dimtags, source_axis=source_axis, use_min=use_min, plane=plane)
         old = _whole_boundary_extreme_loop_curves(
             dimtags, source_axis=source_axis, use_min=use_min
         )

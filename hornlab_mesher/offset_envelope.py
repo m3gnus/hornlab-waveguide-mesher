@@ -649,31 +649,6 @@ def _curled_meridian_envelope(inner_m, outer_m, radius):
     return result
 
 
-def _curled_rows_envelope(inner, outer, wall, *, rows=None):
-    """Each row's meridian envelope, for rows that lie in their azimuth plane.
-
-    Exact on a surface of revolution. Where the rows differ, a neighbouring
-    row can come nearer than the row's own meridian: the fitted faces'
-    certificate measures that and the build adds clearance.
-    """
-    angles = np.arctan2(inner[:, 0, 1], inner[:, 0, 0])
-    direction = np.stack((np.cos(angles), np.sin(angles)), axis=1)
-    scale = max(1.0, float(np.max(np.abs(inner))))
-    off_plane = inner[:, :, 0] * direction[:, None, 1] - inner[:, :, 1] * direction[:, None, 0]
-    if np.any(np.abs(off_plane) > 1e-9 * scale):
-        raise ValueError("a curled wall's rows leave their azimuth planes")
-    result = np.empty_like(outer)
-    for row in range(len(inner)) if rows is None else rows:
-        along_inner = inner[row, :, :2] @ direction[row]
-        along_outer = outer[row, :, :2] @ direction[row]
-        meridian = _curled_meridian_envelope(
-            np.stack((along_inner, inner[row, :, 2]), axis=1),
-            np.stack((along_outer, outer[row, :, 2]), axis=1), wall)
-        result[row, :, :2] = meridian[:, :1] * direction[row]
-        result[row, :, 2] = meridian[:, 1]
-    return result
-
-
 def regularize_outer_offset(
     inner: np.ndarray, outer: np.ndarray, wall: float, *, full_circle: bool,
     rollback: bool = False, revolution: bool = False, rows=None,
@@ -696,28 +671,27 @@ def regularize_outer_offset(
             # Only triangles within the wall's angular reach can touch row
             # 0's rays: solve that open band, then turn its row to every row.
             inner_band, outer_band, center, closed = window
-            if rollback and _curls_back(np.linalg.norm(inner[0, :, :2], axis=1), inner[0, :, 2]):
+            inner_r = np.linalg.norm(inner[0, :, :2], axis=1)
+            if rollback and _curls_back(inner_r, inner[0, :, 2]):
                 # Neither ray schedule follows a curl; its meridian does.
-                meridian = _curled_rows_envelope(inner, outer, wall, rows=(0,))[0]
+                radius, z = _curled_meridian_envelope(
+                    np.stack((inner_r, inner[0, :, 2]), axis=1),
+                    np.stack((np.linalg.norm(outer[0, :, :2], axis=1), outer[0, :, 2]), axis=1),
+                    wall).T
             else:
                 meridian = regularize_outer_offset(
                     inner_band, outer_band, wall, full_circle=closed,
                     rollback=rollback, rows=(center,))[center]
-            radius = np.linalg.norm(meridian[:, :2], axis=1)
+                radius, z = np.linalg.norm(meridian[:, :2], axis=1), meridian[:, 2]
             angles = np.arctan2(inner[:, 0, 1], inner[:, 0, 0])
             result = np.empty_like(outer)
             result[:, :, 0] = np.cos(angles)[:, None] * radius
             result[:, :, 1] = np.sin(angles)[:, None] * radius
-            result[:, :, 2] = meridian[:, 2]
+            result[:, :, 2] = z
             return result
     if np.any(np.diff(inner[:, :, 2], axis=1) <= 0.0):
         if not rollback:
             raise ValueError("outer offset envelope requires monotone axial input stations")
-        radii = np.linalg.norm(inner[:, :, :2], axis=2)
-        if np.any(np.diff(radii, axis=1) <= 0.0):
-            # The axial schedule needs increasing radii: a row that curls
-            # back in both takes its own meridian's envelope.
-            return _curled_rows_envelope(inner, outer, wall, rows=rows)
         return _axial_outer_envelope(inner, outer, wall, full_circle=full_circle,
                                      revolution=revolution, rows=rows)
     if np.any(outer[:, -1, 2] <= outer[:, 0, 2]):

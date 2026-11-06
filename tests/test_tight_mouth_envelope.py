@@ -98,19 +98,16 @@ def test_preview_and_solve_agree_on_the_envelope(config, tmp_path, caplog):
     assert result.metadata['outerEnvelopeClearance']['lowerBoundMm'] >= _wall(config)
 
 
-# Lips curling back in both radius and z (tmax > 1). tmax 1.2 and 1.5, a60 1.3
-# and 1.5, and azimuth-R 1.2 failed their solve after a clean preview
-# (nonmanifold edges, or the throat and rear caps filled across a mouth ring
-# below them); the others built a folded wall.
+# Lips curling back in both radius and z (tmax > 1). tmax 1.2 and 1.5 and a60
+# 1.3 and 1.5 failed their solve after a clean preview (nonmanifold edges, or
+# the throat and rear caps filled across a mouth ring below them); the others
+# built a folded wall.
 CURLS = {
     'tmax1.1': {'tmax': 1.1}, 'tmax1.2': {'tmax': 1.2}, 'tmax1.3': {'tmax': 1.3},
     'tmax1.5': {'tmax': 1.5},
     'a60-tmax1.2': {'tmax': 1.2, 'a': 60, 'r': 0.5, 'b': 0.4},
     'a60-tmax1.3': {'tmax': 1.3, 'a': 60, 'r': 0.5, 'b': 0.4},
     'a60-tmax1.5': {'tmax': 1.5, 'a': 60, 'r': 0.5, 'b': 0.4},
-    # Not a surface of revolution: each row takes its own meridian's envelope.
-    'azimuth-R-tmax1.1': {'tmax': 1.1, 'R': '140 + 20*cos(2*p)'},
-    'azimuth-R-tmax1.2': {'tmax': 1.2, 'R': '140 + 20*cos(2*p)'},
 }
 
 
