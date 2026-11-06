@@ -98,25 +98,64 @@ def test_preview_and_solve_agree_on_the_envelope(config, tmp_path, caplog):
     assert result.metadata['outerEnvelopeClearance']['lowerBoundMm'] >= _wall(config)
 
 
-@pytest.mark.parametrize('profile', [
-    {'tmax': 1.2}, {'tmax': 1.5}, {'tmax': 1.2, 'a': 60, 'r': 0.5, 'b': 0.4},
-    {'tmax': 1.5, 'a': 60, 'r': 0.5, 'b': 0.4},
-], ids=['tmax1.2', 'tmax1.5', 'a60-tmax1.2', 'a60-tmax1.5'])
-def test_curled_rosse_keeps_its_previous_outcome(profile):
-    # P3: a lip curling back in both radius and z has no ray schedule for an
-    # envelope. These designs keep exactly the result they had before: the
-    # same grid with its fold warning, never a new refusal.
+# Lips curling back in both radius and z (tmax > 1). tmax 1.2 and 1.5, a60 1.3
+# and 1.5, and azimuth-R 1.2 failed their solve after a clean preview
+# (nonmanifold edges, or the throat and rear caps filled across a mouth ring
+# below them); the others built a folded wall.
+CURLS = {
+    'tmax1.1': {'tmax': 1.1}, 'tmax1.2': {'tmax': 1.2}, 'tmax1.3': {'tmax': 1.3},
+    'tmax1.5': {'tmax': 1.5},
+    'a60-tmax1.2': {'tmax': 1.2, 'a': 60, 'r': 0.5, 'b': 0.4},
+    'a60-tmax1.3': {'tmax': 1.3, 'a': 60, 'r': 0.5, 'b': 0.4},
+    'a60-tmax1.5': {'tmax': 1.5, 'a': 60, 'r': 0.5, 'b': 0.4},
+    # Not a surface of revolution: each row takes its own meridian's envelope.
+    'azimuth-R-tmax1.1': {'tmax': 1.1, 'R': '140 + 20*cos(2*p)'},
+    'azimuth-R-tmax1.2': {'tmax': 1.2, 'R': '140 + 20*cos(2*p)'},
+}
+
+
+def _meridian_clearance(inner, outer):
+    """Exact 2D distance from each outer station to the inner meridian polyline."""
+    from hornlab_mesher.preview.fidelity import _point_segment_squared
+
+    def meridian(grid):
+        return np.stack((np.linalg.norm(grid[0, :, :2], axis=1), grid[0, :, 2]), axis=1)
+    m, o = meridian(inner), meridian(outer)
+    return np.sqrt(np.min(_point_segment_squared(o[:, None], m[None, :-1], m[None, 1:]), axis=1))
+
+
+@pytest.mark.parametrize('profile', CURLS.values(), ids=CURLS.keys())
+def test_curled_rosse_gets_its_meridian_envelope(profile):
+    # A curl has no axial or radial ray schedule, but on a surface of
+    # revolution the exterior is the meridian's trimmed one-sided offset.
     params, _, _ = build_geometry_params({**ROSSE, 'profile': profile})
     grid = build_point_grid_arrays(params)
-    assert 'normal flip' in grid['outer_offset_fold'] and not grid.get('outer_envelope')
-    assert np.array_equal(grid['outer_grid'], _raw_offset(grid, params['wallThickness']))
+    acoustic = build_point_grid_arrays({**params, 'wallThickness': 0.0})
+    assert grid['inner_grid'].tobytes() == acoustic['inner_grid'].tobytes()
+    assert grid['outer_offset_fold'] is None and grid['outer_envelope']
+    validate_outer_offset_grid(grid['inner_grid'], grid['outer_grid'], full_circle=grid['full_circle'])
+    clearance = _meridian_clearance(grid['inner_grid'], grid['outer_grid'])
+    wall = params['wallThickness']
+    # Chords between the 5-degree arc points of a vertex ball sag 0.006 mm.
+    assert clearance.min() >= wall + 0.1 - 0.01
+    # Stations stay on the envelope: none is left deeper than the kink's
+    # sampling allows (the raw normal offset sat about 2 mm inside the wall).
+    assert np.median(clearance) <= wall + 0.1 + 1e-6
 
 
-def test_curled_rosse_that_built_still_builds(tmp_path):
-    config = {**ROSSE, 'profile': {'tmax': 1.2, 'a': 60, 'r': 0.5, 'b': 0.4}}
+@pytest.mark.parametrize('profile', CURLS.values(), ids=CURLS.keys())
+def test_curled_rosse_preview_and_solve_agree(profile, tmp_path, caplog):
+    config = {**ROSSE, 'profile': profile}
+    with caplog.at_level(logging.WARNING, logger='hornlab_mesher'):
+        preview = build_preview_geometry(config)
+    assert any(surface.role.startswith('horn.outer') for surface in preview.surfaces)
+    assert not [r for r in caplog.records if 'self-intersects' in r.getMessage()
+                or 'normal outer offset' in r.getMessage()]
     result = build_from_config(config, tmp_path / 'curl.msh')
-    assert 'normal flip' in result.metadata['outerOffsetFold']
-    assert 'outerEnvelopeClearance' not in result.metadata
+    assert not result.metadata.get('outerOffsetFold')
+    _assert_closed_valid_mesh(result, require_positive_volume=True)
+    certificate = result.metadata['outerEnvelopeClearance']
+    assert certificate['certified'] and certificate['lowerBoundMm'] >= _wall(config)
 
 
 def test_corner_freeform_envelope_is_certified(tmp_path):

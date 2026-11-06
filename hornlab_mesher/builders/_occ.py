@@ -196,9 +196,13 @@ def extreme_boundary_loop_curves(
     *,
     source_axis: str = "z",
     use_min: bool = True,
+    plane: float | None = None,
 ) -> list[int]:
     """Boundary curves of ``dimtags`` lying entirely on the extreme axis plane.
 
+    ``plane``, when the caller knows where its loop lies, picks the flat
+    loop nearest that height instead of the extreme one: a lip that curls
+    back past the throat or rear plane puts its mouth ring beyond them.
     Requires a prior ``occ.synchronize()``.
     """
 
@@ -244,7 +248,11 @@ def extreme_boundary_loop_curves(
     # before -- which is why this restriction moves no existing mesh.
     eps = max(1e-6, abs(hi_all - lo_all) * 1e-3)
     flat = {tag: lo for tag, (lo, hi) in bounds.items() if abs(hi - lo) <= eps}
-    if flat:
+    if flat and plane is not None:
+        # Ties keep the extreme one, as without a plane.
+        target = (min if use_min else max)(
+            flat.values(), key=lambda z: (abs(z - plane), z if use_min else -z))
+    elif flat:
         target = min(flat.values()) if use_min else max(flat.values())
     else:
         target = lo_all if use_min else hi_all
@@ -375,17 +383,21 @@ def make_planar_fill_from_boundary(
     use_min: bool = True,
     closed: bool = True,
     split_open_sectors: bool = False,
+    plane: float | None = None,
 ) -> list[tuple[int, int]]:
-    """Fill an extreme boundary loop using the existing OCC boundary curves."""
+    """Fill an extreme boundary loop using the existing OCC boundary curves.
+
+    ``plane`` is passed to ``extreme_boundary_loop_curves``.
+    """
 
     if split_open_sectors and not closed and len(dimtags) > 1:
         # Separate quadrant patches carry coincident, independently authored
         # seam endpoint tags. Fill each sector on its own rim rather than
         # treating those interior endpoint tags as the two exterior cut axes.
         return [face for surface in dimtags for face in make_planar_fill_from_boundary(
-            [surface], source_axis=source_axis, use_min=use_min, closed=False)]
+            [surface], source_axis=source_axis, use_min=use_min, closed=False, plane=plane)]
     loop_curves = extreme_boundary_loop_curves(
-        dimtags, source_axis=source_axis, use_min=use_min
+        dimtags, source_axis=source_axis, use_min=use_min, plane=plane
     )
     return _make_planar_fill_from_loop_curves(
         loop_curves, closed=closed, source_axis=source_axis

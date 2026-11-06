@@ -498,6 +498,7 @@ def _build_acoustic_freestanding_point_grid(
         rear_cap = make_planar_fill_from_boundary(
             outer_wall, source_axis="z", use_min=True, closed=geometry.closed,
             split_open_sectors=getattr(geometry, "quadrant_patch_fit", False),
+            plane=float(np.mean(rear_points[:, 2])),
         )
     else:
         # Use the actual shell boundary curves so the warped fan shares

@@ -61,11 +61,12 @@ FREEFORM_MORPH = {
 def force_folded_offset(monkeypatch, config):
     """Keep a folding design's normal offset, as when no envelope can be built.
 
-    The throat-extension R-OSSE now gets a valid exterior envelope; profiles
-    that curl back in both radius and z still fall back to the folded offset.
-    That fallback is what these fold diagnostics must keep describing.
+    The throat-extension and slotted R-OSSEs now get a valid exterior
+    envelope; an offset whose envelope cannot be built still falls back to
+    the folded one. That fallback is what these fold diagnostics must keep
+    describing.
     """
-    if config is ROSSE_EXTENSION:
+    if config is ROSSE_EXTENSION or config is ROSSE_SLOT:
         import hornlab_mesher.offset_envelope as envelope
 
         def unbuildable(*args, **kwargs):

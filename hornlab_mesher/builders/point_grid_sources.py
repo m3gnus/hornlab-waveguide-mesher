@@ -119,7 +119,7 @@ def _occ_rounded_cap_on_wall_rim(
     gmsh = require_gmsh()
     gmsh.model.occ.synchronize()
     curves = extreme_boundary_loop_curves(
-        wall_dimtags, source_axis="z", use_min=throat_use_min
+        wall_dimtags, source_axis="z", use_min=throat_use_min, plane=float(center[2])
     )
     if not curves:
         return []
@@ -326,7 +326,8 @@ def _add_occ_source_cap_surfaces(
         # wall's boundary instead, as the bare flat-disc path already does.
         require_gmsh().model.occ.synchronize()
         filled = make_planar_fill_from_boundary(
-            wall_dimtags, source_axis="z", use_min=throat_use_min, closed=True
+            wall_dimtags, source_axis="z", use_min=throat_use_min, closed=True,
+            plane=float(center[2]),
         )
         if filled:
             return filled

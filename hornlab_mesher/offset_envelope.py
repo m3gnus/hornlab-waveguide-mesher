@@ -451,6 +451,229 @@ def _follow_absorbed_lip(inner_r, inner_z, outer_r, outer_z):
     return z
 
 
+def _curls_back(meridian_r, meridian_z) -> bool:
+    """Whether a meridian turns back in both radius and z (a curled lip)."""
+    return bool(np.any(np.diff(meridian_r) <= 0.0) and np.any(np.diff(meridian_z) <= 0.0))
+
+
+def _cross2(a, b):
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+
+# Largest turn between the offset points drawn around a vertex ball.
+_ARC_STEP = np.radians(5.0)
+
+
+def _meridian_offset_polyline(meridian, side, radius):
+    """The untrimmed one-sided offset of a 2D polyline, and each vertex's point.
+
+    Convex vertices get an arc of their vertex ball; at concave ones the two
+    offset segments cross and the loop they form is trimmed later.
+    """
+    steps = np.diff(meridian, axis=0)
+    lengths = np.linalg.norm(steps, axis=1)
+    if np.any(lengths <= 0.0):
+        raise ValueError("curled meridian has repeated stations")
+    tangent = steps / lengths[:, None]
+    normal = side * np.stack((-tangent[:, 1], tangent[:, 0]), axis=1)
+    points = [meridian[0] + radius * normal[0]]
+    anchors = [0]
+    for k in range(1, len(meridian) - 1):
+        a, b = normal[k - 1], normal[k]
+        turn = float(np.arctan2(_cross2(a, b), a @ b))
+        anchors.append(len(points))
+        if side * _cross2(tangent[k - 1], tangent[k]) < 0.0:
+            # Turning away from the offset side: the ball's arc joins them.
+            count = int(np.ceil(abs(turn) / _ARC_STEP))
+            base = np.arctan2(a[1], a[0]) + turn * np.arange(count + 1) / max(count, 1)
+            arc = meridian[k] + radius * np.stack((np.cos(base), np.sin(base)), axis=1)
+            anchors[-1] += count // 2
+            points.extend(arc if count else arc[:1])
+        else:
+            points.append(meridian[k] + radius * a)
+            if turn != 0.0:
+                points.append(meridian[k] + radius * b)
+    anchors.append(len(points))
+    # The mouth vertex's ball, from its normal round to its tip: a lip that
+    # ends inside the wall is wrapped there instead of leaving no exterior.
+    count = int(np.ceil(0.5 * np.pi / _ARC_STEP))
+    base = (np.arctan2(normal[-1, 1], normal[-1, 0])
+            - side * 0.5 * np.pi * np.arange(count + 1) / count)
+    points.extend(meridian[-1] + radius * np.stack((np.cos(base), np.sin(base)), axis=1))
+    return np.asarray(points), np.asarray(anchors)
+
+
+def _trimmed_offset(polyline, meridian, radius):
+    """Drop the offset's loops: follow the pieces at least ``radius`` away.
+
+    The polyline is split at all its self-crossings. A piece whose midpoint
+    or interior vertex lies closer than ``radius`` to the meridian is inside
+    the wall. From the start, the walk takes at each crossing the outside
+    branch, jumping forward over a loop; outside slivers it never reaches are
+    not part of the sheet. Returns the walked polyline, its arclength, each
+    input vertex's arclength on it (a skipped vertex moves to the next join)
+    and the joins' arclengths.
+    """
+    from .preview.fidelity import _point_segment_squared
+
+    def clearance(points):
+        return np.sqrt(np.min(_point_segment_squared(
+            points[:, None], meridian[None, :-1], meridian[None, 1:]), axis=1))
+
+    start, step = polyline[:-1], np.diff(polyline, axis=0)
+    count = len(step)
+    seglen = np.linalg.norm(step, axis=1)
+    denominator = _cross2(step[:, None], step[None])
+    gap = start[None] - start[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = _cross2(gap, step[None]) / denominator
+        u = _cross2(gap, step[:, None]) / denominator
+    index = np.arange(count)
+    crossing = ((denominator != 0.0) & (t > 0.0) & (t < 1.0) & (u > 0.0) & (u < 1.0)
+                & (np.abs(index[:, None] - index[None]) > 1))
+    vertex_at = np.concatenate(([0.0], np.cumsum(seglen)))
+    here = (vertex_at[:-1, None] + t * seglen[:, None])[crossing]
+    there = (vertex_at[None, :-1] + u * seglen[None, :])[crossing]
+    cuts = np.unique(np.concatenate((vertex_at[[0, -1]], here)))
+
+    def point_at(at):
+        k = np.clip(np.searchsorted(vertex_at, at, side="right") - 1, 0, count - 1)
+        return start[k] + ((at - vertex_at[k]) / seglen[k])[:, None] * step[k]
+
+    floor = radius * (1.0 - 1e-6)
+    # A midpoint on a chord of a vertex ball's arc sags inside by at most this.
+    keep = clearance(point_at(0.5 * (cuts[:-1] + cuts[1:]))) >= floor * np.cos(0.5 * _ARC_STEP)
+    interior = vertex_at[1:-1]
+    holds = (interior[None] > cuts[:-1, None]) & (interior[None] < cuts[1:, None])
+    keep &= ~np.any(holds & (clearance(polyline[1:-1]) < floor)[None], axis=1)
+    if not (keep[0] and keep[-1]):
+        raise ValueError("a curled wall's offset ends inside the wall")
+    # Each crossing's cut and the cut where the other branch passes it.
+    tolerance = 1e-9 * max(1.0, float(vertex_at[-1]))
+    partner = {}
+    for a, b in zip(np.searchsorted(cuts, here - tolerance), np.searchsorted(cuts, there - tolerance)):
+        partner.setdefault(int(a), []).append(int(b))
+    first, last = [cuts[0]], []
+    piece = 0
+    while piece < len(keep) - 1:
+        cut = piece + 1
+        ahead = [b for b in partner.get(cut, ()) if b > cut and b < len(keep) and keep[b]]
+        if ahead:
+            last.append(cuts[cut])
+            piece = max(ahead)
+            first.append(cuts[piece])
+        elif keep[cut]:
+            piece = cut
+        else:
+            raise ValueError("a curled wall's offset breaks into separate sheets")
+    last.append(cuts[-1])
+    first, last = np.asarray(first), np.asarray(last)
+    before = np.concatenate(([0.0], np.cumsum(last - first)))
+
+    def trimmed(at):
+        k = np.clip(np.searchsorted(first, at, side="right") - 1, 0, len(first) - 1)
+        return np.where(at <= last[k], before[k] + np.maximum(at - first[k], 0.0),
+                        before[np.minimum(k + 1, len(first) - 1)])
+
+    inside = np.any((interior[:, None] >= first) & (interior[:, None] <= last), axis=1)
+    at = np.unique(np.concatenate((first, last, interior[inside])))
+    arclength = trimmed(at)
+    order = np.argsort(arclength, kind="stable")
+    return point_at(at)[order], arclength[order], trimmed(vertex_at), before[1:-1]
+
+
+def _stations_around_joins(stations, meridian, curve, arclength, joins):
+    """Move the stations a trimmed loop collapsed onto a join (the wall's kink).
+
+    Each collapsed run is split at the kink by direction: a station's step
+    stays on the flank it follows, so outer cells turn with the acoustic
+    cells. The run borrows as many neighbouring stations on each side for
+    room, spaced like the acoustic stations they face.
+    """
+    s = stations.copy()
+    steps = np.diff(meridian, axis=0)
+    along = np.concatenate(([0.0], np.cumsum(np.linalg.norm(steps, axis=1))))
+    tolerance = 1e-9 * max(1.0, float(arclength[-1]))
+    probe = 1e-3 * float(arclength[-1])
+
+    def at(where):
+        return np.array([np.interp(where, arclength, curve[:, k]) for k in range(2)])
+
+    for join in joins:
+        run = np.flatnonzero(np.abs(s - join) <= tolerance)
+        if not run.size:
+            continue
+        a, b = int(run[0]), int(run[-1])
+        if a == 0 or b == len(s) - 1:
+            raise ValueError("a curled wall's offset loop reaches its end")
+        here = at(join)
+        incoming, outgoing = here - at(join - probe), at(join + probe) - here
+        faces = steps[a - 1:b + 1]
+        kink = a - 1 + int(np.count_nonzero(faces @ incoming / np.linalg.norm(incoming)
+                                            >= faces @ outgoing / np.linalg.norm(outgoing)))
+        low = max(0, a - 1 - max(1, kink - a + 1))
+        high = min(len(s) - 1, b + 1 + max(1, b - kink))
+        for lo, hi, s0, s1 in ((low, kink, s[low], join), (kink, high, join, s[high])):
+            weight = along[lo:hi + 1] - along[lo]
+            s[lo:hi + 1] = s0 + (s1 - s0) * weight / weight[-1]
+    if np.any(np.diff(s) <= tolerance):
+        raise ValueError("a curled wall's outer stations collapse")
+    return s
+
+
+def _curled_meridian_envelope(inner_m, outer_m, radius):
+    """Exterior envelope of a meridian that turns back in radius and z.
+
+    On a surface of revolution the distance from a meridian-plane point to the
+    surface is its 2D distance to the meridian, so the constant-distance
+    exterior is the meridian's one-sided offset with its loops trimmed. Where
+    the wall fills a tight curl the exterior has a kink; the stations the
+    loop swallowed are spread on both sides of it.
+    """
+    steps = np.diff(inner_m, axis=0)
+    # The raw normal offset says which side the wall is on.
+    sides = np.sum(_cross2(steps, outer_m[:-1] - inner_m[:-1]))
+    if not abs(sides) > 1e-9 * radius * float(np.sum(np.linalg.norm(steps, axis=1))):
+        raise ValueError("the offset does not say which side of a curl the wall is on")
+    side = 1.0 if sides > 0.0 else -1.0
+    polyline, anchors = _meridian_offset_polyline(inner_m, side, radius)
+    curve, arclength, vertex_s, joins = _trimmed_offset(polyline, inner_m, radius)
+    s = vertex_s[anchors]
+    if np.any(np.abs(joins - s[-1]) <= 1e-9 * max(1.0, float(arclength[-1]))):
+        # The mouth's normal point is inside the wall: end on the tip of its ball.
+        s[-1] = arclength[-1]
+    s = _stations_around_joins(s, inner_m, curve, arclength, joins)
+    result = np.stack([np.interp(s, arclength, curve[:, k]) for k in range(2)], axis=1)
+    if np.any(result[:, 0] <= 0.0):
+        raise ValueError("a curled wall's envelope crosses the axis")
+    return result
+
+
+def _curled_rows_envelope(inner, outer, wall, *, rows=None):
+    """Each row's meridian envelope, for rows that lie in their azimuth plane.
+
+    Exact on a surface of revolution. Where the rows differ, a neighbouring
+    row can come nearer than the row's own meridian: the fitted faces'
+    certificate measures that and the build adds clearance.
+    """
+    angles = np.arctan2(inner[:, 0, 1], inner[:, 0, 0])
+    direction = np.stack((np.cos(angles), np.sin(angles)), axis=1)
+    scale = max(1.0, float(np.max(np.abs(inner))))
+    off_plane = inner[:, :, 0] * direction[:, None, 1] - inner[:, :, 1] * direction[:, None, 0]
+    if np.any(np.abs(off_plane) > 1e-9 * scale):
+        raise ValueError("a curled wall's rows leave their azimuth planes")
+    result = np.empty_like(outer)
+    for row in range(len(inner)) if rows is None else rows:
+        along_inner = inner[row, :, :2] @ direction[row]
+        along_outer = outer[row, :, :2] @ direction[row]
+        meridian = _curled_meridian_envelope(
+            np.stack((along_inner, inner[row, :, 2]), axis=1),
+            np.stack((along_outer, outer[row, :, 2]), axis=1), wall)
+        result[row, :, :2] = meridian[:, :1] * direction[row]
+        result[row, :, 2] = meridian[:, 1]
+    return result
+
+
 def regularize_outer_offset(
     inner: np.ndarray, outer: np.ndarray, wall: float, *, full_circle: bool,
     rollback: bool = False, revolution: bool = False, rows=None,
@@ -473,9 +696,13 @@ def regularize_outer_offset(
             # Only triangles within the wall's angular reach can touch row
             # 0's rays: solve that open band, then turn its row to every row.
             inner_band, outer_band, center, closed = window
-            meridian = regularize_outer_offset(
-                inner_band, outer_band, wall, full_circle=closed,
-                rollback=rollback, rows=(center,))[center]
+            if rollback and _curls_back(np.linalg.norm(inner[0, :, :2], axis=1), inner[0, :, 2]):
+                # Neither ray schedule follows a curl; its meridian does.
+                meridian = _curled_rows_envelope(inner, outer, wall, rows=(0,))[0]
+            else:
+                meridian = regularize_outer_offset(
+                    inner_band, outer_band, wall, full_circle=closed,
+                    rollback=rollback, rows=(center,))[center]
             radius = np.linalg.norm(meridian[:, :2], axis=1)
             angles = np.arctan2(inner[:, 0, 1], inner[:, 0, 0])
             result = np.empty_like(outer)
@@ -486,6 +713,11 @@ def regularize_outer_offset(
     if np.any(np.diff(inner[:, :, 2], axis=1) <= 0.0):
         if not rollback:
             raise ValueError("outer offset envelope requires monotone axial input stations")
+        radii = np.linalg.norm(inner[:, :, :2], axis=2)
+        if np.any(np.diff(radii, axis=1) <= 0.0):
+            # The axial schedule needs increasing radii: a row that curls
+            # back in both takes its own meridian's envelope.
+            return _curled_rows_envelope(inner, outer, wall, rows=rows)
         return _axial_outer_envelope(inner, outer, wall, full_circle=full_circle,
                                      revolution=revolution, rows=rows)
     if np.any(outer[:, -1, 2] <= outer[:, 0, 2]):
