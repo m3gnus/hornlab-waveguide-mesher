@@ -250,8 +250,7 @@ def extreme_boundary_loop_curves(
     flat = {tag: lo for tag, (lo, hi) in bounds.items() if abs(hi - lo) <= eps}
     if flat and plane is not None:
         # Ties keep the extreme one, as without a plane.
-        target = (min if use_min else max)(
-            flat.values(), key=lambda z: (abs(z - plane), z if use_min else -z))
+        target = min(flat.values(), key=lambda z: (abs(z - plane), z if use_min else -z))
     elif flat:
         target = min(flat.values()) if use_min else max(flat.values())
     else:

@@ -362,3 +362,21 @@ def test_a_failed_measurement_never_blocks_a_solve(tmp_path, monkeypatch):
     result = build_from_config(ROSSE, tmp_path / 'solve.msh')
     record = result.metadata['outerEnvelopeClearance']
     assert record['certified'] is False and 'forced sampling fault' in record['unmeasured']
+
+
+@pytest.mark.parametrize('meridian,radius,side', [
+    ([[50, 0], [50.232, 7.757], [57.089, 5.084], [49.38, -0.629], [45.634, -2.675]], 5.8195, 1.0),
+    ([[50, 0], [45.281, 4.002], [39.727, 5.921], [40.031, 4.245], [40.045, 2.993],
+      [44.858, 2.049], [45.716, -0.034]], 6.9925, -1.0),
+], ids=['throat-station-inside', 'mouth-tip-inside'])
+def test_curled_envelope_refuses_stations_inside_the_wall(meridian, radius, side):
+    # Review P1: the walk splits only at self-crossings, so an end station could
+    # sit inside another part's reach. Such an envelope must fall back (raise).
+    from hornlab_mesher.offset_envelope import _curled_meridian_envelope
+
+    inner = np.asarray(meridian, float)
+    steps = np.diff(inner, axis=0)
+    normal = side * np.stack((-steps[:, 1], steps[:, 0]), axis=1) / np.linalg.norm(steps, axis=1)[:, None]
+    raw = inner + radius * np.vstack((normal, normal[-1:]))
+    with pytest.raises(ValueError, match='inside the wall'):
+        _curled_meridian_envelope(inner, raw, radius)

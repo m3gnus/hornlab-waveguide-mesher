@@ -503,6 +503,14 @@ def _meridian_offset_polyline(meridian, side, radius):
     return np.asarray(points), np.asarray(anchors)
 
 
+def _meridian_clearance(points, meridian):
+    """Distance from each 2D point to the meridian polyline."""
+    from .preview.fidelity import _point_segment_squared
+
+    return np.sqrt(np.min(_point_segment_squared(
+        points[:, None], meridian[None, :-1], meridian[None, 1:]), axis=1))
+
+
 def _trimmed_offset(polyline, meridian, radius):
     """Drop the offset's loops: follow the pieces at least ``radius`` away.
 
@@ -514,11 +522,8 @@ def _trimmed_offset(polyline, meridian, radius):
     input vertex's arclength on it (a skipped vertex moves to the next join)
     and the joins' arclengths.
     """
-    from .preview.fidelity import _point_segment_squared
-
     def clearance(points):
-        return np.sqrt(np.min(_point_segment_squared(
-            points[:, None], meridian[None, :-1], meridian[None, 1:]), axis=1))
+        return _meridian_clearance(points, meridian)
 
     start, step = polyline[:-1], np.diff(polyline, axis=0)
     count = len(step)
@@ -528,12 +533,12 @@ def _trimmed_offset(polyline, meridian, radius):
     with np.errstate(divide="ignore", invalid="ignore"):
         t = _cross2(gap, step[None]) / denominator
         u = _cross2(gap, step[:, None]) / denominator
-    index = np.arange(count)
-    crossing = ((denominator != 0.0) & (t > 0.0) & (t < 1.0) & (u > 0.0) & (u < 1.0)
-                & (np.abs(index[:, None] - index[None]) > 1))
-    vertex_at = np.concatenate(([0.0], np.cumsum(seglen)))
-    here = (vertex_at[:-1, None] + t * seglen[:, None])[crossing]
-    there = (vertex_at[None, :-1] + u * seglen[None, :])[crossing]
+        index = np.arange(count)
+        crossing = ((denominator != 0.0) & (t > 0.0) & (t < 1.0) & (u > 0.0) & (u < 1.0)
+                    & (np.abs(index[:, None] - index[None]) > 1))
+        vertex_at = np.concatenate(([0.0], np.cumsum(seglen)))
+        here = (vertex_at[:-1, None] + t * seglen[:, None])[crossing]
+        there = (vertex_at[None, :-1] + u * seglen[None, :])[crossing]
     cuts = np.unique(np.concatenate((vertex_at[[0, -1]], here)))
 
     def point_at(at):
@@ -644,6 +649,11 @@ def _curled_meridian_envelope(inner_m, outer_m, radius):
         s[-1] = arclength[-1]
     s = _stations_around_joins(s, inner_m, curve, arclength, joins)
     result = np.stack([np.interp(s, arclength, curve[:, k]) for k in range(2)], axis=1)
+    # The walk splits pieces only where the offset crosses itself, so a
+    # station can still sit inside another part's reach (the throat end has
+    # no ball): every station must keep the radius, up to an arc chord's sag.
+    if np.any(_meridian_clearance(result, inner_m) < radius * (1.0 - 1e-6) * np.cos(0.5 * _ARC_STEP)):
+        raise ValueError("a curled wall's envelope passes inside the wall")
     if np.any(result[:, 0] <= 0.0):
         raise ValueError("a curled wall's envelope crosses the axis")
     return result
