@@ -130,7 +130,7 @@ The mesher opens a Gmsh session in exactly two places, and each opens one only
 when no session is already active (`gmsh.isInitialized()` is false):
 
 - `mesher.build_mesh_with_info`, which every `.msh` build reaches
-  (`build_mesh`, `build_from_config`, `experimental.cabinet`);
+  (`build_mesh`, `build_from_config`);
 - `cad.write_step`, which every STEP export reaches (`write_step_from_config`,
   `write_wglink`).
 

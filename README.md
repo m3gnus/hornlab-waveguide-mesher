@@ -7,8 +7,7 @@ format is currently used.
 
 This repository is intentionally limited to waveguide meshes. It does not ship
 supported standalone slot, port, driver, rectangular horn, or cabinet mesh
-builders. (An experimental cabinet compatibility bridge lives under
-`hornlab_mesher.experimental` and is not part of the supported API.)
+builders.
 
 The Python package imports as `hornlab_mesher`; the distribution and repository
 name are `hornlab-waveguide-mesher`.
@@ -164,6 +163,4 @@ hornlab-waveguide config.toml -o waveguide.msh
 ## Scope
 
 The package deliberately does not include non-waveguide geometry families,
-optimization code, or a JavaScript runtime. Cabinet generation is provided only
-as an experimental compatibility bridge under `hornlab_mesher.experimental`,
-not as a supported standalone builder.
+optimization code, a JavaScript runtime, or cabinet generation.
