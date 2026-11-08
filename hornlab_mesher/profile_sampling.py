@@ -610,7 +610,11 @@ def _superellipse_scale(phi: float, exponent: float, aspect_ratio: float) -> flo
 
 
 def _cross_section_scaled(
-    radius: np.ndarray, t_unit: np.ndarray, prefix: float, scale: float
+    radius: np.ndarray,
+    t_unit: np.ndarray,
+    prefix: float,
+    scale: float,
+    prefix_radius: Any,
 ) -> np.ndarray:
     """Apply the cross-section scale to one meridian, keeping its throat.
 
@@ -621,10 +625,22 @@ def _cross_section_scaled(
     the extension and slot themselves stay round. ATH has no cross-section
     exponent; its own outline controls (``Morph``, ``a(p)``) likewise leave
     the throat circular (ath.exe GridExport, V2026-09a).
+
+    ``r_t`` is a property of the design, not of the sampling: a station that
+    lands on the prefix end supplies it, otherwise ``prefix_radius()``
+    evaluates the meridian there. Interpolating it between the last prefix
+    station and the first flare station moved the whole mouth with Surface
+    sampling (MES-02).
     """
 
     t = np.asarray(t_unit, dtype=np.float64)
-    throat_radius = float(np.interp(prefix, t, radius))
+    on_prefix = np.flatnonzero(t == prefix)
+    if on_prefix.size:
+        throat_radius = float(radius[on_prefix[0]])
+    elif prefix_radius is not None:
+        throat_radius = float(prefix_radius())
+    else:
+        raise AssertionError(f"no meridian evaluator for the throat prefix at t={prefix!r}")
     scaled = throat_radius + (radius - throat_radius) * scale
     return np.where(t <= prefix, radius, scaled)
 
@@ -977,6 +993,7 @@ def _raw_radial_grid(
         phi_value = float(phi)
         scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
         meridian_prefix = 0.0
+        prefix_radius = None
         if formula == "LOOKUP":
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
             # cross-section (superellipse scale) and morph are layered on top
@@ -1003,6 +1020,15 @@ def _raw_radial_grid(
                 coverage_angle=coverage_angle,
             )
             curve_radius = curve_radius + h_bulge * osse_bulge_profile
+
+            def prefix_radius(
+                prefix=meridian_prefix, total=total, phi=phi_value,
+                coverage=coverage_angle, h=h_bulge,
+            ):
+                _z, radius = calculate_osse_curve(
+                    np.array([prefix * total]), phi, params, coverage_angle=coverage
+                )
+                return radius[0] + h * math.sin(prefix * math.pi)
         else:
             layout = rosse_axial_layout(params, phi_value)
             if layout.full_length > 1.0e-12 and (layout.ext_len > 0.0 or layout.slot_len > 0.0):
@@ -1017,13 +1043,19 @@ def _raw_radial_grid(
             curve_z, curve_radius = calculate_rosse_curve(
                 t_values, phi_value, params
             )
+
+            def prefix_radius(prefix=meridian_prefix, t_max=layout.t_max, phi=phi_value):
+                _z, radius = calculate_rosse_curve(np.array([prefix * t_max]), phi, params)
+                return radius[0]
         # A circular section keeps the historical ``r * scale`` arithmetic:
         # the scale can land an ulp short of 1.0 at some azimuths, and the
         # published solve and STEP bytes carry that product.
         raw_radials[i] = (
             curve_radius * scale
             if circular_section
-            else _cross_section_scaled(curve_radius, t_unit_values, meridian_prefix, scale)
+            else _cross_section_scaled(
+                curve_radius, t_unit_values, meridian_prefix, scale, prefix_radius
+            )
         )
         z_values[i] = curve_z
     return raw_radials, z_values, _ThroatPrefix(prefix_fraction, slot_end_fraction)

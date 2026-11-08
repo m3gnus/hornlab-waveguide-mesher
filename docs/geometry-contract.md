@@ -726,8 +726,10 @@ Unsupported guiding curve types must fail explicitly.
 A non-circular `cross_section` (superellipse `exponent`, `aspect_ratio`) scales
 each meridian's growth past the throat by the superellipse factor `s(phi)`:
 `r'(t) = r_t + (r(t) - r_t) * s(phi)`, with `r_t` the meridian's radius where
-the throat extension and slot end. Stations up to that point are unchanged, so
-the throat stays circular. ATH has no cross-section key; its own outline
+the throat extension and slot end. `r_t` is evaluated on the meridian at that
+exact point, never interpolated between axial stations, so Surface sampling
+cannot move the mouth. Stations up to that point are unchanged, so the throat
+stays circular. ATH has no cross-section key; its own outline
 controls (`Morph`, `a(p)`) also leave the throat circular (ath.exe V2026-09a
 GridExport: throat radius equal at every azimuth).
 

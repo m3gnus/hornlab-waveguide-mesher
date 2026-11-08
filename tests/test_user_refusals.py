@@ -57,3 +57,29 @@ def test_reachable_families_carry_named_remedies(family):
     assert caught.value.next_step
     restored = pickle.loads(pickle.dumps(caught.value))
     assert (restored.field, restored.user_message, restored.next_step) == (caught.value.field, caught.value.user_message, caught.value.next_step)
+
+
+@pytest.mark.parametrize("bad_radius", [-20.0, 0.0])
+def test_lookup_refuses_a_radius_at_or_through_the_axis(bad_radius):
+    """A LOOKUP row with radius <= 0 is refused at the shared validator.
+
+    The radius is a distance from the axis, so it must be positive: a sign
+    error such as [[0, 10], [100, -20]] used to be accepted and the sampled
+    wall crossed the axis near z = 33.3 mm (10 - 30 z / 100 = 0), reversing
+    azimuth past it. The config resolver uses the same validator, so both entry
+    points refuse.
+    """
+    from hornlab_mesher.config_builder import resolve_geometry
+    from hornlab_mesher.errors import UserRefusal
+    from hornlab_mesher.profile_formulas import lookup_profile_array
+
+    table = [[0.0, 10.0], [50.0, 15.0], [100.0, bad_radius]]
+    with pytest.raises(UserRefusal) as caught:
+        lookup_profile_array({"lookupProfile": table})
+    assert caught.value.field == "Lookup profile points"
+    assert "row 3" in str(caught.value)
+    with pytest.raises(UserRefusal):
+        resolve_geometry({
+            "formula": "LOOKUP", "profile": {"lookupProfile": table},
+            "mesh": {"topology_mode": "legacy", "angular_segments": 8, "length_segments": 4},
+        })

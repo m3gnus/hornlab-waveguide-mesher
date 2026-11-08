@@ -1500,6 +1500,10 @@ def lookup_profile_array(params: Mapping[str, Any]) -> NDArray[np.float64]:
         raise control_refusal("lookupProfile must contain only finite values", 'Lookup profile points', 'Enter finite Position and Radius values in Lookup profile points.', message='A lookup profile point is not finite.')
     if np.any(np.diff(lookup[:, 0]) <= 0.0):
         raise control_refusal("lookupProfile z values must be strictly increasing", 'Lookup profile points', 'Put Lookup profile points in increasing Position order without duplicates.', message='Lookup profile positions do not increase from throat to mouth.')
+    non_positive = np.flatnonzero(lookup[:, 1] <= 0.0)
+    if non_positive.size:
+        row = int(non_positive[0])
+        raise control_refusal(f"lookupProfile radius must be > 0, got {lookup[row, 1]:g} mm in row {row + 1}", 'Lookup profile points', f'Enter a Radius above 0 mm in row {row + 1} of Lookup profile points.', message='A lookup profile radius is zero or negative, so the wall would reach or cross the axis.')
     return lookup
 
 
