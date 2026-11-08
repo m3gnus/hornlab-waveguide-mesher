@@ -614,7 +614,7 @@ def _cross_section_scaled(
     t_unit: np.ndarray,
     prefix: float,
     scale: float,
-    prefix_radius: Any,
+    prefix_radius: float | None = None,
 ) -> np.ndarray:
     """Apply the cross-section scale to one meridian, keeping its throat.
 
@@ -627,10 +627,10 @@ def _cross_section_scaled(
     the throat circular (ath.exe GridExport, V2026-09a).
 
     ``r_t`` is a property of the design, not of the sampling: a station that
-    lands on the prefix end supplies it, otherwise ``prefix_radius()``
-    evaluates the meridian there. Interpolating it between the last prefix
-    station and the first flare station moved the whole mouth with Surface
-    sampling (MES-02).
+    lands on the prefix end supplies it, otherwise ``prefix_radius`` is the
+    meridian evaluated there (see ``_needs_prefix_station``). Interpolating
+    it between the last prefix station and the first flare station moved the
+    whole mouth with Surface sampling (MES-02).
     """
 
     t = np.asarray(t_unit, dtype=np.float64)
@@ -638,11 +638,25 @@ def _cross_section_scaled(
     if on_prefix.size:
         throat_radius = float(radius[on_prefix[0]])
     elif prefix_radius is not None:
-        throat_radius = float(prefix_radius())
+        throat_radius = float(prefix_radius)
     else:
-        raise AssertionError(f"no meridian evaluator for the throat prefix at t={prefix!r}")
+        raise AssertionError(f"no meridian radius for the throat prefix at t={prefix!r}")
     scaled = throat_radius + (radius - throat_radius) * scale
     return np.where(t <= prefix, radius, scaled)
+
+
+def _needs_prefix_station(t_unit: np.ndarray, prefix: float, circular: bool) -> bool:
+    """Whether a non-round meridian must also be evaluated at its prefix end.
+
+    ``_cross_section_scaled`` needs the radius there; when no axial station
+    lands on it, the meridian is evaluated at one extra trailing station.
+    """
+    return not circular and prefix > 0.0 and not np.any(np.asarray(t_unit) == prefix)
+
+
+def _osse_bulge_profile(t_unit: np.ndarray) -> np.ndarray:
+    """The shape of OSSE's ``h`` bulge, ``sin(pi t)`` over the whole composite."""
+    return np.sin(np.asarray(t_unit, dtype=np.float64) * math.pi)
 
 
 def _normalise3(vec: np.ndarray, fallback: tuple[float, float, float] = (0.0, -1.0, 0.0)) -> np.ndarray:
@@ -972,7 +986,7 @@ def _raw_radial_grid(
         icw_meridian_points(icw_curve, t_values) if icw_curve is not None else None
     )
     osse_bulge_profile = (
-        np.sin(np.asarray(t_unit_values, dtype=np.float64) * math.pi)
+        _osse_bulge_profile(t_unit_values)
         if formula == "OSSE"
         else None
     )
@@ -994,6 +1008,7 @@ def _raw_radial_grid(
         scale = _superellipse_scale(phi_value, exponent, aspect_ratio)
         meridian_prefix = 0.0
         prefix_radius = None
+        extra = False
         if formula == "LOOKUP":
             # LOOKUP defines a free-form axisymmetric base radius r(z); the
             # cross-section (superellipse scale) and morph are layered on top
@@ -1013,22 +1028,20 @@ def _raw_radial_grid(
             # The guiding-curve inversion depends only on phi; hoist it out of
             # the per-z loop (a 24-step bisection per grid point otherwise).
             coverage_angle = osse_coverage_angle(params, phi_value)
+            extra = _needs_prefix_station(t_unit_values, meridian_prefix, circular_section)
+            stations = np.append(t_values, meridian_prefix) if extra else t_values
+            bulge = (
+                _osse_bulge_profile(np.append(t_unit_values, meridian_prefix))
+                if extra
+                else osse_bulge_profile
+            )
             curve_z, curve_radius = calculate_osse_curve(
-                t_values * total,
+                stations * total,
                 phi_value,
                 params,
                 coverage_angle=coverage_angle,
             )
-            curve_radius = curve_radius + h_bulge * osse_bulge_profile
-
-            def prefix_radius(
-                prefix=meridian_prefix, total=total, phi=phi_value,
-                coverage=coverage_angle, h=h_bulge,
-            ):
-                _z, radius = calculate_osse_curve(
-                    np.array([prefix * total]), phi, params, coverage_angle=coverage
-                )
-                return radius[0] + h * math.sin(prefix * math.pi)
+            curve_radius = curve_radius + h_bulge * bulge
         else:
             layout = rosse_axial_layout(params, phi_value)
             if layout.full_length > 1.0e-12 and (layout.ext_len > 0.0 or layout.slot_len > 0.0):
@@ -1040,13 +1053,15 @@ def _raw_radial_grid(
                     slot_end_fraction,
                     (layout.ext_len + layout.slot_len) / layout.full_length,
                 )
+            extra = _needs_prefix_station(t_unit_values, meridian_prefix, circular_section)
             curve_z, curve_radius = calculate_rosse_curve(
-                t_values, phi_value, params
+                np.append(t_values, meridian_prefix * layout.t_max) if extra else t_values,
+                phi_value,
+                params,
             )
-
-            def prefix_radius(prefix=meridian_prefix, t_max=layout.t_max, phi=phi_value):
-                _z, radius = calculate_rosse_curve(np.array([prefix * t_max]), phi, params)
-                return radius[0]
+        if extra:
+            prefix_radius = float(curve_radius[-1])
+            curve_z, curve_radius = curve_z[:-1], curve_radius[:-1]
         # A circular section keeps the historical ``r * scale`` arithmetic:
         # the scale can land an ulp short of 1.0 at some azimuths, and the
         # published solve and STEP bytes carry that product.
