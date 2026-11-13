@@ -34,8 +34,7 @@ result = build_from_config(config, "waveguide.msh")
 `build_from_config(config, output_path, *, allow_large_mesh=None,
 measure_profile_deviation=False)` accepts a
 mapping and writes a tagged Gmsh `.msh` file. It returns `BuildResult`
-(`hornlab_mesher.config_builder.BuildResult`, also re-exported from
-`hornlab_mesher.cli`) with `mesh_path`, `formula`, `mode`, `n_vertices`,
+(`hornlab_mesher.config_builder.BuildResult`) with `mesh_path`, `formula`, `mode`, `n_vertices`,
 `n_triangles`, `units`, `physical_groups`, `quadrants`,
 `native_symmetry_plane`, `native_check_open_edges`, `mesh_report` and
 `solve_cost`. `BuildResult.as_dict()` serializes the same fields with

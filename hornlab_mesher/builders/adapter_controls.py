@@ -110,7 +110,7 @@ def certify_occ_mesh(m,built):
 def configure_density(built,density):
     """Local derivative sizing is heuristic; publication uses the hard bound."""
     import gmsh
-    from ..density import _record_and_check_triangle_estimate,_surface_area_mm2,TRIANGLES_PER_AREA_OVER_H2,surface_deviation_field
+    from ..density import _record_and_check_triangle_estimate,_surface_area_mm2,surface_deviation_field
     m=built.controls_meridian;tags=built.metadata["controlsBranchSurfaceTags"]
     fields=[];sizes=[];regions=[];records=[]
     # The native owner already enforces a stronger continuous bound. A looser

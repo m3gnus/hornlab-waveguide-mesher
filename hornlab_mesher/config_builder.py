@@ -63,8 +63,6 @@ from .profile_sampling import (
 from .profiles import azimuthal_mean, eval_param
 from .profiles import build_point_grid  # noqa: F401 - retained compatibility export
 from .builders.point_grid_freestanding import (
-    _freestanding_mouth_closure_points,
-    _outer_wall_axial_ring_indices,
     _restored_outer_throat_points,
 )
 from .rear_compatibility import freestanding_rear_ring, text_import_geometry_class
@@ -74,10 +72,9 @@ from .text_import import (
     uses_v2_text_import_geometry,
     uses_v3_text_import_geometry,
 )
-from .tags import PhysicalGroup
 from .throat_stretch import COMPOSITION_PROFILE_KEYS, COMPOSITION_GUIDE_KEYS, canonical_stretch_params, validate_stretch_composition, stretch_config_errors, stretch_is_inactive, validate_supplied_stretch
 from .text_import import TEXT_IMPORT_VERSION_KEY, uses_text_import_geometry
-from .text_import import ATH_AXIAL_RULE_KEY, ATH_AXIAL_LEGACY
+from .text_import import ATH_AXIAL_RULE_KEY
 from .throat_adapter import normalize_adapter, resolve_adapter
 
 logger = logging.getLogger(__name__)

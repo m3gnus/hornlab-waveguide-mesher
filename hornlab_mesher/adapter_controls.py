@@ -316,7 +316,7 @@ class ControlsMeridian:
             expected=type(self).from_params(params,_values_only=True)
             if tuple(values)!=expected:
                 fail("immutable controls authority does not match its certified construction.")
-        except (KeyError,TypeError,ValueError,OverflowError) as exc:
+        except (KeyError,TypeError,ValueError,OverflowError):
             fail("immutable controls authority does not match its certified construction.")
         if max(abs(v) for row in self.bounds for v in row)>100000:
             fail("physical full envelope exceeds 100000 mm.")
@@ -431,7 +431,7 @@ class ControlsMeridian:
             if not np.all(np.isfinite(result)) or np.any((result<0)|(result>1)):
                 fail("branch parameter must be finite in [0,1].")
             return result
-        except (OverflowError,TypeError,ValueError) as exc:
+        except (OverflowError,TypeError,ValueError):
             fail("branch parameter must be finite in [0,1].")
 
     def interval_bounds(self,name,lo,hi):

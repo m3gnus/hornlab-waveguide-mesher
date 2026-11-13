@@ -24,7 +24,6 @@ converted through it, never compared with raw coordinates.
 
 from __future__ import annotations
 
-from .step_prepare import snap_symmetry_plane_vertices
 # Re-exported, not merely used: callers have always imported the STEP text
 # parsers from this module, and several names below have no other use here.
 from .step_text import (  # noqa: F401
@@ -151,17 +150,5 @@ _parse_solid_brep_faces = parse_solid_brep_faces
 _parse_styled_face_groups = parse_styled_face_groups
 _advanced_face_order = advanced_face_order
 
-
-# The detector is public because it is the only way to re-read a cut from a
-# finished mesh with no knowledge of what was cut, which is what makes an
-# auto-cut self-checking: a plane that was cut but does not come back as an
-# open rim was capped, and a capped plane meshes as a rigid baffle rather than
-# as a symmetry plane.
-_detect_symmetry_planes = detect_symmetry_planes
-
-_snap_symmetry_plane_vertices = snap_symmetry_plane_vertices
-
-# Private spellings of names that are public now; kept for existing imports.
-_gmsh_surface_tags = gmsh_surface_tags
-_gmsh_surface_geometries = gmsh_surface_geometries
+# Private spelling of a name that is public now; kept for existing imports.
 _anchor_surface_order = anchor_surface_order

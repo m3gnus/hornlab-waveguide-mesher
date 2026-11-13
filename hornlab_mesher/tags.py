@@ -46,10 +46,3 @@ PHYSICAL_NAMES: dict[int, str] = {
     PhysicalGroup.MID_PORT_EXIT_RIGHT: "mid_port_exit_right",
     PhysicalGroup.MOUTH_APERTURE: "mouth_aperture",
 }
-
-
-SOURCE_TAGS = {
-    PhysicalGroup.PRIMARY_SOURCE,
-    PhysicalGroup.MID_PORT_EXIT_LEFT,
-    PhysicalGroup.MID_PORT_EXIT_RIGHT,
-}

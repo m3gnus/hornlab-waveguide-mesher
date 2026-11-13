@@ -120,7 +120,7 @@ def build_geometry_params(*args, **kwargs):
 
 
 def load_config(*args, **kwargs):
-    from .cli import load_config as _load_config
+    from .config_parser import load_config as _load_config
 
     return _load_config(*args, **kwargs)
 

@@ -47,7 +47,8 @@ Related reference docs:
 
 - Owns command-line parsing, output-path selection, summary writing, and
   user-facing error reporting.
-- Re-exports config-build helpers for backwards-compatible imports.
+- Re-exports `load_config`, which the add-in's development scripts import
+  from here.
 
 `hornlab_mesher.config_builder`
 
@@ -80,8 +81,6 @@ Related reference docs:
 
 - Owns Gmsh/OCC topology creation.
 - `point_grid_dispatch.py` is the dispatcher for point-grid build modes.
-- `point_grid_enclosure.py` is a compatibility wrapper for the former
-  dispatcher module path.
 - `point_grid_freestanding.py`, `point_grid_sources.py`,
   `point_grid_interfaces.py`, and `point_grid_surfaces.py` split repeated
   topology jobs by surface family.

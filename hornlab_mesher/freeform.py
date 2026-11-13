@@ -1100,17 +1100,6 @@ def _plane_beziers(plane: _PlaneSpline) -> np.ndarray:
                      plane.anchors[1:]), axis=1)
 
 
-def _bezier_spline(controls: np.ndarray, anchor_u: np.ndarray) -> Any:
-    from scipy.interpolate import PPoly
-
-    p0, p1, p2, p3 = np.moveaxis(controls, 1, 0)
-    du = np.diff(anchor_u)[:, None]
-    coefficients = np.stack(((-p0 + 3*p1 - 3*p2 + p3) / du**3,
-                             3*(p0 - 2*p1 + p2) / du**2,
-                             3*(p1 - p0) / du, p0))
-    return PPoly(coefficients, anchor_u, axis=0)
-
-
 def _straight_bezier(controls: np.ndarray) -> bool:
     chord = controls[3] - controls[0]
     expected = controls[0] + np.arange(4)[:, None] * chord / 3

@@ -42,8 +42,8 @@ measurement, the controls, and the thresholds each number rests on.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Sequence
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -78,11 +78,6 @@ FAIL_CHORD_DEVIATION_MM = 5.0
 
 #: The advisory band above the chord gate. A judgement, like ``WARN_P1_ANGLE_DEG``.
 WARN_CHORD_DEVIATION_MM = 3.0
-
-#: Retained under the old names so a caller that wants the reporting threshold
-#: rather than the gate keeps working.
-POOR_P1_ANGLE_DEG = WARN_P1_ANGLE_DEG
-POOR_CHORD_DEVIATION_MM = WARN_CHORD_DEVIATION_MM
 
 _UNIT_TO_MM = {"m": 1000.0, "mm": 1.0, "cm": 10.0}
 
@@ -328,7 +323,7 @@ def chord_deviation_report(
     triangles: Any,
     *,
     vertex_units: str = "m",
-    deviation_threshold_mm: float = POOR_CHORD_DEVIATION_MM,
+    deviation_threshold_mm: float = WARN_CHORD_DEVIATION_MM,
     axis: int = 2,
     sample_limit: int = 8,
 ) -> ChordDeviationReport:
@@ -453,7 +448,7 @@ def mesh_quality_report(
     *,
     vertex_units: str = "m",
     sliver_angle_deg: float = SLIVER_ANGLE_DEG,
-    deviation_threshold_mm: float = POOR_CHORD_DEVIATION_MM,
+    deviation_threshold_mm: float = WARN_CHORD_DEVIATION_MM,
     axis: int = 2,
     sample_limit: int = 8,
 ) -> dict[str, Any]:

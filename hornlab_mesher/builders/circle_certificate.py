@@ -5,7 +5,6 @@ import math
 import numpy as np
 
 from ._occ import require_gmsh
-from ..composite_meridian import CircleArc
 
 
 def certify_circle_facets(groups, label):

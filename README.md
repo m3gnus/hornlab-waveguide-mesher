@@ -117,7 +117,7 @@ print(info.body, info.volume_mm3)  # -> solid 973743.4...
 
 ## Repository Map
 
-- `hornlab_mesher/cli.py`: command-line entry point and compatibility re-exports.
+- `hornlab_mesher/cli.py`: command-line entry point.
 - `hornlab_mesher/config_builder.py`: config normalization and config-driven
   build orchestration.
 - `hornlab_mesher/config_parser.py`: TOML/JSON plus imported ATH-style text

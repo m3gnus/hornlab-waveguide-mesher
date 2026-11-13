@@ -1336,32 +1336,6 @@ def _continuation_solve(
 # the higher-frequency reserved modes (plus S) to fine-tune the endpoint -- "shape" vs "size".
 
 
-def _flat_baffle_lin(
-    targets: ICWTargets,
-    n_coeff: int | None,
-    degree: int,
-    *,
-    gene_basis: str = _GENE_BASIS_SVD,
-) -> tuple[np.ndarray, "_LinSys"]:
-    """Shared setup for the shape-mode entry points: knots + precomputed ``_LinSys``.
-
-    Enforces the flat-baffle-only contract (rollback is out of scope for the 2a entry point) and
-    returns the same ``(knots, _LinSys)`` ``solve_icw`` builds, so the nullspace basis ``Phi`` and
-    the constraint algebra are *identical* to the all-DOF solver. Raises ``ValueError`` for a
-    non-flat-baffle target (truthful, no silent coercion).
-    """
-    gene_basis = _validate_gene_basis(gene_basis)
-    if targets.mode != TerminationMode.FLAT_BAFFLE:
-        raise ValueError(
-            "shape-mode entry points support only mode='flat_baffle' (rollback is out of scope "
-            f"here); got mode={targets.mode!r}"
-        )
-    n_coeff = _resolve_n_coeff(targets, n_coeff)
-    knots = _knots_for_targets(targets, n_coeff, degree)
-    lin = _build_linsys(targets, knots, n_coeff, degree, gene_basis=gene_basis)
-    return knots, lin
-
-
 def n_shape_modes(
     targets: ICWTargets,
     n_coeff: int | None = None,
