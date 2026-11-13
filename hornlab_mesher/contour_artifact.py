@@ -8,13 +8,12 @@ import hashlib
 import json
 import math
 import re
-import subprocess
 import sys
-import tempfile
 from dataclasses import asdict
 from itertools import pairwise
 from pathlib import Path
 
+from .artifact_publish import claim_destination, publish
 from .source_contour import FEATURE, ContourDrive, SourceContour, canonical, digest
 
 
@@ -89,10 +88,7 @@ def export_contour(
         float,
         (mouth_radius_mm, length_mm, mesh_size_mm, housing_radius_mm, backing_depth_mm),
     )
-    destination = Path(destination).absolute()
-    if destination.exists():
-        raise FileExistsError("contour publication requires a new destination")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = claim_destination(destination, "contour")
     request = {
         "contour": contour.to_dict(),
         "drive": asdict(drive),
@@ -108,22 +104,9 @@ def export_contour(
         "triangle_limit": triangle_limit,
         "estimated_triangles": estimate,
     }
-    with tempfile.TemporaryDirectory(
-        dir=destination.parent, prefix=".contour-"
-    ) as temporary:
-        stage = Path(temporary)
-        (stage / "request.json").write_bytes(canonical(request))
-        run = subprocess.run(
-            [sys.executable, "-m", "hornlab_mesher.contour_artifact", str(stage)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if run.returncode:
-            raise ValueError("native contour export failed: " + run.stderr)
-        (stage / "request.json").unlink()
-        stage.rename(destination)
-    return json.loads((destination / "source.json").read_text(encoding="utf-8"))
+    return publish(
+        request, destination, kind="contour", module="hornlab_mesher.contour_artifact"
+    )
 
 
 def _worker(stage):

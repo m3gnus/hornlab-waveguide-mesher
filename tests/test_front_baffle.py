@@ -274,11 +274,11 @@ def test_export_preserves_caller_and_publication(tmp_path):
 def test_atomic_worker_failure(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from hornlab_mesher import woofer_artifact
+    from hornlab_mesher import artifact_publish
 
     model, baffle, _ = models()[0]
     monkeypatch.setattr(
-        woofer_artifact.subprocess,
+        artifact_publish.subprocess,
         "run",
         lambda *a, **k: SimpleNamespace(returncode=1, stderr="injected worker failure"),
     )

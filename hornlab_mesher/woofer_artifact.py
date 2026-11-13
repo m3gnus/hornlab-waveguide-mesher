@@ -4,15 +4,14 @@ import hashlib
 import json
 import math
 import re
-import subprocess
 import sys
-import tempfile
 from dataclasses import asdict
 from itertools import pairwise
 from pathlib import Path
 
 from .front_baffle import FEATURE as BAFFLE_FEATURE
 from .front_baffle import FrontBaffle
+from .artifact_publish import claim_destination, publish
 from .source_contour import FEATURE, ContourDrive, SourceContour, canonical, digest
 
 
@@ -56,10 +55,7 @@ def export_woofer(
         raise ValueError(
             f"woofer estimated triangle budget exceeded: {math.ceil(estimate)} > {triangle_limit}"
         )
-    destination = Path(destination).absolute()
-    if destination.exists():
-        raise FileExistsError("woofer publication requires a new destination")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = claim_destination(destination, "woofer")
     request = {
         "contour": contour.to_dict(),
         "drive": asdict(drive),
@@ -68,22 +64,9 @@ def export_woofer(
         "triangle_limit": triangle_limit,
         "estimated_triangles": math.ceil(estimate),
     }
-    with tempfile.TemporaryDirectory(
-        dir=destination.parent, prefix=".woofer-"
-    ) as temporary:
-        stage = Path(temporary)
-        (stage / "request.json").write_bytes(canonical(request))
-        run = subprocess.run(
-            [sys.executable, "-m", "hornlab_mesher.woofer_artifact", str(stage)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if run.returncode:
-            raise ValueError("native woofer export failed: " + run.stderr)
-        (stage / "request.json").unlink()
-        stage.rename(destination)
-    return json.loads((destination / "source.json").read_text(encoding="utf-8"))
+    return publish(
+        request, destination, kind="woofer", module="hornlab_mesher.woofer_artifact"
+    )
 
 
 def _worker(stage):
