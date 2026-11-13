@@ -11,6 +11,7 @@ from typing import Mapping
 import numpy as np
 
 from .config_parser import ConfigError
+from .native_boundary import finite_scalar
 
 FORMULA = "OSSE-AXIAL"
 KEY = "axial_scale"
@@ -22,13 +23,7 @@ def _fail(message):
 
 
 def _number(value, name):
-    try:
-        valid = type(value) in (int, float) and math.isfinite(float(value))
-    except (ValueError, OverflowError, TypeError):
-        valid = False
-    if not valid:
-        _fail(f"{name} must be a finite scalar number.")
-    return float(value)
+    return finite_scalar(value, name, _fail)
 
 
 def configuration(config, resolver):

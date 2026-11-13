@@ -11,6 +11,7 @@ from typing import Mapping
 import numpy as np
 
 from .config_parser import ConfigError
+from .native_boundary import finite_scalar
 from .throat_adapter import CONTROLS, resolve_adapter, _conic_residual_bound
 
 FORMULA = "OSSE-ADAPTER-AXIAL"
@@ -22,13 +23,7 @@ def _fail(message):
 
 
 def _number(value, name):
-    try:
-        valid = type(value) in (int, float) and math.isfinite(float(value))
-    except (TypeError, ValueError, OverflowError):
-        valid = False
-    if not valid:
-        _fail(f"{name} must be a finite scalar number.")
-    return float(value)
+    return finite_scalar(value, name, _fail)
 
 
 def restrict_controls(controls, lo, hi):

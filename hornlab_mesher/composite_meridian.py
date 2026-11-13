@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config_parser import ConfigError
+from .native_boundary import finite_scalar
 from .throat_adapter import _conic_residual_bound
 
 
@@ -17,13 +18,7 @@ def _fail(message):
 
 
 def _number(value, name):
-    try:
-        valid = type(value) in (int, float) and math.isfinite(float(value))
-    except (ValueError, TypeError, OverflowError):
-        valid = False
-    if not valid:
-        _fail(f"{name} must be a finite scalar number.")
-    return float(value)
+    return finite_scalar(value, name, _fail)
 
 
 def composite_identity(params, construction):

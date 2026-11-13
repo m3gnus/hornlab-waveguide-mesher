@@ -52,14 +52,23 @@ def _fail(message):
     raise ConfigError("Native geometry refused: " + message)
 
 
-def _numeric(value, name):
+def finite_scalar(value, name, fail):
+    """``value`` as a float when it is a finite plain ``int`` or ``float``.
+
+    Anything else -- ``bool``, numpy scalars, strings, NaN, infinities -- is
+    refused through ``fail``, which owns the message prefix.
+    """
     try:
         valid = type(value) in (int, float) and math.isfinite(float(value))
     except (TypeError, ValueError, OverflowError):
         valid = False
     if not valid:
-        _fail(f"{name} must be a finite scalar number.")
+        fail(f"{name} must be a finite scalar number.")
     return float(value)
+
+
+def _numeric(value, name):
+    return finite_scalar(value, name, _fail)
 
 
 def _native_intent(config):
