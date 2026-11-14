@@ -26,18 +26,54 @@ config file or dict
 ```
 
 For the full developer map, see [docs/architecture.md](docs/architecture.md).
-For config keys, builder contracts, change workflow, and public API boundaries,
-see:
 
-- [docs/config-schema.md](docs/config-schema.md)
-- [docs/builder-invariants.md](docs/builder-invariants.md)
-- [docs/change-guide.md](docs/change-guide.md)
-- [docs/public-api.md](docs/public-api.md)
+## Documentation
+
+Core contracts and workflow:
+
+- [docs/architecture.md](docs/architecture.md) — developer map
+- [docs/public-api.md](docs/public-api.md) — public API boundaries
+- [docs/config-schema.md](docs/config-schema.md) — config keys
+- [docs/geometry-contract.md](docs/geometry-contract.md) — geometry rules and compatibility boundaries
+- [docs/builder-invariants.md](docs/builder-invariants.md) — builder handoff contracts
+- [docs/change-guide.md](docs/change-guide.md) — workflow for changing profiles, topology, mesh density or tags
+- [docs/mesh-quality.md](docs/mesh-quality.md) — quality measures and their thresholds
+- [docs/tessellation-report.md](docs/tessellation-report.md) — the tessellation measurement script
+
+Native formulas:
+
+- [docs/native-osse-composition.md](docs/native-osse-composition.md) — composable native OSSE
+- [docs/native-throat-adapter.md](docs/native-throat-adapter.md),
+  [docs/native-adapter-controls.md](docs/native-adapter-controls.md),
+  [docs/native-adapter-axial-scale.md](docs/native-adapter-axial-scale.md) — circular throat adapter
+- [docs/absolute-axial-scale.md](docs/absolute-axial-scale.md) — `OSSE-AXIAL`
+- [docs/native-terminating-arc.md](docs/native-terminating-arc.md) — `OSSE-ARC`
+- [docs/native-mouth-roundover.md](docs/native-mouth-roundover.md) — `OSSE-ROUNDOVER`
+
+Sources and assemblies:
+
+- [docs/source-contours.md](docs/source-contours.md) — circular source contours
+- [docs/standalone-source-body.md](docs/standalone-source-body.md) — `SOURCE-DISK`
+- [docs/front-baffle-woofer.md](docs/front-baffle-woofer.md) — front-baffle woofer
+- [docs/shared-horn-woofer.md](docs/shared-horn-woofer.md) — shared horn and woofer
+- [docs/phase-plug-passages.md](docs/phase-plug-passages.md) — phase-plug passages
+- [docs/native-general-horn-attachment.md](docs/native-general-horn-attachment.md) — sources on a resolved horn
+- [docs/enclosure-woofers.md](docs/enclosure-woofers.md) — resolved enclosure woofers
+
+ATH and text import:
+
+- [docs/text-import-geometry.md](docs/text-import-geometry.md) — text import versions and geometry
+- [docs/ath-import-controls.md](docs/ath-import-controls.md) — import transforms and extension sampling
+- [docs/ath-circular-arc-import.md](docs/ath-circular-arc-import.md) — circular-arc import
+- [docs/ath-rear-import-contract.md](docs/ath-rear-import-contract.md) — bounded rear-return import
 - [docs/throat-adapter-contract.md](docs/throat-adapter-contract.md) — proposed curved-adapter geometry and ATH import contract
 - [docs/mouth-roundover-contract.md](docs/mouth-roundover-contract.md) — mouth-roundover geometry and ATH import contract
 
-For geometry rules and compatibility boundaries, see
-[docs/geometry-contract.md](docs/geometry-contract.md).
+Decision records:
+
+- [docs/review-decisions-2026-07-05.md](docs/review-decisions-2026-07-05.md) — D1–D13 from the Boundary Lab / ATH parity review
+
+Test fixtures carry their own READMEs under `tests/fixtures/`.
 
 ## Status
 
