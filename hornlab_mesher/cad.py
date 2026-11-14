@@ -680,7 +680,9 @@ def _write_step_once(
                 from .builders.ath_cad import build_ath_occ
                 built = build_ath_occ(geometry, open_throat=open_throat)
             else:
-                built = _dispatch_builder(geometry)
+                from .builders._occ import drop_bspline_poles
+                with drop_bspline_poles():
+                    built = _dispatch_builder(geometry)
             gmsh.model.occ.synchronize()
             if (built.metadata.get("outerEnvelope", outer_envelope)
                     and isinstance(geometry, PointGridHornGeometry)

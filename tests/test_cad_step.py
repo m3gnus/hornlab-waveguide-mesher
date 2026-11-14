@@ -506,3 +506,41 @@ def test_export_inside_a_caller_session_gives_its_options_back(tmp_path):
         assert gmsh.option.getNumber("Geometry.Tolerance") == 1e-6
     finally:
         gmsh.finalize()
+
+
+def test_export_drops_pole_vertices_as_each_patch_is_built(tmp_path, monkeypatch):
+    """Pole vertices do not pile up for the final prune.
+
+    gmsh removes a vertex in time proportional to the vertices still bound, so
+    leaving every patch's poles for the prune made fine-grid exports quadratic
+    (47 s of a 96 s export at a 2 mm grid).
+    """
+
+    import contextlib
+
+    import gmsh
+
+    from hornlab_mesher import cad
+    from hornlab_mesher.builders import _occ
+
+    free_vertices = []
+    build = cad._dispatch_builder
+
+    def counting(geometry):
+        built = build(geometry)
+        gmsh.model.occ.synchronize()
+        bound = {(int(d), int(t)) for d, t in gmsh.model.getBoundary(
+            gmsh.model.getEntities(2), combined=False, oriented=False, recursive=True)}
+        free_vertices.append(sum((0, int(t)) not in bound for _, t in gmsh.model.getEntities(0)))
+        return built
+
+    monkeypatch.setattr(cad, "_dispatch_builder", counting)
+    write_step(_freestanding(), tmp_path / "dropped.step")
+    assert _occ._DROP_POLES.get() is False
+    monkeypatch.setattr(_occ, "drop_bspline_poles", contextlib.nullcontext)
+    write_step(_freestanding(), tmp_path / "kept.step")
+    dropped, kept = free_vertices
+    # The poles (40 x 15 per wall here) go; a few construction vertices of
+    # other helpers remain and are left to the prune.
+    assert kept > 1000
+    assert dropped < kept / 20

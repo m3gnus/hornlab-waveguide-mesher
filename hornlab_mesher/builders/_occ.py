@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextvars
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -696,10 +698,29 @@ def add_bspline_patch(
             **knots,
         )
     )
-    if isinstance(points, _AngularPoleGrid):
+    if isinstance(points, _AngularPoleGrid) or _DROP_POLES.get():
         # Construction points, not topology: never leave them in the model.
         gmsh.model.occ.remove([(0, tag) for tag in point_tags], recursive=False)
     return surface
+
+
+# Set while a STEP export builds its model. That export prunes every entity
+# outside the solid, pole vertices included, and gmsh removes a vertex in time
+# proportional to the vertices still bound: deleting 156k poles at once at a
+# 2 mm grid took 47 s. Removing each patch's poles as soon as its face exists
+# keeps that count to one patch. Mesh builds never prune the poles, so they
+# keep them (their entity numbering is part of the mesh bytes).
+_DROP_POLES = contextvars.ContextVar("drop_bspline_poles", default=False)
+
+
+@contextmanager
+def drop_bspline_poles():
+    """Remove each B-spline patch's pole vertices right after its face is built."""
+    token = _DROP_POLES.set(True)
+    try:
+        yield
+    finally:
+        _DROP_POLES.reset(token)
 
 
 def _detached_bspline_surface(gmsh, grid, n_u, degree_u, degree_v, knots) -> int:
