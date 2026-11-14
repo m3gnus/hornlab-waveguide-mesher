@@ -47,8 +47,9 @@ Related reference docs:
 
 - Owns command-line parsing, output-path selection, summary writing, and
   user-facing error reporting.
-- Re-exports `load_config`, which the add-in's development scripts import
-  from here.
+- Re-exports `load_config` (defined in `config_parser`) so the lazy
+  `hornlab_mesher.load_config` wrapper and `from hornlab_mesher.cli import
+  load_config` keep working. No other HornLab repository imports it from here.
 
 `hornlab_mesher.config_builder`
 
