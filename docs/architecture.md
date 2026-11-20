@@ -132,8 +132,8 @@ open a session only when none is active (`gmsh.isInitialized()` is false):
 - `mesher.build_mesh_with_info`, which every `.msh` build reaches
   (`build_mesh`, `build_from_config`);
 - `cad.write_step`, which every STEP export reaches (`write_step_from_config`,
-  and `write_wglink`'s envelope certificate, which builds the same OCC model
-  but writes nothing);
+  and `write_wglink`'s solid check and envelope certificate, which build the
+  same OCC model but write nothing);
 - `preview.ath_import`, the ATH-import preview helper (it also restores the
   Gmsh options it changed when it reuses a caller's session).
 

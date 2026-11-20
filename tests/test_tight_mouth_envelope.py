@@ -326,22 +326,43 @@ def test_wglink_grid_carries_the_envelope_the_step_writes(tmp_path, monkeypatch)
 
     def recording(variant, *args, **kwargs):
         result = real(variant, *args, **kwargs)
-        seen.append((np.asarray(variant.outer_points).copy(), kwargs.get('certificate_only', False)))
+        seen.append((np.asarray(variant.outer_points).copy(), kwargs.get('stop')))
         return result
 
     monkeypatch.setattr(cad, '_write_step_once', recording)
     cad.write_step(geometry, tmp_path / 'horn.step')
-    step_outer, certificate_only = seen[-1]
-    assert not certificate_only
-    seen.clear()
+    step_outer, stop = seen[-1]
+    assert stop is None
+    for verify_solid, expected in ((True, 'solid'), (False, 'certificate')):
+        seen.clear()
+        product = write_wglink(geometry, tmp_path / f'horn-{verify_solid}.wglink',
+                               verify_solid=verify_solid)
+        assert seen and all(only == expected for _, only in seen)  # nothing written
+        grid = json.loads(product.point_grid_path.read_text())
+        offset = float(geometry.vertical_offset_mm)
+        outer = np.asarray(grid['outer_points']) - np.asarray([0.0, offset, 0.0])
+        np.testing.assert_array_equal(outer, step_outer)
     product = write_wglink(geometry, tmp_path / 'horn.wglink')
-    assert seen and all(only for _, only in seen)  # certified, nothing written
     assert not (tmp_path / 'horn.wglink' / 'waveguide.step').exists()
     grid = json.loads(product.point_grid_path.read_text())
     offset = float(geometry.vertical_offset_mm)
     outer = np.asarray(grid['outer_points']) - np.asarray([0.0, offset, 0.0])
     assert not np.allclose(outer, np.asarray(geometry.outer_points))  # rebuilt
     np.testing.assert_array_equal(outer, step_outer)
+
+
+def test_a_trusted_freeform_wall_bundle_builds_nothing(tmp_path, monkeypatch):
+    # A FREEFORM wall refits its envelope inside the OCC builder, so the grid
+    # never changes; once its solid is known to build, a send builds no OCC.
+    import hornlab_mesher.cad as cad
+    from hornlab_mesher import write_wglink
+    from hornlab_mesher.config_builder import resolve_geometry
+
+    geometry = resolve_geometry(corner_config()).geometry
+    assert getattr(geometry, 'freeform_wall', None) is not None
+    monkeypatch.setattr(cad, '_write_step_once',
+                        lambda *a, **k: pytest.fail('a trusted FREEFORM wall must not build OCC'))
+    write_wglink(geometry, tmp_path / 'horn.wglink', verify_solid=False)
 
 
 def test_identity_is_the_same_on_every_path(tmp_path):

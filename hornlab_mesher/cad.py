@@ -570,14 +570,8 @@ def write_step(
     *,
     open_throat: bool = True,
     outer_envelope: bool = False,
-    certificate_only: bool = False,
-) -> tuple[Path, CadInfo] | None:
+) -> tuple[Path, CadInfo]:
     """Write the waveguide's OCC model to a STEP file in millimetres.
-
-    ``certificate_only`` builds the OCC model and certifies its envelope, then
-    stops before anything is written and returns None: the bundle writer's
-    envelope check (:func:`_certified_envelope`), which must see exactly the
-    faces this export would write.
 
     See :func:`_write_step_once`. An outer envelope whose fitted faces measure
     short is rebuilt with more clearance before anything is written.
@@ -597,14 +591,15 @@ def _write_step_once(
     *,
     open_throat: bool = True,
     outer_envelope: bool = False,
-    certificate_only: bool = False,
+    stop: Literal["certificate", "solid"] | None = None,
 ) -> tuple[Path, CadInfo] | None:
     """Write the waveguide's OCC model to a STEP file in millimetres.
 
-    ``certificate_only`` builds the OCC model and certifies its envelope, then
-    stops before anything is written and returns None: the bundle writer's
-    envelope check (:func:`_certified_envelope`), which must see exactly the
-    faces this export would write.
+    ``stop`` runs the same build and returns None before anything is written:
+    ``"certificate"`` after the envelope certificate, ``"solid"`` after the
+    solid is sewn, checked and its throat opened. The bundle writer uses them
+    (:func:`_checked_cad_geometry`), because they must see exactly the faces
+    this export would write.
 
     ``outer_envelope`` says the outer grid is a constant-distance envelope
     (the config path's sampling metadata knows); its fitted faces are then
@@ -708,7 +703,7 @@ def _write_step_once(
                     and geometry.build_mode.value == "freestanding"):
                 from .wall_distance import certify_outer_envelope
                 certify_outer_envelope(built, float(geometry.wall_thickness_mm))
-            if certificate_only:
+            if stop == "certificate":
                 return None
 
             excluded = _role_tags(built, *_NON_MATERIAL_ROLES)
@@ -757,6 +752,8 @@ def _write_step_once(
                 keep=_entity_closure(gmsh,[(3,volume)])
             else:
                 keep = _entity_closure(gmsh, [(2, tag) for tag in faces])
+            if stop == "solid":
+                return None
             _prune_to(gmsh, keep)
 
             offset = float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0)
@@ -948,26 +945,43 @@ def write_step_from_config(
     return write_step(resolved.geometry, output_path, open_throat=open_throat)
 
 
-def _certified_envelope(geometry: PointGridHornGeometry) -> PointGridHornGeometry:
-    """``geometry`` with the outer envelope its STEP export would carry.
+def _checked_cad_geometry(
+    geometry: PointGridHornGeometry,
+    *,
+    open_throat: bool = True,
+    verify_solid: bool = True,
+) -> PointGridHornGeometry:
+    """``geometry`` as its STEP export would build it, checked to build.
 
-    A point-grid envelope whose fitted faces measure short is rebuilt with more
-    clearance (:func:`write_step`), and the bundle's grid must carry that same
-    rebuilt wall, because the CAD program lofts its body from the grid. This
-    runs the STEP writer's own build and certificate and stops before sewing or
-    writing anything. Geometry without an envelope comes back unchanged and
-    builds nothing.
+    ``verify_solid`` runs the STEP writer's own OCC build, envelope certificate,
+    sewing and solid checks, and stops before writing: a design whose solid
+    cannot be built is refused here, with the STEP export's message, instead of
+    failing later in the CAD program. A caller that has already built this
+    exact geometry (WG caches its File -> STEP and Send successes) passes False.
+
+    Either way a point-grid outer envelope whose fitted faces measure short is
+    rebuilt with more clearance, exactly as :func:`write_step` rebuilds it, and
+    the returned grid carries that wall, because the CAD program lofts its body
+    from the grid. Without ``verify_solid`` only that certificate runs. A
+    FREEFORM wall refits its own envelope inside the OCC builder
+    (``envelope_variant``), so its grid never changes and, unverified, it
+    builds nothing; geometry without an envelope builds nothing either.
     """
 
     from .offset_envelope import envelope_variant, has_outer_envelope
     from .wall_distance import with_envelope_retries
 
-    if not has_outer_envelope(geometry):
+    envelope = has_outer_envelope(geometry)
+    grid_envelope = envelope and getattr(geometry, "freeform_wall", None) is None
+    if not verify_solid and not grid_envelope:
         return geometry
+    stop: Literal["certificate", "solid"] = "solid" if verify_solid else "certificate"
 
     def attempt() -> PointGridHornGeometry:
         variant = envelope_variant(geometry)
-        _write_step_once(variant, None, outer_envelope=True, certificate_only=True)
+        _write_step_once(
+            variant, None, open_throat=open_throat, outer_envelope=envelope, stop=stop
+        )
         return variant
 
     return with_envelope_retries(attempt)
@@ -1451,6 +1465,8 @@ def write_wglink(
     built_geometry: BuiltGeometry | None = None,
     identity: WgLinkIdentity | Mapping[str, Mapping[str, Any]] | None = None,
     instance_slug: str = "waveguide",
+    open_throat: bool = True,
+    verify_solid: bool = True,
     check_points: object | None = None,
     informational_parameters: Mapping[str, float] | None = None,
     interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]]
@@ -1462,7 +1478,9 @@ def write_wglink(
     CAD program lofts natively, plus the datums, parameters and identity in
     ``wglink.json``. It writes no STEP (bundle format 1.2): no reader built
     its body from one, and the solid STEP is the File export's job
-    (``write_step``), sampled by the caller.
+    (``write_step``), sampled by the caller. ``open_throat`` and
+    ``verify_solid`` say what solid the bundle must be able to build
+    (:func:`_checked_cad_geometry`).
 
     Bundle/design/export identity is caller-owned: no identifier, sequence,
     timestamp, or content identity is minted here.  Callers with a mesh build
@@ -1506,7 +1524,9 @@ def write_wglink(
             f"wglink output already exists: {target}; write each bundle to a new path"
         )
     target.parent.mkdir(parents=True, exist_ok=True)
-    geometry = _certified_envelope(geometry)
+    geometry = _checked_cad_geometry(
+        geometry, open_throat=open_throat, verify_solid=verify_solid
+    )
     built = built_geometry or _realized_bundle_geometry(geometry)
     _validate_realized_bundle_geometry(geometry, built)
     if (geometry.enclosure is not None and int(geometry.enclosure.plan_type) != 1
@@ -1600,7 +1620,7 @@ def write_wglink(
 
 
 def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str, Any]:
-    """Read a v1 bundle, rejecting unsupported features and corrupt files."""
+    """Read a 1.x bundle (1.2 or earlier), rejecting unsupported features and corrupt files."""
 
     bundle = Path(path)
     manifest_path = bundle / "wglink.json"

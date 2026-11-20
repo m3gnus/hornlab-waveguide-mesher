@@ -98,14 +98,27 @@ def _built(geometry: PointGridHornGeometry) -> BuiltGeometry:
     )
 
 
-def _fake_step(monkeypatch):
-    """A bundle (format 1.2) writes no STEP: any STEP writer here is a failure."""
+def _fake_step(monkeypatch) -> list:
+    """A bundle (format 1.2) writes no STEP: it may only check the solid builds.
+
+    The OCC check is stubbed (it stops before writing, returning None); writing
+    a STEP is a failure. Returns the stops requested.
+    """
+
+    stops: list = []
 
     def no_step(*_args, **_kwargs):
         raise AssertionError("write_wglink must not write a STEP")
 
+    def checked_only(_geometry, output_path=None, *, stop=None, **_kwargs):
+        if stop is None:
+            raise AssertionError("write_wglink must not write a STEP")
+        stops.append(stop)
+        return None
+
     monkeypatch.setattr("hornlab_mesher.cad.write_step", no_step)
-    monkeypatch.setattr("hornlab_mesher.cad._write_step_once", no_step)
+    monkeypatch.setattr("hornlab_mesher.cad._write_step_once", checked_only)
+    return stops
 
 
 def test_freestanding_datums_use_inner_and_outer_realized_rings():
@@ -397,11 +410,11 @@ def test_flush_preserved_grid_datum_keeps_every_corner(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("plan_type", [2, 3])
-def test_flush_nonrectangular_plan_writes_real_bundle(plan_type, monkeypatch, tmp_path):
+def test_flush_nonrectangular_plan_writes_real_bundle(plan_type, tmp_path):
+    """The real OCC solid check runs (verify_solid) and these enclosures pass it."""
     from hornlab_mesher.config_builder import resolve_geometry
     from test_point_grid_contract import rectangular_enclosure
 
-    _fake_step(monkeypatch)
     config = rectangular_enclosure(margin=0, quadrants="1234")
     config["enclosure"]["plan_type"] = plan_type
     result = write_wglink(resolve_geometry(config).geometry, tmp_path / "flush.wglink")
@@ -740,3 +753,23 @@ def test_reader_still_reads_a_format_1_1_bundle_with_its_step(tmp_path):
     }), encoding="utf-8")
 
     assert read_wglink(bundle)["body"]["file"] == "waveguide.step"
+
+
+def test_the_bundle_checks_its_solid_builds_unless_told_it_already_did(monkeypatch, tmp_path):
+    stops = _fake_step(monkeypatch)
+    write_wglink(_freestanding(), tmp_path / "checked.wglink")
+    assert stops == ["solid"]
+    stops.clear()
+    write_wglink(_freestanding(), tmp_path / "trusted.wglink", verify_solid=False)
+    assert stops == []  # no envelope to certify, nothing built
+
+
+def test_a_solid_that_cannot_be_built_refuses_the_bundle(monkeypatch, tmp_path):
+    def broken(_geometry, output_path=None, *, stop=None, **_kwargs):
+        raise MesherError("sewing the waveguide surfaces did not produce a closed solid")
+
+    monkeypatch.setattr("hornlab_mesher.cad._write_step_once", broken)
+    target = tmp_path / "broken.wglink"
+    with pytest.raises(MesherError, match="closed solid"):
+        write_wglink(_freestanding(), target)
+    assert not target.exists()
