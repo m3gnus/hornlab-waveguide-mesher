@@ -312,6 +312,38 @@ def test_wglink_export_carries_a_certified_envelope(config, wall, tmp_path, monk
     assert _identity(resolve_geometry(config).geometry) == identity
 
 
+def test_wglink_grid_carries_the_envelope_the_step_writes(tmp_path, monkeypatch):
+    # Bundle format 1.2 writes no STEP, but Fusion lofts the grid, so the grid
+    # must still carry the rebuilt wall a STEP export of the same geometry
+    # certifies. WG's default 5 mm wall measures short and is rebuilt.
+    import hornlab_mesher.cad as cad
+    from hornlab_mesher import write_wglink
+    from hornlab_mesher.config_builder import resolve_geometry
+
+    geometry = resolve_geometry({**ROSSE, 'mesh': {'wall_thickness_mm': 5}}).geometry
+    seen = []
+    real = cad._write_step_once
+
+    def recording(variant, *args, **kwargs):
+        result = real(variant, *args, **kwargs)
+        seen.append((np.asarray(variant.outer_points).copy(), kwargs.get('certificate_only', False)))
+        return result
+
+    monkeypatch.setattr(cad, '_write_step_once', recording)
+    cad.write_step(geometry, tmp_path / 'horn.step')
+    step_outer, certificate_only = seen[-1]
+    assert not certificate_only
+    seen.clear()
+    product = write_wglink(geometry, tmp_path / 'horn.wglink')
+    assert seen and all(only for _, only in seen)  # certified, nothing written
+    assert not (tmp_path / 'horn.wglink' / 'waveguide.step').exists()
+    grid = json.loads(product.point_grid_path.read_text())
+    offset = float(geometry.vertical_offset_mm)
+    outer = np.asarray(grid['outer_points']) - np.asarray([0.0, offset, 0.0])
+    assert not np.allclose(outer, np.asarray(geometry.outer_points))  # rebuilt
+    np.testing.assert_array_equal(outer, step_outer)
+
+
 def test_identity_is_the_same_on_every_path(tmp_path):
     # Preview identity, solve, STEP and WGLink all hash resolve_geometry's
     # geometry; a rebuild changes only the faces built from it.

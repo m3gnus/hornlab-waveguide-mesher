@@ -198,16 +198,23 @@ class WgLinkSourceInterface:
     suggested_resolution_mm: float
 
 
+#: The bundle format ``write_wglink`` writes. 1.2 carries no STEP: the CAD
+#: program builds the body from ``point-grid.json``, which every reader has
+#: always required, and ``body.file`` names that grid. A 1.x reader that never
+#: opened the STEP reads a 1.2 bundle unchanged; ``read_wglink`` still reads
+#: 1.0/1.1 bundles, whose body is ``waveguide.step``.
+WGLINK_BUNDLE_VERSION = "1.2"
+WGLINK_BODY_FILE = "point-grid.json"
+
+
 @dataclass(frozen=True)
 class WgLinkInfo:
-    """All products of a bundle write, including the underlying CAD result."""
+    """All products of a bundle write."""
 
     path: Path
     manifest_path: Path
-    step_path: Path
     point_grid_path: Path
     manifest: dict[str, Any]
-    cad_info: CadInfo
 
 
 def _axis_direction(source_axis: str) -> tuple[float, float, float]:
@@ -563,8 +570,14 @@ def write_step(
     *,
     open_throat: bool = True,
     outer_envelope: bool = False,
-) -> tuple[Path, CadInfo]:
+    certificate_only: bool = False,
+) -> tuple[Path, CadInfo] | None:
     """Write the waveguide's OCC model to a STEP file in millimetres.
+
+    ``certificate_only`` builds the OCC model and certifies its envelope, then
+    stops before anything is written and returns None: the bundle writer's
+    envelope check (:func:`_certified_envelope`), which must see exactly the
+    faces this export would write.
 
     See :func:`_write_step_once`. An outer envelope whose fitted faces measure
     short is rebuilt with more clearance before anything is written.
@@ -584,8 +597,14 @@ def _write_step_once(
     *,
     open_throat: bool = True,
     outer_envelope: bool = False,
-) -> tuple[Path, CadInfo]:
+    certificate_only: bool = False,
+) -> tuple[Path, CadInfo] | None:
     """Write the waveguide's OCC model to a STEP file in millimetres.
+
+    ``certificate_only`` builds the OCC model and certifies its envelope, then
+    stops before anything is written and returns None: the bundle writer's
+    envelope check (:func:`_certified_envelope`), which must see exactly the
+    faces this export would write.
 
     ``outer_envelope`` says the outer grid is a constant-distance envelope
     (the config path's sampling metadata knows); its fitted faces are then
@@ -689,6 +708,8 @@ def _write_step_once(
                     and geometry.build_mode.value == "freestanding"):
                 from .wall_distance import certify_outer_envelope
                 certify_outer_envelope(built, float(geometry.wall_thickness_mm))
+            if certificate_only:
+                return None
 
             excluded = _role_tags(built, *_NON_MATERIAL_ROLES)
             cap_tags = sorted(_role_tags(built, _SOURCE_ROLE))
@@ -925,6 +946,31 @@ def write_step_from_config(
         working.pop("quadrants", None)
     resolved = resolve_geometry(working)
     return write_step(resolved.geometry, output_path, open_throat=open_throat)
+
+
+def _certified_envelope(geometry: PointGridHornGeometry) -> PointGridHornGeometry:
+    """``geometry`` with the outer envelope its STEP export would carry.
+
+    A point-grid envelope whose fitted faces measure short is rebuilt with more
+    clearance (:func:`write_step`), and the bundle's grid must carry that same
+    rebuilt wall, because the CAD program lofts its body from the grid. This
+    runs the STEP writer's own build and certificate and stops before sewing or
+    writing anything. Geometry without an envelope comes back unchanged and
+    builds nothing.
+    """
+
+    from .offset_envelope import envelope_variant, has_outer_envelope
+    from .wall_distance import with_envelope_retries
+
+    if not has_outer_envelope(geometry):
+        return geometry
+
+    def attempt() -> PointGridHornGeometry:
+        variant = envelope_variant(geometry)
+        _write_step_once(variant, None, outer_envelope=True, certificate_only=True)
+        return variant
+
+    return with_envelope_retries(attempt)
 
 
 def _realized_bundle_geometry(geometry: PointGridHornGeometry) -> BuiltGeometry:
@@ -1405,7 +1451,6 @@ def write_wglink(
     built_geometry: BuiltGeometry | None = None,
     identity: WgLinkIdentity | Mapping[str, Mapping[str, Any]] | None = None,
     instance_slug: str = "waveguide",
-    open_throat: bool = True,
     check_points: object | None = None,
     informational_parameters: Mapping[str, float] | None = None,
     interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]]
@@ -1413,34 +1458,11 @@ def write_wglink(
 ) -> WgLinkInfo:
     """Write a checksummed ``.wglink`` directory and return every product.
 
-    See :func:`_write_wglink_once`. An outer envelope whose fitted faces
-    measure short is rebuilt with more clearance, and the bundle's point grid
-    and STEP both carry the rebuilt wall.
-    """
-    from .offset_envelope import envelope_variant
-    from .wall_distance import with_envelope_retries
-
-    return with_envelope_retries(lambda: _write_wglink_once(
-        envelope_variant(geometry), output_path, built_geometry=built_geometry,
-        identity=identity, instance_slug=instance_slug, open_throat=open_throat,
-        check_points=check_points, informational_parameters=informational_parameters,
-        interface_sources=interface_sources))
-
-
-def _write_wglink_once(
-    geometry: PointGridHornGeometry,
-    output_path: str | Path,
-    *,
-    built_geometry: BuiltGeometry | None = None,
-    identity: WgLinkIdentity | Mapping[str, Mapping[str, Any]] | None = None,
-    instance_slug: str = "waveguide",
-    open_throat: bool = True,
-    check_points: object | None = None,
-    informational_parameters: Mapping[str, float] | None = None,
-    interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]]
-    | None = None,
-) -> WgLinkInfo:
-    """Write a checksummed ``.wglink`` directory and return every product.
+    The bundle is the CAD hand-off: its body is ``point-grid.json``, which the
+    CAD program lofts natively, plus the datums, parameters and identity in
+    ``wglink.json``. It writes no STEP (bundle format 1.2): no reader built
+    its body from one, and the solid STEP is the File export's job
+    (``write_step``), sampled by the caller.
 
     Bundle/design/export identity is caller-owned: no identifier, sequence,
     timestamp, or content identity is minted here.  Callers with a mesh build
@@ -1484,6 +1506,7 @@ def _write_wglink_once(
             f"wglink output already exists: {target}; write each bundle to a new path"
         )
     target.parent.mkdir(parents=True, exist_ok=True)
+    geometry = _certified_envelope(geometry)
     built = built_geometry or _realized_bundle_geometry(geometry)
     _validate_realized_bundle_geometry(geometry, built)
     if (geometry.enclosure is not None and int(geometry.enclosure.plan_type) != 1
@@ -1506,23 +1529,13 @@ def _write_wglink_once(
 
     staging = _publish_staging_directory(target.parent, f".{target.name}.")
     try:
-        from .offset_envelope import has_outer_envelope
-        step_path, cad_info = _write_step_once(
-            geometry, staging / "waveguide.step", open_throat=open_throat,
-            outer_envelope=has_outer_envelope(geometry),
-        )
-        grid_path = staging / "point-grid.json"
+        grid_path = staging / WGLINK_BODY_FILE
         grid_path.write_text(
             json.dumps(point_grid, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
         files = {
-            "waveguide.step": {
-                "sha256": _sha256(step_path),
-                "size_bytes": step_path.stat().st_size,
-                "media_type": "model/step",
-            },
-            "point-grid.json": {
+            WGLINK_BODY_FILE: {
                 "sha256": _sha256(grid_path),
                 "size_bytes": grid_path.stat().st_size,
                 "media_type": "application/json",
@@ -1532,7 +1545,7 @@ def _write_wglink_once(
         if source_interfaces:
             required_features.append(SOURCE_INTERFACE_FEATURE)
         manifest: dict[str, Any] = {
-            "wglink_version": "1.1",
+            "wglink_version": WGLINK_BUNDLE_VERSION,
             "required_features": required_features,
             **identity_sections,
             "coordinate_system": {
@@ -1547,12 +1560,8 @@ def _write_wglink_once(
                 ],
             },
             "body": {
-                "file": "waveguide.step",
-                "kind": cad_info.body,
-                "n_faces": cad_info.n_faces,
-                "volume_mm3": cad_info.volume_mm3,
-                "bbox_mm": [list(v) for v in cad_info.bounding_box_mm],
-                "throat_opened": cad_info.throat_opened,
+                "file": WGLINK_BODY_FILE,
+                "kind": "point-grid-loft",
                 "semantic_face_names": False,
             },
             "files": files,
@@ -1582,18 +1591,8 @@ def _write_wglink_once(
         return WgLinkInfo(
             path=target,
             manifest_path=target / "wglink.json",
-            step_path=target / "waveguide.step",
-            point_grid_path=target / "point-grid.json",
+            point_grid_path=target / WGLINK_BODY_FILE,
             manifest=manifest,
-            cad_info=CadInfo(
-                path=target / "waveguide.step",
-                body=cad_info.body,
-                n_faces=cad_info.n_faces,
-                volume_mm3=cad_info.volume_mm3,
-                bounding_box_mm=cad_info.bounding_box_mm,
-                throat_opened=cad_info.throat_opened,
-                units=cad_info.units,
-            ),
         )
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1703,6 +1702,7 @@ __all__ = [
     "WgLinkInfo",
     "WgLinkSourceInterface",
     "SOURCE_INTERFACE_FEATURE",
+    "WGLINK_BUNDLE_VERSION",
     "read_wglink",
     "normalise_step_header",
     "write_step",

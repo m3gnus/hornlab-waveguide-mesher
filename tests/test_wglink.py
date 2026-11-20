@@ -11,7 +11,6 @@ import pytest
 from hornlab_mesher.builders.enclosure import enclosure_box_bounds
 from hornlab_mesher.cad import (
     SOURCE_INTERFACE_FEATURE,
-    CadInfo,
     WgLinkSourceInterface,
     read_wglink,
     write_wglink,
@@ -100,19 +99,13 @@ def _built(geometry: PointGridHornGeometry) -> BuiltGeometry:
 
 
 def _fake_step(monkeypatch):
-    def write_step(geometry, output_path, *, open_throat=True):
-        path = Path(output_path)
-        path.write_bytes(b"ISO-10303-21;\nFAKE STEP\nEND-ISO-10303-21;\n")
-        return path, CadInfo(
-            path=path,
-            body="solid",
-            n_faces=12,
-            volume_mm3=123.5,
-            bounding_box_mm=((-70.0, -60.0, -6.0), (70.0, 60.0, 100.0)),
-            throat_opened=bool(open_throat),
-        )
+    """A bundle (format 1.2) writes no STEP: any STEP writer here is a failure."""
 
-    monkeypatch.setattr("hornlab_mesher.cad.write_step", write_step)
+    def no_step(*_args, **_kwargs):
+        raise AssertionError("write_wglink must not write a STEP")
+
+    monkeypatch.setattr("hornlab_mesher.cad.write_step", no_step)
+    monkeypatch.setattr("hornlab_mesher.cad._write_step_once", no_step)
 
 
 def test_freestanding_datums_use_inner_and_outer_realized_rings():
@@ -404,16 +397,17 @@ def test_flush_preserved_grid_datum_keeps_every_corner(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("plan_type", [2, 3])
-def test_flush_nonrectangular_plan_writes_real_step_bundle(plan_type, tmp_path):
+def test_flush_nonrectangular_plan_writes_real_bundle(plan_type, monkeypatch, tmp_path):
     from hornlab_mesher.config_builder import resolve_geometry
     from test_point_grid_contract import rectangular_enclosure
 
+    _fake_step(monkeypatch)
     config = rectangular_enclosure(margin=0, quadrants="1234")
     config["enclosure"]["plan_type"] = plan_type
     result = write_wglink(resolve_geometry(config).geometry, tmp_path / "flush.wglink")
-    assert result.cad_info.body == "solid"
-    assert result.cad_info.volume_mm3 > 0
-    assert read_wglink(result.path)["enclosure"]["plan_type"] == plan_type
+    manifest = read_wglink(result.path)
+    assert manifest["enclosure"]["plan_type"] == plan_type
+    assert manifest["body"]["file"] == "point-grid.json"
 
 
 @pytest.mark.parametrize(
@@ -451,17 +445,21 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     )
     manifest = read_wglink(result.path)
 
-    assert result.manifest["wglink_version"] == "1.1"
-    assert manifest["wglink_version"] == "1.1"
+    assert result.manifest["wglink_version"] == "1.2"
+    assert manifest["wglink_version"] == "1.2"
     assert set(path.name for path in result.path.iterdir()) == {
         "wglink.json",
-        "waveguide.step",
         "point-grid.json",
     }
+    assert manifest["body"] == {
+        "file": "point-grid.json",
+        "kind": "point-grid-loft",
+        "semantic_face_names": False,
+    }
+    assert set(manifest["files"]) == {"point-grid.json"}
     assert manifest["bundle"] == identity["bundle"]
     assert manifest["design"] == identity["design"]
     assert manifest["export"] == identity["export"]
-    assert result.cad_info.path == result.step_path
     grid = json.loads(result.point_grid_path.read_text())
     assert grid["n_phi"] == geometry.inner_points.shape[0]
     assert grid["n_length"] == geometry.inner_points.shape[1]
@@ -502,9 +500,9 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
         datums["WG_ENC_BACK_PLANE"]["origin_mm"][2]
     )
 
-    with result.step_path.open("ab") as stream:
+    with result.point_grid_path.open("ab") as stream:
         stream.write(b"X")
-    with pytest.raises(MesherError, match="checksum validation failed.*waveguide.step"):
+    with pytest.raises(MesherError, match="checksum validation failed.*point-grid.json"):
         read_wglink(result.path)
 
 
@@ -561,7 +559,7 @@ def test_publication_is_one_rename_that_leaves_nothing_beside_the_bundle(
     write_wglink(_freestanding(), target)
 
     assert sorted(path.name for path in target.parent.iterdir()) == ["horn.wglink"]
-    assert read_wglink(target)["body"]["file"] == "waveguide.step"
+    assert read_wglink(target)["body"]["file"] == "point-grid.json"
 
 
 def test_a_destination_that_appears_while_staging_is_not_replaced(tmp_path):
@@ -663,8 +661,9 @@ def test_bundle_is_not_staged_in_a_private_temporary_directory(monkeypatch, tmp_
 
     monkeypatch.setattr(cad_module.tempfile, "mkdtemp", refuse)
     monkeypatch.setattr(cad_module.tempfile, "NamedTemporaryFile", refuse)
+    _fake_step(monkeypatch)
     result = write_wglink(_freestanding(), tmp_path / "horn.wglink")
-    assert read_wglink(result.path)["body"]["file"] == "waveguide.step"
+    assert read_wglink(result.path)["body"]["file"] == "point-grid.json"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
@@ -716,3 +715,28 @@ def test_reader_type_checks_the_top_level(tmp_path, manifest, message):
     bundle = _write_manifest(tmp_path / "bad.wglink", manifest)
     with pytest.raises(MesherError, match=message):
         read_wglink(bundle, verify_checksums=False)
+
+
+def test_reader_still_reads_a_format_1_1_bundle_with_its_step(tmp_path):
+    """Bundles published before 1.2 carry a STEP body; they stay readable."""
+
+    import hashlib
+
+    bundle = tmp_path / "old.wglink"
+    bundle.mkdir()
+    step = b"ISO-10303-21;\nEND-ISO-10303-21;\n"
+    grid = b"{}\n"
+    (bundle / "waveguide.step").write_bytes(step)
+    (bundle / "point-grid.json").write_bytes(grid)
+
+    def entry(data: bytes) -> dict:
+        return {"sha256": "sha256:" + hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+
+    (bundle / "wglink.json").write_text(json.dumps({
+        "wglink_version": "1.1",
+        "required_features": ["checksummed-files-v1", "link-local-frame-v1"],
+        "body": {"file": "waveguide.step", "kind": "solid"},
+        "files": {"waveguide.step": entry(step), "point-grid.json": entry(grid)},
+    }), encoding="utf-8")
+
+    assert read_wglink(bundle)["body"]["file"] == "waveguide.step"

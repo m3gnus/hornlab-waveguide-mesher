@@ -177,7 +177,12 @@ keeps importing `_lod_config` and `_guiding_curve_warnings` for WG.
   (root exports): the WGLink bundle WG writes for the Fusion add-in and reads
   back. `write_wglink` refuses an output path that already exists (a
   `MesherError`, the earlier bundle left intact): write each bundle to a new
-  path and replace it yourself. The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
+  path and replace it yourself. Bundle format `WGLINK_BUNDLE_VERSION` 1.2
+  writes no STEP: the body is `point-grid.json` (`body.file`), which the CAD
+  program lofts, and the caller chooses its sampling. A point-grid envelope is
+  still certified as `write_step` would, so the grid carries the same rebuilt
+  wall a STEP of that geometry would. `read_wglink` still reads 1.0/1.1
+  bundles, whose body is `waveguide.step`. The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
   `_SOURCE_PATCH_POLICIES` in `wglink_bundle.py`; change both together.
 
 ### Pre-mesh sizing (`hornlab_mesher.mesh_sizing`)
