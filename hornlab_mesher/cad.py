@@ -956,7 +956,12 @@ def _checked_cad_geometry(
     ``verify_solid`` runs the STEP writer's own OCC build, envelope certificate,
     sewing and solid checks, and stops before writing: a design whose solid
     cannot be built is refused here, with the STEP export's message, instead of
-    failing later in the CAD program. A caller that has already built this
+    failing later in the CAD program. It stops after sewing, the closed-volume
+    test and the throat cut; it does not cover the steps a STEP write does
+    after that (pruning, the placement translate, ``gmsh.write``, the special
+    STEP transports, or a caller's check of the written text), so a design
+    that failed only there would pass here and fail File -> STEP. Send refuses
+    the designs that need those transports (native, ATH roundover) up front. A caller that has already built this
     exact geometry (WG caches its File -> STEP and Send successes) passes False.
 
     Either way a point-grid outer envelope whose fitted faces measure short is
