@@ -126,21 +126,29 @@ Related reference docs:
 
 ## Gmsh Sessions
 
-The mesher opens a Gmsh session in exactly two places, and each opens one only
-when no session is already active (`gmsh.isInitialized()` is false):
+The mesher calls `gmsh.initialize()` in six places. Three are in-process and
+open a session only when none is active (`gmsh.isInitialized()` is false):
 
 - `mesher.build_mesh_with_info`, which every `.msh` build reaches
   (`build_mesh`, `build_from_config`);
 - `cad.write_step`, which every STEP export reaches (`write_step_from_config`,
-  `write_wglink`).
+  `write_wglink`);
+- `preview.ath_import`, the ATH-import preview helper (it also restores the
+  Gmsh options it changed when it reuses a caller's session).
 
-A session opened there is closed by the same call. A caller that has already
+The other three are the artifact workers `contour_artifact._worker`,
+`woofer_artifact._worker` and `assembly_artifact._worker`. Each runs as its own
+subprocess (`python -m hornlab_mesher.<module> <stage>`), so it owns a private
+Gmsh session: it initializes unconditionally and finalizes in its `finally`
+block, and never sees a caller's session.
+
+An in-process session opened by the mesher is closed by the same call. A caller that has already
 opened a session keeps it: the mesher reuses it, never initializes or finalizes
 it, and the caller owns everything about it, including the guard below.
 
 On Windows, `gmsh.initialize()` has been measured truncating the process's
 native PATH while `os.environ` keeps the old value, so later bare-name
-executable lookups and PATH-based DLL loads fail invisibly. Both session opens
+executable lookups and PATH-based DLL loads fail invisibly. The three in-process session opens
 and their matching closes therefore run inside
 `native_env.preserve_native_windows_path()`, which restores the native PATH
 and is a no-op elsewhere. A caller that owns its own session needs the same
