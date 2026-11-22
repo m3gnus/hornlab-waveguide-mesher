@@ -142,17 +142,25 @@ subprocess (`python -m hornlab_mesher.<module> <stage>`), so it owns a private
 Gmsh session: it initializes unconditionally and finalizes in its `finally`
 block, and never sees a caller's session.
 
-An in-process session opened by the mesher is closed by the same call. A caller that has already
-opened a session keeps it: the mesher reuses it, never initializes or finalizes
-it, and the caller owns everything about it, including the guard below.
+An in-process session opened by the mesher is closed by the same call. A
+caller that has already opened a session keeps it: the mesher reuses it, never
+initializes or finalizes it, and the caller owns everything about it, including
+the guard below.
 
 On Windows, `gmsh.initialize()` has been measured truncating the process's
 native PATH while `os.environ` keeps the old value, so later bare-name
-executable lookups and PATH-based DLL loads fail invisibly. The three in-process session opens
-and their matching closes therefore run inside
-`native_env.preserve_native_windows_path()`, which restores the native PATH
-and is a no-op elsewhere. A caller that owns its own session needs the same
-guard around its own open and close. Waveguide Generator's counterpart is
+executable lookups and PATH-based DLL loads fail invisibly. The guard,
+`native_env.preserve_native_windows_path()`, restores the native PATH and is a
+no-op elsewhere. It covers:
+
+- the open and the close in `mesher.build_mesh_with_info` and `cad.write_step`;
+- the open in `preview.ath_import`, but not its `gmsh.finalize()`, which runs
+  unguarded;
+- nothing in the three artifact workers, which initialize and finalize
+  unguarded.
+
+A caller that owns its own session needs the same guard around its own open
+and close. Waveguide Generator's counterpart is
 `_preserve_native_windows_path` in `server/mesh/gmsh_worker.py`; change the
 two together. `tests/test_native_env.py` pins the wiring on every platform and,
 on Windows, the restore against an injected truncation.
@@ -166,10 +174,12 @@ mesher's own open is skipped. The application's CAD-import child process opens
 its session under the same guard. Its Gmsh work goes through `step_import` (a
 re-export of `step_mapping`, `mesh_repair` and `mesh_validation`) and
 `step_prepare` helpers, which use a session but never open one, and its other
-mesher calls are pure. Every other
-mesher call the application makes is pure geometry and never touches Gmsh. The
-mesher's own guard therefore protects direct callers, such as the CLI, scripts
-and other integrations, rather than a known application path.
+mesher calls are pure. The one exception is the source editor, which calls
+`contour_artifact.export_contour` and `woofer_artifact.export_woofer`; each
+spawns an artifact worker with its own unguarded session (see above). Every
+other mesher call the application makes is pure geometry and never touches
+Gmsh. The mesher's own guard therefore protects direct callers, such as the
+CLI, scripts and other integrations, rather than a known application path.
 
 ## Geometry Modes
 

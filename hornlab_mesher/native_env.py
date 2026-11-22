@@ -13,11 +13,14 @@ so the regression tests inject it instead.
 writes it back when the block exits. Off Windows it is a no-op that touches no
 environment at all.
 
-The mesher opens a Gmsh session in exactly two places, each only when no
+The mesher opens an in-process Gmsh session in three places, each only when no
 session is already active: ``mesher.build_mesh_with_info`` and
-``cad.write_step``. Both open and close that session inside this guard. A caller
-that opens its own session before calling the mesher owns that session and must
-guard it itself; the mesher then never initializes. Waveguide Generator's
+``cad.write_step`` open and close it inside this guard; ``preview.ath_import``
+opens it inside the guard but finalizes it outside. The three artifact workers
+(``contour_artifact``, ``woofer_artifact``, ``assembly_artifact``) run in their
+own subprocesses and use no guard. A caller that opens its own session before
+calling the mesher owns that session and must guard it itself; the mesher then
+never initializes. Waveguide Generator's
 counterpart is ``_preserve_native_windows_path`` in
 ``server/mesh/gmsh_worker.py``, which guards the application's worker-thread
 session with the same semantics. Change the two together.
