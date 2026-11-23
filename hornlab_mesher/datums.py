@@ -30,10 +30,24 @@ def _axis_direction(source_axis: str) -> list[float]:
     return direction
 
 
-def _placed(points: NDArray[np.float64], offset_mm: float) -> NDArray[np.float64]:
-    result = np.array(points, dtype=np.float64, copy=True)
-    result[:, 1] += float(offset_mm)
-    return result
+def link_frame_shift_mm(geometry: PointGridHornGeometry) -> NDArray[np.float64]:
+    """The translation from a stored point grid into the CAD link frame.
+
+    The link frame (bundle format 1.3, ``throat-origin-frame-v1``) puts the
+    throat centre at the origin, on the horn axis: x = y = 0 is the axis the
+    grid is built about, and z = 0 is the throat ring's mean station.
+    ``Mesh.VerticalOffset`` is not part of it. That is a placement of the
+    finished model, and a CAD program places its link itself (the occurrence
+    transform a return carries back), so the link-local geometry never moves
+    with it.
+    """
+
+    points = np.asarray(geometry.inner_points, dtype=np.float64)
+    return np.asarray([0.0, 0.0, -float(np.mean(points[:, 0, 2]))], dtype=np.float64)
+
+
+def _to_link(points: NDArray[np.float64], shift: NDArray[np.float64]) -> NDArray[np.float64]:
+    return np.asarray(points, dtype=np.float64) + shift
 
 
 def _polyline(points: NDArray[np.float64]) -> dict[str, Any]:
@@ -104,7 +118,7 @@ def _flush_mouth_outline(geometry: PointGridHornGeometry) -> NDArray[np.float64]
         samples.append(sample_patch_boundary(
             points, group, u, surface_fit=fit, preserve_grid=preserve,
         ))
-    return _placed(np.vstack(samples), geometry.vertical_offset_mm)
+    return _to_link(np.vstack(samples), link_frame_shift_mm(geometry))
 
 
 def derive_datums(
@@ -116,9 +130,9 @@ def derive_datums(
     """Return the v1 datum catalogue for a realized exportable build.
 
     Only freestanding and enclosure solids have defined v1 semantics.  Point
-    rings are placed by ``vertical_offset_mm`` here because the STORED geometry
-    keeps its unshifted grid; the bundle's point-grid payload is shipped
-    already placed so every artifact in a bundle shares one link-local frame.
+    grid datums are in the link frame (:func:`link_frame_shift_mm`), as the
+    bundle's point-grid payload is, so every artifact in a bundle shares one
+    link-local frame with the throat centre at its origin.
     """
 
     if type(geometry) is StandaloneSourceGeometry:
@@ -187,15 +201,16 @@ def derive_datums(
     if points.ndim != 3 or points.shape[2] != 3 or points.shape[0] < 3:
         raise ValueError("inner_points must have shape (n_phi, n_length, 3)")
 
-    offset = float(geometry.vertical_offset_mm)
-    throat = _placed(points[:, 0, :], offset)
-    mouth = _placed(points[:, -1, :], offset)
+    shift = link_frame_shift_mm(geometry)
+    dz = float(shift[2])
+    throat = _to_link(points[:, 0, :], shift)
+    mouth = _to_link(points[:, -1, :], shift)
     roundover = getattr(geometry, "roundover", None)
     if roundover is not None:
         azimuth = np.arctan2(points[:,0,1],points[:,0,0])
         radius = float(roundover.body(roundover.length)[0][1])
-        mouth = np.column_stack((radius*np.cos(azimuth),radius*np.sin(azimuth)+offset,
-                                 np.full(len(azimuth),roundover.length)))
+        mouth = np.column_stack((radius*np.cos(azimuth),radius*np.sin(azimuth),
+                                 np.full(len(azimuth),roundover.length+dz)))
     throat_planar, throat_plane = _fit_plane(
         throat, tolerance_mm=plane_tolerance_mm
     )
@@ -205,7 +220,7 @@ def derive_datums(
         "rim_planar": mouth_planar,
         "WG_AXIS": {
             "type": "axis",
-            "origin_mm": [0.0, offset, 0.0],
+            "origin_mm": [0.0, 0.0, 0.0],
             "direction": _axis_direction(built.source_axis),
         },
         "WG_THROAT_PLANE": {
@@ -214,25 +229,25 @@ def derive_datums(
             "nominal": not throat_planar,
         },
         "WG_MOUTH_OUTLINE_INNER": _polyline(mouth),
-        "WG_GEOM_MIDPLANE_Y": _axis_plane("y", offset),
+        "WG_GEOM_MIDPLANE_Y": _axis_plane("y", 0.0),
         "WG_SOLVER_CUT_PLANE_Y": _axis_plane("y", 0.0),
         "WG_SOLVER_CUT_PLANE_X": _axis_plane("x", 0.0),
     }
     if mouth_planar:
         datums["WG_MOUTH_PLANE"] = {**mouth_plane, "exact": True}
     if roundover is not None and roundover.throat is not None:
-        datums["WG_ADAPTER_JOIN_PLANE"] = {**_axis_plane("z", roundover.start),
-            "origin_mm": [0.0, offset, roundover.start], "nominal": False}
+        datums["WG_ADAPTER_JOIN_PLANE"] = {**_axis_plane("z", roundover.start + dz),
+            "origin_mm": [0.0, 0.0, roundover.start + dz], "nominal": False}
 
     if mode is PointGridBuildMode.FREESTANDING:
         if geometry.outer_points is None:
             raise ValueError("freestanding datums require outer_points")
         outer = np.asarray(geometry.outer_points, dtype=np.float64)
         datums["WG_MOUTH_OUTLINE_OUTER"] = _polyline(
-            _placed(outer[:, -1, :], offset) if roundover is None else
+            _to_link(outer[:, -1, :], shift) if roundover is None else
             np.column_stack((float(roundover.body(roundover.length,True)[0][1])*np.cos(azimuth),
-                             float(roundover.body(roundover.length,True)[0][1])*np.sin(azimuth)+offset,
-                             np.full(len(azimuth),float(roundover.body(roundover.length,True)[0][0]))))
+                             float(roundover.body(roundover.length,True)[0][1])*np.sin(azimuth),
+                             np.full(len(azimuth),float(roundover.body(roundover.length,True)[0][0])+dz)))
         )
         return datums
 
@@ -269,7 +284,12 @@ def derive_datums(
         from .preview.enclosure import _fit_flush_mouth
 
         mouth = _flush_mouth_outline(geometry)
-        ray_mouth = _fit_flush_mouth(_placed(points[:, -1, :], offset), geometry)
+        # The fit works in the mesh's placed frame (Mesh.VerticalOffset);
+        # take the placement back out before moving into the link frame.
+        placed = np.asarray([0.0, float(geometry.vertical_offset_mm), 0.0])
+        ray_mouth = _to_link(
+            _fit_flush_mouth(points[:, -1, :] + placed, geometry) - placed, shift
+        )
         mouth_planar, mouth_plane = _fit_plane(mouth, tolerance_mm=plane_tolerance_mm)
         datums["rim_planar"] = mouth_planar
         datums["WG_MOUTH_OUTLINE_INNER"] = _polyline(ray_mouth)
@@ -277,7 +297,7 @@ def derive_datums(
         datums.pop("WG_MOUTH_PLANE", None)
         if mouth_planar:
             datums["WG_MOUTH_PLANE"] = {**mouth_plane, "exact": True}
-        datums["WG_ENC_BACK_PLANE"] = _axis_plane("z", float(bounds["z_back"]))
+        datums["WG_ENC_BACK_PLANE"] = _axis_plane("z", float(bounds["z_back"]) + dz)
         return datums
 
     z_front = float(bounds["z_front"])
@@ -304,20 +324,20 @@ def derive_datums(
         corner_radius=max(0.1, edge),
         **sample_args,
     )
-    face[:, 1] += offset
-    envelope[:, 1] += offset
+    face = _to_link(face, shift)
+    envelope = _to_link(envelope, shift)
     datums.update(
         {
             # The enclosure's outer material boundary at the mouth is the
             # baffle face perimeter, not the inner acoustic bore rim.
             "WG_MOUTH_OUTLINE_OUTER": _polyline(face),
-            "WG_BAFFLE_PLANE": _axis_plane("z", z_front),
+            "WG_BAFFLE_PLANE": _axis_plane("z", z_front + dz),
             "WG_BAFFLE_OUTLINE_FACE": _polyline(face),
             "WG_BAFFLE_OUTLINE_ENVELOPE": _polyline(envelope),
-            "WG_ENC_BACK_PLANE": _axis_plane("z", float(bounds["z_back"])),
+            "WG_ENC_BACK_PLANE": _axis_plane("z", float(bounds["z_back"]) + dz),
         }
     )
     return datums
 
 
-__all__ = ["DEFAULT_PLANE_TOLERANCE_MM", "derive_datums"]
+__all__ = ["DEFAULT_PLANE_TOLERANCE_MM", "derive_datums", "link_frame_shift_mm"]

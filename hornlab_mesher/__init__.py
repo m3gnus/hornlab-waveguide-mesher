@@ -56,6 +56,7 @@ from .mesh_sizing import (
 from .cad import (
     CadInfo,
     SOURCE_INTERFACE_FEATURE,
+    THROAT_ORIGIN_FRAME_FEATURE,
     WgLinkIdentity,
     WgLinkInfo,
     WgLinkSourceInterface,
@@ -142,6 +143,7 @@ __all__ = [
     "mesh_quality_report",
     "CadInfo",
     "SOURCE_INTERFACE_FEATURE",
+    "THROAT_ORIGIN_FRAME_FEATURE",
     "WgLinkIdentity",
     "WgLinkInfo",
     "WgLinkSourceInterface",

@@ -186,7 +186,16 @@ keeps importing `_lod_config` and `_guiding_curve_warnings` for WG.
   point-grid envelope is certified either way, so the grid carries the same
   rebuilt wall a STEP of that geometry would. `read_wglink` still reads 1.0/1.1
   bundles, whose body is `waveguide.step`. Breaking in 1.2: `WgLinkInfo` no
-  longer has `step_path` or `cad_info` (no consumer used them). The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
+  longer has `step_path` or `cad_info` (no consumer used them). Format 1.3
+  (required feature `THROAT_ORIGIN_FRAME_FEATURE`, `throat-origin-frame-v1`)
+  puts the throat centre at the link-local origin: the grid, datums and
+  parameters move by `datums.link_frame_shift_mm` (the throat's axial station
+  to z = 0) and `Mesh.VerticalOffset` is no longer applied (the payload's
+  `vertical_offset_mm` and the `vertical_offset` parameter are 0). A 1.2
+  bundle was placed by the offset; a 1.2 reader refuses a 1.3 bundle, so it
+  never moves an existing offset link. `write_step` keeps the mesh's placement
+  by default (offset applied, an ATH slot's throat at z = Slot length);
+  `write_step(..., link_frame=True)` writes the bundle's frame instead. The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
   `_SOURCE_PATCH_POLICIES` in `wglink_bundle.py`; change both together.
 
 ### Pre-mesh sizing (`hornlab_mesher.mesh_sizing`)
@@ -260,6 +269,7 @@ The remaining 48 have no user in WG (production or tests) or the add-in:
   `compute_osse_profile_points`, `compute_rosse_profile_points`,
   `derive_datums`
 - CAD / auto-cut helpers: `WgLinkInfo`, `SOURCE_INTERFACE_FEATURE`,
+  `THROAT_ORIGIN_FRAME_FEATURE`,
   `PlaneSymmetryVerdict`, `DEFAULT_AUTO_CUT_GRID`,
   `DEFAULT_AUTO_CUT_TOLERANCE_REL`, `DEFAULT_SYMMETRY_SNAP_BAND_MM`,
   `evaluate_occ_plane_symmetry`, `millimetres_to_step_units`,

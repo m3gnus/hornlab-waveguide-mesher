@@ -266,6 +266,38 @@ def test_vertical_offset_places_the_exported_part(tmp_path):
     assert offset.volume_mm3 == pytest.approx(centred.volume_mm3, rel=1.0e-9)
 
 
+def test_the_link_frame_puts_the_throat_at_the_origin(tmp_path):
+    """``link_frame=True`` writes the WGLink bundle's frame.
+
+    ``write_wglink`` moves a throat that is not at z = 0 (an ATH slot puts it
+    at z = Slot length) to the link origin and drops Mesh.VerticalOffset; the
+    STEP of the same geometry has to land on the same spot, or a part exported
+    with File -> STEP and the body Fusion lofts would differ. The default
+    keeps the mesh's own placement (ATH parity).
+    """
+
+    centred = _freestanding()
+    lift = np.asarray([0.0, 0.0, 7.0])
+    raised = PointGridHornGeometry(
+        inner_points=centred.inner_points + lift,
+        outer_points=centred.outer_points + lift,
+        wall_thickness_mm=6.0,
+        vertical_offset_mm=30.0,
+    )
+    _, reference = write_step(centred, tmp_path / "centred.step")
+    _, moved = write_step(raised, tmp_path / "raised.step", link_frame=True)
+    _, placed = write_step(raised, tmp_path / "placed.step")
+
+    assert np.asarray(moved.bounding_box_mm) == pytest.approx(
+        np.asarray(reference.bounding_box_mm), abs=1.0e-6
+    )
+    assert moved.volume_mm3 == pytest.approx(reference.volume_mm3, rel=1.0e-9)
+    shift = np.asarray([0.0, 30.0, 7.0])
+    assert np.asarray(placed.bounding_box_mm) == pytest.approx(
+        np.asarray(reference.bounding_box_mm) + shift, abs=1.0e-6
+    )
+
+
 def test_export_keeps_an_enclosure_fillet_the_mesh_would_suppress(tmp_path):
     """CAD gets the geometry as designed, not the acoustic level of detail.
 

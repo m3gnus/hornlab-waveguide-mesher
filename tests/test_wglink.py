@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 import stat
@@ -11,6 +12,8 @@ import pytest
 from hornlab_mesher.builders.enclosure import enclosure_box_bounds
 from hornlab_mesher.cad import (
     SOURCE_INTERFACE_FEATURE,
+    THROAT_ORIGIN_FRAME_FEATURE,
+    WGLINK_BUNDLE_VERSION,
     WgLinkSourceInterface,
     read_wglink,
     write_wglink,
@@ -161,24 +164,30 @@ def test_enclosure_datums_use_clamped_bounds_and_distinct_baffle_outlines():
     assert np.ptp(face[:, 1]) < np.ptp(envelope[:, 1])
 
 
-def test_vertical_offset_has_distinct_geometry_and_solver_planes():
+def test_vertical_offset_does_not_move_the_link_frame():
+    """Format 1.3: the throat centre is the link origin whatever the offset.
+
+    Mesh.VerticalOffset used to be baked into every link-local coordinate, so
+    an 80 mm offset design put its throat 80 mm above the Fusion origin and
+    needed a datum pair (WG_GEOM_MIDPLANE_Y, WG_AXIS) just to find it again.
+    """
     geometry = _freestanding(vertical_offset_mm=37.5)
     datums = derive_datums(geometry, _built(geometry))
 
-    assert datums["WG_AXIS"]["origin_mm"] == [0.0, 37.5, 0.0]
-    assert datums["WG_GEOM_MIDPLANE_Y"]["origin_mm"][1] == 37.5
+    assert datums["WG_AXIS"]["origin_mm"] == [0.0, 0.0, 0.0]
+    assert datums["WG_GEOM_MIDPLANE_Y"]["origin_mm"][1] == 0.0
     assert datums["WG_SOLVER_CUT_PLANE_Y"]["origin_mm"][1] == 0.0
+    assert datums["WG_THROAT_PLANE"]["origin_mm"] == pytest.approx([0.0, 0.0, 0.0])
     mouth = np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
-    assert mouth[:, 1] == pytest.approx(geometry.inner_points[:, -1, 1] + 37.5)
+    assert mouth[:, 1] == pytest.approx(geometry.inner_points[:, -1, 1])
 
 
-def test_point_grid_payload_shares_the_datum_frame(monkeypatch, tmp_path):
-    """ONE frame per bundle (plan D1): the grid ships already placed.
+def test_point_grid_payload_shares_the_throat_origin_datum_frame(monkeypatch, tmp_path):
+    """ONE frame per bundle: the grid, datums and parameters share the throat
+    origin, and Mesh.VerticalOffset moves none of them (format 1.3).
 
-    Found on a real Tritonia export: the STEP body and datums sat at
-    y = vertical_offset while point-grid.json stayed centred, so an adapter
-    lofting the grid and mating against the datums would misassemble by the
-    whole offset (80 mm on the reference design).
+    Found on a real Tritonia export: with the offset baked in, the throat sat
+    80 mm above the Fusion origin and the return path had to undo it.
     """
     _fake_step(monkeypatch)
     geometry = _freestanding(vertical_offset_mm=37.5)
@@ -186,15 +195,46 @@ def test_point_grid_payload_shares_the_datum_frame(monkeypatch, tmp_path):
 
     grid = json.loads(result.point_grid_path.read_text())
     assert grid["frame"] == "link-local"
+    assert grid["vertical_offset_mm"] == 0.0
     inner = np.asarray(grid["inner_points"])
-    assert inner[:, -1, 1] == pytest.approx(geometry.inner_points[:, -1, 1] + 37.5)
+    assert np.mean(inner[:, 0, :], axis=0) == pytest.approx([0.0, 0.0, 0.0], abs=1e-9)
+    assert inner == pytest.approx(geometry.inner_points)
     mouth = np.asarray(
         result.manifest["datums"]["WG_MOUTH_OUTLINE_INNER"]["points_mm"]
     )
     assert inner[:, -1, :] == pytest.approx(mouth)
-    # The stored geometry itself stays unshifted.
-    assert float(np.mean(geometry.inner_points[:, -1, 1])) == pytest.approx(
-        float(np.mean(inner[:, -1, 1])) - 37.5
+    params = {entry["name"]: entry["value"] for entry in result.manifest["parameters"]}
+    assert params["wg_waveguide_vertical_offset"] == 0.0
+    assert THROAT_ORIGIN_FRAME_FEATURE in result.manifest["required_features"]
+    assert result.manifest["wglink_version"] == WGLINK_BUNDLE_VERSION == "1.3"
+
+
+def test_a_throat_off_z_zero_is_moved_to_the_link_origin(monkeypatch, tmp_path):
+    """Every artifact in the bundle moves by one axial shift to put the throat at z = 0."""
+
+    _fake_step(monkeypatch)
+    centred = _enclosure_geometry()
+    raised = replace(centred, inner_points=centred.inner_points + np.asarray([0.0, 0.0, 7.0]))
+    reference = write_wglink(centred, tmp_path / "centred.wglink", check_points=[[1.0, 2.0, 3.0]])
+    moved = write_wglink(raised, tmp_path / "raised.wglink", check_points=[[1.0, 2.0, 10.0]])
+
+    grid = json.loads(moved.point_grid_path.read_text())
+    expected = json.loads(reference.point_grid_path.read_text())
+    np.testing.assert_allclose(grid["inner_points"], expected["inner_points"], atol=1e-9)
+    np.testing.assert_allclose(grid["ring_z_mm"], expected["ring_z_mm"], atol=1e-9)
+    np.testing.assert_allclose(grid["check_points"], expected["check_points"], atol=1e-9)
+    assert grid["ring_z_mm"][0] == pytest.approx(0.0, abs=1e-9)
+    values = {e["name"]: e["value"] for e in moved.manifest["parameters"]}
+    reference_values = {e["name"]: e["value"] for e in reference.manifest["parameters"]}
+    assert values == pytest.approx(reference_values)
+    for name in ("WG_THROAT_PLANE", "WG_BAFFLE_PLANE", "WG_ENC_BACK_PLANE", "WG_AXIS"):
+        assert moved.manifest["datums"][name]["origin_mm"] == pytest.approx(
+            reference.manifest["datums"][name]["origin_mm"], abs=1e-9
+        ), name
+    np.testing.assert_allclose(
+        moved.manifest["datums"]["WG_BAFFLE_OUTLINE_FACE"]["points_mm"],
+        reference.manifest["datums"]["WG_BAFFLE_OUTLINE_FACE"]["points_mm"],
+        atol=1e-9,
     )
 
 
@@ -374,7 +414,7 @@ def test_flush_bundle_exposes_the_fitted_mouth_without_a_baffle(
                               surface_fit=geometry.surface_fit)
         for group in groups
     ])
-    expected[:, 1] += geometry.vertical_offset_mm
+    # The offset (11 mm) is not part of the link frame.
     np.testing.assert_allclose(datums["WG_MOUTH_OUTLINE_OUTER"]["points_mm"], expected, atol=1e-10)
     dense = np.vstack([
         sample_patch_boundary(geometry.inner_points, group,
@@ -382,12 +422,10 @@ def test_flush_bundle_exposes_the_fitted_mouth_without_a_baffle(
                               surface_fit=geometry.surface_fit)
         for group in groups
     ])
-    dense[:, 1] += geometry.vertical_offset_mm
     assert cKDTree(dense).query(actual)[0].max() < 0.01
     # The n_phi entries still correspond to the original grid rays.
     original = geometry.inner_points[:, -1, :2]
     on_ray = actual[:, :2].copy()
-    on_ray[:, 1] -= geometry.vertical_offset_mm
     cross = original[:, 0] * on_ray[:, 1] - original[:, 1] * on_ray[:, 0]
     assert np.max(np.abs(cross)) < 0.01
     assert datums["WG_ENC_BACK_PLANE"]["origin_mm"][2] == pytest.approx(
@@ -404,7 +442,6 @@ def test_flush_preserved_grid_datum_keeps_every_corner(monkeypatch, tmp_path):
                        enclosure=replace(geometry.enclosure, space_r_mm=0))
     datums = write_wglink(geometry, tmp_path / "flush.wglink").manifest["datums"]
     expected = geometry.inner_points[:, -1, :].copy()
-    expected[:, 1] += geometry.vertical_offset_mm
     actual = np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
     np.testing.assert_allclose(actual, expected, atol=1e-10)
 
@@ -458,8 +495,8 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     )
     manifest = read_wglink(result.path)
 
-    assert result.manifest["wglink_version"] == "1.2"
-    assert manifest["wglink_version"] == "1.2"
+    assert result.manifest["wglink_version"] == "1.3"
+    assert manifest["wglink_version"] == "1.3"
     assert set(path.name for path in result.path.iterdir()) == {
         "wglink.json",
         "point-grid.json",
@@ -476,8 +513,8 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     grid = json.loads(result.point_grid_path.read_text())
     assert grid["n_phi"] == geometry.inner_points.shape[0]
     assert grid["n_length"] == geometry.inner_points.shape[1]
-    # Check points ship placed into the link-local frame (vertical offset 11).
-    assert grid["check_points"] == [[1.0, 13.0, 3.0]]
+    # Check points ship in the link frame, which the 11 mm offset does not move.
+    assert grid["check_points"] == [[1.0, 2.0, 3.0]]
     parameter_entries = {entry["name"]: entry for entry in manifest["parameters"]}
     params = {name: entry["value"] for name, entry in parameter_entries.items()}
     bounds = built.enclosure_bounds
@@ -487,9 +524,8 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     assert params["wg_a_1_enc_depth"] == pytest.approx(bounds["enc_depth"])
     assert params["wg_a_1_enc_edge"] == pytest.approx(bounds["clamped_edge"])
     assert params["wg_a_1_enc_x0"] == pytest.approx(bounds["bx0"])
-    assert params["wg_a_1_enc_y0"] == pytest.approx(
-        bounds["by0"] + geometry.vertical_offset_mm
-    )
+    assert params["wg_a_1_enc_y0"] == pytest.approx(bounds["by0"])
+    assert params["wg_a_1_enc_y0"] < 0.0
     assert params["wg_a_1_enc_z_front"] == pytest.approx(bounds["z_front"])
 
     for name in ("wg_a_1_enc_x0", "wg_a_1_enc_y0", "wg_a_1_enc_z_front"):

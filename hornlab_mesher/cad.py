@@ -44,7 +44,7 @@ import numpy as np
 
 from .throat_stretch import stretch_config_errors
 
-from .datums import DEFAULT_PLANE_TOLERANCE_MM, derive_datums
+from .datums import DEFAULT_PLANE_TOLERANCE_MM, derive_datums, link_frame_shift_mm
 from .geometry import (
     BuiltGeometry,
     HornGeometry,
@@ -77,6 +77,12 @@ _SOLID_BUILD_MODES = frozenset(
 
 _MIN_SOLID_VOLUME_MM3 = 1.0e-6
 SOURCE_INTERFACE_FEATURE = "source-interface-v1"
+#: Every coordinate in the bundle is in the throat-origin link frame
+#: (:func:`hornlab_mesher.datums.link_frame_shift_mm`): the throat centre is
+#: the origin and ``Mesh.VerticalOffset`` is not applied. Required, because a
+#: reader that placed 1.2 bundles by their offset would move an existing
+#: offset link by that offset on Update.
+THROAT_ORIGIN_FRAME_FEATURE = "throat-origin-frame-v1"
 _SOURCE_INTERFACE_KEYS = frozenset(
     {
         "id",
@@ -200,10 +206,12 @@ class WgLinkSourceInterface:
 
 #: The bundle format ``write_wglink`` writes. 1.2 carries no STEP: the CAD
 #: program builds the body from ``point-grid.json``, which every reader has
-#: always required, and ``body.file`` names that grid. A 1.x reader that never
-#: opened the STEP reads a 1.2 bundle unchanged; ``read_wglink`` still reads
-#: 1.0/1.1 bundles, whose body is ``waveguide.step``.
-WGLINK_BUNDLE_VERSION = "1.2"
+#: always required, and ``body.file`` names that grid. 1.3 puts the throat
+#: centre at the link-local origin instead of applying ``Mesh.VerticalOffset``
+#: (``THROAT_ORIGIN_FRAME_FEATURE``, which a 1.2 reader refuses).
+#: ``read_wglink`` still reads 1.0-1.2 bundles, which are placed by their
+#: offset, and 1.0/1.1 bundles, whose body is ``waveguide.step``.
+WGLINK_BUNDLE_VERSION = "1.3"
 WGLINK_BODY_FILE = "point-grid.json"
 
 
@@ -570,11 +578,19 @@ def write_step(
     *,
     open_throat: bool = True,
     outer_envelope: bool = False,
+    link_frame: bool = False,
 ) -> tuple[Path, CadInfo]:
     """Write the waveguide's OCC model to a STEP file in millimetres.
 
     See :func:`_write_step_once`. An outer envelope whose fitted faces measure
     short is rebuilt with more clearance before anything is written.
+
+    By default the part is where the mesh is: ``Mesh.VerticalOffset`` applied
+    and the throat at its own station (an ATH slot puts it at z = Slot length,
+    as ATH does). ``link_frame=True`` writes it in the WGLink bundle's frame
+    instead (:func:`hornlab_mesher.datums.link_frame_shift_mm`): throat centre
+    at the origin, no offset, so a STEP and the body a CAD program lofts from
+    the bundle of the same geometry are one part.
     """
     from .offset_envelope import envelope_variant, has_outer_envelope
     from .wall_distance import with_envelope_retries
@@ -582,7 +598,7 @@ def write_step(
     envelope = outer_envelope or has_outer_envelope(geometry)
     return with_envelope_retries(lambda: _write_step_once(
         envelope_variant(geometry), output_path, open_throat=open_throat,
-        outer_envelope=envelope))
+        outer_envelope=envelope, link_frame=link_frame))
 
 
 def _write_step_once(
@@ -592,6 +608,7 @@ def _write_step_once(
     open_throat: bool = True,
     outer_envelope: bool = False,
     stop: Literal["certificate", "solid"] | None = None,
+    link_frame: bool = False,
 ) -> tuple[Path, CadInfo] | None:
     """Write the waveguide's OCC model to a STEP file in millimetres.
 
@@ -756,16 +773,28 @@ def _write_step_once(
                 return None
             _prune_to(gmsh, keep)
 
-            offset = float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0)
-            if offset:
+            if link_frame:
+                # The WGLink bundle's frame: throat centre at the origin and
+                # no placement, so this solid and the body a CAD program lofts
+                # from the bundle of the same geometry are one part.
+                offset = 0.0
+                axial = (
+                    float(link_frame_shift_mm(geometry)[2])
+                    if isinstance(geometry, PointGridHornGeometry)
+                    else 0.0
+                )
+            else:
                 # Mesh.VerticalOffset is a rigid +y placement of the finished
-                # model; the mesh applies it the same way, so a CAD assembly and
-                # the solved model agree on where the waveguide sits.
+                # model; the mesh applies it the same way, so a CAD assembly
+                # and the solved model agree on where the waveguide sits.
+                offset = float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0)
+                axial = 0.0
+            if offset or axial:
                 gmsh.model.occ.translate(
                     gmsh.model.getEntities(3) or gmsh.model.getEntities(2),
                     0.0,
                     offset,
-                    0.0,
+                    axial,
                 )
                 gmsh.model.occ.synchronize()
 
@@ -1101,26 +1130,26 @@ def _point_grid_payload(
     if not np.isfinite(checks).all():
         raise MesherError("check_points contains non-finite coordinates")
 
-    # ONE frame per bundle (plan D1). The STEP body and every datum are in the
-    # placed link-local frame (the body sits at y = vertical_offset), so the
-    # grid ships placed too -- a consumer that lofts these points and mates
-    # against the datums must not need to know about the offset at all. The
-    # stored geometry keeps its unshifted grid; only the payload is placed.
-    offset = float(geometry.vertical_offset_mm)
-    if offset:
-        shift = np.asarray([0.0, offset, 0.0], dtype=np.float64)
+    # ONE frame per bundle: the grid, every datum and every parameter are in
+    # the throat-origin link frame (``link_frame_shift_mm``), so a consumer
+    # that lofts these points and mates against the datums needs no offset.
+    shift = link_frame_shift_mm(geometry)
+    if np.any(shift):
         inner = inner + shift
         if outer is not None:
             outer = outer + shift
         if checks.size:
             checks = checks + shift
+        ring_z = [value + float(shift[2]) for value in ring_z]
 
     return {
         "units": "mm",
         "build_mode": geometry.build_mode.value,
         "frame": "link-local",
-        # Informational: already applied to every coordinate in this payload.
-        "vertical_offset_mm": float(geometry.vertical_offset_mm),
+        # The link frame's vertical offset: always 0 since format 1.3. A 1.2
+        # bundle carried Mesh.VerticalOffset here, already applied to every
+        # coordinate; readers place by it only for such a bundle.
+        "vertical_offset_mm": 0.0,
         "wall_thickness_mm": float(geometry.wall_thickness_mm),
         "n_phi": int(inner.shape[0]),
         # Kept compatible with wg_profile_points.py: this is the station count,
@@ -1167,23 +1196,27 @@ def _parameter_table(
         "mouth_h": float(np.ptp(mouth[:, 1])),
         "depth": z_front - z_throat,
         "wall_t": float(geometry.wall_thickness_mm),
-        "vertical_offset": float(geometry.vertical_offset_mm),
+        # The y of the horn axis in the link frame: 0 since format 1.3 (see
+        # ``_point_grid_payload``). Kept so a CAD program's datums and its
+        # Onshape variable read one value whatever the bundle's version.
+        "vertical_offset": 0.0,
     }
     if geometry.build_mode is PointGridBuildMode.ENCLOSURE:
         bounds = built.enclosure_bounds
         if bounds is None:
             raise MesherError("enclosure parameters require realized enclosure_bounds")
-        # enclosure_bounds is unplaced; absolute placement shares the datums'
-        # link-local frame, with vertical_offset_mm applied on y only.
+        # enclosure_bounds is in the stored frame; absolute placement shares
+        # the datums' link frame (``link_frame_shift_mm``).
+        shift = link_frame_shift_mm(geometry)
         values.update(
             {
                 "enc_w": float(bounds["bx1"]) - float(bounds["bx0"]),
                 "enc_h": float(bounds["by1"]) - float(bounds["by0"]),
                 "enc_depth": float(bounds["enc_depth"]),
                 "enc_edge": float(bounds["clamped_edge"]),
-                "enc_x0": float(bounds["bx0"]),
-                "enc_y0": float(bounds["by0"]) + float(geometry.vertical_offset_mm),
-                "enc_z_front": float(bounds["z_front"]),
+                "enc_x0": float(bounds["bx0"]) + float(shift[0]),
+                "enc_y0": float(bounds["by0"]) + float(shift[1]),
+                "enc_z_front": float(bounds["z_front"]) + float(shift[2]),
             }
         )
     table = [
@@ -1566,7 +1599,11 @@ def write_wglink(
                 "media_type": "application/json",
             },
         }
-        required_features = ["checksummed-files-v1", "link-local-frame-v1"]
+        required_features = [
+            "checksummed-files-v1",
+            "link-local-frame-v1",
+            THROAT_ORIGIN_FRAME_FEATURE,
+        ]
         if source_interfaces:
             required_features.append(SOURCE_INTERFACE_FEATURE)
         manifest: dict[str, Any] = {
@@ -1625,7 +1662,7 @@ def write_wglink(
 
 
 def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str, Any]:
-    """Read a 1.x bundle (1.2 or earlier), rejecting unsupported features and corrupt files."""
+    """Read a 1.x bundle (1.3 or earlier), rejecting unsupported features and corrupt files."""
 
     bundle = Path(path)
     manifest_path = bundle / "wglink.json"
@@ -1646,6 +1683,7 @@ def read_wglink(path: str | Path, *, verify_checksums: bool = True) -> dict[str,
     supported = {
         "checksummed-files-v1",
         "link-local-frame-v1",
+        THROAT_ORIGIN_FRAME_FEATURE,
         SOURCE_INTERFACE_FEATURE,
     }
     unknown = sorted(set(required_features).difference(supported))
@@ -1727,6 +1765,7 @@ __all__ = [
     "WgLinkInfo",
     "WgLinkSourceInterface",
     "SOURCE_INTERFACE_FEATURE",
+    "THROAT_ORIGIN_FRAME_FEATURE",
     "WGLINK_BUNDLE_VERSION",
     "read_wglink",
     "normalise_step_header",
