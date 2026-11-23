@@ -44,7 +44,12 @@ import numpy as np
 
 from .throat_stretch import stretch_config_errors
 
-from .datums import DEFAULT_PLANE_TOLERANCE_MM, derive_datums, link_frame_shift_mm
+from .datums import (
+    DEFAULT_PLANE_TOLERANCE_MM,
+    cad_frame_shift_mm,
+    derive_datums,
+    link_frame_shift_mm,
+)
 from .geometry import (
     BuiltGeometry,
     HornGeometry,
@@ -773,28 +778,16 @@ def _write_step_once(
                 return None
             _prune_to(gmsh, keep)
 
-            if link_frame:
-                # The WGLink bundle's frame: throat centre at the origin and
-                # no placement, so this solid and the body a CAD program lofts
-                # from the bundle of the same geometry are one part.
-                offset = 0.0
-                axial = (
-                    float(link_frame_shift_mm(geometry)[2])
-                    if isinstance(geometry, PointGridHornGeometry)
-                    else 0.0
-                )
-            else:
-                # Mesh.VerticalOffset is a rigid +y placement of the finished
-                # model; the mesh applies it the same way, so a CAD assembly
-                # and the solved model agree on where the waveguide sits.
-                offset = float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0)
-                axial = 0.0
-            if offset or axial:
+            # By default Mesh.VerticalOffset, a rigid +y placement the mesh
+            # applies the same way, so a CAD assembly and the solved model
+            # agree on where the waveguide sits; with link_frame the WGLink
+            # bundle's frame, so this solid and the body a CAD program lofts
+            # from the bundle of the same geometry are one part.
+            shift = cad_frame_shift_mm(geometry, link_frame=link_frame)
+            if np.any(shift):
                 gmsh.model.occ.translate(
                     gmsh.model.getEntities(3) or gmsh.model.getEntities(2),
-                    0.0,
-                    offset,
-                    axial,
+                    *(float(value) for value in shift),
                 )
                 gmsh.model.occ.synchronize()
 
@@ -890,7 +883,7 @@ def _write_step_once(
                                 "construction": deepcopy(dict(adapter.identity))}
                                if adapter is not None else {})
             if controls is not None:
-                identity_fields={"construction_fingerprint":controls.fingerprint,"construction":controls.identity,"datums":derive_datums(geometry,built)}
+                identity_fields={"construction_fingerprint":controls.fingerprint,"construction":controls.identity,"datums":derive_datums(geometry,built,link_frame=link_frame)}
                 box=(*controls.bounds[0],*controls.bounds[1])
             if composite is not None:
                 identity_fields={"construction_fingerprint":composite.fingerprint,"construction":composite.identity}
@@ -917,7 +910,7 @@ def _write_step_once(
                 **({} if source_body is None else {"source_body":source_body.metadata()["sourceBody"]}),
                 **({} if roundover is None else {"mouth_roundover":roundover.metadata()["mouthRoundover"]}),
                 **({} if axial is None else {"absolute_axial_scale":axial.metadata()["absoluteAxialScale"]}),
-                **({} if arc is None else {"terminating_arc":arc.metadata()["terminatingArc"],"datums":derive_datums(geometry,built)}),
+                **({} if arc is None else {"terminating_arc":arc.metadata()["terminatingArc"],"datums":derive_datums(geometry,built,link_frame=link_frame)}),
             )
         except (MesherError, UserRefusal, EnvelopeShortfall):
             # A fitted-envelope shortfall is classified as on the mesh path:
@@ -1118,7 +1111,9 @@ def _point_grid_payload(
     for station in range(inner.shape[1]):
         z = inner[:, station, 2]
         ring_planar.append(_points_are_planar(inner[:, station, :]))
-        ring_z.append(0.5 * (float(np.min(z)) + float(np.max(z))))
+        # The mean station, as the link frame (``link_frame_shift_mm``) and
+        # the add-in's resampler measure a ring.
+        ring_z.append(float(np.mean(z)))
 
     checks = np.asarray([] if check_points is None else check_points, dtype=np.float64)
     if checks.size == 0:
@@ -1164,6 +1159,13 @@ def _point_grid_payload(
         "outer_points": outer.tolist() if outer is not None else None,
         "check_points": checks.tolist(),
     }
+
+
+#: The interface parameters that state a position in the link frame, and the
+#: axis each is a coordinate on; every other one is a size or a difference.
+#: Format 1.3 writes it on the entry (``position_axis``) so a reader that moves
+#: a bundle into another frame needs no list of its own.
+_POSITION_AXES = {"vertical_offset": "y", "enc_x0": "x", "enc_y0": "y", "enc_z_front": "z"}
 
 
 def _parameter_table(
@@ -1221,6 +1223,7 @@ def _parameter_table(
         )
     table = [
         {"name": prefix + name, "value": value, "unit": "mm", "role": "interface"}
+        | ({"position_axis": _POSITION_AXES[name]} if name in _POSITION_AXES else {})
         for name, value in values.items()
     ]
     for name, value in (informational_parameters or {}).items():
@@ -1573,7 +1576,7 @@ def write_wglink(
             f"wglink export rejects enclosure plan_type={geometry.enclosure.plan_type}; "
             "only plan_type=1 has a buildable watertight non-flush enclosure"
         )
-    datums = derive_datums(geometry, built)
+    datums = derive_datums(geometry, built, link_frame=True)
     point_grid = _point_grid_payload(geometry, check_points=check_points)
     parameters = _parameter_table(
         geometry,

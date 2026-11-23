@@ -46,6 +46,23 @@ def link_frame_shift_mm(geometry: PointGridHornGeometry) -> NDArray[np.float64]:
     return np.asarray([0.0, 0.0, -float(np.mean(points[:, 0, 2]))], dtype=np.float64)
 
 
+def cad_frame_shift_mm(geometry: Any, *, link_frame: bool) -> NDArray[np.float64]:
+    """The translation from stored geometry to a CAD output's frame.
+
+    ``link_frame=True`` is the WGLink bundle's frame (:func:`link_frame_shift_mm`
+    for a point grid; an analytic recipe's throat is already at z = 0).
+    Otherwise it is the mesh's own placement: ``Mesh.VerticalOffset`` on y and
+    the throat at its stored station, as ``write_step`` has always written it.
+    """
+
+    if link_frame:
+        if isinstance(geometry, PointGridHornGeometry):
+            return link_frame_shift_mm(geometry)
+        return np.zeros(3, dtype=np.float64)
+    offset = float(getattr(geometry, "vertical_offset_mm", 0.0) or 0.0)
+    return np.asarray([0.0, offset, 0.0], dtype=np.float64)
+
+
 def _to_link(points: NDArray[np.float64], shift: NDArray[np.float64]) -> NDArray[np.float64]:
     return np.asarray(points, dtype=np.float64) + shift
 
@@ -93,7 +110,9 @@ def _axis_plane(axis: str, value: float) -> dict[str, Any]:
     }
 
 
-def _flush_mouth_outline(geometry: PointGridHornGeometry) -> NDArray[np.float64]:
+def _flush_mouth_outline(
+    geometry: PointGridHornGeometry, shift: NDArray[np.float64]
+) -> NDArray[np.float64]:
     """Sample the same wall boundary that the flush enclosure continues."""
     from .builders._occ import sample_patch_boundary
     from .builders.point_grid_surfaces import _bspline_patch_phi_groups
@@ -118,7 +137,7 @@ def _flush_mouth_outline(geometry: PointGridHornGeometry) -> NDArray[np.float64]
         samples.append(sample_patch_boundary(
             points, group, u, surface_fit=fit, preserve_grid=preserve,
         ))
-    return _to_link(np.vstack(samples), link_frame_shift_mm(geometry))
+    return _to_link(np.vstack(samples), shift)
 
 
 def derive_datums(
@@ -126,41 +145,45 @@ def derive_datums(
     built: BuiltGeometry | None,
     *,
     plane_tolerance_mm: float = DEFAULT_PLANE_TOLERANCE_MM,
+    link_frame: bool = False,
 ) -> dict[str, Any]:
     """Return the v1 datum catalogue for a realized exportable build.
 
-    Only freestanding and enclosure solids have defined v1 semantics.  Point
-    grid datums are in the link frame (:func:`link_frame_shift_mm`), as the
-    bundle's point-grid payload is, so every artifact in a bundle shares one
-    link-local frame with the throat centre at its origin.
+    Only freestanding and enclosure solids have defined v1 semantics. The
+    datums are in the frame :func:`cad_frame_shift_mm` names: by default the
+    mesh's placement (the frame ``write_step`` writes); ``link_frame=True`` is
+    the WGLink bundle's frame, throat centre at the origin, which
+    ``write_wglink`` asks for so every artifact in a bundle shares one frame.
     """
 
     if type(geometry) is StandaloneSourceGeometry:
         return geometry.datums()
     controls = getattr(geometry, "controls_meridian", None)
     if controls is not None:
+        controls_offset = 0.0 if link_frame else controls.offset
         az=np.linspace(0,2*np.pi,64,endpoint=False)
         radius=float(controls.body(1)[0][1])
-        mouth=np.column_stack((radius*np.cos(az),radius*np.sin(az)+controls.offset,np.full(64,controls.depth)))
-        plane=lambda z:{**_axis_plane("z",z),"origin_mm":[0.,controls.offset,z],"nominal":False}
+        mouth=np.column_stack((radius*np.cos(az),radius*np.sin(az)+controls_offset,np.full(64,controls.depth)))
+        plane=lambda z:{**_axis_plane("z",z),"origin_mm":[0.,controls_offset,z],"nominal":False}
         return {"rim_planar":True,"construction_fingerprint":controls.fingerprint,
-            "WG_AXIS":{"type":"axis","origin_mm":[0.,controls.offset,0.],"direction":[0.,0.,1.]},
+            "WG_AXIS":{"type":"axis","origin_mm":[0.,controls_offset,0.],"direction":[0.,0.,1.]},
             "WG_THROAT_PLANE":plane(0.),"WG_ADAPTER_JOIN_PLANE":plane(controls.adapter_length),
             "WG_MOUTH_PLANE":plane(controls.depth),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
-            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",controls.offset),
+            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",controls_offset),
             "WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),"WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
     arc=getattr(geometry,"arc_meridian",None)
     if arc is not None:
+        arc_offset = 0.0 if link_frame else arc.offset
         az=np.arange(64)*2*np.pi/64
         z,r=arc.opening
-        mouth=np.column_stack((r*np.cos(az),r*np.sin(az)+arc.offset,np.full(64,z)))
+        mouth=np.column_stack((r*np.cos(az),r*np.sin(az)+arc_offset,np.full(64,z)))
         def plane(z):
-            return {**_axis_plane("z",z),"origin_mm":[0.,arc.offset,float(z)]}
-        datums={"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,arc.offset,0.],"direction":[0.,0.,1.]},
+            return {**_axis_plane("z",z),"origin_mm":[0.,arc_offset,float(z)]}
+        datums={"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.,arc_offset,0.],"direction":[0.,0.,1.]},
             "WG_THROAT_PLANE":{**plane(0),"nominal":False},"WG_ARC_JOIN_PLANE":plane(arc.join_z),
             "WG_MOUTH_PLANE":plane(z),"WG_MOUTH_OUTLINE_INNER":_polyline(mouth),
             "WG_BODY_MOUTH_REFERENCE_PLANE":{**plane(arc.body_mouth_z),"nominal":True,"reference":True},
-            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",arc.offset),"WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),
+            "WG_GEOM_MIDPLANE_Y":_axis_plane("y",arc_offset),"WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.),
             "WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
         if arc.throat is not None:
             datums["WG_ADAPTER_JOIN_PLANE"]={**plane(arc.conic_start_z),"nominal":False}
@@ -169,7 +192,7 @@ def derive_datums(
     adapter = getattr(geometry, "adapter_meridian", None)
     if isinstance(adapter, PhysicalAdapter):
         az = np.arange(64)*2*np.pi/64
-        offset = adapter.offset
+        offset = 0.0 if link_frame else adapter.offset
         mouth_z = float(adapter.body_poles[-1,0])
         radius = float(adapter.body_poles[-1,1])
         mouth = np.column_stack((radius*np.cos(az),radius*np.sin(az)+offset,np.full(64,mouth_z)))
@@ -182,14 +205,15 @@ def derive_datums(
             "WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.)}
     axial = getattr(geometry, "axial_model", None)
     if axial is not None:
+        axial_offset = 0.0 if link_frame else axial.offset
         az = np.linspace(0,2*np.pi,64,endpoint=False)
         radius = float(axial.body(axial.length)[0][1])
-        mouth = np.column_stack((radius*np.cos(az),radius*np.sin(az)+axial.offset,np.full(64,axial.length)))
-        throat_plane = {**_axis_plane("z",0),"origin_mm":[0.0,axial.offset,0.0],"nominal":False}
-        mouth_plane = {**_axis_plane("z",axial.length),"origin_mm":[0.0,axial.offset,axial.length]}
-        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.0,axial.offset,0.0],"direction":[0.0,0.0,1.0]},
+        mouth = np.column_stack((radius*np.cos(az),radius*np.sin(az)+axial_offset,np.full(64,axial.length)))
+        throat_plane = {**_axis_plane("z",0),"origin_mm":[0.0,axial_offset,0.0],"nominal":False}
+        mouth_plane = {**_axis_plane("z",axial.length),"origin_mm":[0.0,axial_offset,axial.length]}
+        return {"rim_planar":True,"WG_AXIS":{"type":"axis","origin_mm":[0.0,axial_offset,0.0],"direction":[0.0,0.0,1.0]},
             "WG_THROAT_PLANE":throat_plane,"WG_MOUTH_PLANE":mouth_plane,
-            "WG_MOUTH_OUTLINE_INNER":_polyline(mouth),"WG_GEOM_MIDPLANE_Y":_axis_plane("y",axial.offset),
+            "WG_MOUTH_OUTLINE_INNER":_polyline(mouth),"WG_GEOM_MIDPLANE_Y":_axis_plane("y",axial_offset),
             "WG_SOLVER_CUT_PLANE_Y":_axis_plane("y",0.0),"WG_SOLVER_CUT_PLANE_X":_axis_plane("x",0.0)}
     mode = geometry.build_mode
     if mode not in {PointGridBuildMode.FREESTANDING, PointGridBuildMode.ENCLOSURE}:
@@ -201,15 +225,15 @@ def derive_datums(
     if points.ndim != 3 or points.shape[2] != 3 or points.shape[0] < 3:
         raise ValueError("inner_points must have shape (n_phi, n_length, 3)")
 
-    shift = link_frame_shift_mm(geometry)
-    dz = float(shift[2])
+    shift = cad_frame_shift_mm(geometry, link_frame=link_frame)
+    dy, dz = float(shift[1]), float(shift[2])
     throat = _to_link(points[:, 0, :], shift)
     mouth = _to_link(points[:, -1, :], shift)
     roundover = getattr(geometry, "roundover", None)
     if roundover is not None:
         azimuth = np.arctan2(points[:,0,1],points[:,0,0])
         radius = float(roundover.body(roundover.length)[0][1])
-        mouth = np.column_stack((radius*np.cos(azimuth),radius*np.sin(azimuth),
+        mouth = np.column_stack((radius*np.cos(azimuth),radius*np.sin(azimuth)+dy,
                                  np.full(len(azimuth),roundover.length+dz)))
     throat_planar, throat_plane = _fit_plane(
         throat, tolerance_mm=plane_tolerance_mm
@@ -220,7 +244,7 @@ def derive_datums(
         "rim_planar": mouth_planar,
         "WG_AXIS": {
             "type": "axis",
-            "origin_mm": [0.0, 0.0, 0.0],
+            "origin_mm": [0.0, dy, 0.0],
             "direction": _axis_direction(built.source_axis),
         },
         "WG_THROAT_PLANE": {
@@ -229,7 +253,7 @@ def derive_datums(
             "nominal": not throat_planar,
         },
         "WG_MOUTH_OUTLINE_INNER": _polyline(mouth),
-        "WG_GEOM_MIDPLANE_Y": _axis_plane("y", 0.0),
+        "WG_GEOM_MIDPLANE_Y": _axis_plane("y", dy),
         "WG_SOLVER_CUT_PLANE_Y": _axis_plane("y", 0.0),
         "WG_SOLVER_CUT_PLANE_X": _axis_plane("x", 0.0),
     }
@@ -237,7 +261,7 @@ def derive_datums(
         datums["WG_MOUTH_PLANE"] = {**mouth_plane, "exact": True}
     if roundover is not None and roundover.throat is not None:
         datums["WG_ADAPTER_JOIN_PLANE"] = {**_axis_plane("z", roundover.start + dz),
-            "origin_mm": [0.0, 0.0, roundover.start + dz], "nominal": False}
+            "origin_mm": [0.0, dy, roundover.start + dz], "nominal": False}
 
     if mode is PointGridBuildMode.FREESTANDING:
         if geometry.outer_points is None:
@@ -246,7 +270,7 @@ def derive_datums(
         datums["WG_MOUTH_OUTLINE_OUTER"] = _polyline(
             _to_link(outer[:, -1, :], shift) if roundover is None else
             np.column_stack((float(roundover.body(roundover.length,True)[0][1])*np.cos(azimuth),
-                             float(roundover.body(roundover.length,True)[0][1])*np.sin(azimuth),
+                             float(roundover.body(roundover.length,True)[0][1])*np.sin(azimuth)+dy,
                              np.full(len(azimuth),float(roundover.body(roundover.length,True)[0][0])+dz)))
         )
         return datums
@@ -283,7 +307,7 @@ def derive_datums(
         # the denser outer datum preserves the shape between those rays.
         from .preview.enclosure import _fit_flush_mouth
 
-        mouth = _flush_mouth_outline(geometry)
+        mouth = _flush_mouth_outline(geometry, shift)
         # The fit works in the mesh's placed frame (Mesh.VerticalOffset);
         # take the placement back out before moving into the link frame.
         placed = np.asarray([0.0, float(geometry.vertical_offset_mm), 0.0])
@@ -340,4 +364,9 @@ def derive_datums(
     return datums
 
 
-__all__ = ["DEFAULT_PLANE_TOLERANCE_MM", "derive_datums", "link_frame_shift_mm"]
+__all__ = [
+    "DEFAULT_PLANE_TOLERANCE_MM",
+    "cad_frame_shift_mm",
+    "derive_datums",
+    "link_frame_shift_mm",
+]

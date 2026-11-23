@@ -1023,13 +1023,11 @@ def test_adapter_roundover_preview_dimensions_and_datums(name):
     dims=canonical_dimensions(c);box=np.asarray(m.bounds)
     assert dims["mouth_opening"] == [2*float(m.body(m.length)[0][1])]*2
     np.testing.assert_allclose(dims["horn_overall"],box[1]-box[0])
-    # Point-grid datums are in the throat-origin link frame (bundle format
-    # 1.3): Mesh.VerticalOffset does not move them.
     d=derive_datums(g,SimpleNamespace(source_axis="z"))
-    assert d["WG_ADAPTER_JOIN_PLANE"]["origin_mm"] == [0.,0.,m.start]
+    assert d["WG_ADAPTER_JOIN_PLANE"]["origin_mm"] == [0.,m.offset,m.start]
     assert d["WG_THROAT_PLANE"]["origin_mm"][2] == 0
     mouth=np.asarray(d["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
-    np.testing.assert_allclose(np.hypot(mouth[:,0],mouth[:,1]),m.body(m.length)[0][1],rtol=1e-12)
+    np.testing.assert_allclose(np.hypot(mouth[:,0],mouth[:,1]-m.offset),m.body(m.length)[0][1],rtol=1e-12)
     np.testing.assert_allclose(mouth[:,2],m.length)
 
 

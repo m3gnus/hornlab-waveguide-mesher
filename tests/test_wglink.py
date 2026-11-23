@@ -172,7 +172,7 @@ def test_vertical_offset_does_not_move_the_link_frame():
     needed a datum pair (WG_GEOM_MIDPLANE_Y, WG_AXIS) just to find it again.
     """
     geometry = _freestanding(vertical_offset_mm=37.5)
-    datums = derive_datums(geometry, _built(geometry))
+    datums = derive_datums(geometry, _built(geometry), link_frame=True)
 
     assert datums["WG_AXIS"]["origin_mm"] == [0.0, 0.0, 0.0]
     assert datums["WG_GEOM_MIDPLANE_Y"]["origin_mm"][1] == 0.0
@@ -180,6 +180,25 @@ def test_vertical_offset_does_not_move_the_link_frame():
     assert datums["WG_THROAT_PLANE"]["origin_mm"] == pytest.approx([0.0, 0.0, 0.0])
     mouth = np.asarray(datums["WG_MOUTH_OUTLINE_INNER"]["points_mm"])
     assert mouth[:, 1] == pytest.approx(geometry.inner_points[:, -1, 1])
+
+
+def test_default_datums_keep_the_mesh_placement_that_write_step_writes():
+    """``derive_datums`` without ``link_frame`` is the frame a default STEP is in.
+
+    ``CadInfo.datums`` of a placed STEP comes from it, so it must keep the
+    offset (and the throat's own station) the STEP keeps.
+    """
+
+    raised = _freestanding(vertical_offset_mm=37.5)
+    raised = replace(raised, inner_points=raised.inner_points + np.asarray([0.0, 0.0, 7.0]))
+    datums = derive_datums(raised, _built(raised))
+
+    assert datums["WG_AXIS"]["origin_mm"] == [0.0, 37.5, 0.0]
+    assert datums["WG_GEOM_MIDPLANE_Y"]["origin_mm"][1] == 37.5
+    assert datums["WG_SOLVER_CUT_PLANE_Y"]["origin_mm"][1] == 0.0
+    assert datums["WG_THROAT_PLANE"]["origin_mm"] == pytest.approx([0.0, 37.5, 7.0])
+    linked = derive_datums(raised, _built(raised), link_frame=True)
+    assert linked["WG_THROAT_PLANE"]["origin_mm"] == pytest.approx([0.0, 0.0, 0.0])
 
 
 def test_point_grid_payload_shares_the_throat_origin_datum_frame(monkeypatch, tmp_path):
@@ -531,6 +550,16 @@ def test_bundle_round_trip_realized_parameters_identity_and_checksums(monkeypatc
     for name in ("wg_a_1_enc_x0", "wg_a_1_enc_y0", "wg_a_1_enc_z_front"):
         assert parameter_entries[name]["role"] == "interface"
         assert parameter_entries[name]["unit"] == "mm"
+    assert {
+        name: entry["position_axis"]
+        for name, entry in parameter_entries.items()
+        if "position_axis" in entry
+    } == {
+        "wg_a_1_vertical_offset": "y",
+        "wg_a_1_enc_x0": "x",
+        "wg_a_1_enc_y0": "y",
+        "wg_a_1_enc_z_front": "z",
+    }
 
     datums = manifest["datums"]
     envelope = np.asarray(datums["WG_BAFFLE_OUTLINE_ENVELOPE"]["points_mm"])

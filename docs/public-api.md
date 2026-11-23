@@ -195,7 +195,13 @@ keeps importing `_lod_config` and `_guiding_curve_warnings` for WG.
   bundle was placed by the offset; a 1.2 reader refuses a 1.3 bundle, so it
   never moves an existing offset link. `write_step` keeps the mesh's placement
   by default (offset applied, an ATH slot's throat at z = Slot length);
-  `write_step(..., link_frame=True)` writes the bundle's frame instead. The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
+  `write_step(..., link_frame=True)` writes the bundle's frame instead.
+  `derive_datums(..., link_frame=False)` follows the same switch (default: the
+  mesh's placement, the frame of a default STEP and of its `CadInfo.datums`);
+  `write_wglink` asks for the link frame, and `datums.cad_frame_shift_mm` is
+  the one translation both use. In 1.3 each interface parameter that is a
+  position carries `position_axis` (`x`, `y` or `z`), and `ring_z_mm` is each
+  ring's mean station (it was the mid-range; equal for planar rings). The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and
   `_SOURCE_PATCH_POLICIES` in `wglink_bundle.py`; change both together.
 
 ### Pre-mesh sizing (`hornlab_mesher.mesh_sizing`)
