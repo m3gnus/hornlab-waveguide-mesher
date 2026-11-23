@@ -198,7 +198,9 @@ keeps importing `_lod_config` and `_guiding_curve_warnings` for WG.
   `write_step(..., link_frame=True)` writes the bundle's frame instead.
   `derive_datums(..., link_frame=False)` follows the same switch (default: the
   mesh's placement, the frame of a default STEP and of its `CadInfo.datums`);
-  `write_wglink` asks for the link frame, and `datums.cad_frame_shift_mm` is
+  `write_wglink` asks for the link frame (`write_wglink(..., link_frame=False)`
+  still writes a format 1.2 placed bundle, for WG's Onshape send), and
+  `datums.cad_frame_shift_mm` is
   the one translation both use. In 1.3 each interface parameter that is a
   position carries `position_axis` (`x`, `y` or `z`), and `ring_z_mm` is each
   ring's mean station (it was the mid-range; equal for planar rings). The add-in mirrors `hornlab_mesher.cad._SOURCE_INTERFACE_KEYS` and

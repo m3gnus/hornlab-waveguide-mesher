@@ -1094,6 +1094,7 @@ def _point_grid_payload(
     geometry: PointGridHornGeometry,
     *,
     check_points: object | None,
+    link_frame: bool = True,
 ) -> dict[str, Any]:
     inner = np.asarray(geometry.inner_points, dtype=np.float64)
     if inner.ndim != 3 or inner.shape[2] != 3 or inner.shape[0] < 3:
@@ -1128,7 +1129,7 @@ def _point_grid_payload(
     # ONE frame per bundle: the grid, every datum and every parameter are in
     # the throat-origin link frame (``link_frame_shift_mm``), so a consumer
     # that lofts these points and mates against the datums needs no offset.
-    shift = link_frame_shift_mm(geometry)
+    shift = cad_frame_shift_mm(geometry, link_frame=link_frame)
     if np.any(shift):
         inner = inner + shift
         if outer is not None:
@@ -1144,7 +1145,7 @@ def _point_grid_payload(
         # The link frame's vertical offset: always 0 since format 1.3. A 1.2
         # bundle carried Mesh.VerticalOffset here, already applied to every
         # coordinate; readers place by it only for such a bundle.
-        "vertical_offset_mm": 0.0,
+        "vertical_offset_mm": float(shift[1]),
         "wall_thickness_mm": float(geometry.wall_thickness_mm),
         "n_phi": int(inner.shape[0]),
         # Kept compatible with wg_profile_points.py: this is the station count,
@@ -1174,6 +1175,7 @@ def _parameter_table(
     *,
     instance_slug: str,
     informational_parameters: Mapping[str, float] | None,
+    link_frame: bool = True,
 ) -> list[dict[str, Any]]:
     slug = re.sub(r"[^a-z0-9_]+", "_", instance_slug.strip().lower()).strip("_")
     if not slug:
@@ -1201,7 +1203,9 @@ def _parameter_table(
         # The y of the horn axis in the link frame: 0 since format 1.3 (see
         # ``_point_grid_payload``). Kept so a CAD program's datums and its
         # Onshape variable read one value whatever the bundle's version.
-        "vertical_offset": 0.0,
+        "vertical_offset": float(
+            cad_frame_shift_mm(geometry, link_frame=link_frame)[1]
+        ),
     }
     if geometry.build_mode is PointGridBuildMode.ENCLOSURE:
         bounds = built.enclosure_bounds
@@ -1209,7 +1213,7 @@ def _parameter_table(
             raise MesherError("enclosure parameters require realized enclosure_bounds")
         # enclosure_bounds is in the stored frame; absolute placement shares
         # the datums' link frame (``link_frame_shift_mm``).
-        shift = link_frame_shift_mm(geometry)
+        shift = cad_frame_shift_mm(geometry, link_frame=link_frame)
         values.update(
             {
                 "enc_w": float(bounds["bx1"]) - float(bounds["bx0"]),
@@ -1223,7 +1227,11 @@ def _parameter_table(
         )
     table = [
         {"name": prefix + name, "value": value, "unit": "mm", "role": "interface"}
-        | ({"position_axis": _POSITION_AXES[name]} if name in _POSITION_AXES else {})
+        | (
+            {"position_axis": _POSITION_AXES[name]}
+            if link_frame and name in _POSITION_AXES
+            else {}
+        )
         for name, value in values.items()
     ]
     for name, value in (informational_parameters or {}).items():
@@ -1512,8 +1520,15 @@ def write_wglink(
     informational_parameters: Mapping[str, float] | None = None,
     interface_sources: Sequence[WgLinkSourceInterface | Mapping[str, Any]]
     | None = None,
+    link_frame: bool = True,
 ) -> WgLinkInfo:
     """Write a checksummed ``.wglink`` directory and return every product.
+
+    ``link_frame`` (default) writes format 1.3, throat centre at the origin.
+    ``link_frame=False`` writes the format 1.2 placed frame instead
+    (``Mesh.VerticalOffset`` applied on y, the throat at its own station, no
+    ``position_axis`` marks), for a consumer whose existing documents were
+    built in it (WG's Onshape send).
 
     The bundle is the CAD hand-off: its body is ``point-grid.json``, which the
     CAD program lofts natively, plus the datums, parameters and identity in
@@ -1576,13 +1591,16 @@ def write_wglink(
             f"wglink export rejects enclosure plan_type={geometry.enclosure.plan_type}; "
             "only plan_type=1 has a buildable watertight non-flush enclosure"
         )
-    datums = derive_datums(geometry, built, link_frame=True)
-    point_grid = _point_grid_payload(geometry, check_points=check_points)
+    datums = derive_datums(geometry, built, link_frame=link_frame)
+    point_grid = _point_grid_payload(
+        geometry, check_points=check_points, link_frame=link_frame
+    )
     parameters = _parameter_table(
         geometry,
         built,
         instance_slug=instance_slug,
         informational_parameters=informational_parameters,
+        link_frame=link_frame,
     )
     identity_sections = _identity_sections(identity)
     identity_sections.setdefault("generator", _default_generator())
@@ -1602,15 +1620,13 @@ def write_wglink(
                 "media_type": "application/json",
             },
         }
-        required_features = [
-            "checksummed-files-v1",
-            "link-local-frame-v1",
-            THROAT_ORIGIN_FRAME_FEATURE,
-        ]
+        required_features = ["checksummed-files-v1", "link-local-frame-v1"]
+        if link_frame:
+            required_features.append(THROAT_ORIGIN_FRAME_FEATURE)
         if source_interfaces:
             required_features.append(SOURCE_INTERFACE_FEATURE)
         manifest: dict[str, Any] = {
-            "wglink_version": WGLINK_BUNDLE_VERSION,
+            "wglink_version": WGLINK_BUNDLE_VERSION if link_frame else "1.2",
             "required_features": required_features,
             **identity_sections,
             "coordinate_system": {

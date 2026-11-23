@@ -228,6 +228,30 @@ def test_point_grid_payload_shares_the_throat_origin_datum_frame(monkeypatch, tm
     assert result.manifest["wglink_version"] == WGLINK_BUNDLE_VERSION == "1.3"
 
 
+def test_the_placed_frame_is_the_format_1_2_bundle(monkeypatch, tmp_path):
+    """``link_frame=False`` writes what every bundle was before 1.3, for a
+    consumer whose existing documents were built in it (WG's Onshape send)."""
+
+    _fake_step(monkeypatch)
+    geometry = _enclosure_geometry(vertical_offset_mm=11.0)
+    result = write_wglink(geometry, tmp_path / "placed.wglink", link_frame=False,
+                          check_points=[[1.0, 2.0, 3.0]])
+    manifest = read_wglink(result.path)
+    grid = json.loads(result.point_grid_path.read_text())
+
+    assert manifest["wglink_version"] == "1.2"
+    assert THROAT_ORIGIN_FRAME_FEATURE not in manifest["required_features"]
+    assert grid["vertical_offset_mm"] == 11.0
+    np.testing.assert_allclose(grid["inner_points"], geometry.inner_points + [0.0, 11.0, 0.0])
+    assert grid["check_points"] == [[1.0, 13.0, 3.0]]
+    entries = {e["name"]: e for e in manifest["parameters"]}
+    bounds = _built(geometry).enclosure_bounds
+    assert entries["wg_waveguide_vertical_offset"]["value"] == 11.0
+    assert entries["wg_waveguide_enc_y0"]["value"] == pytest.approx(bounds["by0"] + 11.0)
+    assert not any("position_axis" in entry for entry in entries.values())
+    assert manifest["datums"]["WG_AXIS"]["origin_mm"] == [0.0, 11.0, 0.0]
+
+
 def test_a_throat_off_z_zero_is_moved_to_the_link_origin(monkeypatch, tmp_path):
     """Every artifact in the bundle moves by one axial shift to put the throat at z = 0."""
 
