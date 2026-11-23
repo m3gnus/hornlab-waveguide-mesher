@@ -334,3 +334,14 @@ def test_equal_area_source_and_annulus_keep_the_actual_inner_disk(relative_delta
         assert len(annulus)==1
         assert math.isclose(gmsh.model.occ.getMass(2,annulus[0]),math.pi*(R*R-r*r),rel_tol=1e-8)
     finally:gmsh.finalize()
+
+
+def test_an_out_of_range_offset_names_the_native_offset_control():
+    """The refusal labels its control from the catalog (the rename of 23 Nov 2026)."""
+
+    from hornlab_mesher.errors import UserRefusal
+
+    with pytest.raises(UserRefusal) as refused:
+        resolve_geometry(config(vertical_offset_mm=10001))
+    assert refused.value.field == "Vertical offset (native STEP/STL)"
+    assert "between -10000 and 10000 mm" in refused.value.next_step

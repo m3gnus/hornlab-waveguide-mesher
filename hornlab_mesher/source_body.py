@@ -48,7 +48,7 @@ class StandaloneSourceGeometry:
         if not 0.1 <= self.depth_mm <= 500:
             raise control_refusal("depth_mm must be in [0.1, 500]", 'Source body depth', 'Enter Source body depth from 0.1 to 500 mm.', message='Source body depth is outside the supported range.')
         if abs(self.vertical_offset_mm) > 10000:
-            raise control_refusal("vertical_offset_mm magnitude must be <=10000", 'Export vertical offset', 'Enter Export vertical offset between -10000 and 10000 mm.', message='Export vertical offset is outside the supported range.')
+            raise control_refusal("vertical_offset_mm magnitude must be <=10000", 'native.mesh.offset', 'Enter Vertical offset (native STEP/STL) between -10000 and 10000 mm.', message='Vertical offset (native STEP/STL) is outside the supported range.')
 
     @property
     def bounds(self):

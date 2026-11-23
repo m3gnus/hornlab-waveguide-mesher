@@ -842,12 +842,12 @@
   "mesh.vertical_offset": {
     "path": "mesh.vertical_offset",
     "legacyKey": "verticalOffset",
-    "label": "Export vertical offset"
+    "label": "Vertical offset (ATH config)"
   },
   "native.mesh.offset": {
     "path": "mesh.vertical_offset",
     "legacyKey": "mesh.vertical_offset",
-    "label": "Export vertical offset"
+    "label": "Vertical offset (native STEP/STL)"
   },
   "mesh.quadrants": {
     "path": "mesh.quadrants",
