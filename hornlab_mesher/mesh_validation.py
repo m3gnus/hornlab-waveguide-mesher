@@ -13,6 +13,10 @@ import numpy as np
 
 from .step_mapping import RIGID_TAG, StepFaceGroup
 from .step_prepare import millimetres_to_step_units
+# The rim detector and the signed-volume noise rule live with the reduced-mesh
+# check in .symmetry; these names stay importable from here.
+from .symmetry import SIGNED_VOLUME_NOISE_REL
+from .symmetry import detect_symmetry_planes as detect_symmetry_planes
 
 SPEED_OF_SOUND_M_S = 343.0
 FREQUENCY_ELEMENTS_PER_WAVELENGTH = 6.0
@@ -67,18 +71,6 @@ def _signed_volume(points: np.ndarray, triangles: np.ndarray) -> float:
     return float(np.sum(p0 * np.cross(p1, p2)) / 6.0)
 
 
-#: Fraction of a component's own ``area ** 1.5`` below which its signed volume
-#: is rounding noise rather than an orientation. The sum is taken over
-#: coordinates, so its absolute error scales with the component's size and
-#: triangle count, and a near-degenerate component -- a sliver panel, a shell
-#: whose two cut planes almost coincide -- encloses so little that the sign is
-#: whatever the accumulation happened to leave. Exactly ``0.0`` is therefore not
-#: the only unresolved case, and flipping on a noise sign would silently invert
-#: normals that the solver then trusts. A genuinely reduced closed shell sits
-#: many orders of magnitude above this: a half-box scores ~0.09.
-SIGNED_VOLUME_NOISE_REL = 1.0e-9
-
-
 def _signed_volume_noise_floor(points: np.ndarray, triangles: np.ndarray) -> float:
     """Magnitude below which ``_signed_volume`` cannot be read as a sign."""
 
@@ -99,110 +91,6 @@ def _edge_on_expected_plane(
         if all(abs(float(points[vertex, axis])) <= tol for vertex in edge):
             return True
     return False
-
-def detect_symmetry_planes(
-    points: np.ndarray,
-    triangles: np.ndarray,
-    *,
-    tolerance: float,
-    min_edges_per_plane: int = 3,
-) -> tuple[tuple[str, ...], dict[str, object]]:
-    """Detect symmetry cut planes from free edges lying on x=0/y=0/z=0.
-
-    Only free edges lying exclusively on a single coordinate plane count
-    toward that plane. A cut rim in the x=0 wall crossing height z=0
-    contributes edges that sit on both planes at once; counting those toward
-    z0 would misread an internal level as a cut plane. A true cut outline
-    always has edges away from the other coordinate planes, so the exclusive
-    count stays robust. ``min_edges_per_plane`` additionally keeps an
-    isolated leak vertex near the origin from masquerading as a plane. A
-    candidate must also have the whole mesh on one side of it: stray free
-    edges along an internal origin plane cannot turn a full-span model into a
-    native symmetry-reduced solve.
-    """
-    points = np.asarray(points, dtype=np.float64)
-    triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
-    edges = np.sort(triangles[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
-    if len(edges):
-        _unique, first, counts = np.unique(
-            edges, axis=0, return_index=True, return_counts=True
-        )
-        free_rows = first[counts == 1]
-    else:
-        free_rows = np.zeros(0, dtype=np.int64)
-    free_edges = edges[free_rows]
-    free_edge_triangles = free_rows // 3
-
-    on_plane = np.stack(
-        [np.all(np.abs(points[free_edges, axis]) <= tolerance, axis=1) for axis in range(3)],
-        axis=1,
-    ) if len(free_edges) else np.zeros((0, 3), dtype=bool)
-    planes_per_edge = on_plane.sum(axis=1)
-    plane_counts = {
-        plane: int(np.count_nonzero(on_plane[:, axis] & (planes_per_edge == 1)))
-        for axis, plane in enumerate(("x0", "y0", "z0"))
-    }
-    shared_plane_edges = int(np.count_nonzero(planes_per_edge > 1))
-
-    # How squarely the surface meets each plane along its rim: the median
-    # |normal . plane normal| of the triangles owning the plane's free edges.
-    # A mirror-symmetric smooth surface crosses its mirror plane at a right
-    # angle (0); a horn mouth that merely ends on the plane meets it at its
-    # flare angle. Reported only: it is evidence for a caller deciding whether
-    # an undeclared open rim is a cut, never a verdict of this detector.
-    rim_normal_component: dict[str, float | None] = {}
-    for axis, plane in enumerate(("x0", "y0", "z0")):
-        rows = free_edge_triangles[on_plane[:, axis] & (planes_per_edge == 1)] if len(free_edges) else []
-        if len(rows) == 0:
-            rim_normal_component[plane] = None
-            continue
-        owners = triangles[rows]
-        normals = np.cross(
-            points[owners[:, 1]] - points[owners[:, 0]],
-            points[owners[:, 2]] - points[owners[:, 0]],
-        )
-        lengths = np.linalg.norm(normals, axis=1)
-        valid = lengths > 0.0
-        rim_normal_component[plane] = (
-            float(np.median(np.abs(normals[valid, axis]) / lengths[valid]))
-            if np.any(valid)
-            else None
-        )
-
-    plane_vertex_side_counts: dict[str, dict[str, int]] = {}
-    one_sided: dict[str, bool] = {}
-    for axis, plane in enumerate(("x0", "y0", "z0")):
-        coordinates = points[:, axis]
-        negative = int(np.count_nonzero(coordinates < -tolerance))
-        positive = int(np.count_nonzero(coordinates > tolerance))
-        plane_vertex_side_counts[plane] = {
-            "negative": negative,
-            "on_plane": int(len(coordinates) - negative - positive),
-            "positive": positive,
-        }
-        one_sided[plane] = not (negative and positive)
-
-    detected = tuple(
-        plane for plane in ("x0", "y0", "z0")
-        if plane_counts[plane] >= min_edges_per_plane and one_sided[plane]
-    )
-    rejected_spanning_planes = [
-        plane for plane in ("x0", "y0", "z0")
-        if plane_counts[plane] >= min_edges_per_plane and not one_sided[plane]
-    ]
-    detection = {
-        "mode": "auto",
-        "free_edges": int(len(free_edges)),
-        "plane_free_edge_counts": {k: int(v) for k, v in plane_counts.items()},
-        "plane_vertex_side_counts": plane_vertex_side_counts,
-        "rejected_spanning_planes": rejected_spanning_planes,
-        "shared_plane_free_edges": int(shared_plane_edges),
-        "rim_normal_component": rim_normal_component,
-        "min_edges_per_plane": int(min_edges_per_plane),
-        "tolerance": float(tolerance),
-        "detected_planes": list(detected),
-    }
-    return detected, detection
 
 
 def _triangle_edge_lengths(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+import math
 
 import numpy as np
 
@@ -52,6 +53,20 @@ gmsh = _LazyGmsh()
 
 DEFAULT_AUTO_CUT_TOLERANCE_REL = TOLERANCES["fitted"].relative
 DEFAULT_AUTO_CUT_GRID = 7
+#: The mirror test samples each face at least every this fraction of the
+#: model's diagonal, along each of its parameter directions; the fixed
+#: ``DEFAULT_AUTO_CUT_GRID`` per face is the floor. With a fixed grid alone a
+#: one-sided hole or boss smaller than a large face's sample spacing can fall
+#: between the samples and the model is cut as if it mirrored. At 2% a hole
+#: wider than about 3% of the diagonal (20 mm on a 600 mm model) always holds
+#: a sample of the face around it.
+DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL = 0.02
+#: Per face and direction, and for the whole model: the cost cap. Each sample
+#: costs one closest-point query per candidate plane (measured ~0.05-0.5 ms,
+#: B-spline faces the dearest), so the cap bounds the mirror test at a few
+#: seconds; past it the spacing widens evenly for every face.
+AUTO_CUT_MAX_FACE_GRID = 96
+AUTO_CUT_MAX_SAMPLE_POINTS = 20_000
 AUTO_CUT_SPAN_REL = SPAN_TOLERANCE_REL
 AUTO_CUT_TRIM_NUDGE_REL = 1.0e-3
 AUTO_CUT_BOX_PAD_REL = 0.1
@@ -138,9 +153,16 @@ def _param_inside(surface: int, u: float, v: float) -> bool:
         return False
 
 
-def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
-    """Point-sample the actual trimmed OCC face, not its untrimmed extension."""
-    if grid < 2:
+def sample_occ_surface_points(
+    surface: int, *, grid: int, grid_v: int | None = None
+) -> np.ndarray:
+    """Point-sample the actual trimmed OCC face, not its untrimmed extension.
+
+    ``grid`` samples along the face's first parameter direction and
+    ``grid_v`` (default: the same) along its second.
+    """
+    grid_v = grid if grid_v is None else grid_v
+    if grid < 2 or grid_v < 2:
         raise ValueError("grid must be at least 2")
     try:
         bounds_min, bounds_max = gmsh.model.getParametrizationBounds(2, surface)
@@ -151,17 +173,85 @@ def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
     if umax > umin and vmax > vmin:
         for factor in (1, 4):
             n = max(2, grid * factor)
+            m = max(2, grid_v * factor)
             kept: list[float] = []
             for i in range(n):
                 u = umin + (i + 0.5) * (umax - umin) / n
-                for j in range(n):
-                    v = vmin + (j + 0.5) * (vmax - vmin) / n
+                for j in range(m):
+                    v = vmin + (j + 0.5) * (vmax - vmin) / m
                     if _param_inside(surface, u, v):
                         kept.extend((u, v))
             if kept:
                 coords = gmsh.model.getValue(2, surface, kept)
                 return np.asarray(coords, dtype=float).reshape(-1, 3)
     return _sample_occ_surface_boundary_points(surface, grid=grid)
+
+
+def _parameter_lengths(surface: int) -> tuple[float, float]:
+    """The face's length along each parameter direction, through its middle.
+
+    Measured on the untrimmed parametrisation (a trimmed face is never longer
+    than this), as a polyline through nine points per direction: a sample
+    spacing needs the length to within a few per cent, not exactly. A face
+    OCC cannot evaluate answers zero, and keeps the floor grid.
+    """
+
+    try:
+        bounds_min, bounds_max = gmsh.model.getParametrizationBounds(2, surface)
+        umin, vmin = float(bounds_min[0]), float(bounds_min[1])
+        umax, vmax = float(bounds_max[0]), float(bounds_max[1])
+        if not (umax > umin and vmax > vmin):
+            return 0.0, 0.0
+        steps = np.linspace(0.0, 1.0, 9)
+        umid, vmid = 0.5 * (umin + umax), 0.5 * (vmin + vmax)
+        along_u = [value for t in steps for value in (umin + t * (umax - umin), vmid)]
+        along_v = [value for t in steps for value in (umid, vmin + t * (vmax - vmin))]
+        lengths = []
+        for params in (along_u, along_v):
+            points = np.asarray(gmsh.model.getValue(2, surface, params), dtype=float)
+            points = points.reshape(-1, 3)
+            lengths.append(float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()))
+        return lengths[0], lengths[1]
+    except Exception:
+        return 0.0, 0.0
+
+
+def _mirror_sample_grids(
+    surfaces: Iterable[int],
+    *,
+    grid: int,
+    spacing: float,
+    max_face_grid: int = AUTO_CUT_MAX_FACE_GRID,
+    max_points: int = AUTO_CUT_MAX_SAMPLE_POINTS,
+) -> tuple[dict[int, tuple[int, int]], float]:
+    """Per face, the (u, v) sample counts that keep samples ``spacing`` apart.
+
+    Never fewer than ``grid`` per direction, never more than ``max_face_grid``.
+    When the whole model would take more than ``max_points`` samples the
+    spacing widens evenly until it fits (or every face is at its floor).
+    Returns the counts and the spacing actually used.
+    """
+
+    lengths = {surface: _parameter_lengths(surface) for surface in surfaces}
+
+    def counts(step: float) -> dict[int, tuple[int, int]]:
+        return {
+            surface: tuple(  # type: ignore[misc]
+                min(max_face_grid, max(grid, math.ceil(length / step)))
+                for length in pair
+            )
+            for surface, pair in lengths.items()
+        }
+
+    used = float(spacing)
+    grids = counts(used)
+    for _ in range(8):
+        total = sum(nu * nv for nu, nv in grids.values())
+        if total <= max_points:
+            break
+        used *= math.sqrt(total / max_points) * 1.05
+        grids = counts(used)
+    return grids, used
 
 
 def _sample_occ_surface_boundary_points(surface: int, *, grid: int) -> np.ndarray:
@@ -974,6 +1064,8 @@ def auto_cut_occ_geometry(
     tolerance_rel: float = DEFAULT_AUTO_CUT_TOLERANCE_REL,
     planes: Iterable[str] | None = None,
     triangle_surface_mesh: bool = False,
+    sample_spacing_rel: float | None = DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL,
+    max_sample_points: int = AUTO_CUT_MAX_SAMPLE_POINTS,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
 
@@ -989,6 +1081,15 @@ def auto_cut_occ_geometry(
     ``triangle_surface_mesh`` identifies a model built as one OCC face per
     input triangle. Its straight, nonintersecting facets are checked before
     the cut. The general CAD path is used unless the caller opts in.
+
+    Every face is mirror-tested on at least a ``grid`` x ``grid`` sample set,
+    and a large face on samples at most ``sample_spacing_rel`` of the model's
+    diagonal apart (``DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL``; capped at
+    ``max_sample_points`` for the model), so a small one-sided feature cannot
+    hide between samples. The tolerance is taken from the floor grid's
+    samples, as before the denser sampling. ``sample_spacing_rel=None``, and a
+    triangle-surface model (whose replay must stay as it was), use the floor
+    grid only.
     """
     groups = tuple(groups)
     if not groups:
@@ -1046,6 +1147,26 @@ def auto_cut_occ_geometry(
     diagonal = float(np.linalg.norm(np.asarray(sample_bbox[3:]) - sample_bbox[:3]))
     tolerance = replace(TOLERANCES["fitted"], relative=tolerance_rel).resolve(diagonal)
     span_tolerance = AUTO_CUT_SPAN_REL * diagonal
+    # Reported only when the samples were densified: a floor-grid report (a
+    # triangle-surface replay's included) stays byte-for-byte what it was.
+    sampling: dict[str, object] = {}
+    if sample_spacing_rel is not None and triangle_model is None and diagonal > 0.0:
+        grids, spacing = _mirror_sample_grids(
+            samples, grid=grid, spacing=float(sample_spacing_rel) * diagonal,
+            max_points=max_sample_points,
+        )
+        denser = {surface: pair for surface, pair in grids.items() if pair != (grid, grid)}
+        for surface, (grid_u, grid_v) in denser.items():
+            points = sample_occ_surface_points(surface, grid=grid_u, grid_v=grid_v)
+            if len(points):
+                samples[surface] = points
+        stacked = np.concatenate(list(samples.values()))
+        sampling = {
+            "sample_spacing_rel": float(sample_spacing_rel),
+            "sample_spacing_step_units": float(spacing),
+            "sample_point_cap": int(max_sample_points),
+            "densified_surfaces": len(denser),
+        }
     verdict_options = dict(samples=samples, roles=roles, bboxes=bboxes,
                            tolerance=tolerance, span_tolerance=span_tolerance)
     if role_boundaries is not None:
@@ -1060,6 +1181,7 @@ def auto_cut_occ_geometry(
         "tolerance_step_units": float(tolerance),
         "model_diagonal_step_units": diagonal,
         "sample_grid": int(grid),
+        **sampling,
         "sampled_surfaces": len(samples),
         "sample_points": int(len(stacked)),
         "planes": {verdict.plane: verdict.to_dict() for verdict in verdicts},

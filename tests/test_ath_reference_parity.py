@@ -119,6 +119,48 @@ def _assert_counts_close(actual: dict[int, int], expected: dict[int, int], *, rt
         )
 
 
+#: ATH cases whose built model is open away from any cut plane, whole or
+#: reduced alike: 250728solana's enclosure leaves 112 free edges at z = 140
+#: (28 in the quarter), a seam of the enclosure build, not of the cut.
+_ATH_CASES_OPEN_AWAY_FROM_THE_CUT = frozenset({"250728solana-q"})
+
+
+def _assert_reduced_mesh_verifies(result, case: str | None = None) -> None:
+    """The shared reduced-mesh check accepts the mesh an ATH case builds.
+
+    Closed unless bare (``native_check_open_edges``), wound inward for a
+    coupled infinite baffle, at the builder's own snap band (1e-6 mm). A case
+    known to be open away from its cut must still be cut soundly: open on,
+    and kept to the positive side of, every cut plane.
+    """
+
+    from hornlab_mesher.symmetry import FAILURE_LEAK, verify_reduced_mesh
+
+    plane_for_native = {"yz": "x0", "xz": "y0"}
+    planes = tuple(
+        plane_for_native[part]
+        for part in (result.native_symmetry_plane or "").split("+")
+        if part
+    )
+    mesh = meshio.read(result.mesh_path)
+    triangles, _tags = _triangles_and_physical_tags(mesh)
+    verdict = verify_reduced_mesh(
+        _points_in_mm(mesh),
+        triangles,
+        planes,
+        closed=bool(result.native_check_open_edges),
+        expected_volume_sign=-1 if result.mode == "infinite-baffle" else 1,
+        snap_tolerance_mm=1.0e-6,
+    )
+    if case in _ATH_CASES_OPEN_AWAY_FROM_THE_CUT:
+        assert verdict.failure_codes == (FAILURE_LEAK,), verdict.reason
+        assert verdict.failed_planes == ()
+    else:
+        assert verdict.ok, verdict.reason
+    if planes:
+        assert verdict.detected_planes == planes
+
+
 def _built_geometry_from_ath_case(
     case: str,
     *,
@@ -553,6 +595,7 @@ def test_ath_reference_configs_build_end_to_end(case: str, tmp_path: Path):
 
     assert result.n_vertices > 0
     assert result.n_triangles > 0
+    _assert_reduced_mesh_verifies(result, case)
     assert result.physical_groups[1] == "SD1G0"
     assert result.physical_groups[2] == "SD1D1001"
     if case == "260330solana":
@@ -691,6 +734,7 @@ def test_m2_clone_infinite_baffle_build_matches_coupled_aperture_contract(tmp_pa
 
     assert result.mode == "infinite-baffle"
     assert result.native_symmetry_plane is None
+    _assert_reduced_mesh_verifies(result)
     assert result.native_check_open_edges is True
     assert result.physical_groups[1] == "SD1G0"
     assert result.physical_groups[2] == "SD1D1001"

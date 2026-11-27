@@ -929,3 +929,78 @@ def test_auto_cut_refuses_surfaces_it_would_cut_without_testing():
         groups = [OccSurfaceGroup("wall", OccSurfaceSelector(tested), OccSurfaceRole("rigid"))]
         with pytest.raises(ValueError, match="surfaces in no group"):
             auto_cut_occ_geometry(groups, grid=5)
+
+
+def _thin_plate_with_one_sided_hole():
+    """A 400 x 300 mm plate, 0.4 mm thick, with a 20 mm hole at (+85, +65).
+
+    The hole is on one side of both mirror planes. Its wall is so short that
+    its mirror image lies within the mirror tolerance of the plate's faces,
+    and on the fixed 7 x 7 grid no sample of the large faces falls inside the
+    hole or its mirror image: the floor grid alone calls the plate symmetric.
+    """
+
+    plate = gmsh.model.occ.addBox(-200.0, -150.0, 0.0, 400.0, 300.0, 0.4)
+    hole = gmsh.model.occ.addCylinder(85.0, 65.0, -1.0, 0.0, 0.0, 2.4, 10.0)
+    gmsh.model.occ.cut([(3, plate)], [(3, hole)])
+    gmsh.model.occ.synchronize()
+    surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+    return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
+
+
+def test_a_small_one_sided_hole_between_floor_samples_is_not_cut_as_symmetric():
+    with _gmsh_session():
+        groups = _thin_plate_with_one_sided_hole()
+        floor_only = auto_cut_occ_geometry(groups, planes=("x0", "y0"), sample_spacing_rel=None)
+        # The miss this sampling closes: the floor grid accepts both planes.
+        assert floor_only.report["planes"]["x0"]["accepted"] is True
+        assert floor_only.report["planes"]["y0"]["accepted"] is True
+        assert "sample_spacing_rel" not in floor_only.report
+
+    with _gmsh_session():
+        result = auto_cut_occ_geometry(_thin_plate_with_one_sided_hole(), planes=("x0", "y0"))
+        assert result.planes == ()
+        for plane in ("x0", "y0"):
+            verdict = result.report["planes"][plane]
+            assert verdict["accepted"] is False
+            assert verdict["points_off_model"] > 0
+        report = result.report
+        assert report["sample_spacing_rel"] == step_prepare.DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL
+        assert report["sample_points"] <= report["sample_point_cap"]
+        assert report["densified_surfaces"] >= 2
+        # The tolerance still comes from the floor grid: denser samples do not move it.
+        assert report["tolerance_step_units"] == pytest.approx(
+            floor_only.report["tolerance_step_units"], rel=0, abs=0
+        )
+
+
+def test_dense_mirror_samples_keep_a_symmetric_model_and_its_tolerance():
+    with _gmsh_session():
+        surfaces = _box_surfaces(-200.0, -150.0, 0.0, 400.0, 300.0, 18.0)
+        groups = [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
+        floor_only = auto_cut_occ_geometry(groups, planes=("x0", "y0"), sample_spacing_rel=None)
+        floor_report = dict(floor_only.report)
+    with _gmsh_session():
+        surfaces = _box_surfaces(-200.0, -150.0, 0.0, 400.0, 300.0, 18.0)
+        groups = [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
+        dense = auto_cut_occ_geometry(groups, planes=("x0", "y0"))
+    assert dense.planes == floor_only.planes == ("x0", "y0")
+    assert dense.report["tolerance_step_units"] == floor_report["tolerance_step_units"]
+    assert dense.report["sample_points"] > floor_report["sample_points"]
+
+
+def test_the_mirror_sample_count_is_capped_for_the_whole_model():
+    with _gmsh_session():
+        surfaces = _box_surfaces(-200.0, -150.0, 0.0, 400.0, 300.0, 18.0)
+        grids, spacing = step_prepare._mirror_sample_grids(
+            surfaces, grid=7, spacing=1.0, max_points=2_000
+        )
+        assert sum(nu * nv for nu, nv in grids.values()) <= 2_000
+        assert spacing > 1.0
+        assert all(min(pair) >= 7 for pair in grids.values())
+        # Each direction is sized by its own length: the 400 x 18 sides get
+        # more samples along their long edge.
+        lengths = {tag: step_prepare._parameter_lengths(tag) for tag in surfaces}
+        for tag, (nu, nv) in grids.items():
+            long_u = lengths[tag][0] > lengths[tag][1]
+            assert (nu >= nv) if long_u else (nv >= nu)
