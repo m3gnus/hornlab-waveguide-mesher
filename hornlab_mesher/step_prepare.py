@@ -1643,6 +1643,7 @@ def _cut_occ_geometry_to_positive_side(
     triangle_model: _OccTriangleModel | None = None,
     parent_samples: Mapping[int, np.ndarray] | None = None,
     face_index: occ_face_index.FaceIndex | None = None,
+    solid_cut: bool = True,
 ) -> tuple[dict[int, list[int]], set[tuple[int, int]], dict[str, object]]:
     volumes = gmsh.model.getEntities(3)
     surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
@@ -1650,7 +1651,7 @@ def _cut_occ_geometry_to_positive_side(
     # the half-space with each solid, not every face with every other face
     # -- the face-against-face work made the face-by-face cut take seconds.
     # The face-by-face cut stays for open shells, and is the fallback.
-    solid = (triangle_model is None and face_index is not None
+    solid = (solid_cut and triangle_model is None and face_index is not None
              and _solid_cut_applies(volumes, surfaces, planes, tolerance))
     if volumes and not solid:
         gmsh.model.occ.remove(volumes, recursive=False)
@@ -1827,6 +1828,7 @@ def auto_cut_occ_geometry(
     known_verdicts: Mapping[str, Mapping[str, Any]] | None = None,
     fast_check: bool = True,
     feature_check: bool = True,
+    solid_cut: bool = True,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
 
@@ -1846,6 +1848,10 @@ def auto_cut_occ_geometry(
     ``known_verdicts`` are verdicts (``to_dict`` form) the caller already has
     for this very geometry -- the same model, placed and healed the same way
     -- keyed by plane; those planes are not tested again.
+
+    ``solid_cut`` (with ``fast_check``) cuts a model of solids as its solids
+    -- the same faces, but renumbered, so the mesh is not byte-identical to
+    the face-by-face cut's; ``False`` keeps the face-by-face cut.
 
     ``fast_check`` (the default on the general CAD path) decides most mirror
     samples from a forward tessellation of the faces (``occ_face_index``)
@@ -1991,6 +1997,7 @@ def auto_cut_occ_geometry(
         return _cut_accepted_planes(
             groups, accepted_planes, report, tolerance=tolerance, grid=grid,
             triangle_model=triangle_model, parent_samples=samples, face_index=face_index,
+            solid_cut=solid_cut,
         )
     except RuntimeError as exc:
         # The caller learns which planes the refused cut was for, and what the
@@ -2010,11 +2017,13 @@ def _cut_accepted_planes(
     triangle_model: Any,
     parent_samples: Mapping[int, np.ndarray] | None = None,
     face_index: occ_face_index.FaceIndex | None = None,
+    solid_cut: bool = True,
 ) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
     cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
     if face_index is not None:
         cut_options["face_index"] = face_index
+        cut_options["solid_cut"] = solid_cut
     if triangle_model is not None:
         cut_options["triangle_model"] = triangle_model
     if parent_samples is not None:

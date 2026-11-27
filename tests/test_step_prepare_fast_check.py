@@ -501,3 +501,19 @@ def test_a_face_within_tolerance_of_a_neighbour_keeps_only_its_own_parent():
     assert results[True][0] == results[False][0]
     assert results[True][1] == results[False][1]
     assert results[True][2] == "solids"
+
+
+def test_a_caller_can_keep_the_face_by_face_cut():
+    """``solid_cut=False``: the fast check still decides, the cut is the
+    face-by-face one -- the same tags and parentage as without the fast check."""
+
+    results = {}
+    for fast in (False, True):
+        with _session():
+            _build("two-bores")
+            result = auto_cut_occ_geometry(_one_role(), planes=("x0", "y0"), fast_check=fast,
+                                           feature_check=False, solid_cut=False)
+            results[fast] = ([list(g.selector.surface_tags) for g in result.groups],
+                             result.parent_to_children, result.report["cut"].get("route"))
+    assert results[True][:2] == results[False][:2]
+    assert results[True][2] == "faces"
