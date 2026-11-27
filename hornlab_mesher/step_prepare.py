@@ -549,6 +549,7 @@ class _FeatureEdges:
                     uses.setdefault(abs(int(curve)), []).append(surface)
         self.tolerance = float(tolerance)
         spacing = max(FEATURE_EDGE_SPACING_REL * diagonal, 1.0e-12)
+        self.spacing = spacing
         points: list[np.ndarray] = []
         owners: list[int] = []
         segments_a: list[np.ndarray] = []
@@ -592,8 +593,12 @@ class _FeatureEdges:
 
     def _polyline(self, curve: int, t0: float, t1: float) -> tuple[np.ndarray, float]:
         if gmsh.model.getType(1, curve) == "Line":
+            # Exact from its ends (no curve evaluations), in pieces no longer
+            # than the edge samples' spacing so the segment search stays local.
             ends = np.asarray(gmsh.model.getValue(1, curve, [t0, t1]), dtype=float).reshape(-1, 3)
-            return ends, 0.0
+            pieces = max(1, math.ceil(float(np.linalg.norm(ends[1] - ends[0])) / self.spacing))
+            steps = np.linspace(0.0, 1.0, pieces + 1)[:, None]
+            return ends[0] + steps * (ends[1] - ends[0]), 0.0
         chord = math.inf
         for count in (65, 257, 1025):
             params = np.linspace(t0, t1, count)
@@ -905,29 +910,41 @@ class _CertifiedOccMirrorTarget(_OccMirrorTarget):
             rows = plane_rows[near.face[plane_rows] == face]
             if not _all_inside(int(face), near.uv[rows]):
                 plane_rows = plane_rows[near.face[plane_rows] != face]
-        for row in plane_rows[np.argsort(near.upper[plane_rows], kind="stable")]:
-            p = near.point[row]
-            if not passed[p]:
-                passed[p] = True
-                matched[p] = nearest[p] = max(float(near.upper[row]), 0.0)
-                hits[p] = [int(near.face[row])]
-        plane_hits = int(np.count_nonzero(passed))
-        # 2. Curved candidates, confirmed by OCC, one batch per face.
-        cand_rows = np.flatnonzero(near.candidate & same_role & ~passed[near.point])
-        for face in np.unique(near.face[cand_rows]):
-            rows = cand_rows[near.face[cand_rows] == face]
-            pts = np.unique(near.point[rows])
-            pts = pts[~passed[pts]]
-            if not len(pts):
-                continue
-            ok, distance = self._confirm(int(face), mirrored[pts],
-                                         mirrored_normals[pts] if shape else np.full((len(pts), 3), np.nan))
-            for k, p in enumerate(pts):
-                if ok[k]:
+        # 2. Each point's faces nearest first: a proven plane hit settles it;
+        # a curved candidate is confirmed by OCC, in rounds batched per face.
+        proven = np.zeros(len(near.face), dtype=bool)
+        proven[plane_rows] = True
+        usable = np.flatnonzero((proven | (near.candidate & same_role)))
+        usable = usable[np.lexsort((near.estimate[usable], near.point[usable]))]
+        queue: dict[int, list[int]] = {}
+        for row in usable:
+            queue.setdefault(int(near.point[row]), []).append(int(row))
+        plane_hits = confirmed = 0
+        while queue:
+            batch: dict[int, list[int]] = {}
+            for p, rows in list(queue.items()):
+                row = rows.pop(0)
+                if not rows:
+                    del queue[p]
+                if proven[row]:
                     passed[p] = True
-                    matched[p] = nearest[p] = float(distance[k])
-                    hits[p] = [int(face)]
-        confirmed = int(np.count_nonzero(passed)) - plane_hits
+                    matched[p] = nearest[p] = max(float(near.upper[row]), 0.0)
+                    hits[p] = [int(near.face[row])]
+                    plane_hits += 1
+                    queue.pop(p, None)
+                else:
+                    batch.setdefault(int(near.face[row]), []).append(p)
+            for face, pts in batch.items():
+                pts = np.asarray(pts)
+                ok, distance = self._confirm(
+                    face, mirrored[pts], mirrored_normals[pts] if shape else np.full((len(pts), 3), np.nan))
+                for k, p in enumerate(pts):
+                    if ok[k]:
+                        passed[p] = True
+                        matched[p] = nearest[p] = float(distance[k])
+                        hits[p] = [face]
+                        confirmed += 1
+                        queue.pop(int(p), None)
         # 3. Certified misses.
         blocked = np.zeros(total, dtype=bool)
         blocked[near.point[~(near.lower > tol)]] = True
@@ -1272,6 +1289,26 @@ def _solid_cut_applies(volumes, surfaces: list[int], planes: tuple[str, ...],
     return True
 
 
+def _lies_in_a_cut_plane(face: int, axes: list[int], hair: float) -> bool:
+    """Whether ``face`` is flat and lies in one of the cut planes: its normal
+    along that axis and its centroid on the plane (OCC's padded box cannot
+    tell)."""
+    if gmsh.model.getType(2, face) != "Plane":
+        return False
+    try:
+        lo, hi = gmsh.model.getParametrizationBounds(2, face)
+        normal = np.asarray(gmsh.model.getNormal(
+            face, [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])]), dtype=float)
+        centre = gmsh.model.occ.getCenterOfMass(2, face)
+    except Exception:
+        return False
+    length = float(np.linalg.norm(normal))
+    if not length > 0:
+        return False
+    return any(abs(abs(normal[axis]) / length - 1.0) <= 1.0e-9 and abs(centre[axis]) <= hair
+               for axis in axes)
+
+
 def _attribute_cut_faces(
     remaining: list[int], parents: list[int], boxes: Mapping[int, tuple[float, ...]],
     planes: tuple[str, ...], *, tolerance: float, judge: _ClaimJudge,
@@ -1296,8 +1333,7 @@ def _attribute_cut_faces(
     caps: list[int] = []
     for child in remaining:
         box = gmsh.model.getBoundingBox(2, child)
-        if gmsh.model.getType(2, child) == "Plane" and any(
-                abs(box[axis]) <= hair and abs(box[axis + 3]) <= hair for axis in axes):
+        if _lies_in_a_cut_plane(child, axes, hair):
             caps.append(child)
             continue
         verdicts: dict[int, str] = {}
