@@ -451,3 +451,36 @@ def test_root_sizing_exports_price_the_imported_mesh_regions():
     json.dumps(estimate, allow_nan=False)
     measured = estimate_solve_cost(int(estimate["n_triangles"])).to_dict()
     assert measured["n_triangles"] == int(estimate["n_triangles"])
+
+
+# --- enclosure quadrant sizes -------------------------------------------------
+
+@pytest.mark.parametrize(
+    "front, back, expected_front, expected_back",
+    [
+        ("8,12", None, [8.0, 12.0, 12.0, 12.0], None),
+        (20, "20,24,28,32", [20.0] * 4, [20.0, 24.0, 28.0, 32.0]),
+        ("20,-1,24,24", "", [20.0, None, 24.0, 24.0], None),
+    ],
+)
+def test_enclosure_quadrant_resolutions_expand_as_the_mesher_applies_them(
+    front, back, expected_front, expected_back
+):
+    """WG's symmetry check compares these per quadrant across each plane."""
+
+    from hornlab_mesher.config_builder import _mesh_density_from_config, enclosure_quadrant_resolutions
+
+    enclosure = {"depth_mm": 60, "enc_front_resolution": front}
+    if back is not None:
+        enclosure["enc_back_resolution"] = back
+    config = {"formula": "OSSE", "profile": {"L_mm": 80}, "enclosure": enclosure}
+    mouth = _mesh_density_from_config(config).mouth_res_mm
+
+    sizes = enclosure_quadrant_resolutions(config)
+
+    assert list(sizes) == ["front_resolution", "back_resolution"]
+    assert sizes["front_resolution"] == [mouth if value is None else value for value in expected_front]
+    if expected_back is None:
+        assert len(sizes["back_resolution"]) == 4
+    else:
+        assert sizes["back_resolution"] == expected_back

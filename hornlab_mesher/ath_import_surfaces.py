@@ -130,8 +130,8 @@ class AthImportedSurfaceGeometry(PointGridHornGeometry):
 
 def resolve(config, params, formula, mode, allow_large_mesh):
     from .config_builder import (ConfigError, ResolvedGeometry, _mesh_density_from_config,
-                                 _mesh_topology_mode, _mesh_surface_fit, _section, _bool,
-                                 _native_symmetry_plane_for_quadrants)
+                                 _mesh_topology_mode, _mesh_surface_fit, _section, _bool)
+    from .symmetry import native_symmetry_plane_for_quadrants
     from .profile_sampling import build_point_grid_arrays
     from .profiles import azimuthal_mean
     if mode not in {"freestanding", "bare"}:
@@ -181,7 +181,7 @@ def resolve(config, params, formula, mode, allow_large_mesh):
         preserve_grid=_bool(mesh, names=("preserve_grid", "preserveGrid"), default=False),
     )
     return ResolvedGeometry(geometry, density,
-        formula, mode, data["quadrants"], _native_symmetry_plane_for_quadrants(data["quadrants"]),
+        formula, mode, data["quadrants"], native_symmetry_plane_for_quadrants(data["quadrants"]),
         _bool(mesh, names=("scale_to_metres", "scaleToMetres"), default=True),
         {"athImportSurfaces": {"bodyRows": data["ath_body_rows"], "rearSelectedRows": selected,
                                "mouthAngleDeg": math.degrees(data.get("ath_mouth_angle", 0)),

@@ -42,6 +42,7 @@ from .profile_common import (
     _parse_number_list,
     _symmetry_planes_for_quadrants as _symmetry_planes_for_quadrants_common,
 )
+from .symmetry import native_symmetry_plane_for_quadrants
 from .profile_sampling import (
     ACOUSTIC_AXIAL_STATIONS_KEY,
     ACOUSTIC_CORNER_ARC_SUBDIVISION_KEY,
@@ -1040,10 +1041,11 @@ def build_geometry_params(config: Mapping[str, Any], *, _native_expressions: boo
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
     if enclosure_obj is not None:
         if enclosure_obj.dim_mm is not None:
-            from .profile_common import _normalise_quadrants
-            quadrants = _normalise_quadrants(_pick(mesh, config, names=("quadrants",), default="1234"))
-            px, py, nx, ny = enclosure_obj.dim_mm
-            if (quadrants in {"1", "14"} and px != nx) or (quadrants in {"1", "12"} and py != ny):
+            from .symmetry import evaluate_enclosure_symmetry
+            cut_planes = {_PLANE_FOR_SNAP_AXIS[axis] for axis in _symmetry_planes_for_quadrants(
+                _pick(mesh, config, names=("quadrants",), default="1234"))}
+            dim_reasons = evaluate_enclosure_symmetry(dim_mm=enclosure_obj.dim_mm)
+            if any(dim_reasons[plane] for plane in cut_planes):
                 raise control_refusal("reduced domain requires symmetric enclosure Dim on every cut axis", 'Enclosure and placement', 'Use matching opposite enclosure margins, or choose Full model in Symmetry.', message='The enclosure margins do not match across a symmetry plane.')
         enc_depth = enclosure_obj.depth_mm
     elif mode == "enclosure":
@@ -1536,28 +1538,19 @@ def _normalised_quadrants(value: Any) -> str:
     return _normalise_quadrants_common(value)
 
 
-def _native_symmetry_plane_for_quadrants(quadrants: str) -> str | None:
-    """Map grid quadrant coverage to the metal solver's symmetry-plane flag.
-
-    Quadrant 1 spans x >= 0, y >= 0 and mirrors about both the yz and xz
-    planes; "12" spans y >= 0 (xz mirror); "14" spans x >= 0 (yz mirror).
-    """
-
-    return {
-        "1": "yz+xz",
-        "12": "xz",
-        "14": "yz",
-    }.get(_normalised_quadrants(quadrants))
+#: The mirror plane each snap axis cuts on (``"x"`` is the x = 0 plane).
+_PLANE_FOR_SNAP_AXIS = {"x": "x0", "y": "y0"}
 
 
 def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:
     """Map grid quadrant coverage to open-grid snap axes.
 
-    Mirrors :func:`_native_symmetry_plane_for_quadrants` but in the mesher's
-    ``"x"``/``"y"`` snap-axis convention (``"x"`` is the x=0 / yz plane, ``"y"``
-    is the y=0 / xz plane): quadrant 1 is bounded by both planes, "12" by the
-    xz plane (snap ``"y"``), "14" by the yz plane (snap ``"x"``). Full coverage
-    ("1234") returns no planes.
+    In the mesher's ``"x"``/``"y"`` snap-axis convention (``"x"`` is the
+    x=0 / yz plane, ``"y"`` is the y=0 / xz plane): quadrant 1 is bounded by
+    both planes, "12" by the xz plane (snap ``"y"``), "14" by the yz plane
+    (snap ``"x"``). Full coverage ("1234") returns no planes. The metal
+    solver's flag for the same coverage is
+    :func:`hornlab_mesher.symmetry.native_symmetry_plane_for_quadrants`.
     """
 
     return _symmetry_planes_for_quadrants_common(quadrants)
@@ -1739,6 +1732,24 @@ def _mesh_density_from_config(
         raise ConfigError(str(exc)) from exc
     return density
 
+
+def enclosure_quadrant_resolutions(config: Mapping[str, Any]) -> dict[str, list[float]]:
+    """The front and back enclosure mesh sizes per quadrant (q1..q4) a config asks for.
+
+    Expanded exactly as the mesher applies them (a short list repeats its
+    last value; an invalid entry takes the mouth resolution), so a caller can
+    tell whether they mirror across a symmetry plane.
+    """
+    from .density import _parse_quadrant_resolutions
+
+    density = _mesh_density_from_config(config)
+    return {
+        name: _parse_quadrant_resolutions(value, density.mouth_res_mm)
+        for name, value in (
+            ("front_resolution", density.enc_front_res_mm),
+            ("back_resolution", density.enc_back_res_mm),
+        )
+    }
 
 def _num_or_default(value: Any, default: float, *, control: str) -> float:
     """Numeric param with an explicit unset check.
@@ -2676,7 +2687,7 @@ def resolve_geometry(
             "Mounting", "Remove “Mesh.SubdomainSlices” and “Mesh.InterfaceOffset” from the imported configuration, or choose Waveguide in enclosure in Mounting.",
             message="Free-standing models cannot include subdomain interfaces.")
     quadrants = _normalised_quadrants(params.get("quadrants"))
-    native_plane = _native_symmetry_plane_for_quadrants(quadrants)
+    native_plane = native_symmetry_plane_for_quadrants(quadrants)
     source_auto_angle_deg = _source_auto_angle_deg(params, formula)
     adapter = resolve_adapter(params)
     freeform_axis_samples_mm: np.ndarray | None = None

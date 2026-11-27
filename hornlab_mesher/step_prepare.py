@@ -11,6 +11,20 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# The mirror check itself lives in .symmetry; these names stay importable
+# from here for existing callers.
+from .symmetry import (
+    DEFAULT_MAX_FAILURE_SAMPLES,
+    DEFAULT_SYMMETRY_SNAP_BAND_MM as DEFAULT_SYMMETRY_SNAP_BAND_MM,
+    SPAN_TOLERANCE_REL,
+    SYMMETRY_AXIS_FOR_PLANE,
+    TOLERANCES,
+    MirrorMatches,
+    PlaneSymmetryVerdict,
+    evaluate_mirror_symmetry,
+    snap_symmetry_plane_vertices as snap_symmetry_plane_vertices,
+)
+
 
 class _LazyGmsh:
     """Import gmsh on first use, never at module import.
@@ -36,14 +50,12 @@ class _LazyGmsh:
 gmsh = _LazyGmsh()
 
 
-SYMMETRY_AXIS_FOR_PLANE = {"x0": 0, "y0": 1, "z0": 2}
-DEFAULT_AUTO_CUT_TOLERANCE_REL = 5.0e-4
+DEFAULT_AUTO_CUT_TOLERANCE_REL = TOLERANCES["fitted"].relative
 DEFAULT_AUTO_CUT_GRID = 7
-DEFAULT_SYMMETRY_SNAP_BAND_MM = 1.0e-4
-AUTO_CUT_SPAN_REL = 1.0e-3
+AUTO_CUT_SPAN_REL = SPAN_TOLERANCE_REL
 AUTO_CUT_TRIM_NUDGE_REL = 1.0e-3
 AUTO_CUT_BOX_PAD_REL = 0.1
-AUTO_CUT_MAX_FAILURE_SAMPLES = 5
+AUTO_CUT_MAX_FAILURE_SAMPLES = DEFAULT_MAX_FAILURE_SAMPLES
 AUTO_CUT_ROLE_BOUNDARY_EDGE_FRACTION = 0.005
 
 
@@ -78,50 +90,6 @@ class OccSurfaceGroup:
 
 
 @dataclass(frozen=True)
-class PlaneSymmetryVerdict:
-    """Per-plane result of the trimmed-face geometry mirror test."""
-
-    plane: str
-    accepted: bool
-    reason: str
-    tolerance: float
-    axis_min: float
-    axis_max: float
-    points_tested: int
-    points_off_model: int
-    max_residual: float
-    worst_residual_surface: int | None
-    worst_off_model_distance: float
-    worst_surface: int | None
-    role_mismatches: int
-    failure_samples: tuple[dict[str, object], ...]
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "plane": self.plane,
-            "accepted": bool(self.accepted),
-            "reason": self.reason,
-            "tolerance_step_units": float(self.tolerance),
-            "axis_min_step_units": float(self.axis_min),
-            "axis_max_step_units": float(self.axis_max),
-            "points_tested": int(self.points_tested),
-            "points_off_model": int(self.points_off_model),
-            "max_residual_step_units": (
-                None if self.max_residual < 0.0 else float(self.max_residual)
-            ),
-            "worst_residual_surface": self.worst_residual_surface,
-            "worst_off_model_distance_step_units": (
-                None
-                if self.worst_off_model_distance < 0.0
-                else float(self.worst_off_model_distance)
-            ),
-            "worst_surface": self.worst_surface,
-            "role_mismatches": int(self.role_mismatches),
-            "failure_samples": list(self.failure_samples),
-        }
-
-
-@dataclass(frozen=True)
 class OccAutoCutResult:
     """Geometry, group, and diagnostic result of an OCC auto-cut."""
 
@@ -144,21 +112,6 @@ def millimetres_to_step_units(value_mm: float, unit_scale_to_m: float) -> float:
     # Scale factor first: for millimetre coordinates it is exactly 1.0, so a
     # millimetre value comes back bit-for-bit unchanged.
     return float(value_mm) * (1.0e-3 / float(unit_scale_to_m))
-
-
-def snap_symmetry_plane_vertices(
-    points: np.ndarray,
-    *,
-    symmetry_planes: tuple[str, ...],
-    tolerance: float,
-) -> None:
-    """Snap vertices inside a tolerance band exactly onto symmetry planes."""
-    if tolerance < 0.0:
-        raise ValueError("tolerance must be non-negative")
-    for plane in symmetry_planes:
-        axis = SYMMETRY_AXIS_FOR_PLANE[plane]
-        mask = np.abs(points[:, axis]) <= tolerance
-        points[mask, axis] = 0.0
 
 
 def remap_surface_tags(
@@ -398,6 +351,30 @@ class _OccMirrorIndex:
         return result[0], nearest, result[2]
 
 
+class _OccMirrorTarget:
+    """The trimmed OCC faces as a mirror target: exact closest-point projection."""
+
+    def __init__(self, candidates, bboxes, tolerance, role_boundaries):
+        self.index = _OccMirrorIndex(candidates, bboxes, tolerance)
+        self.tolerance = tolerance
+        self.role_boundaries = role_boundaries
+
+    def match(self, surface, mirrored):
+        nearby = self.index.candidates_for_points(mirrored)
+        found = [self.index.closest(point, local) for point, local in zip(mirrored, nearby)]
+        return MirrorMatches(
+            np.asarray([row[0] for row in found], dtype=float),
+            np.asarray([row[1] for row in found], dtype=float),
+            hits=[row[2] for row in found],
+            context=nearby,
+        )
+
+    def role_seam_allows(self, surface, point, mirrored, hits, context):
+        return (self.role_boundaries is not None
+                and self.role_boundaries.allows(
+                    surface, point, mirrored, hits, context, self.tolerance))
+
+
 def evaluate_occ_plane_symmetry(
     plane: str,
     *,
@@ -409,101 +386,10 @@ def evaluate_occ_plane_symmetry(
     _role_boundaries: _OccTriangleRoleBoundaries | None = None,
 ) -> PlaneSymmetryVerdict:
     """Require both trimmed geometry and caller-supplied roles to mirror."""
-    axis = SYMMETRY_AXIS_FOR_PLANE[plane]
-    candidates = sorted(samples)
-    missing_roles = set(candidates) - set(roles)
-    if missing_roles:
-        raise ValueError(f"missing roles for OCC surfaces: {sorted(missing_roles)}")
-    all_axis_values = (
-        np.concatenate([samples[surface][:, axis] for surface in candidates])
-        if candidates
-        else np.zeros(1)
-    )
-    axis_min = float(np.min(all_axis_values))
-    axis_max = float(np.max(all_axis_values))
-    points_tested = int(sum(len(samples[surface]) for surface in candidates))
-    if not (axis_min < -span_tolerance and axis_max > span_tolerance):
-        return PlaneSymmetryVerdict(
-            plane, False,
-            "model does not straddle the plane; there is no half to remove",
-            tolerance, axis_min, axis_max, points_tested, 0, -1.0, None, -1.0,
-            None, 0, (),
-        )
-
-    max_residual = -1.0
-    max_residual_surface: int | None = None
-    points_off_model = 0
-    role_mismatches = 0
-    worst_off_model = -1.0
-    worst_surface: int | None = None
-    failures: list[dict[str, object]] = []
-    index = _OccMirrorIndex(candidates, bboxes, tolerance)
-    for surface in candidates:
-        role = roles[surface]
-        mirrored_points = samples[surface].copy()
-        mirrored_points[:, axis] *= -1
-        nearby = index.candidates_for_points(mirrored_points)
-        for point, mirrored, local in zip(samples[surface], mirrored_points, nearby):
-            matched_distance, nearest, hits = index.closest(mirrored, local)
-            if not hits:
-                points_off_model += 1
-                if nearest > worst_off_model:
-                    worst_off_model = nearest
-                    worst_surface = surface
-                if len(failures) < AUTO_CUT_MAX_FAILURE_SAMPLES:
-                    failures.append(
-                        {
-                            "kind": "off_model",
-                            "surface": int(surface),
-                            "role": role,
-                            "point_step_units": [float(value) for value in point],
-                            "mirrored_point_step_units": [
-                                float(value) for value in mirrored
-                            ],
-                            "nearest_distance_step_units": (
-                                None if nearest < 0.0 else float(nearest)
-                            ),
-                        }
-                    )
-                continue
-            if matched_distance > max_residual:
-                max_residual = matched_distance
-                max_residual_surface = int(surface)
-            if role not in {roles[hit] for hit in hits}:
-                if (_role_boundaries is not None
-                        and _role_boundaries.allows(surface, point, mirrored, hits, local, tolerance)):
-                    continue
-                role_mismatches += 1
-                if len(failures) < AUTO_CUT_MAX_FAILURE_SAMPLES:
-                    failures.append(
-                        {
-                            "kind": "role_mismatch",
-                            "surface": int(surface),
-                            "role": role,
-                            "point_step_units": [float(value) for value in point],
-                            "mirrored_point_step_units": [
-                                float(value) for value in mirrored
-                            ],
-                            "mirrored_surfaces": [int(hit) for hit in hits],
-                            "mirrored_roles": sorted({roles[hit] for hit in hits}),
-                        }
-                    )
-    accepted = points_off_model == 0 and role_mismatches == 0
-    if accepted:
-        reason = "geometry and caller roles mirror within tolerance"
-    elif points_off_model:
-        reason = (
-            f"{points_off_model} of {points_tested} sampled points do not mirror "
-            "onto the model"
-        )
-    else:
-        reason = (
-            f"{role_mismatches} sampled points mirror onto a face of a different role"
-        )
-    return PlaneSymmetryVerdict(
-        plane, accepted, reason, tolerance, axis_min, axis_max, points_tested,
-        points_off_model, max_residual, max_residual_surface, worst_off_model,
-        worst_surface, role_mismatches, tuple(failures),
+    target = _OccMirrorTarget(sorted(samples), bboxes, tolerance, _role_boundaries)
+    return evaluate_mirror_symmetry(
+        plane, samples=samples, roles=roles, target=target, tolerance=tolerance,
+        span_tolerance=span_tolerance, max_failure_samples=AUTO_CUT_MAX_FAILURE_SAMPLES,
     )
 
 

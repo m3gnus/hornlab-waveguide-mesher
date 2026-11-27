@@ -237,6 +237,8 @@ Each row is used in production by the consumer named. Contract tests live in
 | `step_import.mesh_frequency_validation` | WG | Per-source valid band; WG's solver reads `per_source[...]["effective_max_valid_frequency_hz"]`. |
 | `step_import.REDUCED_ORIENTATION_MIRRORED_PARENT` | WG | Feature flag, read with `getattr`; its absence selects WG's fallback. |
 | root `auto_cut_occ_geometry`, `OccAutoCutResult`, `OccSurfaceGroup`, `OccSurfaceRole`, `OccSurfaceSelector` | WG | Symmetry auto-cut of imported CAD (`tests/test_step_prepare.py`). |
+| `symmetry.evaluate_point_grid_symmetry`, `evaluate_enclosure_symmetry`, `TOLERANCES`, `SPAN_TOLERANCE_REL`, `PlaneSymmetryVerdict` | WG | The one mirror check: design grids (`exact`), the enclosure box, and (through `step_prepare.evaluate_occ_plane_symmetry`) imported CAD (`fitted`). Numpy only at import (`tests/test_symmetry.py`). |
+| `config_builder.enclosure_quadrant_resolutions` | WG | Front/back enclosure mesh sizes per quadrant, expanded as the mesher applies them. |
 | root `Region`, `estimate_mesh_cost`, `estimate_solve_cost` | WG | Imported-mesh cost estimate. |
 | `grid_resample.normalized_arc_positions`, `resample_point_grid` | add-in | WGLink bundle resampling script (`tests/test_grid_resample.py`). |
 | `mesh_sizing.*` | add-in | Sizing inside Fusion (see above; `tests/test_mesh_sizing.py`). |

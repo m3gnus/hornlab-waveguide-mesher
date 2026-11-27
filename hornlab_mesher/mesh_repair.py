@@ -27,7 +27,8 @@ from .mesh_validation import (
 )
 from .normals import open_shell_bore_alignment
 from .step_mapping import RIGID_TAG, StepFaceGroup
-from .step_prepare import millimetres_to_step_units, snap_symmetry_plane_vertices
+from .step_prepare import millimetres_to_step_units
+from .symmetry import snap_symmetry_plane_vertices
 
 
 def _mesh_triangle_data(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -1169,15 +1169,16 @@ def _edge_stats_by_tag(
 def _snap_symmetry_planes(
     points: np.ndarray, axes: tuple[str, ...], tolerance: float
 ) -> None:
+    """Snap onto the snap axes' planes; a zero band or an unknown axis is a no-op."""
     if not axes or tolerance <= 0.0:
         return
-    axis_indices = {"x": 0, "y": 1, "z": 2}
-    for axis in axes:
-        idx = axis_indices.get(str(axis))
-        if idx is None:
-            continue
-        mask = np.abs(points[:, idx]) <= float(tolerance)
-        points[mask, idx] = 0.0
+    from .symmetry import snap_symmetry_plane_vertices
+
+    snap_symmetry_plane_vertices(
+        points,
+        symmetry_planes=tuple(str(axis) for axis in axes if str(axis) in ("x", "y", "z")),
+        tolerance=float(tolerance),
+    )
 
 
 def _triangles_and_physical_tags(mesh: meshio.Mesh) -> tuple[np.ndarray, np.ndarray]:

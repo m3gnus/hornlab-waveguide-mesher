@@ -255,9 +255,19 @@ def _certify_occ_partition(built, gmsh):
 
 
 def _symmetric_enclosure_x(enclosure):
+    from .symmetry import evaluate_enclosure_symmetry
+
+    # Dim replaces the margins when given; both are compared exactly.
     if enclosure.dim_mm is not None:
-        return enclosure.dim_mm[0] == enclosure.dim_mm[2]
-    return enclosure.space_l_mm == enclosure.space_r_mm
+        reasons = evaluate_enclosure_symmetry(dim_mm=enclosure.dim_mm)
+    else:
+        reasons = evaluate_enclosure_symmetry(
+            spacing_lr=(enclosure.space_l_mm, enclosure.space_r_mm))
+    return not reasons["x0"]
+
+
+#: How far a horn sample may land from its mirror for a woofer x = 0 half.
+WOOFER_HALF_MIRROR_TOLERANCE_MM = 1.0e-6
 
 
 def validate_woofer_domain(params, enclosure):
@@ -272,12 +282,15 @@ def validate_woofer_domain(params, enclosure):
         raise control_refusal("woofers require full domain or x=0 half with every woofer centred on x=0", 'Symmetry', 'Choose Full model, or centre every woofer on the vertical symmetry plane and use that half model.', message='This woofer arrangement cannot use the chosen symmetry.')
     if not _symmetric_enclosure_x(enclosure):
         raise control_refusal("woofer x=0 half requires symmetric left/right enclosure margins", 'Enclosure and placement', 'Use equal Left and Right margins, or choose Full model.', message='The enclosure margins differ across the woofer symmetry plane.')
-    from scipy.spatial import cKDTree
     from .profile_sampling import build_point_grid_arrays
+    from .symmetry import evaluate_point_grid_symmetry
     full = build_point_grid_arrays({**params, "quadrants": "1234"})
-    points = np.asarray(full["inner_grid"]).reshape(-1, 3)
-    reflected = points * [-1, 1, 1]
-    if np.max(cKDTree(points).query(reflected)[0]) > 1e-6:
+    # The woofer half keeps its own absolute 1e-6 mm, far inside the design
+    # check's share of the size.
+    verdict = evaluate_point_grid_symmetry(
+        {"inner": np.asarray(full["inner_grid"])}, planes=("x0",),
+        tolerance_mm=WOOFER_HALF_MIRROR_TOLERANCE_MM)["x0"]
+    if not verdict.accepted:
         raise control_refusal("woofer x=0 half requires a horn symmetric about x=0", 'Symmetry', 'Choose Full model in Symmetry.', message='The horn is not symmetric across the woofer symmetry plane.')
 
 
