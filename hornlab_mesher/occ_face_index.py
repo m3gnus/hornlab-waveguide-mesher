@@ -663,10 +663,13 @@ def _barycentric(q: np.ndarray, tri: np.ndarray) -> np.ndarray:
     d20 = np.einsum("ij,ij->i", v2, v0)
     d21 = np.einsum("ij,ij->i", v2, v1)
     den = d00 * d11 - d01 * d01
+    # A degenerate triangle (a pole's collapsed cell) has no barycentric
+    # coordinates: its rows come back NaN, and the caller treats them as
+    # unproven.
     with np.errstate(divide="ignore", invalid="ignore"):
         v = (d11 * d20 - d01 * d21) / den
         w = (d00 * d21 - d01 * d20) / den
-    return np.column_stack([1.0 - v - w, v, w])
+        return np.column_stack([1.0 - v - w, v, w])
 
 
 def _degenerate_closest(p, a, b, c):
