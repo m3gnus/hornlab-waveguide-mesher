@@ -140,42 +140,28 @@ def _param_inside(surface: int, u: float, v: float) -> bool:
 
 
 def _params_inside(surface: int, uv: list[float]) -> list[bool]:
-    """``_param_inside`` for each (u, v) pair, asking OCC in blocks.
+    """``_param_inside`` for each (u, v) pair, asking OCC once first.
 
     ``gmsh.model.isInside`` answers how many of the points handed to it lie
-    inside the trim, not which (see ``tessellation.parametric_trim_mask``). A
-    block wholly inside or wholly outside is settled by one call; a mixed
-    block is halved until each piece is settled, down to single points, which
-    are exactly the per-point ``_param_inside`` calls this replaces. A block
-    OCC cannot classify is halved too, so an exception still costs only the
-    sample it belongs to (it abstains, as ``_param_inside`` does).
+    inside the trim, not which (see ``tessellation.parametric_trim_mask``).
+    One call over the whole grid settles an untrimmed face (all inside) and a
+    grid that misses the face (none); any other answer, or an exception, falls
+    back to exactly the per-point ``_param_inside`` calls this replaces. OCC
+    classifies point by point inside that call too, so a mixed grid is not
+    split further: halving it re-classifies every point at each level, which
+    measured twice as slow as asking per point.
     """
 
     count = len(uv) // 2
-    flags = [False] * count
-
-    def settle(first: int, last: int) -> None:
-        size = last - first
-        if size <= 0:
-            return
-        if size == 1:
-            flags[first] = _param_inside(surface, uv[2 * first], uv[2 * first + 1])
-            return
-        try:
-            inside = int(gmsh.model.isInside(2, surface, uv[2 * first:2 * last], parametric=True))
-        except Exception:
-            inside = -1
-        if inside == size:
-            flags[first:last] = [True] * size
-            return
-        if inside == 0:
-            return
-        middle = first + size // 2
-        settle(first, middle)
-        settle(middle, last)
-
-    settle(0, count)
-    return flags
+    try:
+        inside = int(gmsh.model.isInside(2, surface, uv, parametric=True))
+    except Exception:
+        inside = -1
+    if inside == count:
+        return [True] * count
+    if inside == 0:
+        return [False] * count
+    return [_param_inside(surface, uv[2 * index], uv[2 * index + 1]) for index in range(count)]
 
 
 def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
