@@ -951,22 +951,27 @@ def _thin_plate_with_one_sided_hole():
     return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="stage 4b: the floor grid misses a one-sided hole between its samples (R1)",
-)
 def test_a_small_one_sided_hole_between_floor_samples_is_not_cut_as_symmetric():
     with _gmsh_session():
         result = auto_cut_occ_geometry(_thin_plate_with_one_sided_hole(), planes=("x0", "y0"))
         assert result.planes == ()
+        for plane in ("x0", "y0"):
+            verdict = result.report["planes"][plane]
+            assert verdict["feature_mismatches"] > 0
+            assert verdict["points_off_model"] == 0 and verdict["role_mismatches"] == 0
+            assert "no mirror image of the same shape" in verdict["reason"]
 
 
-def test_the_floor_grid_misses_the_one_sided_hole_today():
-    """What stage 4b must close: the floor grid accepts both planes here."""
+def test_the_floor_grid_alone_misses_the_one_sided_hole():
+    """Without the small-feature check (the pre-4b exact scan, which old
+    replays rebuild with) the floor grid accepts both planes here."""
 
     with _gmsh_session():
-        result = auto_cut_occ_geometry(_thin_plate_with_one_sided_hole(), planes=("x0", "y0"))
+        result = auto_cut_occ_geometry(
+            _thin_plate_with_one_sided_hole(), planes=("x0", "y0"), fast_check=False
+        )
         assert result.planes == ("x0", "y0")
+        assert "feature_mismatches" not in result.report["planes"]["x0"]
 
 
 def test_known_verdicts_are_reused_not_tested_again(monkeypatch):
@@ -996,7 +1001,7 @@ def _plain_scan(monkeypatch):
     """Turn the three mirror-test speed-ups off: one isInside per point, every
     face projected in candidate order, every omitted gap measured singly."""
 
-    def one_at_a_time(surface, uv):
+    def one_at_a_time(surface, uv, trim=None):
         return [step_prepare._param_inside(surface, uv[2 * i], uv[2 * i + 1])
                 for i in range(len(uv) // 2)]
 
@@ -1031,7 +1036,8 @@ def _role_model():
 @pytest.mark.parametrize("model", ["role-model", "holed-plate", "box"])
 def test_the_mirror_test_speed_ups_change_no_number(model, monkeypatch):
     """Batched trim queries, own-role-first early exit and the bulk gap screen
-    give the report the plain scan gives, byte for byte."""
+    give the report the plain scan gives, byte for byte (the exact path that
+    ``fast_check=False`` keeps for old replays)."""
 
     import json
 
@@ -1044,11 +1050,11 @@ def test_the_mirror_test_speed_ups_change_no_number(model, monkeypatch):
         return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
 
     with _gmsh_session():
-        fast = auto_cut_occ_geometry(build(), planes=("x0", "y0", "z0"))
+        fast = auto_cut_occ_geometry(build(), planes=("x0", "y0", "z0"), fast_check=False)
     with monkeypatch.context() as plain:
         _plain_scan(plain)
         with _gmsh_session():
-            slow = auto_cut_occ_geometry(build(), planes=("x0", "y0", "z0"))
+            slow = auto_cut_occ_geometry(build(), planes=("x0", "y0", "z0"), fast_check=False)
     assert json.dumps(fast.report, sort_keys=True) == json.dumps(slow.report, sort_keys=True)
     assert fast.planes == slow.planes
     assert [list(g.selector.surface_tags) for g in fast.groups] == [
@@ -1073,7 +1079,7 @@ def test_batched_trim_queries_keep_the_samples_bit_for_bit(monkeypatch):
         batched_calls = len(calls)
         monkeypatch.setattr(
             step_prepare, "_params_inside",
-            lambda surface, uv: [step_prepare._param_inside(surface, uv[2 * i], uv[2 * i + 1])
+            lambda surface, uv, trim=None: [step_prepare._param_inside(surface, uv[2 * i], uv[2 * i + 1])
                                  for i in range(len(uv) // 2)],
         )
         calls.clear()

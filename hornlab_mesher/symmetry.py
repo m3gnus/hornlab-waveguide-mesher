@@ -93,8 +93,22 @@ class PlaneSymmetryVerdict:
     worst_surface: int | str | None
     role_mismatches: int
     failure_samples: tuple[dict[str, object], ...]
+    #: The one-sided small-feature check (OCC models): how many samples it
+    #: looked at (feature edges included) and how many have no mirror image
+    #: of the same shape. ``None``: the check did not run, and the keys are
+    #: left out of ``to_dict`` so older reports read back unchanged.
+    feature_points_tested: int | None = None
+    feature_mismatches: int | None = None
 
     def to_dict(self) -> dict[str, object]:
+        features = (
+            {}
+            if self.feature_mismatches is None
+            else {
+                "feature_points_tested": int(self.feature_points_tested or 0),
+                "feature_mismatches": int(self.feature_mismatches),
+            }
+        )
         return {
             "plane": self.plane,
             "accepted": bool(self.accepted),
@@ -115,6 +129,7 @@ class PlaneSymmetryVerdict:
             ),
             "worst_surface": self.worst_surface,
             "role_mismatches": int(self.role_mismatches),
+            **features,
             "failure_samples": list(self.failure_samples),
         }
 
@@ -136,6 +151,10 @@ class MirrorMatches:
     nearest_distance: np.ndarray
     hits: Sequence[Sequence[Hashable]] | None = None
     context: Sequence[Any] | None = None
+    #: Per sample, when the target checks shape too: True when every face of
+    #: the sample's own role that it hits faces another way (a hole's wall
+    #: landing on a plate). ``None``: not checked.
+    misaligned: Sequence[bool] | None = None
 
 
 class MirrorTarget(Protocol):
@@ -203,6 +222,8 @@ def evaluate_mirror_symmetry(
     max_residual_surface: Hashable | None = None
     points_off_model = 0
     role_mismatches = 0
+    shape_checked = False
+    feature_mismatches = 0
     worst_off_model = -1.0
     worst_surface: Hashable | None = None
     failures: list[dict[str, object]] = []
@@ -212,6 +233,7 @@ def evaluate_mirror_symmetry(
         mirrored_points = points.copy()
         mirrored_points[:, axis] *= -1
         matches = target.match(surface, mirrored_points)
+        shape_checked = shape_checked or matches.misaligned is not None
         matched = np.asarray(matches.matched_distance, dtype=float)
         nearest = np.asarray(matches.nearest_distance, dtype=float)
         # A sample hits when any surface lies within tolerance: the hit list
@@ -261,6 +283,21 @@ def evaluate_mirror_symmetry(
                 continue
             hits = matches.hits[index]
             if role in {roles[hit_surface] for hit_surface in hits}:
+                if matches.misaligned is not None and matches.misaligned[index]:
+                    feature_mismatches += 1
+                    if len(failures) < max_failure_samples:
+                        failures.append(
+                            {
+                                "kind": "normal_mismatch",
+                                "surface": _label(surface),
+                                "role": role,
+                                "point_step_units": [float(value) for value in point],
+                                "mirrored_point_step_units": [
+                                    float(value) for value in mirrored
+                                ],
+                                "mirrored_surfaces": [_label(hit) for hit in hits],
+                            }
+                        )
                 continue
             context = matches.context[index] if matches.context is not None else None
             if target.role_seam_allows(surface, point, mirrored, hits, context):
@@ -280,7 +317,7 @@ def evaluate_mirror_symmetry(
                         "mirrored_roles": sorted({roles[hit_surface] for hit_surface in hits}),
                     }
                 )
-    accepted = points_off_model == 0 and role_mismatches == 0
+    accepted = points_off_model == 0 and role_mismatches == 0 and feature_mismatches == 0
     if accepted:
         reason = "geometry and caller roles mirror within tolerance"
     elif points_off_model:
@@ -288,14 +325,26 @@ def evaluate_mirror_symmetry(
             f"{points_off_model} of {points_tested} sampled points do not mirror "
             "onto the model"
         )
-    else:
+    elif role_mismatches:
         reason = (
             f"{role_mismatches} sampled points mirror onto a face of a different role"
         )
+    else:
+        reason = feature_mismatch_reason(feature_mismatches)
     return PlaneSymmetryVerdict(
         plane, accepted, reason, tolerance, axis_min, axis_max, points_tested,
         points_off_model, max_residual, max_residual_surface, worst_off_model,
         worst_surface, role_mismatches, tuple(failures),
+        feature_points_tested=points_tested if shape_checked else None,
+        feature_mismatches=feature_mismatches if shape_checked else None,
+    )
+
+
+def feature_mismatch_reason(count: int) -> str:
+    """The reason a plane fails the one-sided small-feature check."""
+    return (
+        f"{count} sampled points on faces or sharp edges have no mirror image of "
+        "the same shape (a small hole, boss or edge on one side only)"
     )
 
 

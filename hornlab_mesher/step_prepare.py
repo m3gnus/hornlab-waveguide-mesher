@@ -6,11 +6,14 @@ about OCC surface tags, mirrored geometry, and exact boolean parentage.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
+
+from . import occ_face_index
 
 # The mirror check itself lives in .symmetry; these names stay importable
 # from here for existing callers.
@@ -21,6 +24,7 @@ from .symmetry import (
     SYMMETRY_AXIS_FOR_PLANE,
     TOLERANCES,
     MirrorMatches,
+    feature_mismatch_reason,
     PlaneSymmetryVerdict,
     evaluate_mirror_symmetry,
     snap_symmetry_plane_vertices as snap_symmetry_plane_vertices,
@@ -139,7 +143,9 @@ def _param_inside(surface: int, u: float, v: float) -> bool:
         return False
 
 
-def _params_inside(surface: int, uv: list[float]) -> list[bool]:
+def _params_inside(
+    surface: int, uv: list[float], trim: occ_face_index.FaceTrim | None = None
+) -> list[bool]:
     """``_param_inside`` for each (u, v) pair, asking OCC once first.
 
     ``gmsh.model.isInside`` answers how many of the points handed to it lie
@@ -152,6 +158,11 @@ def _params_inside(surface: int, uv: list[float]) -> list[bool]:
     measured twice as slow as asking per point.
     """
 
+    if trim is not None:
+        # The face's trim polygons answer the points they are certain of
+        # (``occ_face_index.params_inside``), cross-checked against the same
+        # one OCC count; every other point is asked exactly as below.
+        return occ_face_index.params_inside(surface, uv, trim, _param_inside)
     count = len(uv) // 2
     try:
         inside = int(gmsh.model.isInside(2, surface, uv, parametric=True))
@@ -164,8 +175,22 @@ def _params_inside(surface: int, uv: list[float]) -> list[bool]:
     return [_param_inside(surface, uv[2 * index], uv[2 * index + 1]) for index in range(count)]
 
 
-def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
-    """Point-sample the actual trimmed OCC face, not its untrimmed extension."""
+def sample_occ_surface_points(
+    surface: int, *, grid: int, trims: dict[int, Any] | None = None
+) -> np.ndarray:
+    """Point-sample the actual trimmed OCC face, not its untrimmed extension.
+
+    ``trims`` (surface -> ``occ_face_index.FaceTrim``, filled on demand) lets
+    the face's own trim polygons answer the trim queries; the samples are the
+    same either way.
+    """
+    return _sample_occ_surface(surface, grid=grid, trims=trims)[0]
+
+
+def _sample_occ_surface(
+    surface: int, *, grid: int, trims: dict[int, Any] | None = None
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """``sample_occ_surface_points`` and the samples' (u, v), when they have one."""
     if grid < 2:
         raise ValueError("grid must be at least 2")
     try:
@@ -185,7 +210,13 @@ def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
                     uv.extend((u, v))
             # The same grid, in the same order, as one point at a time: the
             # block classification only saves OCC round trips.
-            inside = _params_inside(surface, uv)
+            if trims is None:
+                inside = _params_inside(surface, uv)
+            else:
+                trim = trims.get(surface)
+                if trim is None:
+                    trim = trims[surface] = occ_face_index.FaceTrim.build(surface)
+                inside = _params_inside(surface, uv, trim)
             kept = [
                 value
                 for index, flag in enumerate(inside) if flag
@@ -193,8 +224,9 @@ def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
             ]
             if kept:
                 coords = gmsh.model.getValue(2, surface, kept)
-                return np.asarray(coords, dtype=float).reshape(-1, 3)
-    return _sample_occ_surface_boundary_points(surface, grid=grid)
+                return (np.asarray(coords, dtype=float).reshape(-1, 3),
+                        np.asarray(kept, dtype=float).reshape(-1, 2))
+    return _sample_occ_surface_boundary_points(surface, grid=grid), None
 
 
 def _sample_occ_surface_boundary_points(surface: int, *, grid: int) -> np.ndarray:
@@ -509,6 +541,435 @@ class _OccMirrorTarget:
                     surface, point, mirrored, hits, context, self.tolerance))
 
 
+#: One-sided small features (R1). A mirrored sample must land on a face of
+#: its role that faces the same way, within this |cos| (60 degrees): a hole's
+#: wall lying within tolerance of a plate faces 90 degrees away.
+FEATURE_NORMAL_ALIGNMENT = 0.5
+#: Edges where the faces meet at more than this angle (degrees) are sharp,
+#: and so are free and non-manifold edges; samples of every sharp edge must
+#: mirror onto some edge of the model.
+FEATURE_EDGE_ANGLE_DEG = 30.0
+#: Samples along each sharp edge: at least this many, and one per this
+#: fraction of the model diagonal.
+FEATURE_EDGE_MIN_SAMPLES = 8
+FEATURE_EDGE_SPACING_REL = 0.01
+FEATURE_EDGE_MAX_SAMPLES = 20000
+
+
+class _FeatureEdges:
+    """The model's sharp edges, sampled, and every edge as a target.
+
+    Built once per model. ``check(plane)`` mirrors the sharp-edge samples and
+    counts those farther than tolerance from every edge of the model: a hole
+    or boss on one side has sharp edges whose mirror images lie in the middle
+    of a face. Seams, splits within one smooth surface and tangent edges are
+    not sharp, so a symmetric model with asymmetric face splits passes.
+    """
+
+    def __init__(self, surfaces: Iterable[int], *, diagonal: float, tolerance: float) -> None:
+        selected = {int(surface) for surface in surfaces}
+        uses: dict[int, list[int]] = {}
+        for surface in selected:
+            try:
+                boundary = gmsh.model.getBoundary(
+                    [(2, surface)], combined=False, oriented=False, recursive=False)
+            except Exception:
+                continue
+            for dim, curve in boundary:
+                if dim == 1:
+                    uses.setdefault(abs(int(curve)), []).append(surface)
+        self.tolerance = float(tolerance)
+        spacing = max(FEATURE_EDGE_SPACING_REL * diagonal, 1.0e-12)
+        points: list[np.ndarray] = []
+        owners: list[int] = []
+        segments_a: list[np.ndarray] = []
+        segments_b: list[np.ndarray] = []
+        chords: list[np.ndarray] = []
+        self.curves: list[int] = []
+        for curve, faces in sorted(uses.items()):
+            try:
+                lo, hi = gmsh.model.getParametrizationBounds(1, curve)
+                t0, t1 = float(lo[0]), float(hi[0])
+                if not t1 > t0:
+                    continue
+                polyline, chord = self._polyline(curve, t0, t1)
+            except Exception:
+                continue
+            self.curves.append(curve)
+            segments_a.append(polyline[:-1])
+            segments_b.append(polyline[1:])
+            chords.append(np.full(len(polyline) - 1, chord))
+            length = float(np.sum(np.linalg.norm(np.diff(polyline, axis=0), axis=1)))
+            count = int(max(FEATURE_EDGE_MIN_SAMPLES, min(200, math.ceil(length / spacing))))
+            params = t0 + (np.arange(count) + 0.5) * (t1 - t0) / count
+            sharp = self._sharp(curve, faces, params)
+            if np.any(sharp):
+                values = np.asarray(gmsh.model.getValue(1, curve, params.tolist()), dtype=float).reshape(-1, 3)
+                points.append(values[sharp])
+                owners.extend([curve] * int(np.count_nonzero(sharp)))
+        self.points = np.concatenate(points) if points else np.zeros((0, 3))
+        self.owners = owners
+        if len(self.points) > FEATURE_EDGE_MAX_SAMPLES:
+            keep = np.linspace(0, len(self.points) - 1, FEATURE_EDGE_MAX_SAMPLES).astype(int)
+            self.points = self.points[keep]
+            self.owners = [owners[i] for i in keep]
+        self.a = np.concatenate(segments_a) if segments_a else np.zeros((0, 3))
+        self.b = np.concatenate(segments_b) if segments_b else np.zeros((0, 3))
+        self.segment_curve = np.concatenate([
+            np.full(len(a), curve) for curve, a in zip(self.curves, segments_a)
+        ]) if segments_a else np.zeros(0, dtype=int)
+        self.segment_chord = np.concatenate(chords) if chords else np.zeros(0)
+        self._tree = None
+
+    def _polyline(self, curve: int, t0: float, t1: float) -> tuple[np.ndarray, float]:
+        chord = math.inf
+        for count in (65, 257, 1025):
+            params = np.linspace(t0, t1, count)
+            values = np.asarray(gmsh.model.getValue(1, curve, params.tolist()), dtype=float).reshape(-1, 3)
+            mids = np.asarray(gmsh.model.getValue(
+                1, curve, (0.5 * (params[1:] + params[:-1])).tolist()), dtype=float).reshape(-1, 3)
+            chord = float(np.max(np.linalg.norm(mids - 0.5 * (values[1:] + values[:-1]), axis=1)))
+            if chord <= 0.125 * self.tolerance:
+                break
+        return values, 2.0 * chord
+
+    @staticmethod
+    def _sharp(curve: int, faces: list[int], params: np.ndarray) -> np.ndarray:
+        distinct = sorted(set(faces))
+        if len(faces) == 1:
+            return np.ones(len(params), dtype=bool)          # free edge
+        if len(distinct) == 1:
+            return np.zeros(len(params), dtype=bool)         # seam of one face
+        if len(faces) > 2:
+            return np.ones(len(params), dtype=bool)          # non-manifold
+        normals = []
+        for face in distinct:
+            try:
+                uv = gmsh.model.reparametrizeOnSurface(1, curve, params.tolist(), face)
+                normal = np.asarray(gmsh.model.getNormal(face, list(uv)), dtype=float).reshape(-1, 3)
+            except Exception:
+                return np.zeros(len(params), dtype=bool)     # cannot tell: no claim
+            normals.append(normal / np.maximum(np.linalg.norm(normal, axis=1), 1e-300)[:, None])
+        facing = np.abs(np.einsum("ij,ij->i", normals[0], normals[1]))
+        return facing < math.cos(math.radians(FEATURE_EDGE_ANGLE_DEG))
+
+    def _bounds(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per point: the least lower and upper bound of its distance to any
+        edge, from the polylines and each curve's own chord error."""
+        lower = np.full(len(points), np.inf)
+        upper = np.full(len(points), np.inf)
+        if not len(self.a) or not len(points):
+            return lower, upper
+        from scipy.spatial import cKDTree
+
+        if self._tree is None:
+            self._tree = cKDTree(0.5 * (self.a + self.b))
+        half = 0.5 * float(np.max(np.linalg.norm(self.b - self.a, axis=1)))
+        reach = self.tolerance + float(np.max(self.segment_chord)) + half
+        rows = self._tree.query_ball_point(points, reach * (1.0 + 1e-9))
+        sizes = np.fromiter((len(row) for row in rows), dtype=np.int64, count=len(rows))
+        if not sizes.sum():
+            return lower, upper
+        pid = np.repeat(np.arange(len(points)), sizes)
+        sid = np.fromiter((i for row in rows for i in row), dtype=np.int64, count=int(sizes.sum()))
+        seg = self.b[sid] - self.a[sid]
+        rel = points[pid] - self.a[sid]
+        den = np.einsum("ij,ij->i", seg, seg)
+        t = np.clip(np.einsum("ij,ij->i", rel, seg) / np.where(den > 0, den, 1.0), 0.0, 1.0)
+        dist = np.linalg.norm(rel - t[:, None] * seg, axis=1)
+        np.minimum.at(lower, pid, dist - self.segment_chord[sid])
+        np.minimum.at(upper, pid, dist + self.segment_chord[sid])
+        return lower, upper
+
+    def check(self, plane: str) -> tuple[int, list[dict[str, object]], int]:
+        """``(points tested, failure samples (first few), mismatches)``."""
+        if not len(self.points):
+            return 0, [], 0
+        axis = SYMMETRY_AXIS_FOR_PLANE[plane]
+        mirrored = self.points.copy()
+        mirrored[:, axis] *= -1
+        tol = self.tolerance
+        lower, upper = self._bounds(mirrored)
+        matched = upper <= tol
+        for index in np.flatnonzero(~matched & (lower <= tol)):
+            matched[index] = self._exact(mirrored[index]) <= tol
+        failed = np.flatnonzero(~matched)
+        failures = [
+            {
+                "kind": "edge_mismatch",
+                "curve": int(self.owners[index]),
+                "point_step_units": [float(value) for value in self.points[index]],
+                "mirrored_point_step_units": [float(value) for value in mirrored[index]],
+            }
+            for index in failed[:AUTO_CUT_MAX_FAILURE_SAMPLES]
+        ]
+        return len(self.points), failures, len(failed)
+
+    def _exact(self, point: np.ndarray) -> float:
+        """OCC's distance from ``point`` to the nearest edge (its projection is
+        bounded to each edge); ``0.0`` -- no claim -- if OCC cannot answer."""
+        reach = self.tolerance + float(np.max(self.segment_chord))
+        rel = np.linalg.norm(0.5 * (self.a + self.b) - point, axis=1)
+        half = 0.5 * np.linalg.norm(self.b - self.a, axis=1)
+        curves = sorted({int(self.segment_curve[i]) for i in np.flatnonzero(rel - half <= reach)})
+        best = math.inf
+        for curve in curves:
+            try:
+                closest, _parametric = gmsh.model.getClosestPoint(1, curve, [float(x) for x in point])
+            except Exception:
+                return 0.0
+            best = min(best, float(np.linalg.norm(np.asarray(closest, dtype=float) - point)))
+        return best
+
+
+#: Exact OCC projections spent, per plane, to pin the reported peak residual
+#: and the reported worst off-model distance to real samples.
+CERTIFIED_PEAK_CHECKS = 24
+
+
+class _CertifiedOccMirrorTarget(_OccMirrorTarget):
+    """The exact target, asked only what a forward tessellation cannot prove.
+
+    Every mirrored sample is first measured against the tessellated faces
+    (``occ_face_index``). A sample within tolerance of a face of its own role,
+    by the margin of that triangle's measured chord error, at a point inside
+    the face's trim with room to spare, and facing its way, is a hit without
+    OCC; a sample farther than tolerance (plus the trim query's nudge and the
+    chord error) from every face is a miss without OCC. Every other sample
+    takes the exact scan of :class:`_OccMirrorTarget` unchanged, in the
+    original order. (The exact scan also counts a hit where the projection
+    falls outside the face's parameter box and the trim query's nudge clamps
+    it back in; a certified miss is a miss of the trimmed face itself, so the
+    fast check is the stricter of the two there.)
+
+    Two reported numbers are then pinned to real OCC projections: the peak
+    residual (the certified hits with the largest upper bounds are projected
+    exactly, until the next bound cannot beat the peak found, at most
+    ``CERTIFIED_PEAK_CHECKS``), and, on a rejected plane, the nearest distance
+    of the first failure samples and of the worst-looking misses. A
+    certified sample whose exact projection disagrees takes the exact answer.
+    """
+
+    def __init__(self, candidates, bboxes, tolerance, role_boundaries, roles, *,
+                 samples, axis, face_index, normals=None):
+        super().__init__(candidates, bboxes, tolerance, role_boundaries, roles)
+        self.samples = samples
+        self.axis = axis
+        self.face_index = face_index
+        # Unit normals of the samples (None for a face sampled on its
+        # boundary curves): with them, a hit must also face the same way.
+        self.normals = normals
+        self._plan: dict[Any, MirrorMatches] | None = None
+        self.stats: dict[str, int] = {}
+
+    def match(self, surface, mirrored):
+        if self._plan is None:
+            self._plan = self._plan_all()
+        return self._plan[surface]
+
+    def _exact(self, point):
+        local = self.index.candidates_for_points(np.asarray([point]))[0]
+        return self.index.closest(point, local)
+
+    def _aligned(self, face, point, normal) -> bool:
+        """Whether ``face`` faces along ``normal`` where ``point`` projects (OCC)."""
+        try:
+            _closest, parametric = gmsh.model.getClosestPoint(2, face, [float(x) for x in point])
+            other = np.asarray(gmsh.model.getNormal(face, [float(parametric[0]), float(parametric[1])]),
+                               dtype=float)
+        except Exception:
+            return True
+        length = float(np.linalg.norm(other))
+        if not np.isfinite(length) or length == 0.0:
+            return True
+        return abs(float(np.dot(normal, other))) / length >= FEATURE_NORMAL_ALIGNMENT
+
+    def _plan_all(self) -> dict[Any, MirrorMatches]:
+        order = sorted(self.samples)
+        counts = [len(self.samples[surface]) for surface in order]
+        owners = np.repeat(np.arange(len(order)), counts)
+        points = np.concatenate([self.samples[surface] for surface in order])
+        mirrored = points.copy()
+        mirrored[:, self.axis] *= -1
+        shape = self.normals is not None
+        mirrored_normals = np.full((len(points), 3), np.nan)
+        if shape:
+            start = 0
+            for surface, count in zip(order, counts):
+                normals = self.normals.get(surface)
+                if normals is not None and len(normals) == count:
+                    mirrored_normals[start:start + count] = normals
+                start += count
+            mirrored_normals[:, self.axis] *= -1
+        known_normal = np.all(np.isfinite(mirrored_normals), axis=1)
+        total = len(mirrored)
+        tol = float(self.tolerance)
+        roles = self._roles or {}
+        own_role = np.asarray([roles.get(order[i]) for i in owners], dtype=object)
+        index = self.face_index
+        meshes = index.meshes
+        near = index.near(mirrored, tol)
+        same_role = np.fromiter(
+            (roles.get(int(f)) == own_role[p] for p, f in zip(near.point, near.face)),
+            dtype=bool, count=len(near.face),
+        )
+        hit_cert = near.upper <= tol
+        miss_cert = near.lower > tol
+        candidate_rows = hit_cert & same_role
+        if shape and len(near.face):
+            # A certified hit counts only where the hit face (its triangle)
+            # faces the mirrored sample's way; otherwise OCC decides.
+            facing = np.abs(np.einsum("ij,ij->i", mirrored_normals[near.point], near.normal))
+            candidate_rows &= ~known_normal[near.point] | (
+                near.normal_ok & (facing >= FEATURE_NORMAL_ALIGNMENT))
+        pass_rows = np.flatnonzero(candidate_rows)
+        passed = np.zeros(total, dtype=bool)
+        passed[near.point[pass_rows]] = True
+        estimate = np.full(total, np.inf)
+        upper = np.full(total, np.inf)
+        hit_face = np.full(total, -1, dtype=np.int64)
+        # Per point, the same-role certified hit with the least upper bound.
+        if len(pass_rows):
+            ranked = pass_rows[np.lexsort((near.upper[pass_rows], near.point[pass_rows]))]
+            firsts = ranked[np.r_[True, near.point[ranked][1:] != near.point[ranked][:-1]]]
+            pts = near.point[firsts]
+            upper[pts] = near.upper[firsts]
+            estimate[pts] = np.maximum(near.estimate[firsts], 0.0)
+            hit_face[pts] = near.face[firsts]
+        blocked = np.zeros(total, dtype=bool)
+        blocked[near.point[~miss_cert]] = True
+        # Faces the index could not tessellate: only their box can clear them.
+        unknown = [face for face in self.candidates if face not in meshes and face in self.bboxes]
+        if unknown:
+            boxes = np.asarray([self.bboxes[face] for face in unknown], dtype=float)
+            deltas = np.maximum(np.maximum(boxes[None, :, :3] - mirrored[:, None, :],
+                                           mirrored[:, None, :] - boxes[None, :, 3:]), 0.0)
+            gaps = np.sqrt(np.einsum("pfk,pfk->pf", deltas, deltas))
+            blocked |= np.any(~(gaps > tol), axis=1)
+        missed = ~passed & ~blocked
+        # A miss's nearest distance as the exact scan reads it: a face's box
+        # gap where that is beyond tolerance, else (approximately) the face.
+        approx = np.full(total, np.inf)
+        faces_known = [face for face in self.candidates if face in self.bboxes]
+        if faces_known:
+            boxes = np.asarray([self.bboxes[face] for face in faces_known], dtype=float)
+            column = {face: k for k, face in enumerate(faces_known)}
+            for start in range(0, total, 2048):
+                chunk = mirrored[start:start + 2048]
+                deltas = np.maximum(np.maximum(boxes[None, :, :3] - chunk[:, None, :],
+                                               chunk[:, None, :] - boxes[None, :, 3:]), 0.0)
+                gaps = np.sqrt(np.einsum("pfk,pfk->pf", deltas, deltas))
+                if len(near.face):
+                    rows = np.flatnonzero((near.point >= start) & (near.point < start + len(chunk)))
+                    cols = np.asarray([column.get(int(f), -1) for f in near.face[rows]])
+                    keep = cols >= 0
+                    pts = near.point[rows][keep] - start
+                    cols = cols[keep]
+                    within = gaps[pts, cols] <= tol
+                    gaps[pts[within], cols[within]] = np.maximum(near.estimate[rows][keep][within], 0.0)
+                approx[start:start + len(chunk)] = np.min(gaps, axis=1)
+
+        matched = np.full(total, -1.0)
+        nearest = np.full(total, -1.0)
+        hits: list[list[int]] = [[] for _ in range(total)]
+        exact_done = np.zeros(total, dtype=bool)
+        # 1. The undecided samples, exactly as the plain scan, in its order.
+        undecided = np.flatnonzero(~passed & ~missed)
+        if len(undecided):
+            local = self.index.candidates_for_points(mirrored[undecided])
+            for row, p in enumerate(undecided):
+                preferred = self._by_role.get(roles[order[owners[p]]]) if roles else None
+                result = self.index.closest(
+                    mirrored[p], local[row], preferred=preferred, exit_at=self._largest_residual
+                )
+                matched[p], nearest[p], hits[p] = result[0], result[1], list(result[2])
+                exact_done[p] = True
+                if result[2] and not np.isnan(result[0]) and result[0] > self._largest_residual:
+                    self._largest_residual = result[0]
+        misaligned = np.zeros(total, dtype=bool)
+        if shape:
+            # A face of the sample's role that may lie within tolerance and
+            # faces its way (by the tessellation) also counts: a sample on a
+            # trim curve can project just outside one face and onto the
+            # perpendicular face meeting it there.
+            facing_rows = np.zeros(total, dtype=bool)
+            if len(near.face):
+                facing = np.abs(np.einsum("ij,ij->i", mirrored_normals[near.point], near.normal))
+                ok_rows = same_role & ~(near.lower > tol) & near.normal_ok & (
+                    facing >= FEATURE_NORMAL_ALIGNMENT)
+                facing_rows[near.point[ok_rows]] = True
+            for p in undecided:
+                own = [h for h in hits[p] if roles.get(h) == own_role[p]]
+                if own and known_normal[p] and not facing_rows[p]:
+                    misaligned[p] = not any(
+                        self._aligned(face, mirrored[p], mirrored_normals[p]) for face in own)
+        for p in np.flatnonzero(passed):
+            matched[p] = nearest[p] = estimate[p]
+            hits[p] = [int(hit_face[p])]
+        # 2. The peak residual, pinned to exact projections.
+        exact_peak = max((matched[p] for p in np.flatnonzero(exact_done) if hits[p]
+                          and not np.isnan(matched[p])), default=-1.0)
+        checks = 0
+        # Ranked by the tessellation's own distance (exact on planes); stop
+        # once no remaining sample's upper bound can beat the peak found.
+        ranked = sorted(np.flatnonzero(passed), key=lambda q: (-estimate[q], -upper[q]))
+        for p in ranked:
+            if checks >= CERTIFIED_PEAK_CHECKS:
+                break
+            if upper[p] <= exact_peak:
+                continue
+            checks += 1
+            result = self._exact(mirrored[p])
+            matched[p], nearest[p], hits[p] = result[0], result[1], list(result[2])
+            exact_done[p] = True
+            if result[2] and not np.isnan(result[0]):
+                exact_peak = max(exact_peak, float(result[0]))
+        for p in np.flatnonzero(passed & ~exact_done):
+            if exact_peak >= 0.0 and matched[p] > exact_peak:
+                matched[p] = nearest[p] = exact_peak
+        # 3. Misses: exact nearest distances for the reported failures.
+        failure_order = []
+        for p in range(total):
+            if missed[p] and not exact_done[p]:
+                failure_order.append(p)
+            elif exact_done[p] and (not hits[p] or own_role[p] not in {roles.get(h) for h in hits[p]}
+                                    or misaligned[p]):
+                failure_order.append(p)
+            if len(failure_order) >= DEFAULT_MAX_FAILURE_SAMPLES:
+                break
+        worst_first = sorted(np.flatnonzero(missed), key=lambda q: -approx[q])[:CERTIFIED_PEAK_CHECKS]
+        exact_worst = -1.0
+        for p in [*failure_order, *worst_first]:
+            if exact_done[p]:
+                continue
+            result = self._exact(mirrored[p])
+            matched[p], nearest[p], hits[p] = result[0], result[1], list(result[2])
+            exact_done[p] = True
+            if not result[2]:
+                exact_worst = max(exact_worst, float(result[1]))
+        for p in np.flatnonzero(missed & ~exact_done):
+            value = float(approx[p]) if np.isfinite(approx[p]) else exact_worst
+            nearest[p] = min(value, exact_worst) if exact_worst >= 0.0 else value
+        self.stats = {
+            "points": int(total),
+            "certified_hits": int(np.count_nonzero(passed & ~exact_done)),
+            "certified_misses": int(np.count_nonzero(missed & ~exact_done)),
+            "exact": int(np.count_nonzero(exact_done)),
+            **({"misaligned": int(np.count_nonzero(misaligned))} if shape else {}),
+        }
+        plan: dict[Any, MirrorMatches] = {}
+        start = 0
+        for surface, count in zip(order, counts):
+            stop = start + count
+            plan[surface] = MirrorMatches(
+                matched[start:stop].copy(), nearest[start:stop].copy(),
+                hits=[hits[p] for p in range(start, stop)],
+                misaligned=misaligned[start:stop].tolist() if shape else None,
+            )
+            start = stop
+        return plan
+
+
 def evaluate_occ_plane_symmetry(
     plane: str,
     *,
@@ -518,13 +979,53 @@ def evaluate_occ_plane_symmetry(
     tolerance: float,
     span_tolerance: float,
     _role_boundaries: _OccTriangleRoleBoundaries | None = None,
+    _face_index: occ_face_index.FaceIndex | None = None,
+    _stats: dict[str, int] | None = None,
+    _normals: Mapping[int, np.ndarray | None] | None = None,
+    _feature_edges: _FeatureEdges | None = None,
 ) -> PlaneSymmetryVerdict:
-    """Require both trimmed geometry and caller-supplied roles to mirror."""
-    target = _OccMirrorTarget(sorted(samples), bboxes, tolerance, _role_boundaries, roles)
-    return evaluate_mirror_symmetry(
+    """Require both trimmed geometry and caller-supplied roles to mirror.
+
+    ``_face_index`` (the model's forward tessellation) lets most samples be
+    decided without OCC; the verdict's rule and tolerances are the same.
+    With ``_normals`` and ``_feature_edges`` the plane must also pass the
+    one-sided small-feature check: mirrored samples land on faces facing the
+    same way, and sharp edges mirror onto edges.
+    """
+    target: _OccMirrorTarget
+    if _face_index is not None and _role_boundaries is None:
+        target = _CertifiedOccMirrorTarget(
+            sorted(samples), bboxes, tolerance, None, roles,
+            samples=samples, axis=SYMMETRY_AXIS_FOR_PLANE[plane], face_index=_face_index,
+            normals=_normals,
+        )
+    else:
+        target = _OccMirrorTarget(sorted(samples), bboxes, tolerance, _role_boundaries, roles)
+    verdict = evaluate_mirror_symmetry(
         plane, samples=samples, roles=roles, target=target, tolerance=tolerance,
         span_tolerance=span_tolerance, max_failure_samples=AUTO_CUT_MAX_FAILURE_SAMPLES,
     )
+    if _stats is not None and isinstance(target, _CertifiedOccMirrorTarget):
+        _stats.update(target.stats)
+    straddles = verdict.accepted or verdict.points_off_model or verdict.role_mismatches \
+        or verdict.feature_mismatches
+    if _feature_edges is not None and verdict.feature_mismatches is not None and straddles:
+        tested, edge_failures, edge_mismatches = _feature_edges.check(plane)
+        mismatches = verdict.feature_mismatches + edge_mismatches
+        room = AUTO_CUT_MAX_FAILURE_SAMPLES - len(verdict.failure_samples)
+        verdict = replace(
+            verdict,
+            accepted=verdict.accepted and edge_mismatches == 0,
+            reason=(feature_mismatch_reason(mismatches)
+                    if verdict.accepted and edge_mismatches else verdict.reason),
+            feature_points_tested=int(verdict.feature_points_tested or 0) + tested,
+            feature_mismatches=mismatches,
+            failure_samples=verdict.failure_samples + tuple(edge_failures[:max(room, 0)]),
+        )
+        if _stats is not None:
+            _stats["edge_points"] = tested
+            _stats["edge_mismatches"] = edge_mismatches
+    return verdict
 
 
 def _claim_evidence(parent: int, child: int, *, tolerance: float, grid: int) -> str:
@@ -1105,6 +1606,8 @@ def auto_cut_occ_geometry(
     planes: Iterable[str] | None = None,
     triangle_surface_mesh: bool = False,
     known_verdicts: Mapping[str, Mapping[str, Any]] | None = None,
+    fast_check: bool = True,
+    feature_check: bool = True,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
 
@@ -1124,6 +1627,14 @@ def auto_cut_occ_geometry(
     ``known_verdicts`` are verdicts (``to_dict`` form) the caller already has
     for this very geometry -- the same model, placed and healed the same way
     -- keyed by plane; those planes are not tested again.
+
+    ``fast_check`` (the default on the general CAD path) decides most mirror
+    samples from a forward tessellation of the faces (``occ_face_index``)
+    and leaves the rest to OCC's exact projection; ``False`` projects every
+    sample with OCC, exactly as before stage 4b (a portable replay of an
+    older package rebuilds that way). ``feature_check`` (with
+    ``fast_check``) adds the one-sided small-feature check: mirrored samples
+    must land on faces facing the same way, and sharp edges on edges.
 
     A cut that fails raises ``RuntimeError`` with ``accepted_planes`` (the
     planes the mirror test accepted and the cut was for) and ``report``.
@@ -1161,10 +1672,40 @@ def auto_cut_occ_geometry(
     triangle_model = _triangle_model(surfaces) if triangle_surface_mesh else None
     role_boundaries = (_OccTriangleRoleBoundaries(triangle_model, roles)
                        if triangle_model is not None else None)
-    samples = {
-        surface: sample_occ_surface_points(surface, grid=grid) for surface in surfaces
+    # The general CAD path tessellates its faces for the mirror test first:
+    # the trim polygons, once they match OCC's area for a face, also answer
+    # the sampling's trim queries.
+    trims: dict[int, Any] | None = None
+    face_index: occ_face_index.FaceIndex | None = None
+    if triangle_model is None and fast_check:
+        box = gmsh.model.getBoundingBox(-1, -1)
+        box_diagonal = float(np.linalg.norm(np.asarray(box[3:]) - np.asarray(box[:3])))
+        face_index, trims = occ_face_index.build_face_index(
+            surfaces, diagonal=box_diagonal,
+            tolerance=TOLERANCES["fitted"].relative * box_diagonal, trims={},
+        )
+    sampled = {
+        surface: _sample_occ_surface(surface, grid=grid, trims=trims) for surface in surfaces
     }
-    samples = {surface: points for surface, points in samples.items() if len(points)}
+    samples = {surface: points for surface, (points, _uv) in sampled.items() if len(points)}
+    normals: dict[int, np.ndarray | None] | None = None
+    if face_index is not None and feature_check:
+        normals = {}
+        for surface in samples:
+            uv = sampled[surface][1]
+            if uv is None:
+                normals[surface] = None
+                continue
+            try:
+                values = np.asarray(gmsh.model.getNormal(surface, uv.ravel().tolist()),
+                                    dtype=float).reshape(-1, 3)
+            except Exception:
+                normals[surface] = None
+                continue
+            lengths = np.linalg.norm(values, axis=1)
+            values = values / np.where(lengths > 0, lengths, 1.0)[:, None]
+            values[~(lengths > 0)] = np.nan
+            normals[surface] = values
     bboxes = {
         surface: tuple(float(value) for value in gmsh.model.getBoundingBox(2, surface))
         for surface in samples
@@ -1189,11 +1730,20 @@ def auto_cut_occ_geometry(
                            tolerance=tolerance, span_tolerance=span_tolerance)
     if role_boundaries is not None:
         verdict_options["_role_boundaries"] = role_boundaries
-    tested = {
-        plane: evaluate_occ_plane_symmetry(plane, **verdict_options)
-        for plane in candidate_planes
-        if plane not in known
-    }
+    oracle: dict[str, dict[str, int]] = {}
+    untested = [plane for plane in candidate_planes if plane not in known]
+    if face_index is not None and untested:
+        verdict_options["_face_index"] = face_index
+        if normals is not None:
+            verdict_options["_normals"] = normals
+            verdict_options["_feature_edges"] = _FeatureEdges(
+                samples, diagonal=diagonal, tolerance=float(tolerance))
+    tested = {}
+    for plane in untested:
+        stats: dict[str, int] = {}
+        tested[plane] = evaluate_occ_plane_symmetry(plane, **verdict_options, _stats=stats)
+        if stats:
+            oracle[plane] = stats
     plane_reports = {
         plane: known[plane] if plane in known else tested[plane].to_dict()
         for plane in candidate_planes
@@ -1213,6 +1763,7 @@ def auto_cut_occ_geometry(
         "sample_points": int(len(stacked)),
         "planes": plane_reports,
         "cut_planes": list(accepted_planes),
+        **({"mirror_check_points": oracle} if oracle else {}),
     }
     if not accepted_planes:
         report["cut"] = None
