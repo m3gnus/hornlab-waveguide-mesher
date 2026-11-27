@@ -738,3 +738,33 @@ def test_the_tessellation_never_proves_a_hit_on_a_curved_face():
         assert np.all(np.isinf(near.upper[rows]))
         closest, _uv = gmsh.model.getClosestPoint(2, ridge, point.ravel().tolist())
         assert float(np.linalg.norm(np.asarray(closest) - point[0])) > tolerance
+
+
+def test_the_face_cut_retry_judges_its_own_children(monkeypatch):
+    """The periodic-seam retry's children reuse the tags of the attempt-0
+    children it removed; a claim judge carried over from attempt 0 answered
+    from those faces' samples, disproved true claims and refused the cut
+    (the 34d775978b42 family, two roles). Force the retry on a cylinder."""
+    real = step_prepare._uncovered_cut_parents
+    calls = []
+
+    def lose_one_on_the_first_attempt(mapping, copies, planes, **kwargs):
+        calls.append(1)
+        got = real(mapping, copies, planes, **kwargs)
+        return got or (sorted(mapping)[:1] if len(calls) == 1 else got)
+
+    monkeypatch.setattr(step_prepare, "_uncovered_cut_parents", lose_one_on_the_first_attempt)
+    with _session():
+        gmsh.model.occ.addCylinder(0, 0, 0, 0, 0, 30, 15)
+        gmsh.model.occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        low = min(surfaces, key=lambda t: gmsh.model.getBoundingBox(2, t)[2])
+        groups = [
+            OccSurfaceGroup("src", OccSurfaceSelector([low]), OccSurfaceRole("source")),
+            OccSurfaceGroup("rest", OccSurfaceSelector([t for t in surfaces if t != low]),
+                            OccSurfaceRole("rigid")),
+        ]
+        result = auto_cut_occ_geometry(groups, planes=("x0",), solid_cut=False)
+        assert len(calls) == 2
+        assert result.planes == ("x0",)
+        assert result.report["cut"]["route"] == "faces"

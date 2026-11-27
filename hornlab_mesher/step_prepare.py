@@ -1171,6 +1171,9 @@ class _ClaimJudge:
     parent, and ``"off"`` when one is certainly farther than tolerance from
     the trimmed parent -- which ``_claim_evidence`` would also call off. Any
     other claim is judged by ``_claim_evidence`` on the parent's copy.
+
+    It caches each child's samples by tag, so one judge serves one cut
+    result: a later cut can reuse those tags for other faces.
     """
 
     def __init__(self, copies: dict[int, int], *, tolerance: float, grid: int,
@@ -1826,9 +1829,12 @@ def _cut_occ_geometry_to_positive_side(
             gmsh.model.occ.synchronize()
             if triangle_model is not None:
                 _verify_triangle_copies(copies, triangle_model)
-        judge = (_ClaimJudge(copies, tolerance=tolerance, grid=grid, face_index=face_index)
-                 if triangle_model is None else None)
         for attempt in range(2) if cut_surfaces else ():
+            # A fresh judge each attempt: the retry's children reuse the tags
+            # of the attempt-0 children it removed, so samples cached under
+            # those tags would describe faces that no longer exist.
+            judge = (_ClaimJudge(copies, tolerance=tolerance, grid=grid, face_index=face_index)
+                     if triangle_model is None else None)
             box = gmsh.model.occ.addBox(
                 lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
             )
