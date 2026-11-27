@@ -46,16 +46,9 @@ from typing import Any
 
 import numpy as np
 
+from ._lazy_gmsh import LazyGmsh
 
-class _LazyGmsh:
-    def __getattr__(self, name: str):
-        import gmsh as _gmsh_module
-
-        globals()["gmsh"] = _gmsh_module
-        return getattr(_gmsh_module, name)
-
-
-gmsh: Any = _LazyGmsh()
+gmsh: Any = LazyGmsh(globals())
 
 #: Target chord error, as a fraction of the mirror tolerance.
 DELTA_TARGET_FRACTION = 1.0 / 4.0
@@ -70,8 +63,11 @@ MAX_FACE_CELLS = 1 << 16
 CURVE_SAMPLES = (33, 129, 513)
 #: Safety factor on the measured chord error.
 DELTA_SAFETY = 2.0
-#: The trim query's parameter nudge (``step_prepare.AUTO_CUT_TRIM_NUDGE_REL``).
-NUDGE_REL = 1.0e-3
+#: Surface types whose chord error the 5-probe measure follows (smooth,
+#: closed-form curvature); every other face is re-sampled on a lattice.
+ANALYTIC_TYPES = frozenset({"Plane", "Cylinder", "Cone", "Sphere", "Torus"})
+#: Lattice of extra chord probes per cell on non-analytic faces (cell-local).
+LATTICE = (1.0 / 6.0, 0.5, 5.0 / 6.0)
 
 
 # -- planar point-in-polygon in parameter space --------------------------------
@@ -105,35 +101,48 @@ def _crossings(points: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return inside
 
 
-def _segment_distance(points: np.ndarray, a: np.ndarray, b: np.ndarray, reach: float,
-                      tree: Any = None) -> np.ndarray:
-    """Distance from each point to the nearest segment, exact up to ``reach``.
+def segment_pairs(points: np.ndarray, a: np.ndarray, b: np.ndarray, reach: float,
+                  tree: Any = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every (point, segment) pair within ``reach``, with its distance.
 
-    Points farther than ``reach`` from every segment get ``inf``: only the
-    segments whose midpoint lies within ``reach`` plus half the longest
-    segment are measured, through a KD-tree.
+    Works in any dimension. Segments are found through a KD-tree of their
+    midpoints (``tree``, built here when not given) searched to ``reach``
+    plus half the longest segment, so no segment within ``reach`` is missed.
+    Returns point indices, segment indices and distances.
     """
-    out = np.full(len(points), np.inf)
-    if not len(a) or not len(points):
-        return out
+    empty = (np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), np.zeros(0))
+    finite = np.all(np.isfinite(points), axis=1) if len(points) else np.zeros(0, dtype=bool)
+    if not len(a) or not np.any(finite):
+        return empty
     from scipy.spatial import cKDTree
 
     ab = b - a
     length = np.sqrt(np.einsum("ij,ij->i", ab, ab))
     if tree is None:
         tree = cKDTree(0.5 * (a + b))
-    rows = tree.query_ball_point(points, reach + 0.5 * float(np.max(length)) * (1.0 + 1e-9))
-    sizes = np.fromiter((len(row) for row in rows), dtype=np.int64, count=len(rows))
+    query = np.where(finite[:, None], points, 0.0)
+    rows = tree.query_ball_point(query, (reach + 0.5 * float(np.max(length))) * (1.0 + 1e-9))
+    sizes = np.fromiter((len(row) if keep else 0 for keep, row in zip(finite, rows)),
+                        dtype=np.int64, count=len(rows))
     if not sizes.sum():
-        return out
+        return empty
     pid = np.repeat(np.arange(len(points)), sizes)
-    sid = np.fromiter((i for row in rows for i in row), dtype=np.int64, count=int(sizes.sum()))
+    sid = np.fromiter((i for keep, row in zip(finite, rows) if keep for i in row),
+                      dtype=np.int64, count=int(sizes.sum()))
     seg = ab[sid]
     den = np.einsum("ij,ij->i", seg, seg)
     rel = points[pid] - a[sid]
     t = np.clip(np.einsum("ij,ij->i", rel, seg) / np.where(den > 0, den, 1.0), 0.0, 1.0)
     gap = rel - t[:, None] * seg
-    dist = np.sqrt(np.einsum("ij,ij->i", gap, gap))
+    return pid, sid, np.sqrt(np.einsum("ij,ij->i", gap, gap))
+
+
+def _segment_distance(points: np.ndarray, a: np.ndarray, b: np.ndarray, reach: float,
+                      tree: Any = None) -> np.ndarray:
+    """Distance from each point to the nearest segment, exact up to ``reach``
+    (``inf`` beyond it)."""
+    out = np.full(len(points), np.inf)
+    pid, _sid, dist = segment_pairs(points, a, b, reach, tree)
     np.minimum.at(out, pid, dist)
     return out
 
@@ -366,8 +375,11 @@ def params_inside(
 class FaceMesh:
     """One face's tessellation and, per triangle, the bounds that certify it.
 
-    ``delta`` bounds the gap between a triangle and the surface patch it
-    stands for (measured, doubled, and taken over the cell's neighbours too);
+    ``delta`` is the *measured* gap between a triangle and the surface patch
+    it stands for (sampled, doubled, and taken over the cell's neighbours;
+    on a non-analytic face also re-sampled on a 3 x 3 lattice per cell). It
+    is not a proof, so it only ever decides misses -- a too small ``delta``
+    can turn a hit into a miss, never a miss into a hit;
     ``nudge`` bounds how far the trim query's parameter nudge can move a
     point of that patch in space.
     """
@@ -375,11 +387,9 @@ class FaceMesh:
     surface: int
     triangles: np.ndarray        # (T, 3, 3), inside and boundary cells
     inside: np.ndarray           # (T,) cell fully inside the trim
-    clearance: np.ndarray        # (T,) least distance in space from the cell to the trim
     delta: np.ndarray            # (T,)
     nudge: np.ndarray            # (T,)
     uv: np.ndarray               # (T, 3, 2) parameter corners
-    stretch: np.ndarray          # (T,) lower bound of |dS| / |d(u, v)| near the cell
     trim: FaceTrim | None = None
     planar: bool = False
 
@@ -440,11 +450,15 @@ def _trim_cells(trim: FaceTrim, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarra
         dense = closed[owner] + (offset / pieces[owner])[:, None] * seg[owner]
         # Each polyline point marks the cells within the polygon's margin of
         # it: the true p-curve is no farther than that from its polyline.
-        for su in (-reach, reach):
-            for sv in (-reach, reach):
-                iu = np.clip(np.floor((dense[:, 0] + su - u0) / du).astype(int), 0, nu - 1)
-                iv = np.clip(np.floor((dense[:, 1] + sv - v0) / dv).astype(int), 0, nv - 1)
-                crossed[iu, iv] = True
+        # Every cell the reach box touches, however wide it is.
+        iu_lo = np.clip(np.floor((dense[:, 0] - reach - u0) / du).astype(int), 0, nu - 1)
+        iu_hi = np.clip(np.floor((dense[:, 0] + reach - u0) / du).astype(int), 0, nu - 1)
+        iv_lo = np.clip(np.floor((dense[:, 1] - reach - v0) / dv).astype(int), 0, nv - 1)
+        iv_hi = np.clip(np.floor((dense[:, 1] + reach - v0) / dv).astype(int), 0, nv - 1)
+        for ku in range(int(np.max(iu_hi - iu_lo)) + 1):
+            for kv in range(int(np.max(iv_hi - iv_lo)) + 1):
+                hit = (iu_lo + ku <= iu_hi) & (iv_lo + kv <= iv_hi)
+                crossed[iu_lo[hit] + ku, iv_lo[hit] + kv] = True
     sure_in = corner_in & corner_certain
     sure_out = ~corner_in & corner_certain
     all_in = sure_in[:-1, :-1] & sure_in[1:, :-1] & sure_in[:-1, 1:] & sure_in[1:, 1:]
@@ -454,7 +468,7 @@ def _trim_cells(trim: FaceTrim, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarra
 
 def build_face_mesh(
     surface: int, trim: FaceTrim, *, cell_size: float, delta_target: float,
-    tolerance: float, area: float | None = None,
+    area: float | None = None, nudge_rel: float,
 ) -> FaceMesh | None:
     """Tessellate one face; ``None`` when OCC cannot evaluate it.
 
@@ -472,9 +486,10 @@ def build_face_mesh(
         return None
     try:
         coarse = _grid_values(surface, np.linspace(u0, u1, 9), np.linspace(v0, v1, 9))
-        planar = gmsh.model.getType(2, surface) == "Plane"
+        kind = gmsh.model.getType(2, surface)
     except Exception:
         return None
+    planar = kind == "Plane"
     length_u = float(np.max(np.sum(np.linalg.norm(np.diff(coarse, axis=0), axis=2), axis=0)))
     length_v = float(np.max(np.sum(np.linalg.norm(np.diff(coarse, axis=1), axis=2), axis=1)))
     nu = int(min(MAX_CELLS, max(MIN_CELLS, math.ceil(length_u / cell_size))))
@@ -534,40 +549,48 @@ def build_face_mesh(
             continue
         break
 
+    if not planar and kind not in ANALYTIC_TYPES:
+        # Features narrower than a cell can hide between the five probes: on
+        # a non-analytic face sample each cell again on a 3 x 3 lattice.
+        try:
+            for a in LATTICE:
+                for b in LATTICE:
+                    lattice = np.stack([u[:-1, None] + a * du + 0.0 * v[None, :-1],
+                                        0.0 * u[:-1, None] + v[None, :-1] + b * dv], axis=-1)
+                    value = _point_values(surface, lattice)
+                    if a >= b:      # triangle (00, 10, 11)
+                        guess = p00 + a * (p10 - p00) + b * (p11 - p10)
+                    else:           # triangle (00, 11, 01)
+                        guess = p00 + b * (p01 - p00) + a * (p11 - p01)
+                    gap = np.maximum(gap, np.linalg.norm(value - guess, axis=-1))
+        except Exception:
+            return None
+        if not np.all(np.isfinite(gap)):
+            return None
     delta = np.zeros_like(gap) if planar else DELTA_SAFETY * _dilate_max(gap)
-    # The trim query nudges a projection by NUDGE_REL of the parameter
+    # The trim query nudges a projection by ``nudge_rel`` of the parameter
     # range in u and in v; bound that step in space from the local edges.
     speed_u = np.maximum(np.linalg.norm(p10 - p00, axis=-1), np.linalg.norm(p11 - p01, axis=-1)) / du
     speed_v = np.maximum(np.linalg.norm(p01 - p00, axis=-1), np.linalg.norm(p11 - p10, axis=-1)) / dv
-    nudge = 1.5 * NUDGE_REL * _dilate_max(speed_u * (u1 - u0) + speed_v * (v1 - v0)) + delta
-
-    # How far an inside cell is from the trim, in space: a ring of inside
-    # neighbours keeps the trim at least one neighbour's width away (each
-    # cell's width taken as its parallelogram's smaller altitude, less its
-    # chord error).
-    padded = np.zeros((nu + 2, nv + 2), dtype=bool)
-    padded[1:-1, 1:-1] = cell_in
-    ringed = cell_in.copy()
-    for di in (-1, 0, 1):
-        for dj in (-1, 0, 1):
-            ringed &= padded[1 + di:nu + 1 + di, 1 + dj:nv + 1 + dj]
-    e_u, e_v = p10 - p00, p01 - p00
-    twice_area = np.linalg.norm(np.cross(e_u, e_v), axis=-1)
-    width = np.minimum(twice_area / np.maximum(np.linalg.norm(e_v, axis=-1), 1e-300),
-                       twice_area / np.maximum(np.linalg.norm(e_u, axis=-1), 1e-300))
-    clearance = np.where(ringed, np.maximum(-_dilate_max(-width) - 2.0 * delta, 0.0), 0.0)
-    if trim.ok and area is not None and np.isfinite(area) and area > 0.0:
+    nudge = 1.5 * nudge_rel * _dilate_max(speed_u * (u1 - u0) + speed_v * (v1 - v0)) + delta
+    if not (np.all(np.isfinite(delta)) and np.all(np.isfinite(nudge))):
+        return None
+    if not (area is not None and np.isfinite(area) and area > 0.0):
+        # Unverifiable polygons: no inside cells (no certified hit here).
+        trim.ok = False
+    if trim.ok:
         # The trim polygons must agree with OCC's own area for the face: the
         # inside cells cannot cover more, nor all kept ones less.
+        assert area is not None
         slack = 1.0e-3 * area + 4.0 * float(np.max(delta)) * (length_u + length_v)
         if (float(np.sum(cell_area[cell_in])) > area + slack
                 or float(np.sum(cell_area[cell_keep])) < area - slack):
             trim.ok = False
-            cell_in = np.zeros_like(cell_in)
-            clearance = np.zeros_like(clearance)
-            cell_keep = np.ones_like(cell_keep)
         else:
             trim.verified = True
+    if not trim.ok:
+        cell_in = np.zeros_like(cell_in)
+        cell_keep = np.ones_like(cell_keep)
 
     eps = 64.0 * np.finfo(float).eps * max(1.0, float(np.max(np.abs(nodes))))
     keep = cell_keep.ravel()
@@ -577,27 +600,13 @@ def build_face_mesh(
     q10, q01, q11 = q00 + [du, 0.0], q00 + [0.0, dv], q00 + [du, dv]
     uv_a = np.stack([q00, q10, q11], axis=2).reshape(-1, 3, 2)[keep]
     uv_b = np.stack([q00, q11, q01], axis=2).reshape(-1, 3, 2)[keep]
-    # Least stretch of the map (u, v) -> space over the cell: the smaller
-    # singular value of its Jacobian, from the cell's edges, lowered to the
-    # least of its neighbours and halved for safety.
-    ju = (p10 - p00) / du
-    jv = (p01 - p00) / dv
-    guu = np.einsum("ijk,ijk->ij", ju, ju)
-    gvv = np.einsum("ijk,ijk->ij", jv, jv)
-    guv = np.einsum("ijk,ijk->ij", ju, jv)
-    half_trace = 0.5 * (guu + gvv)
-    root = np.sqrt(np.maximum(half_trace ** 2 - (guu * gvv - guv ** 2), 0.0))
-    sigma = np.sqrt(np.maximum(half_trace - root, 0.0))
-    stretch = 0.5 * -_dilate_max(-sigma)
-
     def twice(values: np.ndarray) -> np.ndarray:
         kept = values.ravel()[keep]
         return np.concatenate([kept, kept])
 
     return FaceMesh(
-        surface, np.concatenate([tri_a, tri_b]), twice(cell_in), twice(clearance),
-        twice(delta) + eps, twice(nudge) + eps, np.concatenate([uv_a, uv_b]),
-        twice(stretch), trim, planar,
+        surface, np.concatenate([tri_a, tri_b]), twice(cell_in),
+        twice(delta) + eps, twice(nudge) + eps, np.concatenate([uv_a, uv_b]), trim, planar,
     )
 
 
@@ -698,19 +707,15 @@ class FaceIndex:
             self.faces = np.concatenate([np.full(len(m.triangles), m.surface, dtype=np.int64)
                                          for m in parts])
             self.inside = np.concatenate([m.inside for m in parts])
-            self.clearance = np.concatenate([m.clearance for m in parts])
             self.planar = np.concatenate([np.full(len(m.triangles), m.planar) for m in parts])
             self.delta = np.concatenate([m.delta for m in parts])
             self.nudge = np.concatenate([m.nudge for m in parts])
             self.uv = np.concatenate([m.uv for m in parts])
-            self.stretch = np.concatenate([m.stretch for m in parts])
         else:
             self.uv = np.zeros((0, 3, 2))
-            self.stretch = np.zeros(0)
             self.triangles = np.zeros((0, 3, 3))
             self.faces = np.zeros(0, dtype=np.int64)
             self.inside = self.planar = np.zeros(0, dtype=bool)
-            self.clearance = np.zeros(0)
             self.delta = self.nudge = np.zeros(0)
         self.centroids = self.triangles.mean(axis=1) if len(self.triangles) else np.zeros((0, 3))
         radii = (np.max(np.linalg.norm(self.triangles - self.centroids[:, None, :], axis=2), axis=1)
@@ -741,24 +746,21 @@ class FaceIndex:
                                  for members, radius in self._classes]
         return self._trees_cache
 
-    def _room_inside(self, closest: np.ndarray, tri_ids: np.ndarray, room: np.ndarray) -> np.ndarray:
+    def _foot_inside(self, closest: np.ndarray, tri_ids: np.ndarray) -> np.ndarray:
+        """Whether each plane foot's (u, v) -- affine on a plane, so exact up
+        to rounding -- is certainly inside its face's trim."""
         weights = _barycentric(closest, self.triangles[tri_ids])
         uv = np.einsum("kj,kjl->kl", weights, self.uv[tri_ids])
         ok = np.all(np.isfinite(uv), axis=1)
         faces = self.faces[tri_ids]
         for face in np.unique(faces[ok]):
-            mesh = self.meshes[int(face)]
-            trim = mesh.trim
+            trim = self.meshes[int(face)].trim
             rows = np.flatnonzero(ok & (faces == face))
-            if trim is None or not trim.ok:
+            if trim is None or not (trim.ok and trim.verified):
                 ok[rows] = False
                 continue
-            a, b, tree = trim.segments()
-            inside = _crossings(uv[rows], a, b)
-            need = room[rows] / np.maximum(self.stretch[tri_ids[rows]], 1.0e-300)
-            reach = trim.margin + float(np.max(need))
-            gap = _segment_distance(uv[rows], a, b, reach, tree) - trim.margin
-            ok[rows] = inside & (gap > 0.0) & (gap * self.stretch[tri_ids[rows]] >= room[rows])
+            inside, certain = trim.classify(uv[rows])
+            ok[rows] = inside & certain
         return ok
 
     def near(self, points: np.ndarray, tolerance: float) -> NearFaces:
@@ -769,17 +771,21 @@ class FaceIndex:
         ``tolerance``, nudge included.
         """
         points = np.asarray(points, dtype=float).reshape(-1, 3)
-        reach = tolerance + self.max_margin
+        finite = np.all(np.isfinite(points), axis=1)
+        reach = (tolerance + self.max_margin) * (1.0 + 1.0e-9)
         pid_parts, tid_parts = [], []
+        query = np.where(finite[:, None], points, 0.0)
         for members, radius, tree in (self._trees() if len(points) else ()):
-            rows = tree.query_ball_point(points, reach + radius)
+            rows = tree.query_ball_point(query, (reach + radius) * (1.0 + 1.0e-9))
             lengths = np.fromiter((len(row) for row in rows), dtype=np.int64, count=len(rows))
+            lengths[~finite] = 0
             total = int(lengths.sum())
             if not total:
                 continue
             pid_parts.append(np.repeat(np.arange(len(points)), lengths))
-            tid_parts.append(members[np.fromiter((t for row in rows for t in row),
-                                                 dtype=np.int64, count=total)])
+            tid_parts.append(members[np.fromiter(
+                (t for keep, row in zip(finite, rows) if keep for t in row),
+                dtype=np.int64, count=total)])
         if not pid_parts:
             return NearFaces.empty()
         point_ids = np.concatenate(pid_parts)
@@ -791,65 +797,78 @@ class FaceIndex:
         delta = self.delta[tri_ids]
         lower = dist - delta - self.nudge[tri_ids]
         within = dist + delta <= tolerance
-        # What OCC's projection lands on must be inside the trim. On a plane
-        # it lands on the foot of the perpendicular: certified when that foot
-        # is the triangle's own closest point, inside the trim. On a curved
-        # carrier it lands within 2 (d + delta) of the face point found here,
-        # so that point needs that much room to the trim.
+        # A plane is the one case the tessellation proves a hit: the triangle
+        # lies in the carrier, so its closest point is where OCC projects
+        # (the perpendicular foot) when the foot falls in the triangle, and
+        # that foot must be certainly inside the trim. A curved face within
+        # tolerance is only a *candidate*: OCC confirms it.
         planar = self.planar[tri_ids]
         height = np.abs(np.einsum("ij,ij->i", mirrored - triangles[:, 0], self.normals[tri_ids]))
         scale = 1.0e-9 * (1.0 + np.max(np.abs(mirrored), axis=1))
-        foot = planar & (np.abs(dist - height) <= scale)
-        room = np.where(planar, 0.0, 2.0 * (dist + delta))
-        certified = within & self.inside[tri_ids] & np.where(planar, foot, self.clearance[tri_ids] >= room)
-        check = np.flatnonzero(within & ~certified & (foot | ~planar))
+        foot = planar & within & (np.abs(dist - height) <= scale)
+        certified = foot & self.inside[tri_ids]
+        check = np.flatnonzero(foot & ~certified)
         if len(check):
-            certified[check] = self._room_inside(closest[check], tri_ids[check], room[check])
-        upper = np.where(certified, dist + delta, np.inf)
+            certified[check] = self._foot_inside(closest[check], tri_ids[check])
+        upper = np.where(certified, dist, np.inf)
+        foot_uv = np.full((len(tri_ids), 2), np.nan)
+        rows = np.flatnonzero(certified)
+        if len(rows):
+            weights = _barycentric(closest[rows], triangles[rows])
+            foot_uv[rows] = np.einsum("kj,kjl->kl", weights, self.uv[tri_ids[rows]])
+        candidate = within & ~planar
         face = self.faces[tri_ids]
-        # Group by (point, face).
-        order = np.lexsort((upper, face, point_ids))
+        # Group by (point, face), nearest triangle first.
+        order = np.lexsort((dist, face, point_ids))
         point_ids, face, tri_ids = point_ids[order], face[order], tri_ids[order]
-        dist, lower, upper = dist[order], lower[order], upper[order]
+        dist, lower, upper, candidate = dist[order], lower[order], upper[order], candidate[order]
+        foot_uv = foot_uv[order]
         first = np.ones(len(order), dtype=bool)
         first[1:] = (point_ids[1:] != point_ids[:-1]) | (face[1:] != face[:-1])
         starts = np.flatnonzero(first)
-        best_upper = upper[starts]          # sorted by upper within a group
-        best_tri = tri_ids[starts]
-        best_lower = np.minimum.reduceat(lower, starts)
-        nearest = np.minimum.reduceat(dist, starts)
+        nearest_tri = tri_ids[starts]
+        # Per group, the (u, v) of its proven hit with the least distance.
+        best_upper = np.minimum.reduceat(upper, starts)
+        group = np.cumsum(first) - 1
+        best_uv = np.full((len(starts), 2), np.nan)
+        rows = np.flatnonzero(np.isfinite(upper) & (upper == best_upper[group]))
+        best_uv[group[rows[::-1]]] = foot_uv[rows[::-1]]
         return NearFaces(
-            point_ids[starts], face[starts], best_lower, best_upper,
-            np.where(np.isfinite(best_upper), dist[starts], nearest),
-            self.normals[best_tri], self.normal_ok[best_tri],
+            point_ids[starts], face[starts], np.minimum.reduceat(lower, starts),
+            best_upper, dist[starts], np.logical_or.reduceat(candidate, starts),
+            self.normals[nearest_tri], self.normal_ok[nearest_tri], best_uv,
         )
 
 
 @dataclass
 class NearFaces:
-    """Per (point, face) pair: ``lower`` -- every point of the trimmed face
-    (and of its carrier within the trim query's nudge) is farther than this;
-    ``upper`` -- some point of the face, away from its trim, is no farther
-    than this (``inf`` if no triangle certifies one);
-    ``estimate`` -- the tessellation's distance behind ``upper`` (or the
-    least triangle distance); and the unit normal of that triangle."""
+    """Per (point, face) pair: ``lower`` -- by the measured chord error,
+    every point of the trimmed face (and of its carrier within the trim
+    query's nudge) is farther than this; ``upper`` -- a proven hit's
+    distance (planes only, else ``inf``); ``estimate`` -- the least triangle
+    distance; ``candidate`` -- a curved face the tessellation puts within
+    tolerance, for OCC to confirm; and the unit normal of the nearest
+    triangle (exact on a plane)."""
 
     point: np.ndarray
     face: np.ndarray
     lower: np.ndarray
     upper: np.ndarray
     estimate: np.ndarray
+    candidate: np.ndarray
     normal: np.ndarray
     normal_ok: np.ndarray
+    uv: np.ndarray               # (u, v) of the proven hit's foot, NaN if none
 
     @classmethod
     def empty(cls) -> NearFaces:
         return cls(np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), np.zeros(0),
-                   np.zeros(0), np.zeros(0), np.zeros((0, 3)), np.zeros(0, dtype=bool))
+                   np.zeros(0), np.zeros(0), np.zeros(0, dtype=bool), np.zeros((0, 3)),
+                   np.zeros(0, dtype=bool), np.zeros((0, 2)))
 
 
 def build_face_index(
-    surfaces: list[int], *, diagonal: float, tolerance: float,
+    surfaces: list[int], *, diagonal: float, tolerance: float, nudge_rel: float,
     trims: dict[int, FaceTrim] | None = None,
 ) -> tuple[FaceIndex, dict[int, FaceTrim]]:
     """Trim polygons and tessellations for ``surfaces``; faces OCC cannot
@@ -867,7 +886,7 @@ def build_face_index(
         except Exception:
             area = None
         mesh = build_face_mesh(surface, trim, cell_size=cell, delta_target=delta_target,
-                               tolerance=tolerance, area=area)
+                               area=area, nudge_rel=nudge_rel)
         if mesh is not None:
             meshes[surface] = mesh
     return FaceIndex(meshes), trims

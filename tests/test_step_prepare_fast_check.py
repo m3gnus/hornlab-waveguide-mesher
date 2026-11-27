@@ -145,7 +145,7 @@ def _audit(model):
     box = gmsh.model.getBoundingBox(-1, -1)
     diagonal = float(np.linalg.norm(np.asarray(box[3:]) - box[:3]))
     index, trims = occ_face_index.build_face_index(
-        surfaces, diagonal=diagonal, tolerance=5e-4 * diagonal, trims={})
+        surfaces, diagonal=diagonal, tolerance=5e-4 * diagonal, nudge_rel=1e-3, trims={})
     samples = {s: step_prepare.sample_occ_surface_points(s, grid=7, trims=trims) for s in surfaces}
     samples = {s: p for s, p in samples.items() if len(p)}
     stacked = np.concatenate(list(samples.values()))
@@ -166,7 +166,8 @@ def _audit(model):
             for i in range(len(mirrored)):
                 false_hits += bool(b.hits[i]) and not a.hits[i]
                 extra_misses += bool(a.hits[i]) and not b.hits[i]
-        certified += fast.stats["certified_hits"] + fast.stats["certified_misses"]
+        certified += (fast.stats["proven_plane_hits"] + fast.stats["confirmed_hits"]
+                      + fast.stats["certified_misses"])
     return false_hits, extra_misses, certified
 
 
@@ -204,7 +205,7 @@ def test_trim_polygons_give_occs_samples_bit_for_bit():
             box = gmsh.model.getBoundingBox(-1, -1)
             diagonal = float(np.linalg.norm(np.asarray(box[3:]) - box[:3]))
             _index, trims = occ_face_index.build_face_index(
-                surfaces, diagonal=diagonal, tolerance=5e-4 * diagonal, trims={})
+                surfaces, diagonal=diagonal, tolerance=5e-4 * diagonal, nudge_rel=1e-3, trims={})
             for surface in surfaces:
                 plain = step_prepare.sample_occ_surface_points(surface, grid=7)
                 fast = step_prepare.sample_occ_surface_points(surface, grid=7, trims=trims)
@@ -517,3 +518,223 @@ def test_a_caller_can_keep_the_face_by_face_cut():
                              result.parent_to_children, result.report["cut"].get("route"))
     assert results[True][:2] == results[False][:2]
     assert results[True][2] == "faces"
+
+
+# -- round 2: what the fast path may prove ----------------------------------------
+
+
+def _ridge_sheet(height):
+    """Opus's probe: a flat open sheet whose right part is a dense-knot cubic
+    B-spline carrying one narrow ridge (no edges) that fits between the
+    chord probes of a coarse cell, on the +x side only."""
+    occ = gmsh.model.occ
+    knots_n, column = 144, 83
+    a = occ.addRectangle(-50, -30, 0, 50, 60)
+    uc = (12 * 6 + 10) / knots_n
+    m = 50.0 * 5.5 / 7.0
+    s = (m - 50.0 * uc) / (1.0 - uc)
+    length = 50.0 - s
+    knots = [0.0] * 4 + [i / knots_n for i in range(1, knots_n)] + [1.0] * 4
+    b = occ.addRectangle(0, -30, 0, s, 60)
+    count_u = knots_n + 3
+    greville = [(knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3 for i in range(count_u)]
+    ys = [-30.0, -1.0, -0.4, 0.4, 1.0, 30.0]
+    tags = [occ.addPoint(s + length * greville[i], y, height if (i == column and r in (2, 3)) else 0.0)
+            for r, y in enumerate(ys) for i in range(count_u)]
+    spline = occ.addBSplineSurface(
+        tags, count_u, degreeU=3, degreeV=1,
+        knotsU=[0.0] + [i / knots_n for i in range(1, knots_n)] + [1.0],
+        knotsV=[(y + 30) / 60 for y in ys], multiplicitiesU=[4] + [1] * (knots_n - 1) + [4],
+        multiplicitiesV=[2, 1, 1, 1, 1, 2])
+    occ.remove([(0, t) for t in tags])
+    occ.fragment([(2, a), (2, b), (2, spline)], [])
+    occ.synchronize()
+
+
+@pytest.mark.parametrize("height", [0.3, 5.0])
+def test_a_narrow_spline_ridge_between_chord_probes_is_not_accepted(height):
+    """The chord error is measured, not proven: a hit on a curved face is
+    confirmed by OCC, so the hidden ridge is rejected like the exact scan."""
+    verdicts = {}
+    for fast in (False, True):
+        with _session():
+            _ridge_sheet(height)
+            result = auto_cut_occ_geometry(_one_role(), planes=("x0",), fast_check=fast)
+            verdicts[fast] = result.report["planes"]["x0"]
+    assert verdicts[False]["accepted"] is False
+    assert verdicts[True]["accepted"] is False
+    assert verdicts[True]["points_off_model"] == verdicts[False]["points_off_model"]
+
+
+def test_a_crease_inside_one_face_mirrors_a_sharp_edge():
+    """Opus's probe: one side kinked by two planes meeting at an edge, the
+    other by a C0 knot inside one spline face -- the same shape."""
+    def build():
+        occ = gmsh.model.occ
+
+        def height(x):
+            return 0.0 if x <= 25 else x - 25.0
+
+        def quad(x0, x1):
+            pts = [occ.addPoint(x0, -30, height(abs(x0))), occ.addPoint(x1, -30, height(abs(x1))),
+                   occ.addPoint(x1, 30, height(abs(x1))), occ.addPoint(x0, 30, height(abs(x0)))]
+            lines = [occ.addLine(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+            return occ.addPlaneSurface([occ.addCurveLoop(lines)])
+
+        a, b = quad(0, 25), quad(25, 50)
+        tags = [occ.addPoint(x, y, height(abs(x))) for y in (-30, 30) for x in (-50, -25, 0)]
+        c = occ.addBSplineSurface(tags, 3, degreeU=1, degreeV=1, knotsU=[0, 0.5, 1], knotsV=[0, 1],
+                                  multiplicitiesU=[2, 1, 2], multiplicitiesV=[2, 2])
+        occ.fragment([(2, a), (2, b), (2, c)], [])
+        occ.synchronize()
+
+    with _session():
+        build()
+        exact = auto_cut_occ_geometry(_one_role(), planes=("x0",), fast_check=False)
+    with _session():
+        build()
+        fast = auto_cut_occ_geometry(_one_role(), planes=("x0",))
+    assert exact.planes == fast.planes == ("x0",)
+    assert fast.report["planes"]["x0"]["feature_mismatches"] == 0
+
+
+def test_a_small_hole_inside_one_cell_never_makes_that_cell_inside():
+    """Neon P1-2: a trim curve wholly inside a cell, with a polygon margin
+    wider than half a cell, must still mark the cell."""
+    outer = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
+    hole = np.array([[5.48, 5.48], [5.52, 5.48], [5.52, 5.52], [5.48, 5.52]])
+    trim = occ_face_index.FaceTrim(1, [outer, hole], 0.55, True)
+    grid = np.linspace(0.0, 10.0, 11)
+    inside, keep = occ_face_index._trim_cells(trim, grid, grid)
+    assert not inside[5, 5]
+    assert keep[5, 5]
+
+
+def test_a_face_without_an_area_from_occ_has_no_inside_cells():
+    with _session():
+        gmsh.model.occ.addRectangle(-10, -10, 0, 20, 20)
+        gmsh.model.occ.synchronize()
+        trim = occ_face_index.FaceTrim.build(1)
+        mesh = occ_face_index.build_face_mesh(1, trim, cell_size=1.0, delta_target=0.01,
+                                              area=None, nudge_rel=1e-3)
+        assert mesh is not None and not np.any(mesh.inside)
+        assert trim.ok is False
+
+
+@pytest.mark.parametrize("model", ["holed-plate", "bored-box", "cylinder", "filleted-box"])
+def test_the_shape_check_never_trusts_a_triangle_normal(model, monkeypatch):
+    """Neon P1-4: the small-feature decision comes from OCC normals (a plane
+    triangle's normal only lets a proven plane hit skip OCC); with every
+    triangle's normal turned sideways no verdict changes."""
+    def reference():
+        with _session():
+            if model == "holed-plate":
+                groups = _plate(holes=[(85.0, 65.0, 2.0)])
+            else:
+                _build(model)
+                groups = _one_role()
+            return auto_cut_occ_geometry(groups, planes=PLANES).report["planes"]
+
+    expected = reference()
+    real_init = occ_face_index.FaceIndex.__init__
+
+    def sideways(self, meshes):
+        real_init(self, meshes)
+        turned = np.cross(self.normals, [0.3, 0.4, 0.5])
+        self.normals = turned / np.maximum(np.linalg.norm(turned, axis=1), 1e-12)[:, None]
+
+    monkeypatch.setattr(occ_face_index.FaceIndex, "__init__", sideways)
+    got = reference()
+    for plane in PLANES:
+        for field in EXACT_FIELDS + ("feature_mismatches",):
+            assert got[plane].get(field) == expected[plane].get(field), (plane, field)
+
+
+def test_a_certified_miss_stays_a_miss_when_its_distance_is_reported(monkeypatch):
+    """Opus P3-4: re-measuring a reported miss exactly (where the exact
+    scan's clamp could call it a hit) only sets its distance."""
+    def build():
+        _build("offset-box")
+        return _one_role()
+
+    with _session():
+        expected = auto_cut_occ_geometry(build(), planes=("x0",)).report["planes"]["x0"]
+    real = step_prepare._CertifiedOccMirrorTarget._exact
+
+    def hit_anyway(self, point):
+        matched, nearest, hits = real(self, point)
+        return 0.0, nearest, hits or [self.candidates[0]]
+
+    monkeypatch.setattr(step_prepare._CertifiedOccMirrorTarget, "_exact", hit_anyway)
+    with _session():
+        got = auto_cut_occ_geometry(build(), planes=("x0",)).report["planes"]["x0"]
+    assert got["points_off_model"] == expected["points_off_model"] > 0
+    assert got["accepted"] is False
+
+
+def test_a_strip_narrower_than_the_tolerance_is_cut_as_a_solid_like_face_by_face():
+    """Opus P2-1 / Neon P1-5: a source strip narrower than the tolerance on a
+    box top: the solid cut gives the face cut's groups (no refusal)."""
+    def build(width):
+        occ = gmsh.model.occ
+        box = occ.addBox(-50, -30, -20, 100, 60, 40)
+        r = occ.addRectangle(-50, 5, 20, 100, width)
+        r2 = occ.addRectangle(-50, -5 - width, 20, 100, width)
+        occ.fragment([(3, box)], [(2, r), (2, r2)])
+        occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        strips = [t for t in surfaces
+                  if gmsh.model.getBoundingBox(2, t)[4] - gmsh.model.getBoundingBox(2, t)[1] < 2 * width + 1e-6
+                  and abs(gmsh.model.getBoundingBox(2, t)[2] - 20) < 1e-6]
+        return [OccSurfaceGroup("strip", OccSurfaceSelector(strips), OccSurfaceRole("source")),
+                OccSurfaceGroup("rest", OccSurfaceSelector([t for t in surfaces if t not in strips]),
+                                OccSurfaceRole("rigid"))]
+
+    for width in (0.03, 0.06):
+        results = {}
+        for solid in (False, True):
+            with _session():
+                result = auto_cut_occ_geometry(build(width), planes=("x0", "y0"), solid_cut=solid)
+                results[solid] = (result.planes, _group_geometry(result), result.report["cut"]["route"])
+        assert results[True][:2] == results[False][:2]
+        assert results[True][2] == "solids"
+
+
+def test_a_thin_walled_solid_keeps_no_cap_on_the_plane():
+    """Neon P1-5: a plate thinner than the tolerance -- its cap lies within
+    tolerance of both walls -- is still left open on the plane."""
+    def build():
+        gmsh.model.occ.addBox(-250.0, -150.0, 0.0, 500.0, 300.0, 0.2)
+        gmsh.model.occ.synchronize()
+        return _one_role()
+
+    results = {}
+    for solid in (False, True):
+        with _session():
+            result = auto_cut_occ_geometry(build(), planes=("x0",), solid_cut=solid,
+                                           feature_check=False)
+            results[solid] = (result.planes, _group_geometry(result), _topology())
+    assert results[True] == results[False]
+    assert results[True][0] == ("x0",)
+
+
+def test_the_tessellation_never_proves_a_hit_on_a_curved_face():
+    """Opus P1-1 at the primitive: over the hidden ridge the tessellation
+    reads a gap of ~0 while OCC measures ~3 tolerances; no curved triangle
+    may certify a hit (only a candidate for OCC)."""
+    with _session():
+        _ridge_sheet(0.3)
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        box = gmsh.model.getBoundingBox(-1, -1)
+        diagonal = float(np.linalg.norm(np.subtract(box[3:], box[:3])))
+        tolerance = 5e-4 * diagonal
+        index, _trims = occ_face_index.build_face_index(
+            surfaces, diagonal=diagonal, tolerance=tolerance, nudge_rel=1e-3, trims={})
+        ridge = next(t for t in surfaces if gmsh.model.getType(2, t) != "Plane")
+        point = np.array([[50.0 * 5.5 / 7.0, 0.0, 0.0]])
+        near = index.near(point, tolerance)
+        rows = near.face == ridge
+        assert np.any(rows)
+        assert np.all(np.isinf(near.upper[rows]))
+        closest, _uv = gmsh.model.getClosestPoint(2, ridge, point.ravel().tolist())
+        assert float(np.linalg.norm(np.asarray(closest) - point[0])) > tolerance

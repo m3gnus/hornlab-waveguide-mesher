@@ -13,8 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 from types import TracebackType
+from typing import Any
 
 import numpy as np
+
+from ._lazy_gmsh import LazyGmsh
 
 from .step_prepare import OccSurfaceRole
 from .step_text import (
@@ -30,17 +33,7 @@ from .step_text import (
     step_length_unit_mm_from_text,
 )
 
-class _LazyGmsh:
-    """Import gmsh on first use, never at module import."""
-
-    def __getattr__(self, name: str):
-        import gmsh as _gmsh_module
-
-        globals()["gmsh"] = _gmsh_module
-        return getattr(_gmsh_module, name)
-
-
-gmsh = _LazyGmsh()
+gmsh: Any = LazyGmsh(globals())
 
 
 RIGID_TAG = 1
