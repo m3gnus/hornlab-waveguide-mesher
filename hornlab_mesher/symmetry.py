@@ -515,7 +515,9 @@ SIGNED_VOLUME_NOISE_REL = 1.0e-9
 #: A triangle lying in a cut plane with at most this area (mm^2) is a sliver
 #: that snapping a near-tangent facet onto the plane flattened, not a cap: the
 #: parametric builder drops such slivers (``mesher._remove_symmetry_plane_slivers``)
-#: and refuses anything larger, and the reduced-mesh check draws the same line.
+#: and refuses anything larger. The reduced-mesh check draws the same line for
+#: each edge-connected patch of in-plane triangles, so a finely meshed cap is
+#: still caught.
 SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25
 
 _COORDINATE_PLANES = ("x0", "y0", "z0")
@@ -852,9 +854,9 @@ def verify_reduced_mesh(
     the check entirely: an internal subdomain interface (ATH
     ``Mesh.SubdomainSlices``, tag ``INTERFACE``) has a free rim by
     construction, and the closed-shell contract the mesher enforces exempts it
-    the same way (``mesher._CONTRACT_EXEMPT_TAGS``). A triangle in a cut plane
-    no larger than ``SYMMETRY_SLIVER_MAX_AREA_MM2`` is a snap sliver, not a
-    cap.
+    the same way (``mesher._CONTRACT_EXEMPT_TAGS``). An edge-connected patch of
+    triangles in a cut plane no larger than ``SYMMETRY_SLIVER_MAX_AREA_MM2``
+    in all is a snap sliver, not a cap.
     """
 
     if expected_volume_sign not in (1, -1):
@@ -928,10 +930,18 @@ def verify_reduced_mesh(
         )
         for plane in planes:
             axis = SYMMETRY_AXIS_FOR_PLANE[plane]
-            in_plane = np.all(np.abs(corners[:, :, axis]) <= tolerance, axis=1) & (
-                0.5 * areas > SYMMETRY_SLIVER_MAX_AREA_MM2
+            rows = np.flatnonzero(
+                np.all(np.abs(corners[:, :, axis]) <= tolerance, axis=1) & (areas > 0.0)
             )
-            count = int(np.count_nonzero(in_plane))
+            if not len(rows):
+                continue
+            # A cap is judged by the area of each edge-connected patch lying
+            # in the plane, not per triangle: a cap meshed finely is still a
+            # cap, while a snap sliver is an isolated scrap of a seam.
+            patch = edge_connected_components(triangles[rows])
+            patch_area = np.bincount(patch, weights=0.5 * areas[rows])
+            capping = patch_area[patch] > SYMMETRY_SLIVER_MAX_AREA_MM2
+            count = int(np.count_nonzero(capping))
             if count:
                 cap_faces[plane] = count
     on_cut = np.zeros(len(free_edges), dtype=bool)

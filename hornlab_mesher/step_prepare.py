@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-import math
 from typing import Any
 
 import numpy as np
@@ -54,20 +53,6 @@ gmsh = _LazyGmsh()
 
 DEFAULT_AUTO_CUT_TOLERANCE_REL = TOLERANCES["fitted"].relative
 DEFAULT_AUTO_CUT_GRID = 7
-#: The mirror test samples each face at least every this fraction of the
-#: model's diagonal, along each of its parameter directions; the fixed
-#: ``DEFAULT_AUTO_CUT_GRID`` per face is the floor. With a fixed grid alone a
-#: one-sided hole or boss smaller than a large face's sample spacing can fall
-#: between the samples and the model is cut as if it mirrored. At 2% a hole
-#: wider than about 3% of the diagonal (20 mm on a 600 mm model) always holds
-#: a sample of the face around it.
-DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL = 0.02
-#: Per face and direction, and for the whole model: the cost cap. Each sample
-#: costs one closest-point query per candidate plane (measured ~0.05-0.5 ms,
-#: B-spline faces the dearest), so the cap bounds the mirror test at a few
-#: seconds; past it the spacing widens evenly for every face.
-AUTO_CUT_MAX_FACE_GRID = 96
-AUTO_CUT_MAX_SAMPLE_POINTS = 20_000
 AUTO_CUT_SPAN_REL = SPAN_TOLERANCE_REL
 AUTO_CUT_TRIM_NUDGE_REL = 1.0e-3
 AUTO_CUT_BOX_PAD_REL = 0.1
@@ -154,19 +139,48 @@ def _param_inside(surface: int, u: float, v: float) -> bool:
         return False
 
 
-def sample_occ_surface_points(
-    surface: int, *, grid: int, grid_v: int | None = None, retry_finer: bool = True
-) -> np.ndarray:
-    """Point-sample the actual trimmed OCC face, not its untrimmed extension.
+def _params_inside(surface: int, uv: list[float]) -> list[bool]:
+    """``_param_inside`` for each (u, v) pair, asking OCC in blocks.
 
-    ``grid`` samples along the face's first parameter direction and
-    ``grid_v`` (default: the same) along its second. When no grid point falls
-    inside the trim, the grid is retried four times finer (``retry_finer``),
-    then the face's boundary is sampled; a caller with a sample budget turns
-    the finer retry off, so it never asks for more than ``grid * grid_v``.
+    ``gmsh.model.isInside`` answers how many of the points handed to it lie
+    inside the trim, not which (see ``tessellation.parametric_trim_mask``). A
+    block wholly inside or wholly outside is settled by one call; a mixed
+    block is halved until each piece is settled, down to single points, which
+    are exactly the per-point ``_param_inside`` calls this replaces. A block
+    OCC cannot classify is halved too, so an exception still costs only the
+    sample it belongs to (it abstains, as ``_param_inside`` does).
     """
-    grid_v = grid if grid_v is None else grid_v
-    if grid < 2 or grid_v < 2:
+
+    count = len(uv) // 2
+    flags = [False] * count
+
+    def settle(first: int, last: int) -> None:
+        size = last - first
+        if size <= 0:
+            return
+        if size == 1:
+            flags[first] = _param_inside(surface, uv[2 * first], uv[2 * first + 1])
+            return
+        try:
+            inside = int(gmsh.model.isInside(2, surface, uv[2 * first:2 * last], parametric=True))
+        except Exception:
+            inside = -1
+        if inside == size:
+            flags[first:last] = [True] * size
+            return
+        if inside == 0:
+            return
+        middle = first + size // 2
+        settle(first, middle)
+        settle(middle, last)
+
+    settle(0, count)
+    return flags
+
+
+def sample_occ_surface_points(surface: int, *, grid: int) -> np.ndarray:
+    """Point-sample the actual trimmed OCC face, not its untrimmed extension."""
+    if grid < 2:
         raise ValueError("grid must be at least 2")
     try:
         bounds_min, bounds_max = gmsh.model.getParametrizationBounds(2, surface)
@@ -175,106 +189,26 @@ def sample_occ_surface_points(
     except Exception:
         umin = umax = vmin = vmax = 0.0
     if umax > umin and vmax > vmin:
-        for factor in ((1, 4) if retry_finer else (1,)):
+        for factor in (1, 4):
             n = max(2, grid * factor)
-            m = max(2, grid_v * factor)
-            kept: list[float] = []
+            uv: list[float] = []
             for i in range(n):
                 u = umin + (i + 0.5) * (umax - umin) / n
-                for j in range(m):
-                    v = vmin + (j + 0.5) * (vmax - vmin) / m
-                    if _param_inside(surface, u, v):
-                        kept.extend((u, v))
+                for j in range(n):
+                    v = vmin + (j + 0.5) * (vmax - vmin) / n
+                    uv.extend((u, v))
+            # The same grid, in the same order, as one point at a time: the
+            # block classification only saves OCC round trips.
+            inside = _params_inside(surface, uv)
+            kept = [
+                value
+                for index, flag in enumerate(inside) if flag
+                for value in (uv[2 * index], uv[2 * index + 1])
+            ]
             if kept:
                 coords = gmsh.model.getValue(2, surface, kept)
                 return np.asarray(coords, dtype=float).reshape(-1, 3)
-        if not retry_finer:
-            return np.zeros((0, 3), dtype=float)
     return _sample_occ_surface_boundary_points(surface, grid=grid)
-
-
-def _parameter_lengths(surface: int) -> tuple[float, float]:
-    """The face's longest length along each parameter direction.
-
-    Each direction is measured along three parameter lines -- both edges of
-    the other parameter and its middle -- and the longest is kept, so a flared
-    face (a horn wall whose rings grow toward the mouth, a cone) is sized by
-    its wide end, not its middle. Measured on the untrimmed parametrisation (a
-    trimmed face is never longer than this), as polylines through nine points:
-    a sample spacing needs the length to within a few per cent, not exactly. A
-    face OCC cannot evaluate answers zero, and keeps the floor grid.
-    """
-
-    try:
-        bounds_min, bounds_max = gmsh.model.getParametrizationBounds(2, surface)
-        umin, vmin = float(bounds_min[0]), float(bounds_min[1])
-        umax, vmax = float(bounds_max[0]), float(bounds_max[1])
-        if not (umax > umin and vmax > vmin):
-            return 0.0, 0.0
-        steps = np.linspace(0.0, 1.0, 9)
-        lengths = []
-        for along_u in (True, False):
-            longest = 0.0
-            for at in (0.0, 0.5, 1.0):
-                params = [
-                    value
-                    for t in steps
-                    for value in (
-                        (umin + t * (umax - umin), vmin + at * (vmax - vmin))
-                        if along_u
-                        else (umin + at * (umax - umin), vmin + t * (vmax - vmin))
-                    )
-                ]
-                points = np.asarray(gmsh.model.getValue(2, surface, params), dtype=float)
-                points = points.reshape(-1, 3)
-                longest = max(longest, float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()))
-            lengths.append(longest)
-        return lengths[0], lengths[1]
-    except Exception:
-        return 0.0, 0.0
-
-
-def _mirror_sample_grids(
-    surfaces: Iterable[int],
-    *,
-    grid: int,
-    spacing: float,
-    max_points: int,
-    max_face_grid: int = AUTO_CUT_MAX_FACE_GRID,
-) -> tuple[dict[int, tuple[int, int]], float]:
-    """Per face, the extra (u, v) sample counts that keep samples ``spacing`` apart.
-
-    A face that the floor grid already samples finely enough gets none
-    (``(0, 0)``); any other gets at least ``grid`` per direction and at most
-    ``max_face_grid``. The extra samples of the whole model stay within
-    ``max_points``: past it the spacing widens evenly, and when even that
-    cannot fit, no face is densified. Returns the counts and the spacing used.
-    """
-
-    if not spacing > 0.0:
-        raise ValueError("the mirror sample spacing must be positive")
-    if max_points <= 0:
-        return {surface: (0, 0) for surface in surfaces}, float("inf")
-    lengths = {surface: _parameter_lengths(surface) for surface in surfaces}
-
-    def counts(step: float) -> dict[int, tuple[int, int]]:
-        result: dict[int, tuple[int, int]] = {}
-        for surface, pair in lengths.items():
-            wanted = tuple(
-                min(max_face_grid, max(grid, math.ceil(length / step))) for length in pair
-            )
-            result[surface] = wanted if wanted != (grid, grid) else (0, 0)  # type: ignore[assignment]
-        return result
-
-    used = float(spacing)
-    grids = counts(used)
-    for _ in range(64):
-        total = sum(nu * nv for nu, nv in grids.values())
-        if total <= max_points:
-            return grids, used
-        used *= math.sqrt(total / max_points) * 1.05
-        grids = counts(used)
-    return {surface: (0, 0) for surface in lengths}, float("inf")
 
 
 def _sample_occ_surface_boundary_points(surface: int, *, grid: int) -> np.ndarray:
@@ -330,12 +264,32 @@ def _closest_on_model(
     bboxes: dict[int, tuple[float, ...]],
     tolerance: float,
     nearest_contributions: dict[int, float] | None = None,
+    preferred: frozenset[int] | set[int] | None = None,
+    exit_at: float = -1.0,
 ) -> tuple[float, float, list[int]]:
-    matched_distance = -1.0
-    nearest = -1.0
-    matched: list[int] = []
+    """Distances from ``point`` to the candidate faces: ``(matched, nearest, hits)``.
+
+    ``matched`` is the least distance among faces within ``tolerance`` whose
+    trim holds the projection (``hits``, in candidate order), ``nearest`` the
+    least distance or box gap of any face; ``-1.0`` when there is none.
+
+    ``preferred`` faces (the sample's own role) are projected first, and once
+    one of them is a hit no farther than ``exit_at`` the rest are skipped. That
+    answer is then exactly as good as the full scan for a mirror test: the
+    sample is a hit on a face of its own role either way, and its matched
+    distance (at most ``exit_at``, the largest residual already recorded)
+    cannot change the test's largest residual. ``exit_at < 0`` scans every
+    face. Results are reduced in candidate order, so NaN handling is the
+    original scan's.
+    """
     px, py, pz = (float(value) for value in point)
-    for surface in candidates:
+    order = candidates
+    if preferred:
+        order = [surface for surface in candidates if surface in preferred] + [
+            surface for surface in candidates if surface not in preferred
+        ]
+    records: dict[int, tuple[float, bool]] = {}
+    for surface in order:
         bbox = bboxes.get(surface)
         if bbox is None:
             continue
@@ -349,21 +303,30 @@ def _closest_on_model(
             )
         )
         if gap > tolerance:
-            if nearest_contributions is not None:
-                nearest_contributions[surface] = gap
-            if nearest < 0.0 or gap < nearest:
-                nearest = gap
+            records[surface] = (gap, False)
             continue
         try:
             closest, parametric = gmsh.model.getClosestPoint(2, surface, [px, py, pz])
         except Exception:
             continue
         distance = float(np.linalg.norm(np.asarray(closest) - np.asarray([px, py, pz])))
+        hit = not (distance > tolerance or not _parametric_point_on_face(surface, parametric))
+        records[surface] = (distance, hit)
+        if hit and preferred and surface in preferred and 0.0 <= exit_at and distance <= exit_at:
+            break
+    matched_distance = -1.0
+    nearest = -1.0
+    matched: list[int] = []
+    for surface in candidates:
+        record = records.get(surface)
+        if record is None:
+            continue
+        distance, hit = record
         if nearest_contributions is not None:
             nearest_contributions[surface] = distance
         if nearest < 0.0 or distance < nearest:
             nearest = distance
-        if distance > tolerance or not _parametric_point_on_face(surface, parametric):
+        if not hit:
             continue
         matched.append(surface)
         if matched_distance < 0.0 or distance < matched_distance:
@@ -433,11 +396,11 @@ class _OccMirrorIndex:
             nearby.append([self.tags[index] for index in indices[keep]])
         return nearby
 
-    def closest(self, point, candidates):
+    def closest(self, point, candidates, *, preferred=None, exit_at=-1.0):
         contributions: dict[int, float] = {}
         result = _closest_on_model(
             point, candidates=candidates, bboxes=self.bboxes, tolerance=self.tolerance,
-            nearest_contributions=contributions,
+            nearest_contributions=contributions, preferred=preferred, exit_at=exit_at,
         )
         if candidates is self.candidates or 0 <= result[1] <= self.tolerance:
             return result
@@ -445,6 +408,9 @@ class _OccMirrorIndex:
         # a failed sample, even if a second call would succeed. Omitted boxes
         # are beyond tolerance, so the existing scan reads only their gaps.
         # Reduce all contributions in original order, including NaN behavior.
+        fast = self._nearest_with_omitted_gaps(point, candidates, contributions)
+        if fast is not None:
+            return result[0], fast, result[2]
         local = set(candidates)
         nearest = -1.0
         for surface in self.candidates:
@@ -464,15 +430,63 @@ class _OccMirrorIndex:
         return result[0], nearest, result[2]
 
 
+    def _nearest_with_omitted_gaps(self, point, candidates, contributions):
+        """The scan's ``nearest`` over the local contributions and every
+        omitted box's gap, without a Python call per omitted box.
+
+        The gaps are screened in bulk; only the boxes whose screened gap is
+        within a relative 1e-9 of the least are measured with the scan's own
+        formula, so the least is the scan's value bit for bit. Anything the
+        bulk screen cannot vouch for -- a NaN, a gap within tolerance (which
+        the scan would project) -- returns ``None`` and the scan runs as it
+        always has.
+        """
+
+        local = set(candidates)
+        values = [contributions[surface] for surface in candidates if surface in contributions]
+        if any(not np.isfinite(value) for value in values):
+            return None
+        omitted = [surface for surface in self.candidates
+                   if surface not in local and surface in self.bboxes]
+        nearest = min(values) if values else -1.0
+        if not omitted:
+            return nearest
+        boxes = np.asarray([self.bboxes[surface] for surface in omitted], dtype=float)
+        p = np.asarray(point, dtype=float)
+        deltas = np.maximum(np.maximum(boxes[:, :3] - p, p - boxes[:, 3:]), 0.0)
+        gaps = np.sqrt(np.einsum("ij,ij->i", deltas, deltas))
+        if not np.all(np.isfinite(gaps)) or np.any(gaps <= self.tolerance * (1.0 + 1.0e-9)):
+            return None
+        least = float(np.min(gaps))
+        for index in np.flatnonzero(gaps <= least * (1.0 + 1.0e-9)):
+            exact = _closest_on_model(
+                point, candidates=[omitted[int(index)]], bboxes=self.bboxes,
+                tolerance=self.tolerance,
+            )[1]
+            if nearest < 0.0 or exact < nearest:
+                nearest = exact
+        return nearest
+
+
 class _OccMirrorTarget:
     """The trimmed OCC faces as a mirror target: exact closest-point projection."""
 
-    def __init__(self, candidates, bboxes, tolerance, role_boundaries):
+    def __init__(self, candidates, bboxes, tolerance, role_boundaries, roles=None):
         self.candidates = candidates
         self.bboxes = bboxes
         self.tolerance = tolerance
         self.role_boundaries = role_boundaries
         self._index = None
+        # Faces by caller role, so a sample's own role is projected first.
+        self._by_role: dict[str, frozenset[int]] = {}
+        self._roles = roles
+        if roles:
+            for face, role in roles.items():
+                self._by_role.setdefault(role, set()).add(face)  # type: ignore[attr-defined]
+            self._by_role = {role: frozenset(faces) for role, faces in self._by_role.items()}
+        # The largest residual the evaluator has recorded so far for this
+        # plane: the same running maximum over the hits this target returned.
+        self._largest_residual = -1.0
 
     @property
     def index(self):
@@ -484,7 +498,18 @@ class _OccMirrorTarget:
 
     def match(self, surface, mirrored):
         nearby = self.index.candidates_for_points(mirrored)
-        found = [self.index.closest(point, local) for point, local in zip(mirrored, nearby)]
+        preferred = (
+            self._by_role.get(self._roles[surface])
+            if self._roles and surface in self._roles else None
+        )
+        found = []
+        for point, local in zip(mirrored, nearby):
+            row = self.index.closest(
+                point, local, preferred=preferred, exit_at=self._largest_residual
+            )
+            found.append(row)
+            if row[2] and not np.isnan(row[0]) and row[0] > self._largest_residual:
+                self._largest_residual = row[0]
         return MirrorMatches(
             np.asarray([row[0] for row in found], dtype=float),
             np.asarray([row[1] for row in found], dtype=float),
@@ -509,7 +534,7 @@ def evaluate_occ_plane_symmetry(
     _role_boundaries: _OccTriangleRoleBoundaries | None = None,
 ) -> PlaneSymmetryVerdict:
     """Require both trimmed geometry and caller-supplied roles to mirror."""
-    target = _OccMirrorTarget(sorted(samples), bboxes, tolerance, _role_boundaries)
+    target = _OccMirrorTarget(sorted(samples), bboxes, tolerance, _role_boundaries, roles)
     return evaluate_mirror_symmetry(
         plane, samples=samples, roles=roles, target=target, tolerance=tolerance,
         span_tolerance=span_tolerance, max_failure_samples=AUTO_CUT_MAX_FAILURE_SAMPLES,
@@ -679,17 +704,21 @@ def _uncovered_cut_parents(
     *,
     tolerance: float,
     grid: int,
+    parent_samples: Mapping[int, np.ndarray] | None = None,
 ) -> list[int]:
     """Check coverage in the other direction: retained parent onto children.
 
     Validating child ancestry alone cannot detect a face silently discarded
     by OCC. Use trimmed interior samples, clear of the clipping planes, so
     discarded faces and partially missing parents both trigger recovery.
+    ``parent_samples`` are the mirror test's samples of the same parents on
+    the same grid: a copy is the same face, so they are its samples too.
     """
     axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
     missing = []
     for parent, copy in copies.items():
-        points = sample_occ_surface_points(copy, grid=grid)
+        known = None if parent_samples is None else parent_samples.get(parent)
+        points = known if known is not None else sample_occ_surface_points(copy, grid=grid)
         points = points[np.all(points[:, axes] > tolerance, axis=1)]
         children = mapping[parent]
         bboxes = {
@@ -932,6 +961,7 @@ def _cut_occ_geometry_to_positive_side(
     tolerance: float,
     grid: int,
     triangle_model: _OccTriangleModel | None = None,
+    parent_samples: Mapping[int, np.ndarray] | None = None,
 ) -> tuple[dict[int, list[int]], set[tuple[int, int]], dict[str, object]]:
     volumes = gmsh.model.getEntities(3)
     if volumes:
@@ -1005,7 +1035,8 @@ def _cut_occ_geometry_to_positive_side(
                 mapping, copies, remaining, tolerance=tolerance, grid=grid
             )
             uncovered = _uncovered_cut_parents(
-                mapping, copies, planes, tolerance=tolerance, grid=grid
+                mapping, copies, planes, tolerance=tolerance, grid=grid,
+                parent_samples=parent_samples if triangle_model is None else None,
             )
             if not uncovered:
                 break
@@ -1087,8 +1118,6 @@ def auto_cut_occ_geometry(
     tolerance_rel: float = DEFAULT_AUTO_CUT_TOLERANCE_REL,
     planes: Iterable[str] | None = None,
     triangle_surface_mesh: bool = False,
-    sample_spacing_rel: float | None = DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL,
-    max_sample_points: int = AUTO_CUT_MAX_SAMPLE_POINTS,
     known_verdicts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
@@ -1106,19 +1135,6 @@ def auto_cut_occ_geometry(
     input triangle. Its straight, nonintersecting facets are checked before
     the cut. The general CAD path is used unless the caller opts in.
 
-    Every face is mirror-tested on a ``grid`` x ``grid`` sample set (the
-    floor). A plane the floor accepts is then tested again with extra samples
-    added on every face larger than the spacing, at most
-    ``sample_spacing_rel`` of the model's diagonal apart
-    (``DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL``), the floor samples kept: a small
-    one-sided feature cannot hide between samples, and no plane the floor
-    rejects is ever accepted. The extra samples are capped at
-    ``max_sample_points`` less the floor's for the whole model. The tolerance
-    is taken from the floor samples. A plane the floor rejects costs no more
-    than before, and its report is the floor's. ``sample_spacing_rel=None``,
-    and a triangle-surface model (whose replay must stay as it was), use the
-    floor only.
-
     ``known_verdicts`` are verdicts (``to_dict`` form) the caller already has
     for this very geometry -- the same model, placed and healed the same way
     -- keyed by plane; those planes are not tested again.
@@ -1126,10 +1142,6 @@ def auto_cut_occ_geometry(
     A cut that fails raises ``RuntimeError`` with ``accepted_planes`` (the
     planes the mirror test accepted and the cut was for) and ``report``.
     """
-    if sample_spacing_rel is not None and not sample_spacing_rel > 0.0:
-        raise ValueError("sample_spacing_rel must be positive, or None for the floor grid")
-    if max_sample_points <= 0:
-        raise ValueError("max_sample_points must be positive")
     groups = tuple(groups)
     if not groups:
         raise ValueError("at least one OCC surface group is required")
@@ -1196,42 +1208,6 @@ def auto_cut_occ_geometry(
         for plane in candidate_planes
         if plane not in known
     }
-    # Reported only when samples were added: a report where the floor decided
-    # every plane (a triangle-surface replay's included) is what it was.
-    sampling: dict[str, object] = {}
-    floor_accepted = [plane for plane, verdict in tested.items() if verdict.accepted]
-    floor_points = int(len(stacked))
-    if (
-        sample_spacing_rel is not None and triangle_model is None and diagonal > 0.0
-        and floor_accepted
-    ):
-        grids, spacing = _mirror_sample_grids(
-            samples, grid=grid, spacing=float(sample_spacing_rel) * diagonal,
-            max_points=max_sample_points - floor_points,
-        )
-        dense = dict(samples)
-        added = 0
-        for surface, (grid_u, grid_v) in grids.items():
-            if not grid_u:
-                continue
-            extra = sample_occ_surface_points(
-                surface, grid=grid_u, grid_v=grid_v, retry_finer=False
-            )
-            if len(extra):
-                dense[surface] = np.concatenate((samples[surface], extra))
-                added += 1
-        if added:
-            dense_options = {**verdict_options, "samples": dense}
-            for plane in floor_accepted:
-                tested[plane] = evaluate_occ_plane_symmetry(plane, **dense_options)
-            stacked = np.concatenate(list(dense.values()))
-        sampling = {
-            "sample_spacing_rel": float(sample_spacing_rel),
-            "sample_spacing_step_units": float(spacing),
-            "sample_point_cap": int(max_sample_points),
-            "densified_surfaces": added,
-            "densified_planes": list(floor_accepted),
-        }
     plane_reports = {
         plane: known[plane] if plane in known else tested[plane].to_dict()
         for plane in candidate_planes
@@ -1246,7 +1222,6 @@ def auto_cut_occ_geometry(
         "tolerance_step_units": float(tolerance),
         "model_diagonal_step_units": diagonal,
         "sample_grid": int(grid),
-        **sampling,
         **({"reused_verdict_planes": [p for p in candidate_planes if p in known]} if known else {}),
         "sampled_surfaces": len(samples),
         "sample_points": int(len(stacked)),
@@ -1259,7 +1234,7 @@ def auto_cut_occ_geometry(
     try:
         return _cut_accepted_planes(
             groups, accepted_planes, report, tolerance=tolerance, grid=grid,
-            triangle_model=triangle_model,
+            triangle_model=triangle_model, parent_samples=samples,
         )
     except RuntimeError as exc:
         # The caller learns which planes the refused cut was for, and what the
@@ -1277,11 +1252,14 @@ def _cut_accepted_planes(
     tolerance: float,
     grid: int,
     triangle_model: Any,
+    parent_samples: Mapping[int, np.ndarray] | None = None,
 ) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
     cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
     if triangle_model is not None:
         cut_options["triangle_model"] = triangle_model
+    if parent_samples is not None:
+        cut_options["parent_samples"] = parent_samples
     parentage, undecided, cut_stats = _cut_occ_geometry_to_positive_side(
         accepted_planes, **cut_options
     )

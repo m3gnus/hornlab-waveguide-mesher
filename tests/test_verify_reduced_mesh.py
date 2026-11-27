@@ -299,3 +299,16 @@ def test_a_mesh_lying_in_the_plane_is_not_called_the_negative_side():
     verdict = _verify(flat, np.asarray([[0, 1, 2]]), planes=("x0",), closed=False)
     assert FAILURE_WRONG_SIDE not in verdict.failure_codes
     assert verdict.failed_planes == ("x0",)
+
+
+def test_a_finely_meshed_cap_is_caught_by_its_patch_area():
+    """Every triangle under the sliver line, the patch far over it: still a cap."""
+
+    points, triangles, rows = _box(n=40, omit=("x0",), scale=10.0)  # 0.03 mm^2 triangles
+    corners = points[triangles[rows["y0"]]]
+    open_half = [row for row, centre in zip(rows["y0"], corners.mean(axis=1)) if centre[0] >= 5.0]
+    triangles = np.delete(triangles, open_half, axis=0)
+    verdict = _verify(points, triangles)
+    assert "y0" in verdict.detected_planes  # the open half keeps a rim
+    assert verdict.failure_codes == (FAILURE_CAPPED,)
+    assert verdict.failed_planes == ("y0",)

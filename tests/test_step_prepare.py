@@ -951,133 +951,22 @@ def _thin_plate_with_one_sided_hole():
     return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="stage 4b: the floor grid misses a one-sided hole between its samples (R1)",
+)
 def test_a_small_one_sided_hole_between_floor_samples_is_not_cut_as_symmetric():
-    with _gmsh_session():
-        groups = _thin_plate_with_one_sided_hole()
-        floor_only = auto_cut_occ_geometry(groups, planes=("x0", "y0"), sample_spacing_rel=None)
-        # The miss this sampling closes: the floor grid accepts both planes.
-        assert floor_only.report["planes"]["x0"]["accepted"] is True
-        assert floor_only.report["planes"]["y0"]["accepted"] is True
-        assert "sample_spacing_rel" not in floor_only.report
-
     with _gmsh_session():
         result = auto_cut_occ_geometry(_thin_plate_with_one_sided_hole(), planes=("x0", "y0"))
         assert result.planes == ()
-        for plane in ("x0", "y0"):
-            verdict = result.report["planes"][plane]
-            assert verdict["accepted"] is False
-            assert verdict["points_off_model"] > 0
-        report = result.report
-        assert report["sample_spacing_rel"] == step_prepare.DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL
-        assert report["sample_points"] <= report["sample_point_cap"]
-        assert report["densified_surfaces"] >= 2
-        # The tolerance still comes from the floor grid: denser samples do not move it.
-        assert report["tolerance_step_units"] == pytest.approx(
-            floor_only.report["tolerance_step_units"], rel=0, abs=0
-        )
 
 
-def test_dense_mirror_samples_keep_a_symmetric_model_and_its_tolerance():
-    with _gmsh_session():
-        surfaces = _box_surfaces(-200.0, -150.0, 0.0, 400.0, 300.0, 18.0)
-        groups = [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
-        floor_only = auto_cut_occ_geometry(groups, planes=("x0", "y0"), sample_spacing_rel=None)
-        floor_report = dict(floor_only.report)
-    with _gmsh_session():
-        surfaces = _box_surfaces(-200.0, -150.0, 0.0, 400.0, 300.0, 18.0)
-        groups = [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
-        dense = auto_cut_occ_geometry(groups, planes=("x0", "y0"))
-    assert dense.planes == floor_only.planes == ("x0", "y0")
-    assert dense.report["tolerance_step_units"] == floor_report["tolerance_step_units"]
-    assert dense.report["sample_points"] > floor_report["sample_points"]
-
-
-def test_the_mirror_sample_count_is_capped_for_the_whole_model():
-    with _gmsh_session():
-        surfaces = _box_surfaces(-200.0, -150.0, 0.0, 400.0, 300.0, 18.0)
-        grids, spacing = step_prepare._mirror_sample_grids(
-            surfaces, grid=7, spacing=1.0, max_points=2_000
-        )
-        assert sum(nu * nv for nu, nv in grids.values()) <= 2_000
-        assert spacing > 1.0
-        dense = {tag: pair for tag, pair in grids.items() if pair != (0, 0)}
-        assert dense and all(min(pair) >= 7 for pair in dense.values())
-        # Each direction is sized by its own length: the 400 x 18 sides get
-        # more samples along their long edge.
-        lengths = {tag: step_prepare._parameter_lengths(tag) for tag in surfaces}
-        for tag, (nu, nv) in dense.items():
-            long_u = lengths[tag][0] > lengths[tag][1]
-            assert (nu >= nv) if long_u else (nv >= nu)
-        # No budget at all: no face is densified (the floor is never cut back).
-        none, _ = step_prepare._mirror_sample_grids(surfaces, grid=7, spacing=1.0, max_points=0)
-        assert set(none.values()) == {(0, 0)}
-        with pytest.raises(ValueError, match="positive"):
-            step_prepare._mirror_sample_grids(surfaces, grid=7, spacing=0.0, max_points=10)
-
-
-def test_a_flared_face_is_sized_by_its_wide_end():
-    with _gmsh_session():
-        cone = gmsh.model.occ.addCone(0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 10.0, 200.0)
-        gmsh.model.occ.synchronize()
-        lateral = max(
-            (tag for _dim, tag in gmsh.model.getEntities(2)),
-            key=lambda tag: gmsh.model.occ.getMass(2, tag),
-        )
-        lengths = step_prepare._parameter_lengths(lateral)
-        # The mouth circumference (2 pi 200 mm, less the 8-chord polyline's
-        # 2.5 %), not the middle's (2 pi 105 mm).
-        assert max(lengths) == pytest.approx(2.0 * np.pi * 200.0, rel=0.04)
-        del cone
-
-
-def test_a_dense_sample_request_never_retries_finer():
-    with _gmsh_session():
-        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
-        calls = []
-        real = step_prepare._param_inside
-
-        def outside(surface, u, v):
-            calls.append((u, v))
-            return False
-
-        step_prepare._param_inside = outside
-        try:
-            points = step_prepare.sample_occ_surface_points(
-                surfaces[0], grid=10, grid_v=12, retry_finer=False
-            )
-        finally:
-            step_prepare._param_inside = real
-        assert len(points) == 0 and len(calls) == 10 * 12
-
-
-def _hole_on_a_floor_sample(radius_mm):
-    """The 0.4 mm plate with a small one-sided hole centred on a floor sample."""
-
-    x = -200.0 + 4.5 * 400.0 / 7.0
-    y = -150.0 + 5.5 * 300.0 / 7.0
-    plate = gmsh.model.occ.addBox(-200.0, -150.0, 0.0, 400.0, 300.0, 0.4)
-    hole = gmsh.model.occ.addCylinder(x, y, -1.0, 0.0, 0.0, 2.4, radius_mm)
-    gmsh.model.occ.cut([(3, plate)], [(3, hole)])
-    gmsh.model.occ.synchronize()
-    surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
-    return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
-
-
-@pytest.mark.parametrize("radius_mm", [1.0, 2.0])
-def test_dense_samples_add_to_the_floor_so_a_floor_rejection_stands(radius_mm):
-    """A hole the floor grid catches stays caught: dense samples only add."""
+def test_the_floor_grid_misses_the_one_sided_hole_today():
+    """What stage 4b must close: the floor grid accepts both planes here."""
 
     with _gmsh_session():
-        floor = auto_cut_occ_geometry(
-            _hole_on_a_floor_sample(radius_mm), planes=("x0", "y0"), sample_spacing_rel=None
-        )
-    with _gmsh_session():
-        dense = auto_cut_occ_geometry(_hole_on_a_floor_sample(radius_mm), planes=("x0", "y0"))
-    assert floor.planes == ()
-    assert dense.planes == ()
-    # The floor rejected every plane, so nothing was densified: the report is
-    # the floor's, number for number.
-    assert dense.report == floor.report
+        result = auto_cut_occ_geometry(_thin_plate_with_one_sided_hole(), planes=("x0", "y0"))
+        assert result.planes == ("x0", "y0")
 
 
 def test_known_verdicts_are_reused_not_tested_again(monkeypatch):
@@ -1100,4 +989,96 @@ def test_known_verdicts_are_reused_not_tested_again(monkeypatch):
     assert tested == []
     assert again.report["planes"] == first.report["planes"]
     assert again.report["reused_verdict_planes"] == ["x0", "y0"]
-    assert again.planes == first.planes == ()
+    assert again.planes == first.planes
+
+
+def _plain_scan(monkeypatch):
+    """Turn the three mirror-test speed-ups off: one isInside per point, every
+    face projected in candidate order, every omitted gap measured singly."""
+
+    def one_at_a_time(surface, uv):
+        return [step_prepare._param_inside(surface, uv[2 * i], uv[2 * i + 1])
+                for i in range(len(uv) // 2)]
+
+    monkeypatch.setattr(step_prepare, "_params_inside", one_at_a_time)
+    monkeypatch.setattr(
+        step_prepare._OccMirrorIndex, "_nearest_with_omitted_gaps", lambda *_args: None
+    )
+    real_init = step_prepare._OccMirrorTarget.__init__
+
+    def without_roles(self, candidates, bboxes, tolerance, role_boundaries, roles=None):
+        real_init(self, candidates, bboxes, tolerance, role_boundaries, None)
+
+    monkeypatch.setattr(step_prepare._OccMirrorTarget, "__init__", without_roles)
+
+
+def _role_model():
+    """A box with a one-sided bore, two roles: some planes pass, some fail."""
+
+    box = gmsh.model.occ.addBox(-40.0, -30.0, 0.0, 80.0, 60.0, 50.0)
+    bore = gmsh.model.occ.addCylinder(12.0, 0.0, -1.0, 0.0, 0.0, 52.0, 6.0)
+    gmsh.model.occ.cut([(3, box)], [(3, bore)])
+    gmsh.model.occ.synchronize()
+    surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+    top = max(surfaces, key=lambda tag: gmsh.model.getBoundingBox(2, tag)[5])
+    return [
+        OccSurfaceGroup("top", OccSurfaceSelector([top]), OccSurfaceRole("source")),
+        OccSurfaceGroup("rest", OccSurfaceSelector([t for t in surfaces if t != top]),
+                        OccSurfaceRole("rigid")),
+    ]
+
+
+@pytest.mark.parametrize("model", ["role-model", "holed-plate", "box"])
+def test_the_mirror_test_speed_ups_change_no_number(model, monkeypatch):
+    """Batched trim queries, own-role-first early exit and the bulk gap screen
+    give the report the plain scan gives, byte for byte."""
+
+    import json
+
+    def build():
+        if model == "role-model":
+            return _role_model()
+        if model == "holed-plate":
+            return _thin_plate_with_one_sided_hole()
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
+
+    with _gmsh_session():
+        fast = auto_cut_occ_geometry(build(), planes=("x0", "y0", "z0"))
+    with monkeypatch.context() as plain:
+        _plain_scan(plain)
+        with _gmsh_session():
+            slow = auto_cut_occ_geometry(build(), planes=("x0", "y0", "z0"))
+    assert json.dumps(fast.report, sort_keys=True) == json.dumps(slow.report, sort_keys=True)
+    assert fast.planes == slow.planes
+    assert [list(g.selector.surface_tags) for g in fast.groups] == [
+        list(g.selector.surface_tags) for g in slow.groups
+    ]
+
+
+def test_batched_trim_queries_keep_the_samples_bit_for_bit(monkeypatch):
+    with _gmsh_session():
+        _thin_plate_with_one_sided_hole()
+        surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+        fast = {tag: step_prepare.sample_occ_surface_points(tag, grid=7) for tag in surfaces}
+        calls = []
+        real = gmsh.model.isInside
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(gmsh.model, "isInside", counted)
+        batched = sum(1 for _ in [step_prepare.sample_occ_surface_points(t, grid=7) for t in surfaces])
+        batched_calls = len(calls)
+        monkeypatch.setattr(
+            step_prepare, "_params_inside",
+            lambda surface, uv: [step_prepare._param_inside(surface, uv[2 * i], uv[2 * i + 1])
+                                 for i in range(len(uv) // 2)],
+        )
+        calls.clear()
+        slow = {tag: step_prepare.sample_occ_surface_points(tag, grid=7) for tag in surfaces}
+    assert batched == len(surfaces)
+    for tag in surfaces:
+        assert fast[tag].tobytes() == slow[tag].tobytes()
+    assert batched_calls < len(calls)

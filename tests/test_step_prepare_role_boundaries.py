@@ -87,7 +87,7 @@ def test_mirror_verdict_applies_boundary_rule_only_to_triangle_models(monkeypatc
         def candidates_for_points(self, points):
             return [[1, 2, 3, 4] for _ in points]
 
-        def closest(self, point, _candidates):
+        def closest(self, point, _candidates, **_ranking):
             if point[0] < 0:
                 hit = 4
             else:
