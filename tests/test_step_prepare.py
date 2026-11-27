@@ -287,7 +287,9 @@ def test_auto_cut_never_hands_a_removed_face_the_piece_that_reused_its_tag():
             OccSurfaceGroup("mf", OccSurfaceSelector(source), OccSurfaceRole("mf")),
         ]
 
-        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+        # out_map's recycled tags are a face-by-face cut's hazard; a cut of the
+        # solids as solids reports no history and renumbers every face.
+        result = auto_cut_occ_geometry(groups, grid=5, planes=("x0",), fast_check=False)
 
         assert result.planes == ("x0",)
         assert result.report["cut"]["surfaces_split"] >= 1
@@ -386,15 +388,17 @@ def test_auto_cut_refuses_a_surviving_surface_that_no_parent_claims(monkeypatch)
         groups = [
             OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))
         ]
+        # The face-by-face cut (the fast check would cut this box as a solid,
+        # whose faces carry no out_map claims at all).
         with pytest.raises(RuntimeError, match="with no parent") as refused:
-            auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0",), fast_check=False)
         # The caller learns which planes the refused cut was for, and why.
         assert refused.value.accepted_planes == ("x0",)
         assert refused.value.report["planes"]["x0"]["accepted"] is True
 
 
-def _cut_groups(groups, planes=("x0",), grid=5):
-    result = auto_cut_occ_geometry(groups, grid=grid, planes=planes)
+def _cut_groups(groups, planes=("x0",), grid=5, **options):
+    result = auto_cut_occ_geometry(groups, grid=grid, planes=planes, **options)
     return result, {group.name: list(group.selector.surface_tags) for group in result.groups}
 
 
@@ -611,8 +615,9 @@ def test_an_undecided_claim_into_another_groups_surface_is_refused(monkeypatch):
             OccSurfaceGroup("low", OccSurfaceSelector([low]), OccSurfaceRole("a")),
             OccSurfaceGroup("high", OccSurfaceSelector([high]), OccSurfaceRole("b")),
         ]
+        # The exact evidence is made undecided; the tessellation would settle it.
         with pytest.raises(RuntimeError, match="cannot confirm"):
-            auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+            auto_cut_occ_geometry(groups, grid=5, planes=("x0",), fast_check=False)
 
 
 def test_an_undecided_claim_within_one_group_is_kept(monkeypatch):
@@ -624,7 +629,8 @@ def test_an_undecided_claim_within_one_group_is_kept(monkeypatch):
         _undecided_for(monkeypatch, {"original": low, "copy": None})
 
         result, _groups = _cut_groups(
-            [OccSurfaceGroup("all", OccSurfaceSelector([low, high]), OccSurfaceRole("rigid"))]
+            [OccSurfaceGroup("all", OccSurfaceSelector([low, high]), OccSurfaceRole("rigid"))],
+            fast_check=False,
         )
 
         assert len(result.parent_to_children[low]) == 2
@@ -822,10 +828,11 @@ def test_periodic_cut_retry_cleans_up_on_failure(monkeypatch, name, call):
 
         monkeypatch.setattr(gmsh.model.occ, "copy", recording)
         _fail_on_call(monkeypatch, gmsh.model.occ, name, call)
+        # The face-by-face cut's retry (the fast check cuts this solid as a solid).
         with pytest.raises(RuntimeError, match="injected"):
             auto_cut_occ_geometry([
                 OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))
-            ], planes=("x0", "y0"))
+            ], planes=("x0", "y0"), fast_check=False)
 
         monkeypatch.undo()
         gmsh.model.occ.synchronize()

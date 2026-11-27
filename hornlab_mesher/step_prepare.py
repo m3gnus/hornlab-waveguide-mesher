@@ -1082,6 +1082,69 @@ def _distance_to_boundary(surface: int, point: np.ndarray) -> float | None:
     return min(distances) if distances else None
 
 
+class _ClaimJudge:
+    """``_claim_evidence``, answered from the parents' tessellation when it can.
+
+    The parents' forward tessellation (the mirror test's ``FaceIndex``,
+    built before the cut from the very faces the copies copy) certifies a
+    claim ``"on"`` when every sample of the child is a certified hit on the
+    parent, and ``"off"`` when one is certainly farther than tolerance from
+    the trimmed parent -- which ``_claim_evidence`` would also call off. Any
+    other claim is judged by ``_claim_evidence`` on the parent's copy.
+    """
+
+    def __init__(self, copies: dict[int, int], *, tolerance: float, grid: int,
+                 face_index: occ_face_index.FaceIndex | None) -> None:
+        self.copies = copies
+        self.tolerance = tolerance
+        self.grid = grid
+        self.face_index = face_index
+        self._near: dict[int, Any] = {}
+        self._samples: dict[int, np.ndarray] = {}
+
+    def _child(self, child: int):
+        if child not in self._near:
+            points = self._points(child)
+            near = self.face_index.near(points, self.tolerance) if len(points) else None
+            self._near[child] = (len(points), near)
+        return self._near[child]
+
+    def carrier_gap(self, parent: int, child: int) -> float:
+        """The largest distance from the child's samples to the parent's
+        carrier surface (OCC); ``inf`` when OCC cannot answer."""
+        points = self._points(child)
+        if not len(points):
+            return math.inf
+        try:
+            closest, _parametric = gmsh.model.getClosestPoint(
+                2, self.copies[parent], points.ravel().tolist())
+        except Exception:
+            return math.inf
+        gaps = np.linalg.norm(np.asarray(closest, dtype=float).reshape(-1, 3) - points, axis=1)
+        return float(np.max(gaps)) if np.all(np.isfinite(gaps)) else math.inf
+
+    def _points(self, child: int) -> np.ndarray:
+        if child not in self._samples:
+            self._samples[child] = _sample_occ_surface(child, grid=self.grid, trims={})[0]
+        return self._samples[child]
+
+    def __call__(self, parent: int, child: int) -> str:
+        index = self.face_index
+        if index is not None and parent in index.meshes:
+            count, near = self._child(child)
+            if count and near is not None:
+                rows = near.face == parent
+                on = np.zeros(count, dtype=bool)
+                on[near.point[rows & (near.upper <= self.tolerance)]] = True
+                if np.all(on):
+                    return "on"
+                possible = np.zeros(count, dtype=bool)
+                possible[near.point[rows & ~(near.lower > self.tolerance)]] = True
+                if not np.all(possible):
+                    return "off"
+        return _claim_evidence(self.copies[parent], child, tolerance=self.tolerance, grid=self.grid)
+
+
 def _verify_cut_parentage(
     mapping: dict[int, list[int]],
     copies: dict[int, int],
@@ -1089,6 +1152,7 @@ def _verify_cut_parentage(
     *,
     tolerance: float,
     grid: int,
+    judge: _ClaimJudge | None = None,
 ) -> tuple[dict[int, list[int]], set[tuple[int, int]], int]:
     """Keep only the out_map claims the geometry does not disprove.
 
@@ -1108,7 +1172,10 @@ def _verify_cut_parentage(
     for parent, children in mapping.items():
         kept: list[int] = []
         for child in children:
-            verdict = _claim_evidence(copies[parent], child, tolerance=tolerance, grid=grid)
+            verdict = (
+                judge(parent, child) if judge is not None
+                else _claim_evidence(copies[parent], child, tolerance=tolerance, grid=grid)
+            )
             if verdict == "off":
                 disproved += 1
                 continue
@@ -1121,6 +1188,75 @@ def _verify_cut_parentage(
     if unclaimed:
         raise RuntimeError(f"OCC cut left surfaces {unclaimed} with no parent")
     return cleaned, undecided, disproved
+
+
+def _solid_cut_applies(volumes, surfaces: list[int], planes: tuple[str, ...],
+                       tolerance: float) -> bool:
+    """Whether the model can be cut as its solids rather than face by face.
+
+    Every face must bound a solid (no free sheet), and none may lie in a cut
+    plane (there the solid's cap and the face would coincide).
+    """
+    if not volumes:
+        return False
+    axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
+    for surface in surfaces:
+        if not len(gmsh.model.getAdjacencies(2, surface)[0]):
+            return False
+        box = gmsh.model.getBoundingBox(2, surface)
+        if any(abs(box[axis]) <= tolerance and abs(box[axis + 3]) <= tolerance for axis in axes):
+            return False
+    return True
+
+
+def _attribute_cut_faces(
+    remaining: list[int], parents: list[int], boxes: Mapping[int, tuple[float, ...]],
+    planes: tuple[str, ...], *, tolerance: float, judge: _ClaimJudge,
+) -> tuple[dict[int, list[int]], set[tuple[int, int]], list[int]]:
+    """Parentage of the faces a solid cut left, from geometry alone.
+
+    A boolean on solids reports no face history, so each surviving face is
+    claimed by every parent it lies on (``judge`` is the same evidence the
+    face-by-face cut's claims are checked with); one it cannot rule out is
+    an undecided claim, as there. A face no parent claims is the solid's cap
+    when it lies in a cut plane; any other is refused.
+    """
+    axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
+    mapping: dict[int, list[int]] = {parent: [] for parent in parents}
+    undecided: set[tuple[int, int]] = set()
+    caps: list[int] = []
+    for child in remaining:
+        box = gmsh.model.getBoundingBox(2, child)
+        verdicts: dict[int, str] = {}
+        for parent in parents:
+            other = boxes[parent]
+            if any(box[k] > other[k + 3] + tolerance or other[k] > box[k + 3] + tolerance
+                   for k in range(3)):
+                continue
+            verdict = judge(parent, child)
+            if verdict != "off":
+                verdicts[parent] = verdict
+        if len(verdicts) > 1:
+            # More than one parent the face may lie on: a piece lies on its
+            # own parent's carrier exactly, while a neighbour within
+            # tolerance (a tangent fillet, a fitted spline) lies near it.
+            # Keep the nearest, and any coincident with it -- the claims the
+            # face-by-face cut's history would make.
+            gaps = {parent: judge.carrier_gap(parent, child) for parent in verdicts}
+            least = min(gaps.values())
+            verdicts = {parent: verdict for parent, verdict in verdicts.items()
+                        if gaps[parent] <= least + 1.0e-3 * tolerance}
+        for parent, verdict in verdicts.items():
+            mapping[parent].append(child)
+            if verdict == "unknown":
+                undecided.add((parent, child))
+        if verdicts:
+            continue
+        if any(abs(box[axis]) <= tolerance and abs(box[axis + 3]) <= tolerance for axis in axes):
+            caps.append(child)
+            continue
+        raise RuntimeError(f"OCC cut left surface {child} with no parent")
+    return mapping, undecided, caps
 
 
 def _remove_temporary_geometry(copies: Iterable[int], box: int | None) -> None:
@@ -1441,6 +1577,63 @@ def _verify_triangle_copies(copies: dict[int, int], model: _OccTriangleModel) ->
             raise RuntimeError("OCC returned triangle face copies in an unexpected order")
 
 
+def _cut_solids(
+    volumes, lo: list[float], hi: list[float], copies: dict[int, int], parents: list[int],
+    parent_boxes: Mapping[int, tuple[float, ...]], planes: tuple[str, ...], *,
+    tolerance: float, grid: int, judge: _ClaimJudge,
+    parent_samples: Mapping[int, np.ndarray] | None,
+) -> tuple[dict[int, list[int]], set[tuple[int, int]], list[int]] | None:
+    """Keep the solids' positive side, then leave their faces open there.
+
+    The cut works on a copy of the solids. When its result is proven (every
+    surviving face claimed by a parent or a cap, every retained portion
+    covered) the originals are removed and the parentage, undecided claims
+    and surviving faces are returned. Otherwise nothing of it is left and
+    ``None`` returned: the originals are untouched for the face-by-face cut.
+    """
+    keep = {tag for _dim, tag in gmsh.model.occ.getEntities(2)}
+    keep_volumes = {tag for _dim, tag in volumes}
+    try:
+        solids = gmsh.model.occ.copy(list(volumes))
+        box = gmsh.model.occ.addBox(lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+        gmsh.model.occ.synchronize()
+        gmsh.model.occ.intersect(solids, [(3, box)], removeObject=True, removeTool=True)
+        gmsh.model.occ.synchronize()
+        result = [item for item in gmsh.model.getEntities(3) if item[1] not in keep_volumes]
+        if result:
+            gmsh.model.occ.remove(result, recursive=False)
+            gmsh.model.occ.synchronize()
+        remaining = [tag for _dim, tag in sorted(gmsh.model.getEntities(2)) if tag not in keep]
+        mapping, undecided, caps = _attribute_cut_faces(
+            remaining, parents, parent_boxes, planes, tolerance=tolerance, judge=judge)
+        if caps:
+            gmsh.model.occ.remove([(2, tag) for tag in caps], recursive=True)
+            gmsh.model.occ.synchronize()
+        remaining = [tag for tag in remaining if tag not in set(caps)]
+        if _uncovered_cut_parents(mapping, copies, planes, tolerance=tolerance, grid=grid,
+                                  parent_samples=parent_samples):
+            raise RuntimeError("OCC solid cut lost retained portions")
+    except Exception:
+        _discard_cut_result(keep, keep_volumes)
+        return None
+    # The originals' faces carry the parent tags; the copies stay for the
+    # caller's cleanup. Remove the original solids with their own faces.
+    gmsh.model.occ.remove(list(volumes), recursive=True)
+    gmsh.model.occ.synchronize()
+    return mapping, undecided, remaining
+
+
+def _discard_cut_result(keep: set[int], keep_volumes: set[int]) -> None:
+    """Remove every entity a failed solid cut left, keeping the originals and copies."""
+    solids = [item for item in gmsh.model.occ.getEntities(3) if item[1] not in keep_volumes]
+    if solids:
+        gmsh.model.occ.remove(solids, recursive=False)
+    faces = [(2, tag) for _dim, tag in gmsh.model.occ.getEntities(2) if tag not in keep]
+    if faces:
+        gmsh.model.occ.remove(faces, recursive=True)
+    gmsh.model.occ.synchronize()
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -1449,12 +1642,20 @@ def _cut_occ_geometry_to_positive_side(
     grid: int,
     triangle_model: _OccTriangleModel | None = None,
     parent_samples: Mapping[int, np.ndarray] | None = None,
+    face_index: occ_face_index.FaceIndex | None = None,
 ) -> tuple[dict[int, list[int]], set[tuple[int, int]], dict[str, object]]:
     volumes = gmsh.model.getEntities(3)
-    if volumes:
+    surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
+    # A model of solids is cut as its solids (stage 4b): OCC then intersects
+    # the half-space with each solid, not every face with every other face
+    # -- the face-against-face work made the face-by-face cut take seconds.
+    # The face-by-face cut stays for open shells, and is the fallback.
+    solid = (triangle_model is None and face_index is not None
+             and _solid_cut_applies(volumes, surfaces, planes, tolerance))
+    if volumes and not solid:
         gmsh.model.occ.remove(volumes, recursive=False)
         gmsh.model.occ.synchronize()
-    surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
+    parent_boxes = {tag: tuple(gmsh.model.getBoundingBox(2, tag)) for tag in surfaces}
     inside: set[int] = set()
     outside: set[int] = set()
     cut_parents = surfaces
@@ -1489,12 +1690,29 @@ def _cut_occ_geometry_to_positive_side(
         gmsh.model.occ.synchronize()
         if triangle_model is not None:
             _verify_triangle_copies(copies, triangle_model)
+        judge = (_ClaimJudge(copies, tolerance=tolerance, grid=grid, face_index=face_index)
+                 if triangle_model is None else None)
         cut_surfaces = cut_parents
         repaired: list[int] = []
         mapping: dict[int, list[int]] = {}
         undecided: set[tuple[int, int]] = set()
         disproved = 0
         remaining: list[int] = []
+        route = "faces"
+        if solid:
+            route = "solids"
+            solid_result = _cut_solids(
+                volumes, lo, hi, copies, surfaces, parent_boxes, planes,
+                tolerance=tolerance, grid=grid, judge=judge, parent_samples=parent_samples,
+            )
+            if solid_result is not None:
+                mapping, undecided, remaining = solid_result
+                cut_surfaces = []
+            else:
+                # The originals are untouched: cut them face by face, as below.
+                route = "solids, then faces"
+                gmsh.model.occ.remove(volumes, recursive=False)
+                gmsh.model.occ.synchronize()
         for attempt in range(2) if cut_surfaces else ():
             box = gmsh.model.occ.addBox(
                 lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
@@ -1519,7 +1737,7 @@ def _cut_occ_geometry_to_positive_side(
                 if tag not in copy_tags and tag not in inside and tag not in outside
             ]
             mapping, undecided, disproved = _verify_cut_parentage(
-                mapping, copies, remaining, tolerance=tolerance, grid=grid
+                mapping, copies, remaining, tolerance=tolerance, grid=grid, judge=judge
             )
             uncovered = _uncovered_cut_parents(
                 mapping, copies, planes, tolerance=tolerance, grid=grid,
@@ -1588,6 +1806,7 @@ def _cut_occ_geometry_to_positive_side(
         "residual_volumes": len(gmsh.model.getEntities(3)),
         "parentage_claims_disproved": disproved,
         "parentage_claims_undecided": len(undecided),
+        **({"route": route} if triangle_model is None and face_index is not None else {}),
     }
     if repaired:
         stats["coverage_repaired_parents"] = repaired
@@ -1771,7 +1990,7 @@ def auto_cut_occ_geometry(
     try:
         return _cut_accepted_planes(
             groups, accepted_planes, report, tolerance=tolerance, grid=grid,
-            triangle_model=triangle_model, parent_samples=samples,
+            triangle_model=triangle_model, parent_samples=samples, face_index=face_index,
         )
     except RuntimeError as exc:
         # The caller learns which planes the refused cut was for, and what the
@@ -1790,9 +2009,12 @@ def _cut_accepted_planes(
     grid: int,
     triangle_model: Any,
     parent_samples: Mapping[int, np.ndarray] | None = None,
+    face_index: occ_face_index.FaceIndex | None = None,
 ) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
     cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
+    if face_index is not None:
+        cut_options["face_index"] = face_index
     if triangle_model is not None:
         cut_options["triangle_model"] = triangle_model
     if parent_samples is not None:

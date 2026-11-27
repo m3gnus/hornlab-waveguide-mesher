@@ -350,3 +350,154 @@ def test_the_feature_check_keeps_the_seams_of_periodic_faces():
         _build("cylinder")
         result = auto_cut_occ_geometry(_one_role(), planes=("x0", "y0"))
         assert result.planes == ("x0", "y0")
+
+
+# -- the cut: solids cut as solids ---------------------------------------------
+
+
+def _topology():
+    return (len(gmsh.model.getEntities(3)), len(gmsh.model.getEntities(2)),
+            len(gmsh.model.getEntities(1)), len(gmsh.model.getEntities(0)))
+
+
+@pytest.mark.parametrize("model", ["box", "cylinder", "two-bores", "filleted-box", "cone"])
+@pytest.mark.parametrize("planes", [("x0",), ("x0", "y0")])
+def test_a_solid_is_cut_as_a_solid_into_the_same_open_faces(model, planes):
+    """Same kept faces, same shared curves and points, no cap, no copy left."""
+
+    results = {}
+    for fast in (False, True):
+        with _session():
+            _build(model)
+            result = auto_cut_occ_geometry(_one_role(), planes=planes, fast_check=fast,
+                                           feature_check=False)
+            results[fast] = (result.planes, _group_geometry(result), _topology(),
+                             (result.report.get("cut") or {}).get("route"))
+    assert results[True][0] == results[False][0] == planes
+    assert results[True][1] == results[False][1]
+    assert results[True][2] == results[False][2]
+    assert results[True][3] == "solids"
+    assert results[False][3] is None
+
+
+def test_an_open_shell_is_cut_face_by_face():
+    with _session():
+        gmsh.model.occ.addRectangle(-40, -30, 20, 80, 60)
+        gmsh.model.occ.addRectangle(-40, -30, -20, 80, 60)
+        gmsh.model.occ.synchronize()
+        result = auto_cut_occ_geometry(_one_role(), planes=("x0",))
+        assert result.planes == ("x0",)
+        assert result.report["cut"]["route"] == "faces"
+
+
+def test_a_solid_with_a_face_in_the_cut_plane_is_cut_face_by_face():
+    with _session():
+        occ = gmsh.model.occ
+        left = occ.addBox(-40, -30, -20, 40, 60, 40)
+        right = occ.addBox(0, -30, -20, 40, 60, 40)
+        occ.fragment([(3, left)], [(3, right)])
+        occ.synchronize()
+        result = auto_cut_occ_geometry(_one_role(), planes=("x0",), feature_check=False)
+        assert (result.report.get("cut") or {}).get("route") in (None, "faces")
+
+
+def test_a_solid_cut_that_cannot_be_proven_falls_back_to_the_face_cut(monkeypatch):
+    def unproven(*_args, **_kwargs):
+        raise RuntimeError("OCC cut left surface 999 with no parent")
+
+    with _session():
+        _build("two-bores")
+        expected = auto_cut_occ_geometry(_one_role(), planes=("x0", "y0"), fast_check=False)
+        expected_geometry, expected_topology = _group_geometry(expected), _topology()
+    monkeypatch.setattr(step_prepare, "_attribute_cut_faces", unproven)
+    with _session():
+        _build("two-bores")
+        result = auto_cut_occ_geometry(_one_role(), planes=("x0", "y0"), feature_check=False)
+        assert result.report["cut"]["route"] == "solids, then faces"
+        assert _group_geometry(result) == expected_geometry
+        assert _topology() == expected_topology
+
+
+def test_a_cap_is_never_kept_and_a_stray_face_is_never_kept(monkeypatch):
+    """Faces no parent claims: the cap (in the plane) is removed; any other
+    face makes the solid cut fall back."""
+
+    real = step_prepare._ClaimJudge.__call__
+    calls = []
+
+    def judge(self, parent, child):
+        calls.append(child)
+        return real(self, parent, child)
+
+    monkeypatch.setattr(step_prepare._ClaimJudge, "__call__", judge)
+    with _session():
+        _build("box")
+        result = auto_cut_occ_geometry(_one_role(), planes=("x0",), feature_check=False)
+        assert result.report["cut"]["route"] == "solids"
+        kept = [tag for group in result.groups for tag in group.selector.surface_tags]
+        assert all(abs(gmsh.model.getBoundingBox(2, tag)[0]) > 1e-9
+                   or abs(gmsh.model.getBoundingBox(2, tag)[3]) > 1e-9 for tag in kept)
+        assert len(kept) == 5          # the x0 cap is gone
+        assert gmsh.model.getEntities(3) == []
+
+
+@pytest.mark.parametrize(("name", "call"), [("copy", "solids"), ("intersect", 1), ("synchronize", 4)])
+def test_a_failure_inside_the_solid_cut_leaves_the_face_cut_as_before(monkeypatch, name, call):
+    """An OCC failure while cutting the copied solids discards that attempt;
+    the originals are then cut face by face, exactly as without the fast check."""
+
+    with _session():
+        _build("two-bores")
+        expected = auto_cut_occ_geometry(_one_role(), planes=("x0",), fast_check=False)
+        expected_geometry, expected_topology = _group_geometry(expected), _topology()
+    real = getattr(gmsh.model.occ, name)
+    count = {"n": 0}
+
+    def failing(*args, **kwargs):
+        count["n"] += 1
+        if count["n"] == call or (call == "solids" and args and args[0] and args[0][0][0] == 3):
+            raise RuntimeError(f"injected {name} failure")
+        return real(*args, **kwargs)
+
+    with _session():
+        _build("two-bores")
+        monkeypatch.setattr(gmsh.model.occ, name, failing)
+        result = auto_cut_occ_geometry(_one_role(), planes=("x0",), feature_check=False)
+        monkeypatch.undo()
+        assert result.report["cut"]["route"] == "solids, then faces"
+        assert _group_geometry(result) == expected_geometry
+        assert _topology() == expected_topology
+
+
+def test_a_face_within_tolerance_of_a_neighbour_keeps_only_its_own_parent():
+    """A fillet narrower than the mirror tolerance lies within tolerance of the
+    faces it joins; each piece of it still belongs to the fillet alone, so a
+    group never gains a neighbour's face."""
+
+    def build():
+        occ = gmsh.model.occ
+        box = occ.addBox(-200, -150, -100, 400, 300, 200)
+        occ.synchronize()
+        along_x = [tag for _d, tag in gmsh.model.getEntities(1)
+                   if abs(gmsh.model.getBoundingBox(1, tag)[3] - gmsh.model.getBoundingBox(1, tag)[0]) > 300]
+        occ.fillet([box], along_x, [0.2])
+        occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        fillets = [t for t in surfaces if gmsh.model.getType(2, t) != "Plane"]
+        assert len(fillets) == 4
+        return [
+            OccSurfaceGroup("fillets", OccSurfaceSelector(fillets), OccSurfaceRole("src")),
+            OccSurfaceGroup("rest", OccSurfaceSelector([t for t in surfaces if t not in fillets]),
+                            OccSurfaceRole("rigid")),
+        ]
+
+    results = {}
+    for fast in (False, True):
+        with _session():
+            result = auto_cut_occ_geometry(build(), planes=("x0",), fast_check=fast,
+                                           feature_check=False)
+            results[fast] = (_group_geometry(result), result.report["cut"]["surfaces_split"],
+                             result.report["cut"].get("route"))
+    assert results[True][0] == results[False][0]
+    assert results[True][1] == results[False][1]
+    assert results[True][2] == "solids"
