@@ -7,7 +7,7 @@ about OCC surface tags, mirrored geometry, and exact boolean parentage.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -355,9 +355,19 @@ class _OccMirrorTarget:
     """The trimmed OCC faces as a mirror target: exact closest-point projection."""
 
     def __init__(self, candidates, bboxes, tolerance, role_boundaries):
-        self.index = _OccMirrorIndex(candidates, bboxes, tolerance)
+        self.candidates = candidates
+        self.bboxes = bboxes
         self.tolerance = tolerance
         self.role_boundaries = role_boundaries
+        self._index = None
+
+    @property
+    def index(self):
+        # Built on the first match only: a plane the model does not straddle,
+        # or a bad plane or role, is decided before any broad phase.
+        if self._index is None:
+            self._index = _OccMirrorIndex(self.candidates, self.bboxes, self.tolerance)
+        return self._index
 
     def match(self, surface, mirrored):
         nearby = self.index.candidates_for_points(mirrored)
@@ -1034,7 +1044,7 @@ def auto_cut_occ_geometry(
         for value in (*np.min(stacked, axis=0), *np.max(stacked, axis=0))
     )
     diagonal = float(np.linalg.norm(np.asarray(sample_bbox[3:]) - sample_bbox[:3]))
-    tolerance = tolerance_rel * diagonal
+    tolerance = replace(TOLERANCES["fitted"], relative=tolerance_rel).resolve(diagonal)
     span_tolerance = AUTO_CUT_SPAN_REL * diagonal
     verdict_options = dict(samples=samples, roles=roles, bboxes=bboxes,
                            tolerance=tolerance, span_tolerance=span_tolerance)

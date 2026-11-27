@@ -1041,8 +1041,8 @@ def build_geometry_params(config: Mapping[str, Any], *, _native_expressions: boo
     enclosure_obj = _enclosure_from_config(config, mesh, enclosure, formula)
     if enclosure_obj is not None:
         if enclosure_obj.dim_mm is not None:
-            from .symmetry import evaluate_enclosure_symmetry
-            cut_planes = {_PLANE_FOR_SNAP_AXIS[axis] for axis in _symmetry_planes_for_quadrants(
+            from .symmetry import PLANE_FOR_SNAP_AXIS, evaluate_enclosure_symmetry
+            cut_planes = {PLANE_FOR_SNAP_AXIS[axis] for axis in _symmetry_planes_for_quadrants(
                 _pick(mesh, config, names=("quadrants",), default="1234"))}
             dim_reasons = evaluate_enclosure_symmetry(dim_mm=enclosure_obj.dim_mm)
             if any(dim_reasons[plane] for plane in cut_planes):
@@ -1536,10 +1536,6 @@ def _normalised_quadrants(value: Any) -> str:
     open full-circle grid this mesher's earlier set-based logic produced.
     """
     return _normalise_quadrants_common(value)
-
-
-#: The mirror plane each snap axis cuts on (``"x"`` is the x = 0 plane).
-_PLANE_FOR_SNAP_AXIS = {"x": "x0", "y": "y0"}
 
 
 def _symmetry_planes_for_quadrants(quadrants: str) -> tuple[str, ...]:

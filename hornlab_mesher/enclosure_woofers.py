@@ -285,11 +285,12 @@ def validate_woofer_domain(params, enclosure):
     from .profile_sampling import build_point_grid_arrays
     from .symmetry import evaluate_point_grid_symmetry
     full = build_point_grid_arrays({**params, "quadrants": "1234"})
-    # The woofer half keeps its own absolute 1e-6 mm, far inside the design
-    # check's share of the size.
+    # The woofer half keeps its own rule: every mirrored vertex within an
+    # absolute 1e-6 mm of a grid vertex, far inside the design check's share
+    # of the size.
     verdict = evaluate_point_grid_symmetry(
         {"inner": np.asarray(full["inner_grid"])}, planes=("x0",),
-        tolerance_mm=WOOFER_HALF_MIRROR_TOLERANCE_MM)["x0"]
+        tolerance_mm=WOOFER_HALF_MIRROR_TOLERANCE_MM, match="vertex")["x0"]
     if not verdict.accepted:
         raise control_refusal("woofer x=0 half requires a horn symmetric about x=0", 'Symmetry', 'Choose Full model in Symmetry.', message='The horn is not symmetric across the woofer symmetry plane.')
 

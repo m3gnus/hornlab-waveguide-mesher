@@ -1172,11 +1172,11 @@ def _snap_symmetry_planes(
     """Snap onto the snap axes' planes; a zero band or an unknown axis is a no-op."""
     if not axes or tolerance <= 0.0:
         return
-    from .symmetry import snap_symmetry_plane_vertices
+    from .symmetry import PLANE_FOR_SNAP_AXIS, snap_symmetry_plane_vertices
 
     snap_symmetry_plane_vertices(
         points,
-        symmetry_planes=tuple(str(axis) for axis in axes if str(axis) in ("x", "y", "z")),
+        symmetry_planes=tuple(str(axis) for axis in axes if str(axis) in PLANE_FOR_SNAP_AXIS),
         tolerance=float(tolerance),
     )
 

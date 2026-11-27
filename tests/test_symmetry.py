@@ -13,6 +13,7 @@ from hornlab_mesher.symmetry import (
     TOLERANCES,
     MirrorMatches,
     PlaneSymmetryVerdict,
+    PLANE_FOR_SNAP_AXIS,
     RingMirrorTarget,
     evaluate_enclosure_symmetry,
     evaluate_mirror_symmetry,
@@ -283,7 +284,7 @@ def test_enclosure_spacing_tolerance_and_non_finite():
 def test_enclosure_dim_is_compared_exactly():
     assert evaluate_enclosure_symmetry(dim_mm=(200.0, 150.0, 200.0, 150.0)) == {"x0": [], "y0": []}
     reasons = evaluate_enclosure_symmetry(dim_mm=(200.0, 150.0, 200.0 + 1e-9, 170.0))
-    assert reasons["x0"] == ["enclosure Dim +X=200 mm differs from -X=200 mm"]
+    assert reasons["x0"] == ["enclosure Dim +X=200.0 mm differs from -X=200.000000001 mm"]
     assert reasons["y0"] == ["enclosure Dim +Y=150 mm differs from -Y=170 mm"]
 
 
@@ -313,3 +314,136 @@ def test_snap_accepts_both_plane_spellings():
 )
 def test_native_plane_for_quadrants(quadrants, plane):
     assert native_symmetry_plane_for_quadrants(quadrants) == plane
+
+
+def _square_rings(n_axial=3):
+    """A square ring whose azimuth samples do not mirror about x = 0.
+
+    (0.3, 1) mirrors to (-0.3, 1): on the top edge, but no vertex is there.
+    """
+    ring = np.array([[1.0, 1.0], [0.3, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]])
+    z = np.arange(n_axial, dtype=float)
+    grid = np.empty((len(ring), n_axial, 3))
+    grid[:, :, :2] = ring[:, None, :]
+    grid[:, :, 2] = z[None, :]
+    return grid
+
+
+def test_ring_and_vertex_matching_disagree_where_they_should():
+    grid = _square_rings()
+    ring = evaluate_point_grid_symmetry({"inner": grid}, planes=("x0",), tolerance_mm=1e-6)["x0"]
+    vertex = evaluate_point_grid_symmetry(
+        {"inner": grid}, planes=("x0",), tolerance_mm=1e-6, match="vertex")["x0"]
+    assert ring.accepted
+    assert not vertex.accepted
+    assert vertex.points_off_model == 3  # the off-axis sample, once per ring
+    assert vertex.worst_off_model_distance == pytest.approx(0.6)
+
+
+def _old_woofer_kd_verdict(grid):
+    """The woofer check before stage 2, verbatim: a KD-tree over all vertices."""
+    from scipy.spatial import cKDTree
+
+    points = np.asarray(grid).reshape(-1, 3)
+    reflected = points * [-1, 1, 1]
+    distance = float(np.max(cKDTree(points).query(reflected)[0]))
+    return not distance > 1e-6, distance
+
+
+@pytest.mark.parametrize("make", [
+    _square_rings,
+    lambda: _ellipse_grid(),
+    lambda: _ellipse_grid(phase=0.013),
+    lambda: _ellipse_grid(rotation_deg=1e-6),
+    lambda: _ellipse_grid(rotation_deg=25.0),
+])
+def test_vertex_matching_is_the_old_woofer_check(make):
+    grid = make()
+    old_accepted, old_distance = _old_woofer_kd_verdict(grid)
+    verdict = evaluate_point_grid_symmetry(
+        {"inner": grid}, planes=("x0",), tolerance_mm=1e-6, match="vertex")["x0"]
+    assert verdict.accepted is old_accepted
+    new_distance = verdict.max_residual if verdict.accepted else verdict.worst_off_model_distance
+    assert new_distance == old_distance
+
+
+def test_grid_tolerance_must_be_finite_and_non_negative():
+    for bad in (-1.0, math.nan, math.inf):
+        with pytest.raises(ValueError, match="tolerance_mm"):
+            evaluate_point_grid_symmetry({"inner": _ellipse_grid()}, tolerance_mm=bad)
+
+
+def test_kernel_ignores_a_nan_distance_on_a_hit():
+    samples = {1: _straddling(2)}
+    target = _TableTarget({1: [(math.nan, math.nan, [1]), (0.02, 0.02, [1])]})
+    verdict = evaluate_mirror_symmetry(
+        "x0", samples=samples, roles={1: "a"}, target=target, tolerance=0.05, span_tolerance=0.1,
+    )
+    assert verdict.accepted
+    assert verdict.max_residual == 0.02
+
+
+def test_kernel_labels_numpy_surface_ids_as_ints():
+    samples = {np.int64(7): _straddling(2)}
+    target = _TableTarget({np.int64(7): [(-1.0, 0.5, []), (-1.0, 0.4, [])]})
+    verdict = evaluate_mirror_symmetry(
+        "x0", samples=samples, roles={np.int64(7): "a"}, target=target,
+        tolerance=0.05, span_tolerance=0.1,
+    )
+    assert type(verdict.worst_surface) is int and verdict.worst_surface == 7
+
+
+def test_enclosure_dim_must_be_finite():
+    reasons = evaluate_enclosure_symmetry(dim_mm=(math.inf, 150.0, math.inf, 150.0))
+    assert reasons == {"x0": ["enclosure Dim +X/-X is not a finite scalar"], "y0": []}
+
+
+def test_mesher_snap_keeps_its_no_ops():
+    from hornlab_mesher.mesher import _snap_symmetry_planes
+
+    points = np.array([[5e-7, 5e-7, 5e-7], [-0.0, 2e-6, 0.0]])
+    for tolerance in (0.0, -1.0):
+        copy = points.copy()
+        _snap_symmetry_planes(copy, ("x", "y"), tolerance)
+        assert np.array_equal(copy, points) and math.copysign(1.0, copy[1, 0]) < 0
+    copy = points.copy()
+    _snap_symmetry_planes(copy, ("x", "x0", "w"), 1e-6)  # unknown axes are skipped
+    assert copy.tolist() == [[0.0, 5e-7, 5e-7], [0.0, 2e-6, 0.0]]
+    assert set(PLANE_FOR_SNAP_AXIS) == {"x", "y", "z"}
+
+
+def test_woofer_margin_check_reads_dim_when_given():
+    from hornlab_mesher.enclosure_woofers import _symmetric_enclosure_x
+    from hornlab_mesher.geometry import HornEnclosure
+
+    margins_differ = HornEnclosure(depth_mm=60.0, space_l_mm=10.0, space_r_mm=30.0)
+    assert not _symmetric_enclosure_x(margins_differ)
+    dim_even = HornEnclosure(depth_mm=60.0, space_l_mm=10.0, space_r_mm=30.0,
+                             dim_mm=(200.0, 150.0, 200.0, 170.0))
+    assert _symmetric_enclosure_x(dim_even)
+    dim_odd = HornEnclosure(depth_mm=60.0, dim_mm=(210.0, 150.0, 200.0, 150.0))
+    assert not _symmetric_enclosure_x(dim_odd)
+
+
+def test_woofer_half_check_stays_fast_on_a_fine_grid():
+    """The woofer x = 0 check runs at the build's own angular segments."""
+    import time
+
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from test_enclosure_woofers import assembly_config
+
+    from hornlab_mesher.config_builder import _enclosure_from_config, build_geometry_params
+    from hornlab_mesher.enclosure_woofers import validate_woofer_domain
+
+    config = assembly_config()
+    config["mesh"]["quadrants"] = "14"
+    config["mesh"]["angular_segments"] = 1024
+    for row in config["enclosure"]["woofers"]:
+        row["x_mm"] = 0
+    params, formula, _mode = build_geometry_params(config)
+    assert params["angularSegments"] == 1024
+    enclosure = _enclosure_from_config(config, config["mesh"], config["enclosure"], formula)
+    started = time.perf_counter()
+    validate_woofer_domain(params, enclosure)
+    # KD-tree vertex matching: ~0.1 s here; the ring polyline check took ~2.4 s.
+    assert time.perf_counter() - started < 1.5

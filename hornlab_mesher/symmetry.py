@@ -26,7 +26,7 @@ import numpy as np
 
 SYMMETRY_AXIS_FOR_PLANE = {"x0": 0, "y0": 1, "z0": 2}
 #: The mesher's snap-axis spelling of the same planes (``"x"`` is x = 0).
-_PLANE_FOR_AXIS_NAME = {"x": "x0", "y": "y0", "z": "z0"}
+PLANE_FOR_SNAP_AXIS = {"x": "x0", "y": "y0", "z": "z0"}
 #: Each mirror plane by the coordinate plane it lies in, in words.
 _PLANE_WORDS = {"x0": "yz", "y0": "xz", "z0": "xy"}
 
@@ -234,7 +234,7 @@ def evaluate_mirror_symmetry(
                 points_off_model += 1
                 if distance > worst_off_model:
                     worst_off_model = distance
-                    worst_surface = surface
+                    worst_surface = _label(surface)
                 if len(failures) < max_failure_samples:
                     failures.append(
                         {
@@ -340,16 +340,49 @@ class RingMirrorTarget:
         return False
 
 
+class VertexMirrorTarget:
+    """Every vertex of a sampled grid: a mirrored sample must land on a vertex.
+
+    Stricter than :class:`RingMirrorTarget` and blind to which ring the vertex
+    is on; fast (a KD-tree, O(N log N)) at any grid size. Right where the grid's
+    azimuths are built to mirror onto each other, as the mesher's own grids are.
+    """
+
+    def __init__(self, grids: Mapping[Hashable, np.ndarray], tolerance: float) -> None:
+        self.grids = grids
+        self.tolerance = float(tolerance)
+        self._trees: dict[Hashable, Any] = {}
+
+    def match(self, surface: Hashable, mirrored: np.ndarray) -> MirrorMatches:
+        tree = self._trees.get(surface)
+        if tree is None:
+            from scipy.spatial import cKDTree  # lazy: the module stays numpy-only
+
+            tree = self._trees[surface] = cKDTree(self.grids[surface].reshape(-1, 3))
+        nearest = np.asarray(tree.query(mirrored)[0], dtype=np.float64)
+        matched = np.where(nearest <= self.tolerance, nearest, -1.0)
+        return MirrorMatches(matched, nearest)
+
+    def role_seam_allows(self, surface, point, mirrored, hits, context) -> bool:
+        return False
+
+
+_GRID_TARGETS = {"ring": RingMirrorTarget, "vertex": VertexMirrorTarget}
+
+
 def evaluate_point_grid_symmetry(
     grids: Mapping[str, np.ndarray],
     *,
     planes: Sequence[str] = ("x0", "y0"),
     tolerance_class: ToleranceClass = "exact",
     tolerance_mm: float | None = None,
+    match: Literal["ring", "vertex"] = "ring",
 ) -> dict[str, PlaneSymmetryVerdict]:
     """Mirror-test sampled surface grids, each ``(n_phi, n_axial, 3)``, per plane.
 
-    Each grid is its own role, tested against its own rings only. The
+    Each grid is its own role, tested against its own surface only: with
+    ``match="ring"`` a mirrored sample is measured to its own axial ring's
+    polyline, with ``match="vertex"`` to the nearest grid vertex. The
     tolerance is the class's share of the grids' joint bounding-box diagonal
     unless ``tolerance_mm`` gives it. A grid samples a whole model, so no
     straddle is required.
@@ -370,7 +403,9 @@ def evaluate_point_grid_symmetry(
         tolerance = TOLERANCES[tolerance_class].resolve(diagonal)
     else:
         tolerance = float(tolerance_mm)
-    target = RingMirrorTarget(checked, tolerance)
+        if not (math.isfinite(tolerance) and tolerance >= 0.0):
+            raise ValueError("tolerance_mm must be finite and non-negative")
+    target = _GRID_TARGETS[match](checked, tolerance)
     samples = {name: grid.reshape(-1, 3) for name, grid in checked.items()}
     roles = {name: name for name in checked}
     return {
@@ -397,6 +432,12 @@ def _pair_reason(
     if abs(first - second) > tolerance_mm:
         return f"enclosure {labels[0]}={first:g} mm differs from {labels[1]}={second:g} mm"
     return None
+
+
+def _distinct_numbers(first: float, second: float) -> tuple[str, str]:
+    """Two different numbers, short, but never printed alike."""
+    short = (f"{first:g}", f"{second:g}")
+    return short if short[0] != short[1] else (repr(first), repr(second))
 
 
 def evaluate_enclosure_symmetry(
@@ -433,10 +474,13 @@ def evaluate_enclosure_symmetry(
                 )
     if dim_mm is not None:
         px, py, nx, ny = (float(value) for value in dim_mm)
-        if px != nx:
-            reasons["x0"].append(f"enclosure Dim +X={px:g} mm differs from -X={nx:g} mm")
-        if py != ny:
-            reasons["y0"].append(f"enclosure Dim +Y={py:g} mm differs from -Y={ny:g} mm")
+        for plane, axis, plus, minus in (("x0", "X", px, nx), ("y0", "Y", py, ny)):
+            if not (math.isfinite(plus) and math.isfinite(minus)):
+                reasons[plane].append(f"enclosure Dim +{axis}/-{axis} is not a finite scalar")
+            elif plus != minus:
+                shown = _distinct_numbers(plus, minus)
+                reasons[plane].append(
+                    f"enclosure Dim +{axis}={shown[0]} mm differs from -{axis}={shown[1]} mm")
     for plane, labels, values in (
         ("x0", ("space_l", "space_r"), spacing_lr),
         ("y0", ("space_t", "space_b"), spacing_tb),
@@ -465,7 +509,7 @@ def snap_symmetry_plane_vertices(
     if tolerance < 0.0:
         raise ValueError("tolerance must be non-negative")
     for plane in symmetry_planes:
-        axis = SYMMETRY_AXIS_FOR_PLANE[_PLANE_FOR_AXIS_NAME.get(plane, plane)]
+        axis = SYMMETRY_AXIS_FOR_PLANE[PLANE_FOR_SNAP_AXIS.get(plane, plane)]
         mask = np.abs(points[:, axis]) <= tolerance
         points[mask, axis] = 0.0
 
@@ -491,11 +535,13 @@ __all__ = [
     "MirrorMatches",
     "MirrorTarget",
     "PlaneSymmetryVerdict",
+    "PLANE_FOR_SNAP_AXIS",
     "RingMirrorTarget",
     "SPAN_TOLERANCE_REL",
     "SYMMETRY_AXIS_FOR_PLANE",
     "TOLERANCES",
     "ToleranceSpec",
+    "VertexMirrorTarget",
     "evaluate_enclosure_symmetry",
     "evaluate_mirror_symmetry",
     "evaluate_point_grid_symmetry",
