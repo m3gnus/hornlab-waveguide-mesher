@@ -1715,6 +1715,7 @@ def _cut_occ_geometry_to_positive_side(
     face_index: occ_face_index.FaceIndex | None = None,
     solid_cut: bool = True,
     owners: Mapping[int, str] | None = None,
+    report_route: bool = False,
 ) -> tuple[dict[int, list[int]], set[tuple[int, int]], dict[str, object]]:
     volumes = gmsh.model.getEntities(3)
     surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
@@ -1884,7 +1885,7 @@ def _cut_occ_geometry_to_positive_side(
         "residual_volumes": len(gmsh.model.getEntities(3)),
         "parentage_claims_disproved": disproved,
         "parentage_claims_undecided": len(undecided),
-        **({"route": route} if triangle_model is None and face_index is not None else {}),
+        **({"route": route} if report_route else {}),
     }
     if repaired:
         stats["coverage_repaired_parents"] = repaired
@@ -2077,7 +2078,7 @@ def auto_cut_occ_geometry(
         return _cut_accepted_planes(
             groups, accepted_planes, report, tolerance=tolerance, grid=grid,
             triangle_model=triangle_model, parent_samples=samples, face_index=face_index,
-            solid_cut=solid_cut,
+            solid_cut=solid_cut, fast_check=fast_check,
         )
     except RuntimeError as exc:
         # The caller learns which planes the refused cut was for, and what the
@@ -2098,9 +2099,12 @@ def _cut_accepted_planes(
     parent_samples: Mapping[int, np.ndarray] | None = None,
     face_index: occ_face_index.FaceIndex | None = None,
     solid_cut: bool = True,
+    fast_check: bool = False,
 ) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
     cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
+    if triangle_model is None and fast_check:
+        cut_options["report_route"] = True
     if face_index is not None:
         cut_options["face_index"] = face_index
         cut_options["solid_cut"] = solid_cut
