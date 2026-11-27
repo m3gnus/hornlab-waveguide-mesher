@@ -119,22 +119,20 @@ def _assert_counts_close(actual: dict[int, int], expected: dict[int, int], *, rt
         )
 
 
-#: ATH cases whose built model is open away from any cut plane, whole or
-#: reduced alike: 250728solana's enclosure leaves 112 free edges at z = 140
-#: (28 in the quarter), a seam of the enclosure build, not of the cut.
-_ATH_CASES_OPEN_AWAY_FROM_THE_CUT = frozenset({"250728solana-q"})
-
-
-def _assert_reduced_mesh_verifies(result, case: str | None = None) -> None:
+def _assert_reduced_mesh_verifies(result) -> None:
     """The shared reduced-mesh check accepts the mesh an ATH case builds.
 
     Closed unless bare (``native_check_open_edges``), wound inward for a
-    coupled infinite baffle, at the builder's own snap band (1e-6 mm). A case
-    known to be open away from its cut must still be cut soundly: open on,
-    and kept to the positive side of, every cut plane.
+    coupled infinite baffle, at the builder's own snap band (1e-6 mm). An
+    internal subdomain interface (tag INTERFACE, ``Mesh.SubdomainSlices``) is
+    left out, as the mesher's own closed-shell contract leaves it out
+    (``mesher._CONTRACT_EXEMPT_TAGS``). A full model has no cut to verify, so
+    it is held to what the check would ask of its closed pieces instead: no
+    free edge, and the whole wound with the expected sign.
     """
 
-    from hornlab_mesher.symmetry import FAILURE_LEAK, verify_reduced_mesh
+    from hornlab_mesher.symmetry import verify_reduced_mesh
+    from hornlab_mesher.tags import PhysicalGroup
 
     plane_for_native = {"yz": "x0", "xz": "y0"}
     planes = tuple(
@@ -143,22 +141,31 @@ def _assert_reduced_mesh_verifies(result, case: str | None = None) -> None:
         if part
     )
     mesh = meshio.read(result.mesh_path)
-    triangles, _tags = _triangles_and_physical_tags(mesh)
+    triangles, tags = _triangles_and_physical_tags(mesh)
+    points = _points_in_mm(mesh)
+    closed = bool(result.native_check_open_edges)
+    sign = -1 if result.mode == "infinite-baffle" else 1
+    interface = np.asarray(tags) == int(PhysicalGroup.INTERFACE)
     verdict = verify_reduced_mesh(
-        _points_in_mm(mesh),
+        points,
         triangles,
         planes,
-        closed=bool(result.native_check_open_edges),
-        expected_volume_sign=-1 if result.mode == "infinite-baffle" else 1,
+        closed=closed,
+        expected_volume_sign=sign,
         snap_tolerance_mm=1.0e-6,
+        exempt_triangles=interface,
     )
-    if case in _ATH_CASES_OPEN_AWAY_FROM_THE_CUT:
-        assert verdict.failure_codes == (FAILURE_LEAK,), verdict.reason
-        assert verdict.failed_planes == ()
-    else:
-        assert verdict.ok, verdict.reason
+    assert verdict.ok, verdict.reason
     if planes:
         assert verdict.detected_planes == planes
+        if closed:
+            assert verdict.orientation["checked"] is True
+            assert verdict.orientation["inverted_component_count"] == 0
+    elif closed:
+        assert verdict.free_edge_count == 0
+        kept = np.asarray(triangles)[~interface]
+        p0, p1, p2 = (points[kept[:, k]] for k in range(3))
+        assert sign * float(np.einsum("ij,ij->i", p0, np.cross(p1, p2)).sum()) > 0.0
 
 
 def _built_geometry_from_ath_case(
@@ -595,7 +602,7 @@ def test_ath_reference_configs_build_end_to_end(case: str, tmp_path: Path):
 
     assert result.n_vertices > 0
     assert result.n_triangles > 0
-    _assert_reduced_mesh_verifies(result, case)
+    _assert_reduced_mesh_verifies(result)
     assert result.physical_groups[1] == "SD1G0"
     assert result.physical_groups[2] == "SD1D1001"
     if case == "260330solana":

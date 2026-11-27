@@ -512,6 +512,11 @@ def evaluate_enclosure_symmetry(
 #: normals that the solver then trusts. A genuinely reduced closed shell sits
 #: many orders of magnitude above this: a half-box scores ~0.09.
 SIGNED_VOLUME_NOISE_REL = 1.0e-9
+#: A triangle lying in a cut plane with at most this area (mm^2) is a sliver
+#: that snapping a near-tangent facet onto the plane flattened, not a cap: the
+#: parametric builder drops such slivers (``mesher._remove_symmetry_plane_slivers``)
+#: and refuses anything larger, and the reduced-mesh check draws the same line.
+SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25
 
 _COORDINATE_PLANES = ("x0", "y0", "z0")
 
@@ -535,7 +540,10 @@ def _detect_symmetry_planes(
     *,
     tolerance: float,
     min_edges_per_plane: int,
+    side_points: np.ndarray | None = None,
 ) -> tuple[tuple[str, ...], dict[str, object]]:
+    """``side_points`` (default: every point) are the vertices whose sides of
+    each plane are counted."""
     on_plane = np.stack(
         [np.all(np.abs(points[free_edges, axis]) <= tolerance, axis=1) for axis in range(3)],
         axis=1,
@@ -574,8 +582,9 @@ def _detect_symmetry_planes(
 
     plane_vertex_side_counts: dict[str, dict[str, int]] = {}
     one_sided: dict[str, bool] = {}
+    counted = points if side_points is None else side_points
     for axis, plane in enumerate(_COORDINATE_PLANES):
-        coordinates = points[:, axis]
+        coordinates = counted[:, axis]
         negative = int(np.count_nonzero(coordinates < -tolerance))
         positive = int(np.count_nonzero(coordinates > tolerance))
         plane_vertex_side_counts[plane] = {
@@ -819,6 +828,7 @@ def verify_reduced_mesh(
     closed: bool,
     expected_volume_sign: Literal[1, -1],
     snap_tolerance_mm: float = SYMMETRY_SNAP_TOLERANCE_MM,
+    exempt_triangles: np.ndarray | None = None,
 ) -> ReducedMeshVerification:
     """Re-read a cut from the meshed boundary: the one reduced-mesh check.
 
@@ -837,6 +847,14 @@ def verify_reduced_mesh(
     so a leak is reported as the leak it is rather than as a volume read off
     an open surface. A full domain (no cut plane) is verified by construction;
     the planes the detector finds open are reported for the caller to judge.
+
+    ``exempt_triangles`` (a boolean mask over ``triangles``) are left out of
+    the check entirely: an internal subdomain interface (ATH
+    ``Mesh.SubdomainSlices``, tag ``INTERFACE``) has a free rim by
+    construction, and the closed-shell contract the mesher enforces exempts it
+    the same way (``mesher._CONTRACT_EXEMPT_TAGS``). A triangle in a cut plane
+    no larger than ``SYMMETRY_SLIVER_MAX_AREA_MM2`` is a snap sliver, not a
+    cap.
     """
 
     if expected_volume_sign not in (1, -1):
@@ -850,9 +868,18 @@ def verify_reduced_mesh(
         raise ValueError(f"unknown symmetry planes: {unknown}")
     points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
+    if exempt_triangles is not None:
+        exempt = np.asarray(exempt_triangles, dtype=bool).reshape(-1)
+        if exempt.shape != (len(triangles),):
+            raise ValueError("exempt_triangles must be one flag per triangle")
+        triangles = triangles[~exempt]
     free_edges, owners = _free_edges(triangles)
+    # Sides are read off the vertices the triangles use: a stray unreferenced
+    # vertex is not mesh on the wrong side.
+    used = np.unique(triangles) if len(triangles) else np.zeros(0, dtype=np.int64)
     detected, detection = _detect_symmetry_planes(
         points, triangles, free_edges, owners, tolerance=tolerance, min_edges_per_plane=3,
+        side_points=points[used],
     )
 
     def result(**fields: Any) -> ReducedMeshVerification:
@@ -887,7 +914,10 @@ def verify_reduced_mesh(
     # The positive side of every mirror plane is the one kept, so a domain on
     # the negative side is a mirror image of the model: accepted, it would
     # solve the wrong half.
-    wrong_side = tuple(plane for plane in planes if sides[plane]["positive"] == 0)
+    wrong_side = tuple(
+        plane for plane in planes
+        if sides[plane]["positive"] == 0 and sides[plane]["negative"] > 0
+    )
     # A triangle lying in a cut plane is a wall on the mirror: the mirrored
     # solve sees it coincide with its own image.
     cap_faces: dict[str, int] = {}
@@ -898,7 +928,9 @@ def verify_reduced_mesh(
         )
         for plane in planes:
             axis = SYMMETRY_AXIS_FOR_PLANE[plane]
-            in_plane = np.all(np.abs(corners[:, :, axis]) <= tolerance, axis=1) & (areas > 0.0)
+            in_plane = np.all(np.abs(corners[:, :, axis]) <= tolerance, axis=1) & (
+                0.5 * areas > SYMMETRY_SLIVER_MAX_AREA_MM2
+            )
             count = int(np.count_nonzero(in_plane))
             if count:
                 cap_faces[plane] = count
@@ -1020,6 +1052,7 @@ __all__ = [
     "GLOBAL_FAILURES",
     "ReducedMeshVerification",
     "SIGNED_VOLUME_NOISE_REL",
+    "SYMMETRY_SLIVER_MAX_AREA_MM2",
     "SYMMETRY_SNAP_TOLERANCE_MM",
     "DEFAULT_SYMMETRY_SNAP_BAND_MM",
     "MirrorMatches",

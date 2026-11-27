@@ -46,6 +46,7 @@ from .mesh_repair_ops import (
     _weld_near_duplicate_vertices as _weld_repair_vertices,
 )
 from .native_boundary import NATIVE_MODEL_ATTRIBUTES
+from .symmetry import SYMMETRY_SLIVER_MAX_AREA_MM2
 from .native_env import preserve_native_windows_path
 from .normals import (
     MeshOrientationError,
@@ -972,7 +973,8 @@ def _compact_unused_vertices(
     return _compact_repair_vertices(points, triangles, preserve_empty=False)
 
 
-_SYMMETRY_SLIVER_MAX_AREA_MM2 = 0.25
+# One sliver/cap line for the builder and the reduced-mesh check.
+_SYMMETRY_SLIVER_MAX_AREA_MM2 = SYMMETRY_SLIVER_MAX_AREA_MM2
 
 # Interface surfaces (ATH ``Mesh.SubdomainSlices``) are internal partitions
 # authored on their own points, so their base rim is free by construction. They

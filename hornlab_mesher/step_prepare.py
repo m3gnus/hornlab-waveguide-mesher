@@ -6,9 +6,10 @@ about OCC surface tags, mirrored geometry, and exact boolean parentage.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 import math
+from typing import Any
 
 import numpy as np
 
@@ -154,12 +155,15 @@ def _param_inside(surface: int, u: float, v: float) -> bool:
 
 
 def sample_occ_surface_points(
-    surface: int, *, grid: int, grid_v: int | None = None
+    surface: int, *, grid: int, grid_v: int | None = None, retry_finer: bool = True
 ) -> np.ndarray:
     """Point-sample the actual trimmed OCC face, not its untrimmed extension.
 
     ``grid`` samples along the face's first parameter direction and
-    ``grid_v`` (default: the same) along its second.
+    ``grid_v`` (default: the same) along its second. When no grid point falls
+    inside the trim, the grid is retried four times finer (``retry_finer``),
+    then the face's boundary is sampled; a caller with a sample budget turns
+    the finer retry off, so it never asks for more than ``grid * grid_v``.
     """
     grid_v = grid if grid_v is None else grid_v
     if grid < 2 or grid_v < 2:
@@ -171,7 +175,7 @@ def sample_occ_surface_points(
     except Exception:
         umin = umax = vmin = vmax = 0.0
     if umax > umin and vmax > vmin:
-        for factor in (1, 4):
+        for factor in ((1, 4) if retry_finer else (1,)):
             n = max(2, grid * factor)
             m = max(2, grid_v * factor)
             kept: list[float] = []
@@ -184,16 +188,21 @@ def sample_occ_surface_points(
             if kept:
                 coords = gmsh.model.getValue(2, surface, kept)
                 return np.asarray(coords, dtype=float).reshape(-1, 3)
+        if not retry_finer:
+            return np.zeros((0, 3), dtype=float)
     return _sample_occ_surface_boundary_points(surface, grid=grid)
 
 
 def _parameter_lengths(surface: int) -> tuple[float, float]:
-    """The face's length along each parameter direction, through its middle.
+    """The face's longest length along each parameter direction.
 
-    Measured on the untrimmed parametrisation (a trimmed face is never longer
-    than this), as a polyline through nine points per direction: a sample
-    spacing needs the length to within a few per cent, not exactly. A face
-    OCC cannot evaluate answers zero, and keeps the floor grid.
+    Each direction is measured along three parameter lines -- both edges of
+    the other parameter and its middle -- and the longest is kept, so a flared
+    face (a horn wall whose rings grow toward the mouth, a cone) is sized by
+    its wide end, not its middle. Measured on the untrimmed parametrisation (a
+    trimmed face is never longer than this), as polylines through nine points:
+    a sample spacing needs the length to within a few per cent, not exactly. A
+    face OCC cannot evaluate answers zero, and keeps the floor grid.
     """
 
     try:
@@ -203,14 +212,23 @@ def _parameter_lengths(surface: int) -> tuple[float, float]:
         if not (umax > umin and vmax > vmin):
             return 0.0, 0.0
         steps = np.linspace(0.0, 1.0, 9)
-        umid, vmid = 0.5 * (umin + umax), 0.5 * (vmin + vmax)
-        along_u = [value for t in steps for value in (umin + t * (umax - umin), vmid)]
-        along_v = [value for t in steps for value in (umid, vmin + t * (vmax - vmin))]
         lengths = []
-        for params in (along_u, along_v):
-            points = np.asarray(gmsh.model.getValue(2, surface, params), dtype=float)
-            points = points.reshape(-1, 3)
-            lengths.append(float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()))
+        for along_u in (True, False):
+            longest = 0.0
+            for at in (0.0, 0.5, 1.0):
+                params = [
+                    value
+                    for t in steps
+                    for value in (
+                        (umin + t * (umax - umin), vmin + at * (vmax - vmin))
+                        if along_u
+                        else (umin + at * (umax - umin), vmin + t * (vmax - vmin))
+                    )
+                ]
+                points = np.asarray(gmsh.model.getValue(2, surface, params), dtype=float)
+                points = points.reshape(-1, 3)
+                longest = max(longest, float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()))
+            lengths.append(longest)
         return lengths[0], lengths[1]
     except Exception:
         return 0.0, 0.0
@@ -221,37 +239,42 @@ def _mirror_sample_grids(
     *,
     grid: int,
     spacing: float,
+    max_points: int,
     max_face_grid: int = AUTO_CUT_MAX_FACE_GRID,
-    max_points: int = AUTO_CUT_MAX_SAMPLE_POINTS,
 ) -> tuple[dict[int, tuple[int, int]], float]:
-    """Per face, the (u, v) sample counts that keep samples ``spacing`` apart.
+    """Per face, the extra (u, v) sample counts that keep samples ``spacing`` apart.
 
-    Never fewer than ``grid`` per direction, never more than ``max_face_grid``.
-    When the whole model would take more than ``max_points`` samples the
-    spacing widens evenly until it fits (or every face is at its floor).
-    Returns the counts and the spacing actually used.
+    A face that the floor grid already samples finely enough gets none
+    (``(0, 0)``); any other gets at least ``grid`` per direction and at most
+    ``max_face_grid``. The extra samples of the whole model stay within
+    ``max_points``: past it the spacing widens evenly, and when even that
+    cannot fit, no face is densified. Returns the counts and the spacing used.
     """
 
+    if not spacing > 0.0:
+        raise ValueError("the mirror sample spacing must be positive")
+    if max_points <= 0:
+        return {surface: (0, 0) for surface in surfaces}, float("inf")
     lengths = {surface: _parameter_lengths(surface) for surface in surfaces}
 
     def counts(step: float) -> dict[int, tuple[int, int]]:
-        return {
-            surface: tuple(  # type: ignore[misc]
-                min(max_face_grid, max(grid, math.ceil(length / step)))
-                for length in pair
+        result: dict[int, tuple[int, int]] = {}
+        for surface, pair in lengths.items():
+            wanted = tuple(
+                min(max_face_grid, max(grid, math.ceil(length / step))) for length in pair
             )
-            for surface, pair in lengths.items()
-        }
+            result[surface] = wanted if wanted != (grid, grid) else (0, 0)  # type: ignore[assignment]
+        return result
 
     used = float(spacing)
     grids = counts(used)
-    for _ in range(8):
+    for _ in range(64):
         total = sum(nu * nv for nu, nv in grids.values())
         if total <= max_points:
-            break
+            return grids, used
         used *= math.sqrt(total / max_points) * 1.05
         grids = counts(used)
-    return grids, used
+    return {surface: (0, 0) for surface in lengths}, float("inf")
 
 
 def _sample_occ_surface_boundary_points(surface: int, *, grid: int) -> np.ndarray:
@@ -1066,6 +1089,7 @@ def auto_cut_occ_geometry(
     triangle_surface_mesh: bool = False,
     sample_spacing_rel: float | None = DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL,
     max_sample_points: int = AUTO_CUT_MAX_SAMPLE_POINTS,
+    known_verdicts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
 
@@ -1082,15 +1106,30 @@ def auto_cut_occ_geometry(
     input triangle. Its straight, nonintersecting facets are checked before
     the cut. The general CAD path is used unless the caller opts in.
 
-    Every face is mirror-tested on at least a ``grid`` x ``grid`` sample set,
-    and a large face on samples at most ``sample_spacing_rel`` of the model's
-    diagonal apart (``DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL``; capped at
-    ``max_sample_points`` for the model), so a small one-sided feature cannot
-    hide between samples. The tolerance is taken from the floor grid's
-    samples, as before the denser sampling. ``sample_spacing_rel=None``, and a
-    triangle-surface model (whose replay must stay as it was), use the floor
-    grid only.
+    Every face is mirror-tested on a ``grid`` x ``grid`` sample set (the
+    floor). A plane the floor accepts is then tested again with extra samples
+    added on every face larger than the spacing, at most
+    ``sample_spacing_rel`` of the model's diagonal apart
+    (``DEFAULT_AUTO_CUT_SAMPLE_SPACING_REL``), the floor samples kept: a small
+    one-sided feature cannot hide between samples, and no plane the floor
+    rejects is ever accepted. The extra samples are capped at
+    ``max_sample_points`` less the floor's for the whole model. The tolerance
+    is taken from the floor samples. A plane the floor rejects costs no more
+    than before, and its report is the floor's. ``sample_spacing_rel=None``,
+    and a triangle-surface model (whose replay must stay as it was), use the
+    floor only.
+
+    ``known_verdicts`` are verdicts (``to_dict`` form) the caller already has
+    for this very geometry -- the same model, placed and healed the same way
+    -- keyed by plane; those planes are not tested again.
+
+    A cut that fails raises ``RuntimeError`` with ``accepted_planes`` (the
+    planes the mirror test accepted and the cut was for) and ``report``.
     """
+    if sample_spacing_rel is not None and not sample_spacing_rel > 0.0:
+        raise ValueError("sample_spacing_rel must be positive, or None for the floor grid")
+    if max_sample_points <= 0:
+        raise ValueError("max_sample_points must be positive")
     groups = tuple(groups)
     if not groups:
         raise ValueError("at least one OCC surface group is required")
@@ -1147,33 +1186,59 @@ def auto_cut_occ_geometry(
     diagonal = float(np.linalg.norm(np.asarray(sample_bbox[3:]) - sample_bbox[:3]))
     tolerance = replace(TOLERANCES["fitted"], relative=tolerance_rel).resolve(diagonal)
     span_tolerance = AUTO_CUT_SPAN_REL * diagonal
-    # Reported only when the samples were densified: a floor-grid report (a
-    # triangle-surface replay's included) stays byte-for-byte what it was.
-    sampling: dict[str, object] = {}
-    if sample_spacing_rel is not None and triangle_model is None and diagonal > 0.0:
-        grids, spacing = _mirror_sample_grids(
-            samples, grid=grid, spacing=float(sample_spacing_rel) * diagonal,
-            max_points=max_sample_points,
-        )
-        denser = {surface: pair for surface, pair in grids.items() if pair != (grid, grid)}
-        for surface, (grid_u, grid_v) in denser.items():
-            points = sample_occ_surface_points(surface, grid=grid_u, grid_v=grid_v)
-            if len(points):
-                samples[surface] = points
-        stacked = np.concatenate(list(samples.values()))
-        sampling = {
-            "sample_spacing_rel": float(sample_spacing_rel),
-            "sample_spacing_step_units": float(spacing),
-            "sample_point_cap": int(max_sample_points),
-            "densified_surfaces": len(denser),
-        }
+    known = {str(plane): dict(verdict) for plane, verdict in (known_verdicts or {}).items()}
     verdict_options = dict(samples=samples, roles=roles, bboxes=bboxes,
                            tolerance=tolerance, span_tolerance=span_tolerance)
     if role_boundaries is not None:
         verdict_options["_role_boundaries"] = role_boundaries
-    verdicts = [evaluate_occ_plane_symmetry(plane, **verdict_options)
-                for plane in candidate_planes]
-    accepted_planes = tuple(verdict.plane for verdict in verdicts if verdict.accepted)
+    tested = {
+        plane: evaluate_occ_plane_symmetry(plane, **verdict_options)
+        for plane in candidate_planes
+        if plane not in known
+    }
+    # Reported only when samples were added: a report where the floor decided
+    # every plane (a triangle-surface replay's included) is what it was.
+    sampling: dict[str, object] = {}
+    floor_accepted = [plane for plane, verdict in tested.items() if verdict.accepted]
+    floor_points = int(len(stacked))
+    if (
+        sample_spacing_rel is not None and triangle_model is None and diagonal > 0.0
+        and floor_accepted
+    ):
+        grids, spacing = _mirror_sample_grids(
+            samples, grid=grid, spacing=float(sample_spacing_rel) * diagonal,
+            max_points=max_sample_points - floor_points,
+        )
+        dense = dict(samples)
+        added = 0
+        for surface, (grid_u, grid_v) in grids.items():
+            if not grid_u:
+                continue
+            extra = sample_occ_surface_points(
+                surface, grid=grid_u, grid_v=grid_v, retry_finer=False
+            )
+            if len(extra):
+                dense[surface] = np.concatenate((samples[surface], extra))
+                added += 1
+        if added:
+            dense_options = {**verdict_options, "samples": dense}
+            for plane in floor_accepted:
+                tested[plane] = evaluate_occ_plane_symmetry(plane, **dense_options)
+            stacked = np.concatenate(list(dense.values()))
+        sampling = {
+            "sample_spacing_rel": float(sample_spacing_rel),
+            "sample_spacing_step_units": float(spacing),
+            "sample_point_cap": int(max_sample_points),
+            "densified_surfaces": added,
+            "densified_planes": list(floor_accepted),
+        }
+    plane_reports = {
+        plane: known[plane] if plane in known else tested[plane].to_dict()
+        for plane in candidate_planes
+    }
+    accepted_planes = tuple(
+        plane for plane in candidate_planes if plane_reports[plane].get("accepted")
+    )
     report: dict[str, object] = {
         "mode": "auto-cut",
         "candidate_planes": list(candidate_planes),
@@ -1182,16 +1247,39 @@ def auto_cut_occ_geometry(
         "model_diagonal_step_units": diagonal,
         "sample_grid": int(grid),
         **sampling,
+        **({"reused_verdict_planes": [p for p in candidate_planes if p in known]} if known else {}),
         "sampled_surfaces": len(samples),
         "sample_points": int(len(stacked)),
-        "planes": {verdict.plane: verdict.to_dict() for verdict in verdicts},
+        "planes": plane_reports,
         "cut_planes": list(accepted_planes),
     }
     if not accepted_planes:
         report["cut"] = None
         return OccAutoCutResult((), groups, {}, report)
+    try:
+        return _cut_accepted_planes(
+            groups, accepted_planes, report, tolerance=tolerance, grid=grid,
+            triangle_model=triangle_model,
+        )
+    except RuntimeError as exc:
+        # The caller learns which planes the refused cut was for, and what the
+        # mirror test found, without testing again.
+        exc.accepted_planes = accepted_planes  # type: ignore[attr-defined]
+        exc.report = report  # type: ignore[attr-defined]
+        raise
+
+
+def _cut_accepted_planes(
+    groups: tuple[OccSurfaceGroup, ...],
+    accepted_planes: tuple[str, ...],
+    report: dict[str, object],
+    *,
+    tolerance: float,
+    grid: int,
+    triangle_model: Any,
+) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
-    cut_options = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
+    cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
     if triangle_model is not None:
         cut_options["triangle_model"] = triangle_model
     parentage, undecided, cut_stats = _cut_occ_geometry_to_positive_side(

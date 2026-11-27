@@ -386,8 +386,11 @@ def test_auto_cut_refuses_a_surviving_surface_that_no_parent_claims(monkeypatch)
         groups = [
             OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("rigid"))
         ]
-        with pytest.raises(RuntimeError, match="with no parent"):
+        with pytest.raises(RuntimeError, match="with no parent") as refused:
             auto_cut_occ_geometry(groups, grid=5, planes=("x0",))
+        # The caller learns which planes the refused cut was for, and why.
+        assert refused.value.accepted_planes == ("x0",)
+        assert refused.value.report["planes"]["x0"]["accepted"] is True
 
 
 def _cut_groups(groups, planes=("x0",), grid=5):
@@ -997,10 +1000,104 @@ def test_the_mirror_sample_count_is_capped_for_the_whole_model():
         )
         assert sum(nu * nv for nu, nv in grids.values()) <= 2_000
         assert spacing > 1.0
-        assert all(min(pair) >= 7 for pair in grids.values())
+        dense = {tag: pair for tag, pair in grids.items() if pair != (0, 0)}
+        assert dense and all(min(pair) >= 7 for pair in dense.values())
         # Each direction is sized by its own length: the 400 x 18 sides get
         # more samples along their long edge.
         lengths = {tag: step_prepare._parameter_lengths(tag) for tag in surfaces}
-        for tag, (nu, nv) in grids.items():
+        for tag, (nu, nv) in dense.items():
             long_u = lengths[tag][0] > lengths[tag][1]
             assert (nu >= nv) if long_u else (nv >= nu)
+        # No budget at all: no face is densified (the floor is never cut back).
+        none, _ = step_prepare._mirror_sample_grids(surfaces, grid=7, spacing=1.0, max_points=0)
+        assert set(none.values()) == {(0, 0)}
+        with pytest.raises(ValueError, match="positive"):
+            step_prepare._mirror_sample_grids(surfaces, grid=7, spacing=0.0, max_points=10)
+
+
+def test_a_flared_face_is_sized_by_its_wide_end():
+    with _gmsh_session():
+        cone = gmsh.model.occ.addCone(0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 10.0, 200.0)
+        gmsh.model.occ.synchronize()
+        lateral = max(
+            (tag for _dim, tag in gmsh.model.getEntities(2)),
+            key=lambda tag: gmsh.model.occ.getMass(2, tag),
+        )
+        lengths = step_prepare._parameter_lengths(lateral)
+        # The mouth circumference (2 pi 200 mm, less the 8-chord polyline's
+        # 2.5 %), not the middle's (2 pi 105 mm).
+        assert max(lengths) == pytest.approx(2.0 * np.pi * 200.0, rel=0.04)
+        del cone
+
+
+def test_a_dense_sample_request_never_retries_finer():
+    with _gmsh_session():
+        surfaces = _box_surfaces(-1.0, -1.0, -1.0, 2.0, 2.0, 2.0)
+        calls = []
+        real = step_prepare._param_inside
+
+        def outside(surface, u, v):
+            calls.append((u, v))
+            return False
+
+        step_prepare._param_inside = outside
+        try:
+            points = step_prepare.sample_occ_surface_points(
+                surfaces[0], grid=10, grid_v=12, retry_finer=False
+            )
+        finally:
+            step_prepare._param_inside = real
+        assert len(points) == 0 and len(calls) == 10 * 12
+
+
+def _hole_on_a_floor_sample(radius_mm):
+    """The 0.4 mm plate with a small one-sided hole centred on a floor sample."""
+
+    x = -200.0 + 4.5 * 400.0 / 7.0
+    y = -150.0 + 5.5 * 300.0 / 7.0
+    plate = gmsh.model.occ.addBox(-200.0, -150.0, 0.0, 400.0, 300.0, 0.4)
+    hole = gmsh.model.occ.addCylinder(x, y, -1.0, 0.0, 0.0, 2.4, radius_mm)
+    gmsh.model.occ.cut([(3, plate)], [(3, hole)])
+    gmsh.model.occ.synchronize()
+    surfaces = [tag for _dim, tag in gmsh.model.getEntities(2)]
+    return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("opaque"))]
+
+
+@pytest.mark.parametrize("radius_mm", [1.0, 2.0])
+def test_dense_samples_add_to_the_floor_so_a_floor_rejection_stands(radius_mm):
+    """A hole the floor grid catches stays caught: dense samples only add."""
+
+    with _gmsh_session():
+        floor = auto_cut_occ_geometry(
+            _hole_on_a_floor_sample(radius_mm), planes=("x0", "y0"), sample_spacing_rel=None
+        )
+    with _gmsh_session():
+        dense = auto_cut_occ_geometry(_hole_on_a_floor_sample(radius_mm), planes=("x0", "y0"))
+    assert floor.planes == ()
+    assert dense.planes == ()
+    # The floor rejected every plane, so nothing was densified: the report is
+    # the floor's, number for number.
+    assert dense.report == floor.report
+
+
+def test_known_verdicts_are_reused_not_tested_again(monkeypatch):
+    with _gmsh_session():
+        groups = _thin_plate_with_one_sided_hole()
+        first = auto_cut_occ_geometry(groups, planes=("x0", "y0"))
+    with _gmsh_session():
+        groups = _thin_plate_with_one_sided_hole()
+        tested = []
+        real = step_prepare.evaluate_occ_plane_symmetry
+
+        def counting(plane, **kwargs):
+            tested.append(plane)
+            return real(plane, **kwargs)
+
+        monkeypatch.setattr(step_prepare, "evaluate_occ_plane_symmetry", counting)
+        again = auto_cut_occ_geometry(
+            groups, planes=("x0", "y0"), known_verdicts=first.report["planes"]
+        )
+    assert tested == []
+    assert again.report["planes"] == first.report["planes"]
+    assert again.report["reused_verdict_planes"] == ["x0", "y0"]
+    assert again.planes == first.planes == ()

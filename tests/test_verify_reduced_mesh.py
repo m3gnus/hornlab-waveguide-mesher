@@ -94,7 +94,7 @@ def test_an_open_quarter_is_verified():
 
 
 def test_a_cut_plane_without_its_open_rim_implicates_that_plane():
-    points, triangles, _rows = _box(omit=("x0",))
+    points, triangles, _rows = _box(omit=("x0",), scale=10.0)
     verdict = _verify(points, triangles)
     assert not verdict.ok
     # A closed plane is both: no rim, and the cap lying in it.
@@ -106,7 +106,7 @@ def test_a_cut_plane_without_its_open_rim_implicates_that_plane():
 
 
 def test_a_face_lying_in_an_open_cut_plane_caps_it():
-    points, triangles, rows = _box(omit=("y0",))
+    points, triangles, rows = _box(omit=("y0",), scale=10.0)
     # The x0 face is open except for one triangle in its middle: the rim is
     # there, and so is a wall on the mirror.
     keep = rows["x0"][10]
@@ -254,3 +254,48 @@ def test_the_record_keeps_the_keys_its_readers_use():
         "expected_volume_sign", "missing_rim_planes", "cap_face_counts",
     } == set(record)
     assert record["detection"]["plane_vertex_side_counts"]["x0"]["negative"] == 0
+
+
+def test_a_snap_sliver_in_a_cut_plane_is_not_a_cap():
+    """At most SYMMETRY_SLIVER_MAX_AREA_MM2: a flattened seam facet, as the builder drops."""
+
+    from hornlab_mesher.symmetry import SYMMETRY_SLIVER_MAX_AREA_MM2
+
+    points, triangles, rows = _box(omit=("y0",))  # 1 mm box: 1/32 mm^2 triangles
+    keep = rows["x0"][10]
+    triangles = np.delete(triangles, [row for row in rows["x0"] if row != keep], axis=0)
+    verdict = _verify(points, triangles)
+    assert FAILURE_CAPPED not in verdict.failure_codes
+    assert dict(verdict.cap_face_counts) == {}
+    assert SYMMETRY_SLIVER_MAX_AREA_MM2 == 0.25
+
+
+def test_exempt_triangles_are_left_out_like_the_closed_shell_contract():
+    """An internal interface skirt has a free rim by construction (tag INTERFACE)."""
+
+    points, triangles = _quarter()
+    skirt_points = np.asarray([(0.2, 0.2, 1.5), (0.8, 0.2, 1.5), (0.2, 0.8, 1.5)])
+    all_points = np.vstack([points, skirt_points])
+    skirt = np.asarray([[len(points), len(points) + 1, len(points) + 2]])
+    all_triangles = np.vstack([triangles, skirt])
+    assert _verify(all_points, all_triangles).failure_codes == (FAILURE_LEAK,)
+    exempt = np.zeros(len(all_triangles), dtype=bool)
+    exempt[-1] = True
+    verdict = _verify(all_points, all_triangles, exempt_triangles=exempt)
+    assert verdict.ok
+    assert verdict.orientation["component_count"] == 1
+    with pytest.raises(ValueError, match="one flag per triangle"):
+        _verify(all_points, all_triangles, exempt_triangles=exempt[:-1])
+
+
+def test_an_unreferenced_vertex_is_not_mesh_on_the_wrong_side():
+    points, triangles = _quarter()
+    stray = np.vstack([points, [(-5.0, -5.0, 1.5)]])
+    assert _verify(stray, triangles).ok
+
+
+def test_a_mesh_lying_in_the_plane_is_not_called_the_negative_side():
+    flat = np.asarray([(0.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)])
+    verdict = _verify(flat, np.asarray([[0, 1, 2]]), planes=("x0",), closed=False)
+    assert FAILURE_WRONG_SIDE not in verdict.failure_codes
+    assert verdict.failed_planes == ("x0",)
