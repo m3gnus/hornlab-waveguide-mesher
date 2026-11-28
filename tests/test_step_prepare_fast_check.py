@@ -1042,3 +1042,20 @@ def test_an_open_shell_cut_on_its_crossing_faces_keeps_the_same_faces(monkeypatc
     assert results[True][0] == ("x0",)
     assert results[True][4] == ("faces" if force_retry else "faces (crossing faces)")
     assert results[False][4] == "faces"
+
+
+def test_a_loose_area_check_never_verifies_trim_polygons(monkeypatch):
+    """A coarse curved tessellation can make the area check's slack larger
+    than the face: such a check proves nothing, so the polygons must not be
+    trusted (they would let trim queries skip OCC). An inflated safety factor
+    stands in for an outlier cell's chord error."""
+    monkeypatch.setattr(occ_face_index, "DELTA_SAFETY", 1.0e6)
+    with _session():
+        gmsh.model.occ.addCylinder(0, 0, 0, 0, 0, 0.5, 5.0)
+        gmsh.model.occ.synchronize()
+        wall = next(t for _d, t in gmsh.model.getEntities(2)
+                    if gmsh.model.getType(2, t) == "Cylinder")
+        _index, trims = occ_face_index.build_face_index(
+            [wall], diagonal=10.0, tolerance=2.0, nudge_rel=1e-3, trims={})
+    trim = trims[wall]
+    assert not (trim.ok and trim.verified)

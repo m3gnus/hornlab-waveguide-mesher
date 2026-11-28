@@ -585,8 +585,14 @@ def build_face_mesh(
         # The trim polygons must agree with OCC's own area for the face: the
         # inside cells cannot cover more, nor all kept ones less.
         assert area is not None
-        slack = 1.0e-3 * area + 4.0 * float(np.max(delta)) * (length_u + length_v)
-        if (float(np.sum(cell_area[cell_in])) > area + slack
+        # The slack follows the chord error of the cells that can hold the
+        # face, and a check whose slack is not small against the area proves
+        # nothing: such polygons are not used (no inside cells; OCC answers
+        # every trim query).
+        kept_delta = delta[cell_keep] if np.any(cell_keep) else delta
+        slack = 1.0e-3 * area + 4.0 * float(np.max(kept_delta)) * (length_u + length_v)
+        if (slack >= 0.25 * area
+                or float(np.sum(cell_area[cell_in])) > area + slack
                 or float(np.sum(cell_area[cell_keep])) < area - slack):
             trim.ok = False
         else:
