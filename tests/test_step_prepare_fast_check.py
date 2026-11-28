@@ -524,7 +524,7 @@ def test_a_caller_can_keep_the_face_by_face_cut():
 
 
 def _ridge_sheet(height):
-    """Opus's probe: a flat open sheet whose right part is a dense-knot cubic
+    """A review probe: a flat open sheet whose right part is a dense-knot cubic
     B-spline carrying one narrow ridge (no edges) that fits between the
     chord probes of a coarse cell, on the +x side only."""
     occ = gmsh.model.occ
@@ -567,7 +567,7 @@ def test_a_narrow_spline_ridge_between_chord_probes_is_not_accepted(height):
 
 
 def test_a_crease_inside_one_face_mirrors_a_sharp_edge():
-    """Opus's probe: one side kinked by two planes meeting at an edge, the
+    """A review probe: one side kinked by two planes meeting at an edge, the
     other by a C0 knot inside one spline face -- the same shape."""
     def build():
         occ = gmsh.model.occ
@@ -599,7 +599,7 @@ def test_a_crease_inside_one_face_mirrors_a_sharp_edge():
 
 
 def test_a_small_hole_inside_one_cell_never_makes_that_cell_inside():
-    """Neon P1-2: a trim curve wholly inside a cell, with a polygon margin
+    """A trim curve wholly inside a cell, with a polygon margin
     wider than half a cell, must still mark the cell."""
     outer = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]])
     hole = np.array([[5.48, 5.48], [5.52, 5.48], [5.52, 5.52], [5.48, 5.52]])
@@ -623,7 +623,7 @@ def test_a_face_without_an_area_from_occ_has_no_inside_cells():
 
 @pytest.mark.parametrize("model", ["holed-plate", "bored-box", "cylinder", "filleted-box"])
 def test_the_shape_check_never_trusts_a_triangle_normal(model, monkeypatch):
-    """Neon P1-4: the small-feature decision comes from OCC normals (a plane
+    """The small-feature decision comes from OCC normals (a plane
     triangle's normal only lets a proven plane hit skip OCC); with every
     triangle's normal turned sideways no verdict changes."""
     def reference():
@@ -651,7 +651,7 @@ def test_the_shape_check_never_trusts_a_triangle_normal(model, monkeypatch):
 
 
 def test_a_certified_miss_stays_a_miss_when_its_distance_is_reported(monkeypatch):
-    """Opus P3-4: re-measuring a reported miss exactly (where the exact
+    """Re-measuring a reported miss exactly (where the exact
     scan's clamp could call it a hit) only sets its distance."""
     def build():
         _build("offset-box")
@@ -673,7 +673,7 @@ def test_a_certified_miss_stays_a_miss_when_its_distance_is_reported(monkeypatch
 
 
 def test_a_strip_narrower_than_the_tolerance_is_cut_as_a_solid_like_face_by_face():
-    """Opus P2-1 / Neon P1-5: a source strip narrower than the tolerance on a
+    """A source strip narrower than the tolerance on a
     box top: the solid cut gives the face cut's groups (no refusal)."""
     def build(width):
         occ = gmsh.model.occ
@@ -701,7 +701,7 @@ def test_a_strip_narrower_than_the_tolerance_is_cut_as_a_solid_like_face_by_face
 
 
 def test_a_thin_walled_solid_keeps_no_cap_on_the_plane():
-    """Neon P1-5: a plate thinner than the tolerance -- its cap lies within
+    """A plate thinner than the tolerance -- its cap lies within
     tolerance of both walls -- is still left open on the plane."""
     def build():
         gmsh.model.occ.addBox(-250.0, -150.0, 0.0, 500.0, 300.0, 0.2)
@@ -719,7 +719,7 @@ def test_a_thin_walled_solid_keeps_no_cap_on_the_plane():
 
 
 def test_the_tessellation_never_proves_a_hit_on_a_curved_face():
-    """Opus P1-1 at the primitive: over the hidden ridge the tessellation
+    """At the primitive: over the hidden ridge the tessellation
     reads a gap of ~0 while OCC measures ~3 tolerances; no curved triangle
     may certify a hit (only a candidate for OCC)."""
     with _session():
@@ -774,7 +774,7 @@ def test_the_face_cut_retry_judges_its_own_children(monkeypatch):
 
 
 def _bent_sheet(radius, hole=True):
-    """Opus bendhole.py: an open sheet with a quarter-round bend, and a
+    """The bend-hole review probe: an open sheet with a quarter-round bend, and a
     one-sided 1.2 mm hole drilled through the bend at x = +100."""
     occ = gmsh.model.occ
     p0 = occ.addPoint(-300, -400, 0)
@@ -800,7 +800,7 @@ def _bent_sheet(radius, hole=True):
 def test_a_one_sided_hole_on_a_tight_bend_is_rejected(radius):
     """A smooth bend tighter than ~7.6 tolerances turns by more than 30
     degrees over the crease probe, but it is no crease: the hole's edges
-    mirror onto no edge (Opus P2-R2, Neon P1-1). The bare sheet passes."""
+    mirror onto no edge. The bare sheet passes."""
     with _session():
         report = auto_cut_occ_geometry(_bent_sheet(radius), planes=("x0",)).report
     assert report["planes"]["x0"]["accepted"] is False
@@ -811,7 +811,7 @@ def test_a_one_sided_hole_on_a_tight_bend_is_rejected(radius):
 
 
 def test_a_wrong_facing_hit_is_not_excused_by_another_faces_carrier():
-    """Neon P1-2: a low one-sided boss's walls mirror onto the plate,
+    """A low one-sided boss's walls mirror onto the plate,
     facing the wrong way. A rib wall of the same role on the same carrier
     plane, 0.1 mm beyond the mirrored samples, must not excuse them: its
     trimmed face is not within tolerance."""
@@ -834,7 +834,7 @@ def test_a_wrong_facing_hit_is_not_excused_by_another_faces_carrier():
 
 
 def test_the_solid_cut_refuses_faces_in_a_cut_plane_or_shared_by_two_solids(monkeypatch):
-    """Neon P1-3: a face in a cut plane must keep the face cut even where
+    """A face in a cut plane must keep the face cut even where
     OCC pads its box beyond the tolerance, and so must a face two solids
     share (copying the solids would split it in two)."""
     tolerance = 0.01
@@ -867,7 +867,7 @@ def test_the_solid_cut_refuses_faces_in_a_cut_plane_or_shared_by_two_solids(monk
 
 
 def test_a_plane_hit_needs_the_perpendicular_foot_itself():
-    """Neon P2-1: a point 0.25 above a plane triangle whose foot is 1e-4
+    """A point 0.25 above a plane triangle whose foot is 1e-4
     outside it is no proven hit; comparing distances let the lateral offset
     through as its square (2e-8)."""
     triangle = np.array([[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]]])
@@ -882,7 +882,7 @@ def test_a_plane_hit_needs_the_perpendicular_foot_itself():
 
 
 def test_a_non_finite_mirror_sample_is_never_a_certified_miss():
-    """Neon P2-2: a sample the index cannot place is left to the exact scan."""
+    """A sample the index cannot place is left to the exact scan."""
     with _session():
         gmsh.model.occ.addBox(-10, -5, 0, 20, 10, 5)
         gmsh.model.occ.synchronize()
@@ -901,7 +901,7 @@ def test_a_non_finite_mirror_sample_is_never_a_certified_miss():
 
 
 def test_trim_cells_marks_wide_margins_in_one_pass():
-    """Neon P2-3: a p-curve margin as wide as the face on a 1024 x 1024 grid
+    """A p-curve margin as wide as the face on a 1024 x 1024 grid
     marks every cell it reaches without one pass per cell of reach."""
     import time
     from types import SimpleNamespace
