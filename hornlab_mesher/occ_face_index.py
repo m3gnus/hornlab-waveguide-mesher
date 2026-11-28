@@ -9,8 +9,9 @@ says so only when it can prove the answer:
 * Each face is tessellated forward, from its own parameter grid
   (``getValue`` is a fraction of a microsecond per point), refined per
   direction where its chords sag, and the chord error of every cell is
-  *measured*: the surface is evaluated again at the cell's centre, its two
-  triangles' centroids and two edge midpoints, and the largest gap from the
+  *measured* (not proven): the surface is evaluated again at the cell's
+  centre, its two triangles' centroids and two edge midpoints (and, on a
+  non-analytic face, a 3 x 3 lattice per cell); the largest gap from the
   planar triangles, doubled and raised to its neighbours', is that cell's
   ``delta``.
 * The trim comes from the face's own boundary curves, reparametrized onto the
@@ -18,21 +19,19 @@ says so only when it can prove the answer:
   A grid cell is *inside* only when its four corners are inside and no
   boundary curve passes within the margin of it -- so a hole smaller than a
   cell still makes its cells boundary cells. The polygons must agree with the
-  area OCC reports for the face (and, until they have, with OCC's inside
-  count of each sample grid), or the face keeps no inside cells.
+  area OCC reports for the face, or the face keeps no inside cells.
 
 For a point ``m``, a triangle at distance ``d``, its cell's ``delta`` and
 ``nudge`` (how far the mirror test's trim query, which nudges a projection by
 1e-3 of the parameter range, can move a point in space there):
 
-* ``d - delta - nudge > tolerance`` for every triangle of the face: no point
-  of the trimmed face, nor of its carrier within the nudge, is within
-  tolerance -- a certified miss.
-* ``d + delta <= tolerance`` where OCC's projection must land inside the
-  trim: on a plane, the triangle's closest point is the perpendicular foot
-  and lies inside the trim; on a curved face, the trim is at least
-  ``2 (d + delta)`` away (the carrier's closest point lies within that of
-  the face point found) -- a certified hit.
+* ``d - delta - nudge > tolerance`` for every triangle of the face: a miss
+  (by the measured ``delta``: an error there can only reject, never accept).
+* On a **plane** only, a hit is proven: the triangle's closest point is the
+  perpendicular foot itself, within tolerance, and certainly inside the trim
+  (the caller also has OCC count the feet inside).
+* A curved face within reach is only a candidate: OCC's projection onto
+  that face confirms a hit (``step_prepare``).
 * Anything else is left to OCC's exact projection.
 
 gmsh and scipy are imported lazily, as everywhere in this package.
@@ -455,10 +454,14 @@ def _trim_cells(trim: FaceTrim, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarra
         iu_hi = np.clip(np.floor((dense[:, 0] + reach - u0) / du).astype(int), 0, nu - 1)
         iv_lo = np.clip(np.floor((dense[:, 1] - reach - v0) / dv).astype(int), 0, nv - 1)
         iv_hi = np.clip(np.floor((dense[:, 1] + reach - v0) / dv).astype(int), 0, nv - 1)
-        for ku in range(int(np.max(iu_hi - iu_lo)) + 1):
-            for kv in range(int(np.max(iv_hi - iv_lo)) + 1):
-                hit = (iu_lo + ku <= iu_hi) & (iv_lo + kv <= iv_hi)
-                crossed[iu_lo[hit] + ku, iv_lo[hit] + kv] = True
+        # Mark every cell of each reach box at once (a 2D difference array:
+        # linear in points and cells however wide the boxes).
+        marks = np.zeros((nu + 1, nv + 1), dtype=np.int64)
+        np.add.at(marks, (iu_lo, iv_lo), 1)
+        np.add.at(marks, (iu_hi + 1, iv_lo), -1)
+        np.add.at(marks, (iu_lo, iv_hi + 1), -1)
+        np.add.at(marks, (iu_hi + 1, iv_hi + 1), 1)
+        crossed |= marks.cumsum(axis=0).cumsum(axis=1)[:nu, :nv] > 0
     sure_in = corner_in & corner_certain
     sure_out = ~corner_in & corner_certain
     all_in = sure_in[:-1, :-1] & sure_in[1:, :-1] & sure_in[:-1, 1:] & sure_in[1:, 1:]
@@ -803,18 +806,25 @@ class FaceIndex:
         # that foot must be certainly inside the trim. A curved face within
         # tolerance is only a *candidate*: OCC confirms it.
         planar = self.planar[tri_ids]
-        height = np.abs(np.einsum("ij,ij->i", mirrored - triangles[:, 0], self.normals[tri_ids]))
+        # The perpendicular foot on the triangle's plane: a plane hit needs
+        # the triangle's closest point to be that very foot (compared as
+        # points: comparing distances would let a lateral offset through as
+        # its square), and the foot certainly inside the trim.
+        normals = self.normals[tri_ids]
+        signed = np.einsum("ij,ij->i", mirrored - triangles[:, 0], normals)
+        foot_point = mirrored - signed[:, None] * normals
         scale = 1.0e-9 * (1.0 + np.max(np.abs(mirrored), axis=1))
-        foot = planar & within & (np.abs(dist - height) <= scale)
+        foot = (planar & self.normal_ok[tri_ids] & within
+                & (np.linalg.norm(closest - foot_point, axis=1) <= scale))
         certified = foot & self.inside[tri_ids]
         check = np.flatnonzero(foot & ~certified)
         if len(check):
-            certified[check] = self._foot_inside(closest[check], tri_ids[check])
+            certified[check] = self._foot_inside(foot_point[check], tri_ids[check])
         upper = np.where(certified, dist, np.inf)
         foot_uv = np.full((len(tri_ids), 2), np.nan)
         rows = np.flatnonzero(certified)
         if len(rows):
-            weights = _barycentric(closest[rows], triangles[rows])
+            weights = _barycentric(foot_point[rows], triangles[rows])
             foot_uv[rows] = np.einsum("kj,kjl->kl", weights, self.uv[tri_ids[rows]])
         candidate = within & ~planar
         face = self.faces[tri_ids]

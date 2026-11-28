@@ -515,6 +515,9 @@ FEATURE_NORMAL_ALIGNMENT = 0.5
 #: and so are free and non-manifold edges; samples of every sharp edge must
 #: mirror onto some edge of the model.
 FEATURE_EDGE_ANGLE_DEG = 30.0
+#: A crease inside a face must keep its jump over this many halvings of the
+#: probe interval (a smooth bend's turn halves with each).
+FEATURE_CREASE_HALVINGS = 6
 #: Samples along each sharp edge: at least this many, and one per this
 #: fraction of the model diagonal.
 FEATURE_EDGE_MIN_SAMPLES = 8
@@ -680,9 +683,13 @@ class _FeatureEdges:
         return len(self.points), failures, len(failed)
 
     def _on_crease(self, point: np.ndarray) -> bool:
-        """Whether ``point`` lies within tolerance of a face that is creased
-        there: normals a little way to either side, in both parameter
-        directions, differ by more than the sharp-edge angle."""
+        """Whether ``point`` lies within tolerance of a face (inside its trim)
+        that is creased there: normals a little way to either side, in either
+        parameter direction, differ by more than the sharp-edge angle, and
+        keep doing so as that interval is halved (``FEATURE_CREASE_HALVINGS``
+        times, keeping the half that turns more). A C0 crease keeps its jump
+        however short the interval; a smooth bend, however tight, turns less
+        and less, so it is no crease."""
         if not self.faces:
             return False
         gaps = _box_gaps(point[None, :], self.face_boxes)[0]
@@ -694,6 +701,8 @@ class _FeatureEdges:
             if float(np.linalg.norm(np.asarray(closest, dtype=float) - point)) > self.tolerance:
                 continue
             u, v = float(parametric[0]), float(parametric[1])
+            if not _parametric_point_on_face(face, [u, v]):
+                continue
             try:
                 lo, hi = gmsh.model.getParametrizationBounds(2, face)
                 derivative = np.asarray(gmsh.model.getDerivative(2, face, [u, v]), dtype=float)
@@ -709,17 +718,40 @@ class _FeatureEdges:
                 high = [u, v]
                 low[axis] = max(float(lo[axis]), (u, v)[axis] - step)
                 high[axis] = min(float(hi[axis]), (u, v)[axis] + step)
-                try:
-                    normals = np.asarray(gmsh.model.getNormal(face, [*low, *high]), dtype=float).reshape(2, 3)
-                except Exception:
-                    continue
-                lengths = np.linalg.norm(normals, axis=1)
-                if not np.all(lengths > 0):
-                    continue
-                facing = abs(float(np.dot(normals[0], normals[1]))) / float(lengths[0] * lengths[1])
-                if facing < math.cos(math.radians(FEATURE_EDGE_ANGLE_DEG)):
+                if self._jump(face, axis, low, high):
                     return True
         return False
+
+    @staticmethod
+    def _jump(face: int, axis: int, low: list[float], high: list[float]) -> bool:
+        """Whether the normal jumps by more than the sharp-edge angle between
+        ``low`` and ``high`` (along parameter ``axis``) at every halving."""
+        limit = math.cos(math.radians(FEATURE_EDGE_ANGLE_DEG))
+
+        def turn(a: list[float], b: list[float]) -> float | None:
+            try:
+                normals = np.asarray(gmsh.model.getNormal(face, [*a, *b]), dtype=float).reshape(2, 3)
+            except Exception:
+                return None
+            lengths = np.linalg.norm(normals, axis=1)
+            if not (np.all(np.isfinite(lengths)) and np.all(lengths > 0)):
+                return None
+            return abs(float(np.dot(normals[0], normals[1]))) / float(lengths[0] * lengths[1])
+
+        facing = turn(low, high)
+        for _ in range(FEATURE_CREASE_HALVINGS):
+            if facing is None or not facing < limit:
+                return False
+            middle = list(low)
+            middle[axis] = 0.5 * (low[axis] + high[axis])
+            first, second = turn(low, middle), turn(middle, high)
+            if first is None or second is None:
+                return False
+            if first <= second:
+                high, facing = middle, first
+            else:
+                low, facing = middle, second
+        return facing is not None and facing < limit
 
     def _exact(self, point: np.ndarray) -> float:
         """OCC's distance from ``point`` to the nearest edge (its projection is
@@ -814,14 +846,16 @@ class _CertifiedOccMirrorTarget(_OccMirrorTarget):
         return abs(float(np.dot(normal, other))) / length >= FEATURE_NORMAL_ALIGNMENT
 
     def _carrier(self, face, point):
-        """OCC's projection of ``point`` onto ``face``'s carrier: (distance, normal)."""
+        """OCC's projection of ``point`` onto ``face``'s carrier: (distance,
+        normal, whether the projection lies on the trimmed face)."""
         try:
             closest, parametric = gmsh.model.getClosestPoint(2, face, [float(x) for x in point])
             other = np.asarray(gmsh.model.getNormal(face, [float(parametric[0]), float(parametric[1])]),
                                dtype=float)
         except Exception:
             return None
-        return float(np.linalg.norm(np.asarray(closest, dtype=float) - point)), other
+        distance = float(np.linalg.norm(np.asarray(closest, dtype=float) - point))
+        return distance, other, _parametric_point_on_face(face, parametric)
 
     def _confirm(self, face, points, normals):
         """One batched OCC projection of ``points`` onto curved ``face``:
@@ -948,6 +982,8 @@ class _CertifiedOccMirrorTarget(_OccMirrorTarget):
         # 3. Certified misses.
         blocked = np.zeros(total, dtype=bool)
         blocked[near.point[~(near.lower > tol)]] = True
+        # A point the index could not place is never a certified miss.
+        blocked |= ~np.all(np.isfinite(mirrored), axis=1)
         # Faces the index could not tessellate: only their box can clear them.
         unknown = [face for face in self.candidates if face not in meshes and face in self.bboxes]
         if unknown:
@@ -972,22 +1008,28 @@ class _CertifiedOccMirrorTarget(_OccMirrorTarget):
                     self._largest_residual = result[0]
         misaligned = np.zeros(total, dtype=bool)
         if shape:
+            # Per point, once: the faces of its role the tessellation does
+            # not clear of it.
+            others: dict[int, set[int]] = {}
+            for row in np.flatnonzero(same_role & ~(near.lower > tol)):
+                others.setdefault(int(near.point[row]), set()).add(int(near.face[row]))
             for p in undecided:
                 own = [h for h in hits[p] if roles.get(h) == own_role[p]]
                 if not own or not known_normal[p]:
                     continue
                 facing = False
-                # Its own hits first; then any face of its role whose
-                # carrier OCC puts within tolerance (a sample on a trim
-                # curve can project just outside one face and onto the
-                # perpendicular face meeting it there).
-                for face in [*own, *sorted({int(f) for f, q, same in zip(near.face, near.point, same_role)
-                                            if q == p and same and int(f) not in own})]:
+                # Its own hits first; then any face of its role that OCC
+                # puts within tolerance, its projection inside that face's
+                # trim (a sample on a trim curve can project just outside
+                # one face and onto the perpendicular face meeting it there).
+                for face in [*own, *sorted(others.get(int(p), set()) - set(own))]:
                     answer = self._carrier(face, mirrored[p])
                     if answer is None:
                         facing = True
                         break
-                    if answer[0] <= tol and self._facing(mirrored_normals[p], answer[1]):
+                    distance, other, on_face = answer
+                    if (distance <= tol and (face in own or on_face)
+                            and self._facing(mirrored_normals[p], other)):
                         facing = True
                         break
                 misaligned[p] = not facing
@@ -1277,17 +1319,22 @@ def _solid_cut_applies(volumes, surfaces: list[int], planes: tuple[str, ...],
                        tolerance: float) -> bool:
     """Whether the model can be cut as its solids rather than face by face.
 
-    Every face must bound a solid (no free sheet), and none may lie in a cut
-    plane (there the solid's cap and the face would coincide).
+    Every face must bound exactly one solid (no free sheet; no face shared
+    by two solids, which copying the solids would split in two), and none
+    may lie in a cut plane (there the solid's cap and the face would
+    coincide) -- by its box, or by its normal and centroid where OCC pads
+    the box beyond the tolerance.
     """
     if not volumes:
         return False
     axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
     for surface in surfaces:
-        if not len(gmsh.model.getAdjacencies(2, surface)[0]):
+        if len(gmsh.model.getAdjacencies(2, surface)[0]) != 1:
             return False
         box = gmsh.model.getBoundingBox(2, surface)
         if any(abs(box[axis]) <= tolerance and abs(box[axis + 3]) <= tolerance for axis in axes):
+            return False
+        if _lies_in_a_cut_plane(surface, axes, tolerance):
             return False
     return True
 
@@ -2145,13 +2192,17 @@ def _cut_accepted_planes(
 ) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
     cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
+    owners = {
+        int(surface): group.name
+        for group in groups
+        for surface in group.selector.surface_tags
+    }
     if triangle_model is None and fast_check:
         cut_options["report_route"] = True
     if face_index is not None:
         cut_options["face_index"] = face_index
         cut_options["solid_cut"] = solid_cut
-        cut_options["owners"] = {
-            int(surface): group.name for group in groups for surface in group.selector.surface_tags}
+        cut_options["owners"] = owners
     if triangle_model is not None:
         cut_options["triangle_model"] = triangle_model
     if parent_samples is not None:
@@ -2162,11 +2213,6 @@ def _cut_accepted_planes(
     # A claim the geometry could not decide is harmless inside one group, but
     # it must not hand a surface to a second group -- not even one of the same
     # role, since two sources share a role and are still two sources.
-    owners = {
-        int(surface): group.name
-        for group in groups
-        for surface in group.selector.surface_tags
-    }
     claimants: dict[int, set[str]] = {}
     for parent, children in parentage.items():
         for child in children:

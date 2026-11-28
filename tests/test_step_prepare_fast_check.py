@@ -768,3 +768,154 @@ def test_the_face_cut_retry_judges_its_own_children(monkeypatch):
         assert len(calls) == 2
         assert result.planes == ("x0",)
         assert result.report["cut"]["route"] == "faces"
+
+
+# -- round 3 (reviews of ce1dadd) ----------------------------------------------
+
+
+def _bent_sheet(radius, hole=True):
+    """Opus bendhole.py: an open sheet with a quarter-round bend, and a
+    one-sided 1.2 mm hole drilled through the bend at x = +100."""
+    occ = gmsh.model.occ
+    p0 = occ.addPoint(-300, -400, 0)
+    p1 = occ.addPoint(-300, -radius, 0)
+    centre = occ.addPoint(-300, -radius, radius)
+    p2 = occ.addPoint(-300, 0, radius)
+    p3 = occ.addPoint(-300, 0, 300)
+    curves = [occ.addLine(p0, p1), occ.addCircleArc(p1, centre, p2), occ.addLine(p2, p3)]
+    occ.extrude([(1, c) for c in curves], 600, 0, 0)
+    occ.synchronize()
+    if hole:
+        angle = math.pi / 4
+        cy, cz = -radius + radius * math.sin(angle), radius - radius * math.cos(angle)
+        ny, nz = math.sin(angle), -math.cos(angle)
+        drill = occ.addCylinder(100, cy - 2 * ny, cz - 2 * nz, 0, 4 * ny, 4 * nz, 0.6)
+        occ.cut([(2, t) for _d, t in gmsh.model.getEntities(2)], [(3, drill)])
+        occ.synchronize()
+    surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+    return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("wall"))]
+
+
+@pytest.mark.parametrize("radius", [2.0, 20.0])
+def test_a_one_sided_hole_on_a_tight_bend_is_rejected(radius):
+    """A smooth bend tighter than ~7.6 tolerances turns by more than 30
+    degrees over the crease probe, but it is no crease: the hole's edges
+    mirror onto no edge (Opus P2-R2, Neon P1-1). The bare sheet passes."""
+    with _session():
+        report = auto_cut_occ_geometry(_bent_sheet(radius), planes=("x0",)).report
+    assert report["planes"]["x0"]["accepted"] is False
+    assert report["mirror_check_points"]["x0"]["edge_mismatches"] > 0
+    with _session():
+        report = auto_cut_occ_geometry(_bent_sheet(radius, hole=False), planes=("x0",)).report
+    assert report["planes"]["x0"]["accepted"] is True
+
+
+def test_a_wrong_facing_hit_is_not_excused_by_another_faces_carrier():
+    """Neon P1-2: a low one-sided boss's walls mirror onto the plate,
+    facing the wrong way. A rib wall of the same role on the same carrier
+    plane, 0.1 mm beyond the mirrored samples, must not excuse them: its
+    trimmed face is not within tolerance."""
+    with _session():
+        occ = gmsh.model.occ
+        plate = occ.addBox(-60, -30, -2, 120, 60, 2)
+        boss = occ.addBox(45, 0, 0, 5, 5, 0.05)
+        ribs = [occ.addBox(50, 5.1, 0, 2, 10, 10), occ.addBox(-52, 5.1, 0, 2, 10, 10)]
+        occ.fuse([(3, plate)], [(3, boss)] + [(3, r) for r in ribs])
+        occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        groups = [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("wall"))]
+        report = auto_cut_occ_geometry(groups, planes=("x0",)).report
+    stats = report["mirror_check_points"]["x0"]
+    assert report["planes"]["x0"]["accepted"] is False
+    # Every sample the tessellation left to the exact scan is a boss wall's,
+    # and every one of them faces the wrong way.
+    assert stats["exact"] > 0
+    assert stats["misaligned"] == stats["exact"]
+
+
+def test_the_solid_cut_refuses_faces_in_a_cut_plane_or_shared_by_two_solids(monkeypatch):
+    """Neon P1-3: a face in a cut plane must keep the face cut even where
+    OCC pads its box beyond the tolerance, and so must a face two solids
+    share (copying the solids would split it in two)."""
+    tolerance = 0.01
+    with _session():
+        occ = gmsh.model.occ
+        occ.addBox(-10, -5, 0, 10, 10, 5)
+        occ.addBox(0, -5, 0, 10, 10, 5)
+        occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        real = gmsh.model.getBoundingBox
+
+        def padded(dim, tag):
+            box = list(real(dim, tag))
+            return tuple([v - 0.1 for v in box[:3]] + [v + 0.1 for v in box[3:]])
+
+        monkeypatch.setattr(gmsh.model, "getBoundingBox", padded)
+        assert not step_prepare._solid_cut_applies(
+            gmsh.model.getEntities(3), surfaces, ("x0",), tolerance)
+        monkeypatch.setattr(gmsh.model, "getBoundingBox", real)
+    with _session():
+        occ = gmsh.model.occ
+        low = occ.addBox(-10, -5, 0, 20, 10, 5)
+        high = occ.addBox(-10, -5, 5, 20, 10, 5)
+        occ.fragment([(3, low)], [(3, high)])
+        occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        assert any(len(gmsh.model.getAdjacencies(2, s)[0]) == 2 for s in surfaces)
+        assert not step_prepare._solid_cut_applies(
+            gmsh.model.getEntities(3), surfaces, ("x0",), tolerance)
+
+
+def test_a_plane_hit_needs_the_perpendicular_foot_itself():
+    """Neon P2-1: a point 0.25 above a plane triangle whose foot is 1e-4
+    outside it is no proven hit; comparing distances let the lateral offset
+    through as its square (2e-8)."""
+    triangle = np.array([[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]]])
+    mesh = occ_face_index.FaceMesh(
+        1, triangle, np.array([True]), np.zeros(1), np.zeros(1),
+        np.array([[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]), None, True)
+    index = occ_face_index.FaceIndex({1: mesh})
+    near = index.near(np.array([[50.0, -1.0e-4, 0.25], [50.0, 1.0e-4, 0.25]]), 0.3)
+    upper = {int(p): float(u) for p, u in zip(near.point, near.upper)}
+    assert math.isinf(upper[0])
+    assert upper[1] == pytest.approx(0.25)
+
+
+def test_a_non_finite_mirror_sample_is_never_a_certified_miss():
+    """Neon P2-2: a sample the index cannot place is left to the exact scan."""
+    with _session():
+        gmsh.model.occ.addBox(-10, -5, 0, 20, 10, 5)
+        gmsh.model.occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        bboxes = {t: tuple(gmsh.model.getBoundingBox(2, t)) for t in surfaces}
+        samples = {t: step_prepare.sample_occ_surface_points(t, grid=5) for t in surfaces}
+        samples[surfaces[0]] = np.vstack([samples[surfaces[0]], [np.nan, 0.0, 1.0]])
+        index, _trims = occ_face_index.build_face_index(
+            surfaces, diagonal=25.0, tolerance=0.0125, nudge_rel=1e-3, trims={})
+        target = step_prepare._CertifiedOccMirrorTarget(
+            surfaces, bboxes, 0.0125, None, {t: "wall" for t in surfaces},
+            samples=samples, axis=0, face_index=index)
+        target.match(surfaces[0], None)
+    assert target.stats["certified_misses"] == 0
+    assert target.stats["exact"] >= 1
+
+
+def test_trim_cells_marks_wide_margins_in_one_pass():
+    """Neon P2-3: a p-curve margin as wide as the face on a 1024 x 1024 grid
+    marks every cell it reaches without one pass per cell of reach."""
+    import time
+    from types import SimpleNamespace
+
+    loop = np.array([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]])
+    u = np.linspace(0.0, 1.0, 1025)
+
+    def classify_grid(uu, vv):
+        shape = (len(uu), len(vv))
+        return np.ones(shape, dtype=bool), np.ones(shape, dtype=bool)
+
+    trim = SimpleNamespace(ok=True, margin=0.6, loops=[loop], classify_grid=classify_grid)
+    start = time.perf_counter()
+    inside, keep = occ_face_index._trim_cells(trim, u, u)
+    assert time.perf_counter() - start < 5.0
+    assert not inside.any()
+    assert keep.all()
