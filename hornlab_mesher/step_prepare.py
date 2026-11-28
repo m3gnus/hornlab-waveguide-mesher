@@ -1163,6 +1163,28 @@ def _claim_evidence(parent: int, child: int, *, tolerance: float, grid: int) -> 
     points = sample_occ_surface_points(child, grid=grid)
     if not len(points):
         return "unknown"
+    # One batched projection and one inside count settle the usual claims:
+    # every sample on the carrier and inside the trim is "on", one farther
+    # than tolerance from the carrier is "off" -- the answers the loop below
+    # would give. Anything else takes the loop.
+    try:
+        closest, parametric = gmsh.model.getClosestPoint(2, parent, points.ravel().tolist())
+        closest = np.asarray(closest, dtype=float).reshape(-1, 3)
+        uv = np.asarray(parametric, dtype=float).reshape(-1, 2)
+    except Exception:
+        closest = uv = None
+    if closest is not None and closest.shape == points.shape and len(uv) == len(points):
+        gaps = np.linalg.norm(closest - points, axis=1)
+        if np.all(np.isfinite(gaps)):
+            if np.any(gaps > tolerance):
+                return "off"
+            if np.all(np.isfinite(uv)):
+                try:
+                    count = int(gmsh.model.isInside(2, parent, uv.ravel().tolist(), parametric=True))
+                except Exception:
+                    count = -1
+                if count == len(points):
+                    return "on"
     undecided = False
     for point in points:
         try:

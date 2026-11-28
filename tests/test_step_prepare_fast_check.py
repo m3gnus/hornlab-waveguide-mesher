@@ -919,3 +919,61 @@ def test_trim_cells_marks_wide_margins_in_one_pass():
     assert time.perf_counter() - start < 5.0
     assert not inside.any()
     assert keep.all()
+
+
+@pytest.mark.parametrize("fraction", [1.0, 4.0])
+def test_a_coarse_curved_tessellation_still_confirms_hits_with_occ(monkeypatch, fraction):
+    """The curved tessellation only bounds misses: a curved face its bound
+    does not clear is a candidate OCC confirms, however coarse the cells, so
+    a coarser tessellation moves no hit to the exact scan."""
+    def build():
+        gmsh.model.occ.addTorus(0, 0, 0, 30, 8)
+        gmsh.model.occ.addCylinder(0, 0, -40, 0, 0, 20, 12)
+        gmsh.model.occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("wall"))]
+
+    monkeypatch.setattr(occ_face_index, "DELTA_TARGET_FRACTION", fraction)
+    reports = {}
+    for fast in (False, True):
+        with _session():
+            result = auto_cut_occ_geometry(build(), planes=("x0", "y0"), fast_check=fast)
+            reports[fast] = result.report
+    for plane in ("x0", "y0"):
+        for field in EXACT_FIELDS:
+            assert reports[True]["planes"][plane][field] == reports[False]["planes"][plane][field]
+        stats = reports[True]["mirror_check_points"][plane]
+        assert stats["exact"] == 0
+        assert stats["confirmed_hits"] > 0
+
+
+def test_the_batched_claim_evidence_answers_as_the_point_loop(monkeypatch):
+    """``_claim_evidence`` settles most claims with one projection and one
+    inside count; every (parent, child) pair of a real cut must get the
+    answer the point-by-point loop gives."""
+    with _session():
+        gmsh.model.occ.addTorus(0, 0, 0, 30, 8)
+        gmsh.model.occ.addBox(-20, -20, 10, 40, 40, 10)
+        gmsh.model.occ.synchronize()
+        surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+        copies = {s: gmsh.model.occ.copy([(2, s)])[0][1] for s in surfaces}
+        box = gmsh.model.occ.addBox(0, -100, -100, 200, 200, 200)
+        gmsh.model.occ.synchronize()
+        gmsh.model.occ.intersect([(2, s) for s in surfaces], [(3, box)])
+        gmsh.model.occ.synchronize()
+        children = [t for _d, t in gmsh.model.getEntities(2) if t not in copies.values()]
+        tolerance = 0.05
+        batched = {(p, c): step_prepare._claim_evidence(copy, c, tolerance=tolerance, grid=7)
+                   for p, copy in copies.items() for c in children}
+        real = gmsh.model.getClosestPoint
+
+        def one_at_a_time(dim, tag, coords):
+            if len(coords) > 3:
+                raise RuntimeError("batch refused")
+            return real(dim, tag, coords)
+
+        monkeypatch.setattr(gmsh.model, "getClosestPoint", one_at_a_time)
+        looped = {(p, c): step_prepare._claim_evidence(copy, c, tolerance=tolerance, grid=7)
+                  for p, copy in copies.items() for c in children}
+    assert batched == looped
+    assert set(batched.values()) >= {"on", "off"}
