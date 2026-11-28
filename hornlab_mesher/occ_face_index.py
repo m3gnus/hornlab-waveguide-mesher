@@ -50,7 +50,7 @@ from ._lazy_gmsh import LazyGmsh
 gmsh: Any = LazyGmsh(globals())
 
 #: Target chord error, as a fraction of the mirror tolerance.
-DELTA_TARGET_FRACTION = 1.0 / 4.0
+DELTA_TARGET_FRACTION = 1.0
 #: Largest cell, as a fraction of the model diagonal.
 CELL_SIZE_REL = 1.0 / 48.0
 #: Cells per parameter direction, before and after refinement.
@@ -826,7 +826,10 @@ class FaceIndex:
         if len(rows):
             weights = _barycentric(foot_point[rows], triangles[rows])
             foot_uv[rows] = np.einsum("kj,kjl->kl", weights, self.uv[tri_ids[rows]])
-        candidate = within & ~planar
+        # Any curved face the measured bound does not clear is a candidate:
+        # OCC's projection decides it, so a coarse tessellation costs OCC
+        # calls, never a verdict.
+        candidate = ~planar & ~(lower > tolerance)
         face = self.faces[tri_ids]
         # Group by (point, face), nearest triangle first.
         order = np.lexsort((dist, face, point_ids))
