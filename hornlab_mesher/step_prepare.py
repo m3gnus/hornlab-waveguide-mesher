@@ -1824,6 +1824,7 @@ def _cut_occ_geometry_to_positive_side(
     solid_cut: bool = True,
     owners: Mapping[int, str] | None = None,
     report_route: bool = False,
+    crossing_faces_only: bool = False,
 ) -> tuple[dict[int, list[int]], set[tuple[int, int]], dict[str, object]]:
     volumes = gmsh.model.getEntities(3)
     surfaces = [tag for _dim, tag in sorted(gmsh.model.getEntities(2))]
@@ -1840,9 +1841,17 @@ def _cut_occ_geometry_to_positive_side(
     inside: set[int] = set()
     outside: set[int] = set()
     cut_parents = surfaces
-    if triangle_model is not None:
-        axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
-        boxes = {tag: tuple(gmsh.model.getBoundingBox(2, tag)) for tag in surfaces}
+    axes = [SYMMETRY_AXIS_FOR_PLANE[plane] for plane in planes]
+    # The face-by-face cut of an open shell can give OCC only the faces that
+    # cross a plane (stage 4b speed): a face whose box lies strictly on the
+    # kept side is kept as it is, one strictly beyond a plane is dropped.
+    # OCC boxes only ever grow a face, so neither can hide a crossing; a
+    # face touching a plane is cut. Giving OCC every face made it intersect
+    # every face with every other one -- seconds on an open shell.
+    crossing_only = (crossing_faces_only and triangle_model is None
+                     and all(np.all(np.isfinite(box)) for box in parent_boxes.values()))
+    if triangle_model is not None or crossing_only:
+        boxes = parent_boxes
         if any(not np.all(np.isfinite(box)) for box in boxes.values()):
             raise TriangleCutRefused("triangle surface model has invalid face bounds")
         outside = {tag for tag in surfaces if any(boxes[tag][axis + 3] < 0 for axis in axes)}
@@ -1930,7 +1939,8 @@ def _cut_occ_geometry_to_positive_side(
                 mapping, copies, remaining, tolerance=tolerance, grid=grid, judge=judge
             )
             uncovered = _uncovered_cut_parents(
-                mapping, copies, planes, tolerance=tolerance, grid=grid,
+                mapping, {parent: copies[parent] for parent in cut_parents}, planes,
+                tolerance=tolerance, grid=grid,
                 parent_samples=parent_samples if triangle_model is None else None,
             )
             if not uncovered:
@@ -1949,6 +1959,14 @@ def _cut_occ_geometry_to_positive_side(
             # adding a repaired face alone would leave a disconnected mesh.
             repaired = uncovered
             gmsh.model.occ.remove([(2, tag) for tag in remaining], recursive=True)
+            if crossing_only:
+                # The retry cuts every face, as the plain face cut does: the
+                # untouched faces would not share edges with standalone copies.
+                gmsh.model.occ.remove([(2, tag) for tag in sorted(inside | outside)],
+                                      recursive=True)
+                crossing_only = False
+                inside, outside = set(), set()
+                cut_parents = surfaces
             retry_copies = [
                 tag for _dim, tag in gmsh.model.occ.copy(
                     [(2, copies[parent]) for parent in cut_parents]
@@ -1975,6 +1993,14 @@ def _cut_occ_geometry_to_positive_side(
                     or {tag for _d, tag in gmsh.model.getEntities(0)} != used_points):
                 raise TriangleCutRefused("triangle cut left stray curves or points")
             remaining = sorted(actual)
+            mapping = {surface: ([surface] if surface in inside else mapping.get(surface, []))
+                       for surface in surfaces}
+        elif crossing_only and solid_result is None:
+            if outside:
+                gmsh.model.occ.remove([(2, tag) for tag in sorted(outside)], recursive=True)
+                gmsh.model.occ.synchronize()
+            route += " (crossing faces)"
+            remaining = sorted(set(remaining) | inside)
             mapping = {surface: ([surface] if surface in inside else mapping.get(surface, []))
                        for surface in surfaces}
         cut_succeeded = True
@@ -2018,6 +2044,7 @@ def auto_cut_occ_geometry(
     fast_check: bool = True,
     feature_check: bool = True,
     solid_cut: bool = True,
+    crossing_faces_only: bool = False,
 ) -> OccAutoCutResult:
     """Mirror-test explicit caller groups and open-cut all accepted planes.
 
@@ -2041,6 +2068,10 @@ def auto_cut_occ_geometry(
     ``solid_cut`` (with ``fast_check``) cuts a model of solids as its solids
     -- the same faces, but renumbered, so the mesh is not byte-identical to
     the face-by-face cut's; ``False`` keeps the face-by-face cut.
+    ``crossing_faces_only`` lets the face-by-face cut (open shells, and the
+    solid cut's fallback) give OCC only the faces that cross a cut plane;
+    the others are kept or dropped whole -- the same faces, with the kept
+    ones keeping their tags, so again not byte-identical.
 
     ``fast_check`` (the default on the general CAD path) decides most mirror
     samples from a forward tessellation of the faces (``occ_face_index``)
@@ -2189,7 +2220,7 @@ def auto_cut_occ_geometry(
         return _cut_accepted_planes(
             groups, accepted_planes, report, tolerance=tolerance, grid=grid,
             triangle_model=triangle_model, parent_samples=samples, face_index=face_index,
-            solid_cut=solid_cut, fast_check=fast_check,
+            solid_cut=solid_cut, fast_check=fast_check, crossing_faces_only=crossing_faces_only,
         )
     except RuntimeError as exc:
         # The caller learns which planes the refused cut was for, and what the
@@ -2211,6 +2242,7 @@ def _cut_accepted_planes(
     face_index: occ_face_index.FaceIndex | None = None,
     solid_cut: bool = True,
     fast_check: bool = False,
+    crossing_faces_only: bool = False,
 ) -> OccAutoCutResult:
     model_bbox = tuple(float(value) for value in gmsh.model.getBoundingBox(-1, -1))
     cut_options: dict[str, Any] = dict(bbox=model_bbox, tolerance=tolerance, grid=grid)
@@ -2225,6 +2257,8 @@ def _cut_accepted_planes(
         cut_options["face_index"] = face_index
         cut_options["solid_cut"] = solid_cut
         cut_options["owners"] = owners
+    if crossing_faces_only:
+        cut_options["crossing_faces_only"] = True
     if triangle_model is not None:
         cut_options["triangle_model"] = triangle_model
     if parent_samples is not None:

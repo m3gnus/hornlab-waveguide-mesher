@@ -977,3 +977,68 @@ def test_the_batched_claim_evidence_answers_as_the_point_loop(monkeypatch):
                   for p, copy in copies.items() for c in children}
     assert batched == looped
     assert set(batched.values()) >= {"on", "off"}
+
+
+def _open_shell():
+    """An open shell (faces, no solid): a box with a round bore, its lid
+    removed, plus a fin wholly on the kept side and one wholly beyond."""
+    occ = gmsh.model.occ
+    body = occ.addBox(-30, -20, 0, 60, 40, 25)
+    bore = occ.addCylinder(0, 0, -1, 0, 0, 27, 8)
+    occ.cut([(3, body)], [(3, bore)])
+    occ.synchronize()
+    volumes = gmsh.model.getEntities(3)
+    top = max((t for _d, t in gmsh.model.getEntities(2)), key=lambda t: gmsh.model.getBoundingBox(2, t)[5]
+              + gmsh.model.getBoundingBox(2, t)[2])
+    occ.remove(volumes, recursive=False)
+    occ.remove([(2, top)], recursive=True)
+    occ.addRectangle(5, 30, 0, 10, 5)
+    occ.addRectangle(-15, 30, 0, 10, 5)
+    occ.synchronize()
+    surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+    return [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("wall"))]
+
+
+def _free_edges_off_planes(planes):
+    gmsh.option.setNumber("Mesh.MeshSizeMax", 4.0)
+    gmsh.model.mesh.generate(2)
+    nodes, coords, _ = gmsh.model.mesh.getNodes()
+    xyz = dict(zip(nodes, np.asarray(coords).reshape(-1, 3)))
+    tri = np.asarray(gmsh.model.mesh.getElementsByType(2)[1]).reshape(-1, 3)
+    edges = np.sort(np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]]), axis=1)
+    edges, counts = np.unique(edges, axis=0, return_counts=True)
+    axes = [step_prepare.SYMMETRY_AXIS_FOR_PLANE[p] for p in planes]
+    off = sum(1 for a, b in edges[counts == 1]
+              if not any(abs(xyz[a][k]) < 1e-7 and abs(xyz[b][k]) < 1e-7 for k in axes))
+    return off, int(counts.max())
+
+
+@pytest.mark.parametrize("force_retry", [False, True])
+def test_an_open_shell_cut_on_its_crossing_faces_keeps_the_same_faces(monkeypatch, force_retry):
+    """The crossing-faces cut gives OCC only the faces that cross the plane:
+    the same kept faces, curves and points as cutting every face, and the
+    mesh is as watertight. A retry (periodic seams) cuts every face again."""
+    calls: list[int] = []
+    if force_retry:
+        real = step_prepare._uncovered_cut_parents
+
+        def lose_one_first(mapping, copies, planes, **kwargs):
+            calls.append(1)
+            got = real(mapping, copies, planes, **kwargs)
+            if got or len(calls) > 1:
+                return got
+            # The same face either way: the bottom (it crosses the plane).
+            return [min(copies, key=lambda p: gmsh.model.getBoundingBox(2, copies[p])[5])]
+
+        monkeypatch.setattr(step_prepare, "_uncovered_cut_parents", lose_one_first)
+    results = {}
+    for crossing in (False, True):
+        calls.clear()
+        with _session():
+            result = auto_cut_occ_geometry(_open_shell(), planes=("x0",), crossing_faces_only=crossing)
+            results[crossing] = (result.planes, _group_geometry(result), _topology(),
+                                 _free_edges_off_planes(result.planes), result.report["cut"]["route"])
+    assert results[True][:4] == results[False][:4]
+    assert results[True][0] == ("x0",)
+    assert results[True][4] == ("faces" if force_retry else "faces (crossing faces)")
+    assert results[False][4] == "faces"
