@@ -1059,3 +1059,104 @@ def test_a_loose_area_check_never_verifies_trim_polygons(monkeypatch):
             [wall], diagonal=10.0, tolerance=2.0, nudge_rel=1e-3, trims={})
     trim = trims[wall]
     assert not (trim.ok and trim.verified)
+
+
+def _rect(points):
+    occ = gmsh.model.occ
+    tags = [occ.addPoint(*p) for p in points]
+    lines = [occ.addLine(tags[i], tags[(i + 1) % len(tags)]) for i in range(len(tags))]
+    return occ.addPlaneSurface([occ.addCurveLoop(lines)])
+
+
+def _touching_boxes():
+    gmsh.model.occ.addBox(-40, -30, -20, 80, 60, 20)
+    gmsh.model.occ.addBox(-40, -30, 0, 80, 60, 20)
+
+
+def _t_junction():
+    _rect([(-5, 0, 0), (5, 0, 0), (5, 10, 0), (-5, 10, 0)])
+    _rect([(5, 0, 0), (20, 0, 0), (20, 10, 0), (5, 10, 0)])
+    _rect([(-20, 0, 0), (-5, 0, 0), (-5, 10, 0), (-20, 10, 0)])
+    _rect([(-5, 5, 0), (5, 5, 0), (5, 5, 6), (-5, 5, 6)])
+    faces = [(2, t) for _d, t in gmsh.model.occ.getEntities(2)]
+    gmsh.model.occ.fragment(faces[:3], [])
+
+
+def _coincident_edge():
+    occ = gmsh.model.occ
+    for sign in (1, -1):
+        points = [occ.addPoint(sign * (0.02 + 10 * i / 4), y, 2.0 * (i % 2)) for y in (0, 10) for i in range(5)]
+        occ.addBSplineSurface(points, 5, degreeU=3, degreeV=1)
+    _rect([(-0.02, 0, 0), (0.02, 0, 0), (0.02, 10, 0), (-0.02, 10, 0)])
+
+
+def _curve_adjacency():
+    import collections
+
+    return sorted(collections.Counter(
+        len(gmsh.model.getAdjacencies(1, c)[0]) for _d, c in gmsh.model.getEntities(1)).items())
+
+
+@pytest.mark.parametrize("build", [_touching_boxes, _t_junction, _coincident_edge],
+                         ids=["touching-boxes", "t-junction", "coincident-edge"])
+def test_faces_touching_without_shared_topology_are_cut_together(build):
+    """Where faces touch without sharing a curve (unglued stacked boxes, a
+    wall on a plate, a coincident edge that is not shared), only the one
+    boolean over every face glues them: the crossing-faces cut must not be
+    taken, so the seams stay closed (review probes, round 3 + speed)."""
+    results = {}
+    for crossing in (False, True):
+        with _session():
+            build()
+            gmsh.model.occ.synchronize()
+            surfaces = [t for _d, t in gmsh.model.getEntities(2)]
+            groups = [OccSurfaceGroup("all", OccSurfaceSelector(surfaces), OccSurfaceRole("wall"))]
+            result = auto_cut_occ_geometry(groups, planes=("x0",), solid_cut=False,
+                                           crossing_faces_only=crossing)
+            results[crossing] = (result.planes, _group_geometry(result), _topology(), _curve_adjacency(),
+                                 result.report["cut"]["route"])
+    assert results[True] == results[False]
+
+
+def test_a_broken_seam_falls_back_to_cutting_every_face(monkeypatch):
+    """If the crossing-faces cut leaves a shared curve broken (or a stray
+    curve), the cut is redone over every face from a copy of the whole model
+    that keeps its shared curves: the same result as cutting every face."""
+    monkeypatch.setattr(step_prepare, "_crossing_cut_intact", lambda *args, **kwargs: False)
+    results = {}
+    for crossing in (False, True):
+        with _session():
+            result = auto_cut_occ_geometry(_open_shell(), planes=("x0",), crossing_faces_only=crossing)
+            results[crossing] = (result.planes, _group_geometry(result), _topology(), _curve_adjacency(),
+                                 _free_edges_off_planes(result.planes), result.report["cut"]["route"])
+    assert results[True] == results[False]
+    assert results[True][-1] == "faces"
+
+
+def test_an_inverted_face_box_never_classifies_a_face(monkeypatch):
+    """A finite but inverted OCC box would put a face both beyond and on the
+    kept side: such a model is cut over every face."""
+    real = gmsh.model.getBoundingBox
+    calls = []
+
+    def inverted_for_one(dim, tag):
+        box = real(dim, tag)
+        if dim == 2 and tag == 1:
+            calls.append(tag)
+            return (1e100, 1e100, 1e100, -1e100, -1e100, -1e100)
+        return box
+
+    results = {}
+    for crossing in (False, True):
+        with _session():
+            groups = _open_shell()
+            monkeypatch.setattr(gmsh.model, "getBoundingBox", inverted_for_one)
+            try:
+                result = step_prepare._cut_occ_geometry_to_positive_side(
+                    ("x0",), bbox=tuple(real(-1, -1)), tolerance=0.05, grid=7,
+                    crossing_faces_only=crossing, report_route=True)
+            finally:
+                monkeypatch.setattr(gmsh.model, "getBoundingBox", real)
+            results[crossing] = (_topology(), result[2]["route"])
+    assert calls
+    assert results[True] == results[False]

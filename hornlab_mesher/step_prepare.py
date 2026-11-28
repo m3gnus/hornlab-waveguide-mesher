@@ -1812,6 +1812,105 @@ def _discard_cut_result(keep: set[int], keep_volumes: set[int]) -> None:
     gmsh.model.occ.synchronize()
 
 
+def _touches_without_sharing(faces: list[int], hair: float) -> bool:
+    """Whether any of ``faces`` touch without shared topology: two vertices
+    within ``hair``, a vertex on a curve it does not bound, or a curve lying
+    on a face it does not bound (stacked unglued solids, a T-junction, a
+    coincident edge that is not shared). Cutting every face glues those in
+    one boolean; cutting only some would leave them open. ``True`` also when
+    OCC cannot answer."""
+    try:
+        curves: dict[int, set[int]] = {}
+        for face in faces:
+            for _d, curve in gmsh.model.getBoundary([(2, face)], combined=False, oriented=False):
+                curves.setdefault(abs(curve), set()).add(face)
+        points: dict[int, set[int]] = {}
+        for curve in curves:
+            for _d, point in gmsh.model.getBoundary([(1, curve)], combined=False, oriented=False):
+                points.setdefault(abs(point), set()).add(curve)
+        point_xyz = {p: np.asarray(gmsh.model.getValue(0, p, []), dtype=float) for p in points}
+        curve_boxes = {c: np.asarray(gmsh.model.getBoundingBox(1, c), dtype=float) for c in curves}
+        face_boxes = {f: np.asarray(gmsh.model.getBoundingBox(2, f), dtype=float) for f in faces}
+    except Exception:
+        return True
+    tags = sorted(point_xyz)
+    if len(tags) > 1:
+        from scipy.spatial import cKDTree
+
+        xyz = np.asarray([point_xyz[t] for t in tags])
+        if cKDTree(xyz).query_pairs(hair):
+            return True
+
+    def near(box: np.ndarray, xyz: np.ndarray) -> bool:
+        return bool(np.all(xyz >= box[:3] - hair) and np.all(xyz <= box[3:] + hair))
+
+    for point, xyz in point_xyz.items():
+        for curve, box in curve_boxes.items():
+            if curve in points[point] or not near(box, xyz):
+                continue
+            try:
+                closest, _t = gmsh.model.getClosestPoint(1, curve, xyz.tolist())
+            except Exception:
+                return True
+            if float(np.linalg.norm(np.asarray(closest, dtype=float) - xyz)) <= hair:
+                return True
+    for curve, owners in curves.items():
+        try:
+            lo, hi = gmsh.model.getParametrizationBounds(1, curve)
+            params = float(lo[0]) + np.array([0.25, 0.5, 0.75]) * (float(hi[0]) - float(lo[0]))
+            samples = np.asarray(gmsh.model.getValue(1, curve, params.tolist()), dtype=float).reshape(-1, 3)
+        except Exception:
+            return True
+        for face, box in face_boxes.items():
+            if face in owners or not any(near(box, q) for q in samples):
+                continue
+            try:
+                closest, parametric = gmsh.model.getClosestPoint(2, face, samples.ravel().tolist())
+            except Exception:
+                return True
+            closest = np.asarray(closest, dtype=float).reshape(-1, 3)
+            uv = np.asarray(parametric, dtype=float).reshape(-1, 2)
+            for k in range(len(samples)):
+                if (float(np.linalg.norm(closest[k] - samples[k])) <= hair
+                        and _parametric_point_on_face(face, uv[k])):
+                    return True
+    return False
+
+
+def _crossing_cut_intact(seams: Mapping[int, set[int]], inside: set[int],
+                         remaining: list[int], temporary: Iterable[int],
+                         axes: list[int], tolerance: float) -> bool:
+    """After a crossing-faces cut: every curve an untouched face shared with
+    a face being cut still bounds that untouched face, and a cut piece too
+    unless it lies in a cut plane, within ``tolerance`` (the piece beyond it
+    was dropped: that curve is now the rim);
+    and no curve or point is left that no kept or temporary face uses."""
+    kept = set(remaining) | inside
+    try:
+        curves = {tag for _d, tag in gmsh.model.getEntities(1)}
+        for curve, faces in seams.items():
+            if curve not in curves:
+                return False
+            adjacent = set(gmsh.model.getAdjacencies(1, curve)[0])
+            if not faces <= adjacent:
+                return False
+            if not adjacent & set(remaining):
+                lo, hi = gmsh.model.getParametrizationBounds(1, curve)
+                params = np.linspace(float(lo[0]), float(hi[0]), 9)
+                xyz = np.asarray(gmsh.model.getValue(1, curve, params.tolist()), dtype=float).reshape(-1, 3)
+                if not any(np.all(np.abs(xyz[:, axis]) <= tolerance) for axis in axes):
+                    return False
+        owners = [(2, tag) for tag in sorted(kept | set(temporary))]
+        used_curves = {abs(tag) for _d, tag in gmsh.model.getBoundary(
+            owners, combined=False, oriented=False, recursive=False)}
+        used_points = {abs(tag) for _d, tag in gmsh.model.getBoundary(
+            owners, combined=False, oriented=False, recursive=True)}
+    except Exception:
+        return False
+    return (curves <= used_curves
+            and {tag for _d, tag in gmsh.model.getEntities(0)} <= used_points)
+
+
 def _cut_occ_geometry_to_positive_side(
     planes: tuple[str, ...],
     *,
@@ -1849,7 +1948,8 @@ def _cut_occ_geometry_to_positive_side(
     # face touching a plane is cut. Giving OCC every face made it intersect
     # every face with every other one -- seconds on an open shell.
     crossing_only = (crossing_faces_only and triangle_model is None
-                     and all(np.all(np.isfinite(box)) for box in parent_boxes.values()))
+                     and all(np.all(np.isfinite(box)) and all(box[k] <= box[k + 3] for k in range(3))
+                             for box in parent_boxes.values()))
     if triangle_model is not None or crossing_only:
         boxes = parent_boxes
         if any(not np.all(np.isfinite(box)) for box in boxes.values()):
@@ -1857,6 +1957,21 @@ def _cut_occ_geometry_to_positive_side(
         outside = {tag for tag in surfaces if any(boxes[tag][axis + 3] < 0 for axis in axes)}
         inside = {tag for tag in surfaces if all(boxes[tag][axis] > 0 for axis in axes)}
         cut_parents = [tag for tag in surfaces if tag not in inside and tag not in outside]
+    seams: dict[int, set[int]] = {}
+    if crossing_only:
+        # Faces that touch without shared topology need the one boolean that
+        # glues them: then every face is cut.
+        hair = max(1.0e-3 * tolerance, 1.0e-12)
+        if _touches_without_sharing(sorted(inside | set(cut_parents)), hair):
+            crossing_only = False
+            inside, outside, cut_parents = set(), set(), surfaces
+        else:
+            # The curves an untouched face shares with a face being cut must
+            # still be shared afterwards; else the cut falls back to every face.
+            for face in inside:
+                for _d, curve in gmsh.model.getBoundary([(2, face)], combined=False, oriented=False):
+                    if any(other in cut_parents for other in gmsh.model.getAdjacencies(1, abs(curve))[0]):
+                        seams.setdefault(abs(curve), set()).add(face)
     span = max(bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2])
     pad = AUTO_CUT_BOX_PAD_REL * span + 1.0
     lo = [bbox[0] - pad, bbox[1] - pad, bbox[2] - pad]
@@ -1869,6 +1984,7 @@ def _cut_occ_geometry_to_positive_side(
     # meshed as part of the model.
     copies: dict[int, int] = {}
     retry_copies: list[int] = []
+    snapshot: list[int] = []
     box: int | None = None
     cut_succeeded = False
     try:
@@ -1902,12 +2018,16 @@ def _cut_occ_geometry_to_positive_side(
             if triangle_model is None:
                 for surface in surfaces:
                     copies[surface] = gmsh.model.occ.copy([(2, surface)])[0][1]
+                if crossing_only:
+                    snapshot = [tag for _d, tag in gmsh.model.occ.copy(
+                        [(2, surface) for surface in surfaces])]
             elif cut_parents:
                 copies = dict(zip(cut_parents, _copy_triangle_faces(cut_parents)))
             gmsh.model.occ.synchronize()
             if triangle_model is not None:
                 _verify_triangle_copies(copies, triangle_model)
-        for attempt in range(2) if cut_surfaces else ():
+        attempt = 0
+        while cut_surfaces:
             # A fresh judge each attempt: the retry's children reuse the tags
             # of the attempt-0 children it removed, so samples cached under
             # those tags would describe faces that no longer exist.
@@ -1930,7 +2050,7 @@ def _cut_occ_geometry_to_positive_side(
                 surface: [tag for dim, tag in (out_map[index] if index < len(out_map) else []) if dim == 2]
                 for index, surface in enumerate(cut_parents)
             }
-            copy_tags = set(copies.values())
+            copy_tags = set(copies.values()) | set(snapshot)
             remaining = [
                 tag for _dim, tag in sorted(gmsh.model.getEntities(2))
                 if tag not in copy_tags and tag not in inside and tag not in outside
@@ -1943,6 +2063,24 @@ def _cut_occ_geometry_to_positive_side(
                 tolerance=tolerance, grid=grid,
                 parent_samples=parent_samples if triangle_model is None else None,
             )
+            if crossing_only and not uncovered:
+                if outside:
+                    gmsh.model.occ.remove([(2, tag) for tag in sorted(outside)], recursive=True)
+                    gmsh.model.occ.synchronize()
+                if not _crossing_cut_intact(seams, inside, remaining,
+                                            [*copies.values(), *snapshot], axes, tolerance):
+                    # Fall back to cutting every face, as one boolean, from
+                    # the snapshot (a copy of the whole model's faces that
+                    # keeps their shared curves).
+                    present = {tag for _d, tag in gmsh.model.getEntities(2)}
+                    gmsh.model.occ.remove(
+                        [(2, tag) for tag in sorted((set(remaining) | inside | outside) & present)],
+                        recursive=True)
+                    crossing_only = False
+                    inside, outside, cut_parents = set(), set(), surfaces
+                    retry_copies, snapshot = snapshot, []
+                    cut_surfaces = retry_copies
+                    continue
             if not uncovered:
                 break
             if triangle_model is not None:
@@ -1952,6 +2090,7 @@ def _cut_occ_geometry_to_positive_side(
                     f"OCC cut lost retained portions of surfaces {uncovered}")
             if attempt:
                 raise RuntimeError(f"OCC cut lost retained portions of surfaces {uncovered}")
+            attempt += 1
             # OCC can lose a periodic analytic face when its seam meets the
             # clipping plane. Converting that carrier to rational B-splines
             # avoids the periodic boolean path without approximating the
@@ -1996,8 +2135,10 @@ def _cut_occ_geometry_to_positive_side(
             mapping = {surface: ([surface] if surface in inside else mapping.get(surface, []))
                        for surface in surfaces}
         elif crossing_only and solid_result is None:
-            if outside:
-                gmsh.model.occ.remove([(2, tag) for tag in sorted(outside)], recursive=True)
+            present = {tag for _d, tag in gmsh.model.getEntities(2)}
+            if outside & present:
+                # Nothing crossed a plane: only the faces beyond it go.
+                gmsh.model.occ.remove([(2, tag) for tag in sorted(outside & present)], recursive=True)
                 gmsh.model.occ.synchronize()
             route += " (crossing faces)"
             remaining = sorted(set(remaining) | inside)
@@ -2006,7 +2147,7 @@ def _cut_occ_geometry_to_positive_side(
         cut_succeeded = True
     finally:
         try:
-            _remove_temporary_geometry([*copies.values(), *retry_copies], box)
+            _remove_temporary_geometry([*copies.values(), *retry_copies, *snapshot], box)
         except Exception:
             # Raise a cleanup failure after a successful cut (leftover copies
             # would be meshed); never mask an exception already in flight.

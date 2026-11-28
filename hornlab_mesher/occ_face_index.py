@@ -865,8 +865,8 @@ class NearFaces:
     every point of the trimmed face (and of its carrier within the trim
     query's nudge) is farther than this; ``upper`` -- a proven hit's
     distance (planes only, else ``inf``); ``estimate`` -- the least triangle
-    distance; ``candidate`` -- a curved face the tessellation puts within
-    tolerance, for OCC to confirm; and the unit normal of the nearest
+    distance; ``candidate`` -- a curved face the measured bound does not
+    clear, for OCC to confirm; and the unit normal of the nearest
     triangle (exact on a plane)."""
 
     point: np.ndarray
